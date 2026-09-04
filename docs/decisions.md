@@ -46,3 +46,9 @@
 ## ADR-013 REJECTED 決定は実行不可、operation id は決定論的
 - validator は REJECTED 決定を参照する operation / delivery target を error にし、render は実行しない（監査時点では REJECTED でもそのまま compile されていた）。
 - operation id は tool + args + inputs のハッシュで生成する。provenance と Job の `completed_ops` を compile をまたいで照合できるようにするため（resume の前提）。
+
+## ADR-014 resume は新 Job、冪等キーは上流連鎖、記録は size+mtime で検証する
+- 監査で「trim を変更しても loudness の key が変わらず誤スキップする」設計欠陥を予見していたため、key に上流 op の key を含める。
+- 完了記録は出力の size / mtime を持ち、一致しない限り再利用しない。`--no-hash` の場合は source を size+mtime で指紋化する。
+- resume は元 Job を書き換えず新 Job を作る（履歴と provenance を壊さない）。plan_hash が異なっても key が自己検証するので、一致する操作だけが再利用される。
+- 出力の無い operation（check）は常に再実行する。上流が同一引数で再生成された場合、その下流の記録が無傷なら再利用する（key は計画に対して定義され、バイト列に対してではない）。

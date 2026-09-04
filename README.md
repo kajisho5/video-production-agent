@@ -33,6 +33,7 @@ video-agent validate <workspace>/plans/input.youtube.project.json
 video-agent render <workspace>/plans/input.youtube.project.json --dry-run
 video-agent render <workspace>/plans/input.youtube.project.json            # CONFIRM が残れば WAITING_FOR_APPROVAL (exit 4)
 video-agent render <workspace>/plans/input.youtube.project.json --approve all
+video-agent render <workspace>/plans/input.youtube.project.json --resume last   # 途中失敗後: 完了済み操作を再利用
 video-agent explain <workspace>/plans/input.youtube.project.json [--decision <id>]
 video-agent check output.mp4 --platform youtube
 ```

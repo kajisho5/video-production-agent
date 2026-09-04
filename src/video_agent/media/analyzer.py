@@ -57,6 +57,7 @@ class MediaAnalyzer:
             if not os.path.exists(p):
                 raise FileNotFoundError(p)
             asset = Asset(path=str(Path(p).resolve()), provenance="USER")
+            st = os.stat(p)
             if self.hash_sources:
                 asset.hash = sha256_file(p)
             r = self.adapter.measure("ffmpeg-skill/probe", {"inputs": [asset.path]})
@@ -65,6 +66,7 @@ class MediaAnalyzer:
                 raise RuntimeError(f"probe failed for {p}: {r.stderr_tail}")
             probe = r.data
             asset.technical = {k: probe.get(k) for k in ("format", "duration", "size_bytes", "bitrate", "video", "audio", "subtitle_streams")}
+            asset.technical["file"] = {"size": st.st_size, "mtime": st.st_mtime}  # fingerprint fallback when hashing is skipped
             asset.classification = _classify(probe)
             asset.type = asset.classification["type"]
             obs.append(Observation(kind="probe", asset_id=asset.id, source=f"{self.src}/probe", data=probe))

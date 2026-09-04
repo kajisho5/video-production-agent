@@ -69,6 +69,28 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(all(e["result"]["ok"] for e in prov["operations"]))
         self.assertTrue(any("ffmpeg" in c for e in prov["operations"] for c in (e["result"]["commands"] or [])))
 
+    def test_resume_reuses_real_intermediates(self):
+        svc = Service(workspace=self.ws)
+        ir = svc.plan([self.src], "youtube", hash_sources=False)
+        ir_path = str(Path(self.ws) / "resume.json")
+        save_ir(ir, ir_path)
+        first = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(first["status"], "COMPLETED")
+        # simulate a failure after the intermediates: drop the delivery artifact, keep ops/
+        os.remove(first["artifacts"][0]["path"])
+        second = Service(workspace=self.ws).render(load_ir(ir_path), ir_path, timeout=600, resume=first["job"]["id"])
+        self.assertEqual(second["status"], "COMPLETED", second["execution"])
+        self.assertEqual(second["qa"]["status"], "PASS")
+        self.assertEqual(len(second["execution"]["skipped"]), 2, "cut and loudness reused from the first job's ops/")
+        self.assertTrue(all(first["job"]["id"] in p for p in second["execution"]["reused"].values()))
+        self.assertTrue(os.path.exists(second["artifacts"][0]["path"]))
+        self.assertIn(second["job"]["id"], second["artifacts"][0]["path"], "the new artifact lands in the new job")
+        # same IR twice with resume: only check.py runs among the tool operations
+        third = Service(workspace=self.ws).render(load_ir(ir_path), ir_path, timeout=600, resume="last")
+        self.assertEqual(third["status"], "COMPLETED")
+        self.assertEqual(len(third["execution"]["skipped"]), 3)
+        self.assertEqual([r["tool"] for r in third["execution"]["results"]], ["ffmpeg-skill/check"])
+
     @unittest.skipIf(os.name == "nt", "process-group check uses ps")
     def test_timeout_kills_the_whole_process_group(self):
         svc = Service(workspace=self.ws)

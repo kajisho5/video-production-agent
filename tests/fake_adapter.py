@@ -15,6 +15,24 @@ def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool =
             "audio": {"codec": "aac", "channels": 2, "sample_rate": 48000} if audio else None}
 
 
+def _read_fake(path: str) -> Optional[Dict[str, Any]]:
+    """Fake outputs carry their own metadata so a fresh adapter instance (e.g. on resume) probes them consistently."""
+    try:
+        import json
+        raw = Path(path).read_bytes()
+        if raw.startswith(b'{"fake"'):
+            return json.loads(raw.decode())
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _write_fake(path: str, meta: Dict[str, Any]) -> None:
+    import json
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_bytes(json.dumps({"fake": True, **meta}).encode())
+
+
 class FakeAdapter(ToolAdapter):
     name = "ffmpeg-skill"
     version = "0.8.4-fake"
@@ -45,31 +63,41 @@ class FakeAdapter(ToolAdapter):
             self.fail_tools[op.tool] -= 1
             return ToolResult(op.id, op.tool, False, 1, None, {}, [], "error: command failed (1): ffmpeg\nConversion failed!", 0.1, attempt, dry_run)
         out = paths.get(op.args.get("output", ""), op.args.get("output")) if op.args.get("output") else None
-        if out and not dry_run:
-            Path(out).parent.mkdir(parents=True, exist_ok=True)
-            Path(out).write_bytes(b"fake")
+        src = paths.get(op.args.get("input", ""), op.args.get("input")) if op.args.get("input") else None
+        in_meta = _read_fake(src) if src else None
+        in_dur = in_meta["duration"] if in_meta else self.duration
         if script == "probe":
-            return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], self.duration, self.audio, self.vfr, self.hdr), [], "", 0.1, attempt, dry_run)
+            meta = _read_fake(op.args["inputs"][0])
+            dur = meta["duration"] if meta else self.duration
+            return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], dur, self.audio, self.vfr, self.hdr), [], "", 0.1, attempt, dry_run)
         if script == "silence":
             keep = [[max(0.0, (s[1] or self.duration) - 0.15) if i == 0 and s[0] == 0 else 0.0, 0.0] for i, s in enumerate(self.silences[:1])]
             data = {"silences": self.silences, "keep": [[2.85, 13.85]], "input_duration": self.duration, "kept_duration": 11.0, "removed_seconds": 5.0}
             return ToolResult(op.id, op.tool, True, 0, out, data, [], "", 0.1, attempt, dry_run)
         if script == "loudness":
             if op.args.get("measure_only"):
-                return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(self.lufs), "input_tp": "-5.0", "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
+                lufs = in_meta.get("lufs", self.lufs) if in_meta else self.lufs
+                return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(lufs), "input_tp": "-5.0", "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
             self.lufs = float(op.args["lufs"])
+            if out and not dry_run:
+                _write_fake(out, {"duration": in_dur, "lufs": self.lufs})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": ["ffmpeg loudnorm"]}, ["ffmpeg loudnorm"], "", 0.2, attempt, dry_run)
         if script in ("cut", "export", "fit"):
+            dur = in_dur
             if script == "cut":
                 segs = [tuple(float(x) for x in s.split("-")) for s in op.args["segments"].split(",")]
-                self.duration = sum(e - s for s, e in segs)
-            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", self.duration)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
+                dur = sum(e - s for s, e in segs)
+            self.duration = dur
+            if out and not dry_run:
+                _write_fake(out, {"duration": dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", dur)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
         if script == "check":
-            rows = [{"check": "duration", "status": "PASS", "value": f"{self.duration}s", "expected": "any", "fix": "", "kind": "judgement"},
+            rows = [{"check": "duration", "status": "PASS", "value": f"{in_dur}s", "expected": "any", "fix": "", "kind": "judgement"},
                     {"check": "video codec", "status": "PASS", "value": "h264", "expected": "h264", "fix": "", "kind": "format"}]
             return ToolResult(op.id, op.tool, True, 0, None, {"platform": op.args["platform"], "checks": rows, "failed": 0, "warnings": 0, "ok": True}, [], "", 0.1, attempt, dry_run)
         if script == "look":
             if out and not dry_run:
+                Path(out).parent.mkdir(parents=True, exist_ok=True)
                 Path(out).write_bytes(b"png")
             return ToolResult(op.id, op.tool, True, 0, out, {"outputs": [out]}, [], "", 0.1, attempt, dry_run)
         return ToolResult(op.id, op.tool, False, 2, None, {}, [], f"error: unknown tool {script}", 0.0, attempt, dry_run)

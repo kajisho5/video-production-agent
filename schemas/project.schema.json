@@ -6,7 +6,7 @@
   "required": ["schema_version", "project", "request", "requirements", "source", "assets", "analysis", "intent", "constraints", "policy", "decisions", "plan", "timeline", "video", "audio", "captions", "graphics", "color", "delivery", "qa", "execution", "provenance"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"type": "string", "pattern": "^1\\.0$"},
+    "schema_version": {"type": "string", "pattern": "^1\\.1$"},
     "project": {"type": "object", "required": ["id", "kind", "name", "created_at", "profile"], "properties": {
       "id": {"type": "string"}, "kind": {"enum": ["single", "production"]}, "name": {"type": "string"}, "created_at": {"type": "string"},
       "profile": {"type": "object", "required": ["name", "version"], "properties": {"name": {"type": "string"}, "version": {"type": "string"}, "chain": {"type": "array", "items": {"type": "string"}}}},
@@ -43,9 +43,9 @@
     "execution": {"type": "object", "required": ["workspace", "budgets", "recovery_policy"], "properties": {
       "workspace": {"type": "string"}, "dry_run": {"type": "boolean"}, "allowed_inputs": {"type": "array", "items": {"type": "string"}},
       "budgets": {"type": "object"}, "recovery_policy": {"type": "object", "required": ["max_attempts"], "properties": {"max_attempts": {"type": "integer", "minimum": 1, "maximum": 5}}},
-      "approvals": {"type": "object"}}},
+      "approvals": {"type": "object"}, "resume_from": {"type": ["string", "null"]}}},
     "provenance": {"type": "object", "required": ["source_hashes", "profile_version", "skill_versions", "tool_versions"], "properties": {
-      "source_hashes": {"type": "object"}, "profile_version": {"type": "string"}, "skill_versions": {"type": "object"}, "tool_versions": {"type": "object"}, "created_by": {"type": "string"}, "ir_hash": {"type": "string"}, "recovery": {"type": "array"}, "runs": {"type": "array"}}}
+      "source_hashes": {"type": "object"}, "profile_version": {"type": "string"}, "skill_versions": {"type": "object"}, "tool_versions": {"type": "object"}, "created_by": {"type": "string"}, "ir_hash": {"type": "string"}, "plan_hash": {"type": "string"}, "recovery": {"type": "array"}, "runs": {"type": "array"}}}
   },
   "$defs": {
     "rule": {"type": "object", "required": ["id", "kind", "scope", "key"], "properties": {"kind": {"enum": ["POLICY", "PREFERENCE", "CONSTRAINT"]}, "scope": {"type": "string"}, "hard": {"type": "boolean"}}},

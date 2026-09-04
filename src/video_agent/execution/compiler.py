@@ -1,16 +1,31 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed Phase 1 order per asset:
-trim → loudness → export → check. Paths for intermediates are decided here; no ffmpeg flags appear here."""
+trim → loudness → export → check. Paths for intermediates are decided here; no ffmpeg flags appear here.
+
+Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
+produced its inputs). Changing the trim therefore changes the loudness key too, so a resumed job can never reuse
+an output whose upstream changed. Operation ids are deterministic (H(tool, args, inputs)) so provenance and
+job records can be matched across compiles."""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from ..models import Operation, stable_hash
+from ..project.ir import ProjectIR
 
 
 def _op_id(tool: str, args: Dict[str, Any], inputs: List[str]) -> str:
     return "op_" + stable_hash([tool, args, inputs])[:12]
-from ..project.ir import ProjectIR
+
+
+def source_fingerprint(asset: Dict[str, Any]) -> str:
+    """sha256 when the analyzer hashed the file; otherwise size+mtime (weaker, but still detects replaced sources)."""
+    if asset.get("hash"):
+        return "sha256:" + asset["hash"]
+    f = (asset.get("technical") or {}).get("file") or {}
+    if f.get("size") is not None and f.get("mtime") is not None:
+        return f"stat:{f['size']}:{f['mtime']}"
+    return "unknown:" + asset.get("path", "")
 
 
 def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[List[Operation], Dict[str, str]]:
@@ -18,13 +33,25 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
     d = ir.doc
     ops: List[Operation] = []
     paths: Dict[str, str] = {}
+    keys: Dict[str, str] = {}      # artifact id -> idempotency key of the op that produces it ("" for sources)
     job = Path(job_dir)
     frame_accurate = any(r.get("key") == "edit.precision" and r.get("value") == "frame" for r in d["requirements"])
+
+    def add(tool: str, args: Dict[str, Any], inputs: List[str], outputs: List[str], decision_ids: List[str], fp: str, kind: str = "transform") -> Operation:
+        o = Operation(tool=tool, args=args, inputs=inputs, outputs=outputs, decision_ids=decision_ids, kind=kind, id=_op_id(tool, args, inputs))
+        if outputs:
+            o.idempotency_key = stable_hash([fp, tool, args, tool_version, [keys.get(i, "") for i in inputs]])
+            for out in outputs:
+                keys[out] = o.idempotency_key
+        ops.append(o)
+        return o
+
     for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
         paths[asset_id] = asset["path"]
+        keys[asset_id] = ""
+        fp = source_fingerprint(asset)
         stem = f"{idx:02d}_{Path(asset['path']).stem}"  # index keeps two inputs with the same file name apart
         current = asset_id
-        src_hash = asset.get("hash") or ""
         gen = 0
         for op in d["video"]["operations"]:
             if op["asset"] != asset_id or op["type"] != "video.trim":
@@ -36,9 +63,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
             args: Dict[str, Any] = {"input": current, "segments": segs, "output": out_id}
             if frame_accurate:
                 args["accurate"] = True
-            o = Operation(tool="ffmpeg-skill/cut", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []), id=_op_id("ffmpeg-skill/cut", args, [current]))
-            o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
-            ops.append(o)
+            add("ffmpeg-skill/cut", args, [current], [out_id], list(op.get("decision_ids") or []), fp)
             current = out_id
         for op in d["audio"]["operations"]:
             if op["asset"] != asset_id or op["type"] != "audio.loudness":
@@ -47,23 +72,16 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
             out_id = f"{asset_id}_loudnorm"
             paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_loudness" / f"{stem}_loudnorm.mp4")
             args = {"input": current, "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
-            o = Operation(tool="ffmpeg-skill/loudness", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []), id=_op_id("ffmpeg-skill/loudness", args, [current]))
-            o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
-            ops.append(o)
+            add("ffmpeg-skill/loudness", args, [current], [out_id], list(op.get("decision_ids") or []), fp)
             current = out_id
         for t in d["delivery"]["targets"]:
             art_id = f"{asset_id}_delivery_{t['id']}"
             if t.get("preset"):
-                gen += 1
                 ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
                 paths[art_id] = str(job / "artifacts" / f"{stem}_{t['id']}.{ext}")
                 args = {"input": current, "preset": t["preset"], "output": art_id}
-                o = Operation(tool="ffmpeg-skill/export", args=args, inputs=[current], outputs=[art_id], decision_ids=list(t.get("decision_ids") or []), id=_op_id("ffmpeg-skill/export", args, [current]))
-                o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
-                ops.append(o)
-                qargs = {"input": art_id, "platform": t.get("platform", "custom")}
-                q = Operation(tool="ffmpeg-skill/check", args=qargs, inputs=[art_id], outputs=[], decision_ids=list(t.get("decision_ids") or []), kind="qa", id=_op_id("ffmpeg-skill/check", qargs, [art_id]))
-                ops.append(q)
+                add("ffmpeg-skill/export", args, [current], [art_id], list(t.get("decision_ids") or []), fp)
+                add("ffmpeg-skill/check", {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), fp, kind="qa")
             elif current != asset_id:
                 # generic profile: the last processed intermediate is the deliverable (no re-encode)
                 paths[art_id] = paths[current]
