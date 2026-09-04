@@ -107,7 +107,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                      evidence=[o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "loudness"], risk="LOW", approval="AUTO", provenance="OBSERVED"))
         # ---- VFR / HDR facts that change tool behaviour are surfaced as decisions too
         v = (asset.technical.get("video") or {})
-        probe_ids = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "probe"]
+        probe_ids = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind in ("media_probe", "probe")]
         if v.get("variable_frame_rate_suspected"):
             decs.append(Decision(subject="video.vfr", decision="frame-accurate cuts, conform to CFR", reason="probe reports variable frame rate; lossless (stream-copy) cuts are unreliable, so trims are compiled as frame-accurate",
                                  confidence=0.9, evidence=probe_ids, risk="LOW", approval="AUTO", provenance="OBSERVED"))

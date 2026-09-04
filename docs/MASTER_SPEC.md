@@ -217,6 +217,42 @@ is an interpretation.
 
 Never overwrite observed evidence with inference.
 
+### Observation / Analysis architecture (implemented, ADR-019)
+
+```text
+Asset → AnalysisRequest → Analyzer → Observation → AnalysisResult (evidence) → Inference → Decision
+```
+
+- `AnalysisKind` (`media/analysis.py`): only measurements this codebase runs today — `media_probe`, `silence`, `loudness`.
+  Nothing is declared for later; an unknown kind is `ANALYSIS_UNSUPPORTED`.
+- `AnalysisRequest`: inputs, kinds, strategy (FULL / TARGETED / CACHED_ONLY), `AnalysisBudget`, cache policy (use / bypass /
+  only), parameters, hashing. Under TARGETED the kinds come from the requirements (`targeted_kinds`); CACHED_ONLY never
+  runs an analyzer. What to observe is decided by the system / policy — never by an AI provider.
+- `Analyzer` contract: id, version, supported kinds, `analyze(request) → AnalysisResult`. The implemented analyzer is
+  `MediaAnalyzer` (`media@1.0`); it measures only through registry-selected tools (`ToolAdapter.measure`) and never calls an
+  AI provider, builds a decision or an IR, or accepts a command.
+- `Observation`: kind, asset, `source = "<package>/<tool>@<version>"`, structured data, `analysis_id`, `analyzer`, `cache_key`,
+  `provenance = OBSERVED` (always). Every analyzer result is validated (`validate_observation`: asset / kind / source /
+  analysis id / structure / no credential or command material) before it is stored; invalid results are recorded as
+  `ANALYSIS_INVALID_RESULT`, never as observations.
+- `ObservationCache` (`<workspace>/cache/observations/`): key = asset fingerprint (sha256, or size:mtime with `--no-hash`) +
+  kind + analyzer id@version + tool id@version + parameters. Hit → reuse (no tool call); miss → measure and store; any
+  change of content, analyzer version, tool version or parameters is a new key. Observation id ≠ cache key ≠ analysis id.
+  The cache is evidence reuse; job resume state (`completed_ops`) is a separate mechanism.
+- `AnalysisBudget`: `max_analysis_calls`, `max_total_seconds` (legacy `analysis.budget.max_processing_time`) are enforced
+  before each tool call; other names are refused as `ANALYSIS_UNSUPPORTED`. Exceeding stops further measurements,
+  fabricates nothing, and is recorded per measurement. It is not the AI call budget (`analysis.budget.max_ai_calls`).
+- Analysis provenance: `analysis.analyses[]` (analysis id, request, analyzer, timestamps, per-measurement rows with tool,
+  cache key / hit, status, error; budget usage; cache statistics). Separate from `provenance.ai_calls`.
+- Failure domain: `ANALYZER_UNAVAILABLE`, `ANALYZER_TIMEOUT`, `ANALYSIS_BUDGET_EXCEEDED`, `ANALYSIS_CACHE_INVALID`,
+  `ANALYSIS_INVALID_RESULT`, `ANALYSIS_UNSUPPORTED` — distinct from `AIProviderError` and from media-engine incidents. A
+  failed measurement is a warning plus a provenance row; the plan proceeds deterministically on the evidence it has.
+- AI evidence: `build_request` offers only real, `OBSERVED`, tool-sourced observations with credential / command-like
+  material scrubbed; an AI response can cite only those ids and can never create an observation.
+
+Observation ≠ Inference · Analysis ≠ AI reasoning · AI evidence ≠ executable instruction · Analysis budget ≠ AI call
+budget · Analysis cache ≠ Job resume state.
+
 ## 8. Temporal Model
 
 Time is a first-class concept.
@@ -895,6 +931,8 @@ max_api_cost
 ```
 
 Budget exhaustion should produce a controlled state such as degraded/confirm/block rather than silently violating constraints.
+
+Implemented today (ADR-019): `max_analysis_calls`, `max_total_seconds` (alias `max_processing_time`) for analysis, `max_ai_calls` for AI (ADR-018). `max_storage`, `max_gpu_time`, `max_api_cost`, `max_bytes_scanned` are unsupported and are refused when a policy names them.
 
 ## 35. Cache and Incremental Rendering
 

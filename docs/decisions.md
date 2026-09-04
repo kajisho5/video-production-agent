@@ -81,3 +81,12 @@
 - budget `analysis.budget.max_ai_calls`（既定 4）、1 call 1 試行、retry 無し、超過は BUDGET 失敗。provider 失敗は AI failure domain（warning + `ai_calls[].error`）で engine incident とは別、plan は決定論的に継続。revision は AI を呼ばない。
 - provenance: `provenance.ai_calls[]` / `ai_provider`（provider / model / task / fingerprint / response hash / usage / latency）。credential は request / response / provenance / doctor のどこにも置かない。IR schema は変更しない。
 - 作らない: 特定 provider 依存の core、AI による Tool ID 指定・argv・shell・FFmpeg command 生成、AI による IR 直接生成、AI による SkillRegistry / CapabilityResolver / approval の置換。
+
+## ADR-019 Observation is a deterministic evidence layer independent from AI inference
+- 事実: Observation は tool 計測からのみ生成されていたが、何を・どの戦略で・どの予算で観測したかは型として存在せず、strategy と budget は記録だけで強制されていなかった。再分析の再利用も無かった。
+- 決定: `Asset → AnalysisRequest → Analyzer → Observation → AnalysisResult → Inference → Decision` を固定する。`AnalysisKind` は実装済みの計測（media_probe / silence / loudness）だけを持ち、未実装の名前は登録しない。`Analyzer` は決定論的で、registry が選んだ tool を `ToolAdapter.measure` で呼ぶ以外の実行手段を持たず、AI provider・decision・IR・command に触れない。
+- Observation は常に `provenance = OBSERVED`、`source = "<package>/<tool>@<version>"`、`analysis_id` / `analyzer` / `cache_key` を持ち、`validate_observation` を通ったものだけが保存される。AI は Observation を生成も変更もできない（validator と AI evidence 境界で強制）。
+- FULL / TARGETED / CACHED_ONLY は実際に動作し、IR には実行した戦略を記録する。TARGETED の kinds は requirements から system が決める。
+- `AnalysisBudget` は強制できる項目（calls / seconds）だけを持ち、未対応の予算名は拒否する。AI call budget とは別物。超過は計測を止め、捏造せず、行ごとに記録する。
+- `ObservationCache` の key は asset fingerprint + kind + analyzer id@version + tool id@version + params。Observation id、analysis id、cache key、Job の resume 状態はそれぞれ別の identity。
+- 明文化: Observation ≠ Inference、Analysis ≠ AI reasoning、AI evidence ≠ executable instruction、Analysis budget ≠ AI call budget、Analysis cache ≠ Job resume state。
