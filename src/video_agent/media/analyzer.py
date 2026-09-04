@@ -50,14 +50,24 @@ class AnalysisResult:
 
 
 class MediaAnalyzer:
+    DEFAULT_TOOLS = {"media_probe": "ffmpeg-skill/probe", "silence_analysis": "ffmpeg-skill/silence", "loudness_analysis": "ffmpeg-skill/loudness"}
+
     def __init__(self, adapter: ToolAdapter, silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",
-                 hash_sources: bool = True):
+                 hash_sources: bool = True, tools: Optional[Dict[str, str]] = None):
         self.adapter = adapter
         self.threshold = silence_threshold_db
         self.min_silence = min_silence
         self.strategy = strategy if strategy in STRATEGIES else "FULL_ANALYSIS"
         self.hash_sources = hash_sources
-        self.src = f"ffmpeg-skill@{getattr(adapter, 'version', '?')}"
+        self.tools = {**self.DEFAULT_TOOLS, **(tools or {})}   # skill → tool id selected by the registry for this environment
+
+    def _tool(self, skill: str) -> str:
+        return self.tools[skill]
+
+    def _source(self, skill: str) -> str:
+        tool = self._tool(skill)
+        ver = self.adapter.version_of(tool) if hasattr(self.adapter, "version_of") else getattr(self.adapter, "version", "?")
+        return f"{tool}@{ver}"
 
     def analyze(self, paths: List[str]) -> AnalysisResult:
         assets: List[Asset] = []
@@ -72,7 +82,7 @@ class MediaAnalyzer:
             st = os.stat(p)
             if self.hash_sources:
                 asset.hash = sha256_file(p)
-            r = self.adapter.measure("ffmpeg-skill/probe", {"inputs": [asset.path]})
+            r = self.adapter.measure(self._tool("media_probe"), {"inputs": [asset.path]})
             calls.append({"tool": r.tool, "ok": r.ok, "seconds": r.seconds})
             if not r.ok:
                 raise RuntimeError(f"probe failed for {p}: {r.stderr_tail}")
@@ -81,14 +91,14 @@ class MediaAnalyzer:
             asset.technical["file"] = {"size": st.st_size, "mtime": st.st_mtime}  # fingerprint fallback when hashing is skipped
             asset.classification = _classify(probe)
             asset.type = asset.classification["type"]
-            obs.append(Observation(kind="probe", asset_id=asset.id, source=f"{self.src}/probe", data=probe))
+            obs.append(Observation(kind="probe", asset_id=asset.id, source=self._source("media_probe"), data=probe))
             tl.add_timeline(asset.id)
             dur = probe.get("duration") or 0.0
             if probe.get("audio"):
-                s = self.adapter.measure("ffmpeg-skill/silence", {"input": asset.path, "list": True, "threshold": self.threshold, "min_silence": self.min_silence})
+                s = self.adapter.measure(self._tool("silence_analysis"), {"input": asset.path, "list": True, "threshold": self.threshold, "min_silence": self.min_silence})
                 calls.append({"tool": s.tool, "ok": s.ok, "seconds": s.seconds})
                 if s.ok:
-                    o = Observation(kind="silence", asset_id=asset.id, source=f"{self.src}/silence", data={k: s.data.get(k) for k in ("silences", "keep", "input_duration", "kept_duration", "removed_seconds", "threshold")})
+                    o = Observation(kind="silence", asset_id=asset.id, source=self._source("silence_analysis"), data={k: s.data.get(k) for k in ("silences", "keep", "input_duration", "kept_duration", "removed_seconds", "threshold")})
                     o.data["threshold_db"] = self.threshold
                     obs.append(o)
                     for se in s.data.get("silences") or []:
@@ -99,14 +109,14 @@ class MediaAnalyzer:
                         tl.add(Event(type="AUDIO_ACTIVE", timeline_id=f"asset:{asset.id}", range=TimeRange(ke[0], ke[1]).to_dict(), source=o.source, kind="OBSERVED", evidence=[o.id]))
                 else:
                     warnings.append(f"silence analysis failed for {p}: {s.stderr_tail}")
-                m = self.adapter.measure("ffmpeg-skill/loudness", {"input": asset.path, "measure_only": True})
+                m = self.adapter.measure(self._tool("loudness_analysis"), {"input": asset.path, "measure_only": True})
                 calls.append({"tool": m.tool, "ok": m.ok, "seconds": m.seconds})
                 if m.ok:
                     d = m.data
                     data = {"silent": bool(d.get("silent"))}
                     if not data["silent"]:
                         data.update({"lufs": _f(d.get("input_i")), "true_peak": _f(d.get("input_tp")), "lra": _f(d.get("input_lra"))})
-                    o = Observation(kind="loudness", asset_id=asset.id, source=f"{self.src}/loudness", data=data)
+                    o = Observation(kind="loudness", asset_id=asset.id, source=self._source("loudness_analysis"), data=data)
                     obs.append(o)
                     tl.add(Event(type="LOUDNESS_MEASURE", timeline_id=f"asset:{asset.id}", range=TimeRange(0.0, dur).to_dict(), source=o.source, kind="OBSERVED", evidence=[o.id], metadata=data))
                 else:

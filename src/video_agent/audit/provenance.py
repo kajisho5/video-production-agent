@@ -18,7 +18,7 @@ def build_provenance(ir_doc: Dict[str, Any], ops: List[Operation], results: List
         rs = by_op.get(op.id, [])
         last = rs[-1] if rs else None
         entries.append({
-            "who": who, "when": now_iso(), "what": op.tool, "why": [ir_doc_decision_reason(ir_doc, d) for d in op.decision_ids],
+            "who": who, "when": now_iso(), "what": op.tool, "skill": op.skill, "why": [ir_doc_decision_reason(ir_doc, d) for d in op.decision_ids],
             "decision": op.decision_ids, "input": [paths.get(i, i) for i in op.inputs], "output": [paths.get(o, o) for o in op.outputs],
             "tool": op.tool, "tool_version": ir_doc["source"]["tool_versions"].get("ffmpeg-skill"), "args": op.args, "idempotency_key": op.idempotency_key,
             "result": None if last is None else {"ok": last.ok, "exit_code": last.exit_code, "attempts": len(rs), "seconds": sum(r.seconds for r in rs), "commands": last.commands, "dry_run": last.dry_run},

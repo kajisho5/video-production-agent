@@ -185,13 +185,14 @@ class Artifact(Model):
 @dataclass
 class Operation(Model):
     """Output of the compiler: one deterministic tool invocation."""
-    tool: str                       # "ffmpeg-skill/cut"
+    tool: str                       # "ffmpeg-skill/cut" (selected via SkillRegistry.select_tool, never hard-coded downstream)
     args: Dict[str, Any]            # typed adapter args (never argv, never ffmpeg flags)
     inputs: List[str]               # artifact/asset ids
     outputs: List[str]              # artifact ids
     decision_ids: List[str] = field(default_factory=list)
     kind: str = "transform"         # transform | measure | qa
     idempotency_key: str = ""
+    skill: str = ""                 # the skill this operation realises (for provenance / listing)
     id: str = field(default_factory=lambda: new_id("op"))
 
 

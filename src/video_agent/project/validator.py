@@ -28,7 +28,9 @@ def load_schema() -> Dict[str, Any]:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_paths: bool = True) -> ValidationReport:
+def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_paths: bool = True, registry=None, supports=None) -> ValidationReport:
+    """registry: SkillRegistry (plan steps must cite implemented skills and their declared tools); supports: callable(tool) -> bool
+    from the tool router (the named tool must be executable here). Both optional so pure schema checks stay cheap."""
     rep = ValidationReport()
     try:
         import jsonschema
@@ -82,6 +84,33 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"delivery target {t['id']}: unknown preset {t['preset']}")
         if t.get("platform") not in known_platforms:
             rep.errors.append(f"delivery target {t['id']}: unknown platform {t.get('platform')}")
+    # plan steps: Skill → Tool consistency (the compiler takes tools from the steps, so this is the execution contract)
+    if registry is not None:
+        known = set(registry.names())
+        for s in d["plan"]["steps"]:
+            if s["skill"] not in known:
+                rep.errors.append(f"plan step {s['id']} cites unknown skill {s['skill']}")
+                continue
+            spec = registry.get(s["skill"])
+            if not spec.implemented:
+                rep.errors.append(f"plan step {s['id']} cites skill {s['skill']} which is declared for phase {spec.phase} and not implemented")
+            if not s.get("tool"):
+                rep.errors.append(f"plan step {s['id']} ({s['skill']}) has no selected tool")
+            elif s["tool"] not in spec.tools:
+                rep.errors.append(f"plan step {s['id']}: tool {s['tool']} is not a declared tool of skill {s['skill']} ({', '.join(spec.tools)})")
+            elif supports is not None and not supports(s["tool"]):
+                rep.errors.append(f"plan step {s['id']}: no registered adapter supports {s['tool']}")
+    # every executable operation must have a step (otherwise the compiler cannot know its tool)
+    step_keys = {(s["skill"], (s.get("params") or {}).get("asset") or (s.get("params") or {}).get("target")) for s in d["plan"]["steps"]}
+    for op in d["video"]["operations"]:
+        if op["type"] == "video.trim" and ("silence_cleanup", op["asset"]) not in step_keys:
+            rep.errors.append(f"video.trim on {op['asset']} has no plan step")
+    for op in d["audio"]["operations"]:
+        if op["type"] == "audio.loudness" and ("loudness_normalization", op["asset"]) not in step_keys:
+            rep.errors.append(f"audio.loudness on {op['asset']} has no plan step")
+    for t in d["delivery"]["targets"]:
+        if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
+            rep.errors.append(f"delivery target {t['id']} has no export step")
     # paths
     if check_paths:
         for a in assets.values():

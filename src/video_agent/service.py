@@ -12,7 +12,7 @@ from .agent import build_plan, decide, extract_requirements, infer, resolve_inte
 from .agent.requirements import requirement_map
 from .audit import build_provenance, write_audit
 from .capabilities import CapabilityResolver
-from .execution import Executor, compile_ir
+from .execution import CompileError, Executor, compile_ir
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
 from .models import Artifact, Request, new_id, now_iso
@@ -24,6 +24,7 @@ from .project.ir import snapshot_path
 from .media.analyzer import AnalysisResult
 from .qa import run_qa
 from .skills import default_registry
+from .tools import ToolRouter
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
 from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
@@ -37,13 +38,26 @@ class Service:
         self._adapter = adapter
         self.registry = default_registry()
 
-    # ---- adapters
-    def adapter(self, allowed_inputs: Optional[List[str]] = None):
+    # ---- adapters / tools
+    def adapter(self, allowed_inputs: Optional[List[str]] = None) -> ToolRouter:
+        """The tool router with every adapter available in this environment. Today that is ffmpeg-skill only; a second
+        skill package would be registered here (and nowhere else)."""
         if self._adapter is not None:
-            return self._adapter
+            return self._adapter if isinstance(self._adapter, ToolRouter) else ToolRouter([self._adapter])
         skill = locate_ffmpeg_skill(self.skill_dir)
         policy = PathPolicy(allowed_inputs or [], self.workspace) if allowed_inputs is not None else None
-        return FfmpegSkillAdapter(skill, policy)
+        router = ToolRouter()
+        if skill:
+            router.register(FfmpegSkillAdapter(skill, policy))
+        return router
+
+    def tools_for(self, router: Optional[ToolRouter] = None) -> Dict[str, str]:
+        """Skill → tool id for this environment (capabilities + registered adapters)."""
+        router = router or self.adapter([])
+        return self.registry.resolve_tools(self.caps.resolve(), router.supports)
+
+    def skills(self) -> List[Dict[str, Any]]:
+        return self.registry.availability(self.caps.resolve(), self.adapter([]).supports)
 
     def tool_versions(self) -> Dict[str, str]:
         caps = self.caps.resolve()
@@ -55,9 +69,13 @@ class Service:
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter([str(Path(p).resolve().parent) for p in inputs])
+        tools = self.tools_for(adapter)
+        for needed in ("media_probe", "silence_analysis", "loudness_analysis"):
+            if needed not in tools:
+                raise RuntimeError(f"analysis skill {needed} is not available: " + self.registry.select_tool(needed, self.caps.resolve(), adapter.supports)[1])
         # Phase 1 analyses whole files (silence + loudness over the full duration); a budgeted TARGETED strategy is Phase 2,
         # so the recorded strategy says what actually happened rather than what the profile asked for.
-        analyzer = MediaAnalyzer(adapter, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), strategy="FULL_ANALYSIS", hash_sources=hash_sources)
+        analyzer = MediaAnalyzer(adapter, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), strategy="FULL_ANALYSIS", hash_sources=hash_sources, tools=tools)
         analysis = analyzer.analyze(inputs)
         return profile, rules, analysis
 
@@ -76,12 +94,14 @@ class Service:
         """Requirements → Intent → Inference → Decision → Plan. `suppressed` lists (subject, asset_id) pairs the user rejected:
         the planner must not propose them again. Returns (reqs, intent, inferences, decisions, plan, dropped)."""
         caps = self.caps.resolve()
+        router = self.adapter([])
+        tools = self.tools_for(router)
         reqs = extract_requirements(request, profile, rules)
         rm = requirement_map(reqs)
         intent = resolve_intent(reqs)
         target = rm.get("audio.loudness.target_lufs")
         inferences = infer(analysis, rules, target_lufs=float(target.value) if target else None, tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
-        decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry)
+        decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
             keys = {(s["subject"], s.get("asset_id")) for s in suppressed}
@@ -93,7 +113,7 @@ class Service:
                     keep.append(dcs)
             decisions = keep
         precision = rm.get("edit.precision")
-        plan = build_plan(decisions, analysis, frame_accurate=bool(precision and precision.value == "frame"))
+        plan = build_plan(decisions, analysis, frame_accurate=bool(precision and precision.value == "frame"), tools=tools)
         return reqs, intent, inferences, decisions, plan, dropped
 
     def _fill(self, ir: ProjectIR, request: Request, profile, rules, analysis: AnalysisResult, plan_version: int, suppressed=None):
@@ -214,7 +234,7 @@ class Service:
                 "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering"}
 
     def validate(self, ir: ProjectIR, check_paths: bool = True):
-        return validate_ir(ir, self.caps.resolve(), check_paths=check_paths)
+        return validate_ir(ir, self.caps.resolve(), check_paths=check_paths, registry=self.registry, supports=self.adapter([]).supports)
 
     def dry_run(self, ir: ProjectIR) -> Dict[str, Any]:
         job_dir = str(Path(self.workspace) / "jobs" / "<job_id>")
@@ -230,7 +250,7 @@ class Service:
         needed = sorted({c for step in ir.doc["plan"]["steps"] for c in self.registry.get(step["skill"]).required_capabilities}) if ir.doc["plan"]["steps"] else []
         caps = self.caps.resolve()
         total = sum((a.get("technical") or {}).get("duration") or 0 for a in ir.doc["assets"].values())
-        reencodes = sum(1 for op in ops if op.tool in ("ffmpeg-skill/export",)) + sum(1 for op in ops if op.tool == "ffmpeg-skill/cut" and op.args.get("accurate"))
+        reencodes = sum(1 for op in ops if op.skill == "delivery_export") + sum(1 for op in ops if op.skill == "silence_cleanup" and op.args.get("accurate"))
         return {"operations": previews, "required_capabilities": {c: caps[c].status if c in caps else "UNKNOWN" for c in needed},
                 "expected_outputs": [paths[o] for op in ops for o in op.outputs], "risks": [d["subject"] + ": " + d["risk"] for d in ir.doc["decisions"] if d["risk"] != "LOW"],
                 "warnings": self.validate(ir).warnings + ir.doc["analysis"].get("warnings", []), "pending_confirmations": [d["id"] for d in ir.pending_confirmations()], "blocked": [d["id"] for d in ir.blocked()],
@@ -307,8 +327,8 @@ class Service:
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"op {result.failed_op}")
         else:
             job.transition("QA")
-            checks = {op.args["input"]: r for op in ops if op.tool == "ffmpeg-skill/check" for r in result.results if r.op_id == op.id}
-            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks)
+            checks = {op.args["input"]: r for op in ops if op.skill == "delivery_check" for r in result.results if r.op_id == op.id}
+            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=self.tools_for(adapter))
             out["qa"] = qa.to_dict()
             artifacts = []
             for asset_id in ir.doc["assets"]:
@@ -348,8 +368,9 @@ class Service:
 
     def check(self, path: str, platform: str = "custom") -> Dict[str, Any]:
         adapter = self.adapter([str(Path(path).resolve().parent)])
-        pr = adapter.measure("ffmpeg-skill/probe", {"inputs": [str(Path(path).resolve())]})
-        ck = adapter.measure("ffmpeg-skill/check", {"input": str(Path(path).resolve()), "platform": platform})
+        tools = self.tools_for(adapter)
+        pr = adapter.measure(tools["media_probe"], {"inputs": [str(Path(path).resolve())]})
+        ck = adapter.measure(tools["delivery_check"], {"input": str(Path(path).resolve()), "platform": platform})
         return {"probe": pr.data if pr.ok else {"error": pr.stderr_tail}, "check": ck.data if ck.data else {"error": ck.stderr_tail}}
 
 

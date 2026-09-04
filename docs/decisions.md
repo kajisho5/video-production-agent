@@ -58,3 +58,9 @@
 - v(n) は `<stem>.v<n>.json` に保存してから置き換える。
 - v≥2 は `approved_plan_version == plan.version` になるまで render できない。承認は decision 単位、plan 版の承認は「pending も rejected-cited も無い」ときに自動的に成立する。
 - plan_hash は approve/reject で不変、revise で変わる。schema_version はハッシュに含めない。
+
+## ADR-016 Tool は Skill Registry が選び、plan に記録され、compiler は plan からしか読まない
+- 事実: PR #4 までは planner と compiler が `ffmpeg-skill/<script>` を直書きし、`SkillSpec.tools` は参照されていなかった（Tool Selector が不在）。
+- 決定: `SkillRegistry.select_tool(skill, caps, supports)` を唯一の選択点にする。planner は解決済み skill→tool 表を `plan.steps[].tool` に書く。compiler は step から tool を取り、無ければ `CompileError`。validator は step の skill が実装済みで tool が候補に含まれ adapter が対応することを検査する。
+- `ToolRouter` は tool id を対応 adapter へ振り分けるだけで振る舞いを持たない。adapter の登録は `Service.adapter()` の 1 箇所。
+- `phase > IMPLEMENTED_PHASE` の Skill は宣言のみで選択不可（`video-agent skills` で NOT_IMPLEMENTED）。存在しない外部 Skill は registry にも adapter にも置かない。

@@ -769,3 +769,116 @@ class RevisionTests(unittest.TestCase):
         svc.reject(load_ir(p), p, [lead["id"]], reason="x")
         svc.revise(load_ir(p), p)
         self.assertEqual(len(ad.calls), n, "revision is a pure re-plan from recorded observations")
+
+
+class SkillToolBoundaryTests(unittest.TestCase):
+    """Skill (what) → Capability (what is possible here) → Tool (what executes). The plan names the tool; the compiler never chooses."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def test_select_tool_follows_capabilities_and_adapters(self):
+        from video_agent.skills import default_registry
+        reg = default_registry()
+        caps = FakeCaps().resolve()
+        self.assertEqual(reg.select_tool("silence_cleanup", caps, lambda t: True), ("ffmpeg-skill/cut", "ok"))
+        tool, reason = reg.select_tool("silence_cleanup", FakeCaps(missing={"encoder:libx264"}).resolve(), lambda t: True)
+        self.assertIsNone(tool)
+        self.assertIn("encoder:libx264", reason)
+        tool, reason = reg.select_tool("silence_cleanup", caps, lambda t: False)
+        self.assertIsNone(tool)
+        self.assertIn("no registered adapter", reason)
+        tool, reason = reg.select_tool("multi_source_sync", caps, lambda t: True)
+        self.assertIsNone(tool, "declared future skills are never selectable even when their tools exist")
+        self.assertIn("not implemented", reason)
+
+    def test_future_skills_are_listed_but_never_available(self):
+        svc = make_service(self.tmp)
+        rows = {r["skill"]: r for r in svc.skills()}
+        self.assertEqual(rows["multi_source_sync"]["status"], "NOT_IMPLEMENTED")
+        self.assertEqual(rows["caption_generation"]["status"], "NOT_IMPLEMENTED")
+        self.assertEqual(rows["silence_cleanup"]["status"], "AVAILABLE")
+        self.assertEqual(rows["silence_cleanup"]["tool"], "ffmpeg-skill/cut")
+        self.assertNotIn("multi_source_sync", svc.tools_for())
+        self.assertNotIn("caption_generation", svc.tools_for())
+
+    def test_plan_steps_name_registry_selected_tools_and_compiler_uses_them(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        steps = {s["skill"]: s["tool"] for s in ir.doc["plan"]["steps"]}
+        self.assertEqual(steps, {"silence_cleanup": "ffmpeg-skill/cut", "loudness_normalization": "ffmpeg-skill/loudness", "delivery_export": "ffmpeg-skill/export", "delivery_check": "ffmpeg-skill/check"})
+        ops, _ = compile_ir(ir, "/w/jobs/j")
+        self.assertEqual([(o.skill, o.tool) for o in ops], [("silence_cleanup", "ffmpeg-skill/cut"), ("loudness_normalization", "ffmpeg-skill/loudness"), ("delivery_export", "ffmpeg-skill/export"), ("delivery_check", "ffmpeg-skill/check")])
+        # the compiler follows the plan, not a literal: renaming the tool in the plan changes the compiled operation
+        ir.doc["plan"]["steps"][0]["tool"] = "other-skill/trim"
+        ops2, _ = compile_ir(ir, "/w/jobs/j")
+        self.assertEqual(ops2[0].tool, "other-skill/trim")
+        # ...and the validator refuses it because no adapter supports that tool / it is not a declared tool of the skill
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: t.startswith("ffmpeg-skill/"))
+        self.assertFalse(rep.ok)
+        self.assertTrue(any("not a declared tool" in e for e in rep.errors), rep.errors)
+
+    def test_validator_rejects_steps_without_tool_or_with_future_skill(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        ir.doc["plan"]["steps"][1]["tool"] = None
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
+        self.assertTrue(any("has no selected tool" in e or "plan/steps/1/tool" in e for e in rep.errors), rep.errors)  # schema rejects null first
+        ir = svc.plan([self.src], "youtube")
+        ir.doc["plan"]["steps"].append({"id": "step_sync", "skill": "multi_source_sync", "tool": "ffmpeg-skill/sync", "decision_ids": [], "params": {}})
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
+        self.assertTrue(any("not implemented" in e for e in rep.errors), rep.errors)
+        ir = svc.plan([self.src], "youtube")
+        ir.doc["plan"]["steps"] = [s for s in ir.doc["plan"]["steps"] if s["skill"] != "silence_cleanup"]
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
+        self.assertTrue(any("has no plan step" in e for e in rep.errors), rep.errors)
+
+    def test_compiler_refuses_plan_without_tool(self):
+        from video_agent.execution import CompileError
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        ir.doc["plan"]["steps"] = []
+        with self.assertRaises(CompileError):
+            compile_ir(ir, "/w/jobs/j")
+
+    def test_missing_adapter_blocks_the_decision(self):
+        class NoTools(FakeAdapter):
+            def supports(self, tool):
+                return tool.startswith("ffmpeg-skill/") and not tool.endswith("/export")
+        svc = make_service(self.tmp, adapter=NoTools())
+        ir = svc.plan([self.src], "youtube")
+        blocked = [d for d in ir.doc["decisions"] if d["approval"] == "BLOCK"]
+        self.assertTrue(blocked)
+        self.assertIn("no registered adapter", blocked[0]["reason"])
+        self.assertEqual(blocked[0]["params"]["skill"], "delivery_export")
+
+    def test_router_dispatches_by_adapter_support(self):
+        from video_agent.tools import ToolRouter, ToolError
+        a = FakeAdapter()
+        class Other(FakeAdapter):
+            name = "other"
+            def supports(self, tool):
+                return tool.startswith("other/")
+        router = ToolRouter([a, Other()])
+        self.assertTrue(router.supports("ffmpeg-skill/cut"))
+        self.assertTrue(router.supports("other/x"))
+        self.assertFalse(router.supports("nope/x"))
+        self.assertIs(router.adapter_for("other/x").__class__, Other)
+        with self.assertRaises(ToolError):
+            router.measure("nope/x", {})
+        self.assertEqual(router.measure("ffmpeg-skill/probe", {"inputs": ["/x"]}).tool, "ffmpeg-skill/probe")
+
+    def test_no_tool_id_literals_outside_tool_layer(self):
+        """Orchestration code must not hard-code engine tool ids; they come from the registry (defaults live in one place per module)."""
+        import re
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        offenders = []
+        for py in root.rglob("*.py"):
+            rel = py.relative_to(root).as_posix()
+            if rel.startswith(("tools/", "skills/")) or rel == "execution/recovery.py":
+                continue
+            for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+                if '"ffmpeg-skill/' in line and "DEFAULT_TOOLS" not in line and not line.strip().startswith("#") and "#" not in line.split('"ffmpeg-skill/')[0][-40:]:
+                    offenders.append(f"{rel}:{i}: {line.strip()}")
+        self.assertEqual(offenders, [], "\n".join(offenders))

@@ -47,6 +47,17 @@ def cmd_doctor(args, svc: Service) -> int:
     return 1 if hard else 0
 
 
+def cmd_skills(args, svc: Service) -> int:
+    rows = svc.skills()
+    if args.json:
+        _print(rows, True)
+        return 0
+    w = max(len(r["skill"]) for r in rows)
+    for r in rows:
+        print(f"{r['status']:15s} {r['skill']:{w}s}  v{r['version']}  phase {r['phase']}  tool={r['tool'] or '-'}" + ("" if r["status"] == "AVAILABLE" else f"  ({r['reason']})"))
+    return 0
+
+
 def cmd_analyze(args, svc: Service) -> int:
     profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash)
     doc = analysis.to_dict()
@@ -302,6 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("doctor", help="inspect the environment (AVAILABLE / MISSING / DEGRADED / UNKNOWN)")
     p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("skills", help="list skills with their status here (AVAILABLE / UNAVAILABLE / NOT_IMPLEMENTED) and the selected tool")
+    p.set_defaults(fn=cmd_skills)
     p = sub.add_parser("analyze", help="probe media and list observed events")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources (faster on huge files)")
     p.set_defaults(fn=cmd_analyze)
