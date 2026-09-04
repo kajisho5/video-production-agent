@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_ai_provider import FakeAIProvider  # noqa: E402
 from video_agent.project import load_ir, save_ir
 from video_agent.service import Service
 from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
@@ -100,6 +102,39 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(r.ok, r.stderr_tail)
         self.assertTrue(os.path.exists(out) and os.path.exists(self.src), "source preserved, artifact produced")
         self.assertEqual(r.tool, tools["silence_cleanup"])
+
+    def test_ai_recommendation_to_real_production_without_ai_commands(self):
+        """FakeAIProvider → recommendation → AI_GENERATED inference → decision evidence → SkillRegistry → ffmpeg-skill tool →
+        adapter → real media → QA → provenance. The provider never sees or emits a command; every executed command comes
+        from the adapter's typed catalog."""
+        prov = FakeAIProvider(intent="silence_cleanup", params={"tool": "ffmpeg-skill/cut", "argv": ["ffmpeg", "-y", "-i", "x"], "command": "ffmpeg -i in out"})
+        svc = Service(workspace=self.ws, provider=prov)
+        ir = svc.plan([self.src], "youtube")
+        ai = [i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED"]
+        self.assertEqual(len(ai), 1)
+        self.assertEqual(set(ai[0]["data"]["params"]), set(), "tool / argv / command stripped from the AI params")
+        lead = next(d for d in ir.doc["decisions"] if d["subject"] == "silence.leading")
+        self.assertIn(ai[0]["id"], lead["evidence"])
+        self.assertEqual({st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}["silence_cleanup"], "ffmpeg-skill/cut")
+        ir_path = str(Path(self.ws) / "ai.json")
+        save_ir(ir, ir_path)
+        self.assertTrue(svc.validate(ir).ok)
+        out = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        prov_doc = json.loads((Path(self.ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        self.assertEqual(prov_doc["ai_calls"][0]["provider"], "fake")
+        self.assertEqual(len(prov_doc["ai_calls"][0]["response_hash"]), 64)
+        cut = next(e for e in prov_doc["operations"] if e["skill"] == "silence_cleanup")
+        cmd = " ".join(cut["result"]["commands"])
+        start = lead["params"]["end"]
+        self.assertIn(f"-ss {start:.3f}", cmd, "the executed command follows the measured decision, reported by the engine itself")
+        self.assertNotIn(" -i x", cmd, "the AI's argv never reached execution")
+        self.assertNotIn("in out", cmd)
+        self.assertTrue(cut["args"]["segments"].startswith(f"{start:.3f}-"), "typed adapter args come from the IR trim, not from the AI")
+        self.assertNotIn("argv", json.dumps(cut["args"]))
+        for text in (Path(ir_path).read_text(), json.dumps(prov_doc)):
+            self.assertNotIn(prov.api_key, text)
 
     def test_resume_reuses_real_intermediates(self):
         svc = Service(workspace=self.ws)

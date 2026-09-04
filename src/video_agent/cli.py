@@ -311,6 +311,12 @@ def cmd_explain(args, svc: Service) -> int:
                 print(f"    evidence {e}")
         for alt in d.get("alternatives", []):
             print(f"    alternative: {alt['decision']} — {alt['reason']}" + (f" (cost: {alt['cost']})" if alt.get("cost") else ""))
+    calls = ir.doc["provenance"].get("ai_calls") or []
+    if calls:
+        prov = ir.doc["provenance"].get("ai_provider") or {}
+        print(f"AI: provider {prov.get('provider', '?')} model {prov.get('model', '?')}, {len(calls)} call(s); recommendations are proposals (AI_GENERATED), never execution authority")
+        for c in calls:
+            print(f"  {c['at']}  {c['task_type']}  {'ok' if c['ok'] else 'FAILED ' + (c.get('error') or {}).get('kind', '')}  hash={(c.get('response_hash') or '-')[:12]}  latency={c.get('latency_s')}s")
     return 0
 
 

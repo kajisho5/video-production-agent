@@ -72,3 +72,12 @@
 - 既存の `SkillSpec` は production skill（Agent が実現できること）として維持し、改名しない。DECLARED / IMPLEMENTED / AVAILABLE は既存 status に対応付け、新 status は作らない。
 - plugin manager / installer / dynamic import / marketplace / remote registry は作らない。package は adapter module と `Service.adapter()` の 1 行で登録される。future skill は production code に登録も stub も置かず、テストは test scope の fake package で契約を証明する。
 - planner / compiler / decision / QA に engine 固有ロジックを置かない（静的テスト）。tool id は概念名で、engine は adapter の内側。
+
+## ADR-018 AI Provider は Brain の一部だが execution authority ではない
+- 事実: 実装済み Skill package は `kajisho5/ffmpeg-skill`（外部 OSS、100+ stars）のみ。AI provider の本番実装は無く、既存 `AIProvider` は未使用だった。
+- 決定: `AIProvider` / `AIRequest` / `AIResponse` / `AIUsage` / `AIProviderError` を契約として固定し、`agent/ai_reasoning.py` だけが provider を呼ぶ。provider は evidence 要約（observation / event の id と計測値）だけを受け取り、structured result を返す。
+- AI 出力は untrusted input。intent は registry の実装済み production skill 名に限定し、evidence は既存 observation / event id に限定、tool / argv / command / risk / approval は捨てる。Observation（OBSERVED）は tool 計測のみ（validator が強制）。AI 由来は `AI_GENERATED`。
+- 最終 decision authority は system: 計測済み decision と一致する提案は evidence に加わるだけ、それ以外は CONFIRM の review decision で operation を生成しない。BLOCK は AI で覆せない。confidence（AI / 解析の確信）と risk（影響度、registry / policy）は分離。
+- budget `analysis.budget.max_ai_calls`（既定 4）、1 call 1 試行、retry 無し、超過は BUDGET 失敗。provider 失敗は AI failure domain（warning + `ai_calls[].error`）で engine incident とは別、plan は決定論的に継続。revision は AI を呼ばない。
+- provenance: `provenance.ai_calls[]` / `ai_provider`（provider / model / task / fingerprint / response hash / usage / latency）。credential は request / response / provenance / doctor のどこにも置かない。IR schema は変更しない。
+- 作らない: 特定 provider 依存の core、AI による Tool ID 指定・argv・shell・FFmpeg command 生成、AI による IR 直接生成、AI による SkillRegistry / CapabilityResolver / approval の置換。

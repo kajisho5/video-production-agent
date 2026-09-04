@@ -17,7 +17,7 @@ Request → Requirements → Intent → Analysis(probe / silence / loudness) →
 ```bash
 pip install -e .
 # ffmpeg-skill を用意（どちらか）
-npx ffmpeg-skill                       # ~/.claude/skills/ffmpeg-skill
+npx ffmpeg-skill                       # ~/.claude/skills/ffmpeg-skill — first Reference Skill（外部 OSS、実装済みの唯一の Skill package）
 export VIDEO_AGENT_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill
 export VIDEO_AGENT_WORKSPACE=./video-agent-work   # 省略可
 video-agent doctor
@@ -45,7 +45,7 @@ video-agent check output.mp4 --platform youtube
 
 終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。revise: 5 = 新版なし。
 
-Revision workflow: `docs/revision.md`。Skill / Capability / Tool と将来 Skill の追加手順: `docs/skills.md`、Gap 分析: `docs/GAP_ANALYSIS_PHASE2.md`。
+AI Provider contract（AI は提案のみ、execution authority ではない）: ADR-018 / MASTER_SPEC §42。Revision workflow: `docs/revision.md`。Skill / Capability / Tool と将来 Skill の追加手順: `docs/skills.md`、Gap 分析: `docs/GAP_ANALYSIS_PHASE2.md`。
 
 監査結果と既知の制限: `docs/AUDIT_PHASE1.md`、最終レビューと Phase 2 開始条件: `docs/PHASE1_FINAL_REVIEW.md`。
 

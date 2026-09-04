@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_adapter import FakeAdapter  # noqa: E402
+from fake_ai_provider import FakeAIProvider, recommend_from_analysis  # noqa: E402
 
 from video_agent.capabilities.resolver import Capability  # noqa: E402
 from video_agent.execution import CompileError, Executor, compile_ir  # noqa: E402
@@ -1114,3 +1115,220 @@ class EcosystemContractTests(unittest.TestCase):
                 if "ffmpeg" in code or "ffprobe" in code:   # capability names (encoder:libx264) are environment vocabulary, allowed
                     offenders.append(f"{rel}:{i}: {line.strip()}")
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+
+class AIProviderBoundaryTests(unittest.TestCase):
+    """AI Provider Contract / Reasoning Boundary (ADR-018). AI is part of the Brain, never an execution authority."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _svc(self, provider, **kw):
+        return Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=provider, **kw)
+
+    def _analysis(self):
+        return make_service(self.tmp).analyze([self.src], "youtube")[2]
+
+    # A — contract
+    def test_fake_provider_satisfies_the_contract(self):
+        from video_agent.providers import AIRequest, AIResponse, NullProvider, AIProviderError
+        p = FakeAIProvider(recommendations=[])
+        req = AIRequest(task_type="production_recommendation", inputs={"observations": []})
+        resp = p.complete(req)
+        self.assertIsInstance(resp, AIResponse)
+        self.assertEqual((resp.provider, resp.model, resp.task_type), ("fake", "fake-model-1", "production_recommendation"))
+        self.assertEqual(len(resp.response_hash()), 64)
+        self.assertNotIn("api_key", json.dumps(p.describe()))
+        with self.assertRaises(ValueError):
+            AIRequest(task_type="run_ffmpeg", inputs={})
+        with self.assertRaises(AIProviderError):
+            NullProvider().complete(req)
+        self.assertFalse(NullProvider().available())
+
+    # B + C — AI cannot create observations; its data is AI_GENERATED
+    def test_ai_cannot_fabricate_observations(self):
+        from video_agent.agent.ai_reasoning import to_inferences
+        from video_agent.providers import AIResponse
+        analysis = self._analysis()
+        n_obs = len(analysis.observations)
+        hostile = AIResponse(task_type="production_recommendation", provider="fake", model="m", confidence=0.99,
+                             result={"observations": [{"kind": "probe", "data": {"duration": 21.5}}],
+                                     "recommendations": [{"intent": "silence_cleanup", "asset_id": analysis.assets[0].id, "statement": "x", "confidence": 0.9,
+                                                          "evidence": ["obs_fabricated"], "provenance": "OBSERVED"},
+                                                         {"intent": "silence_cleanup", "asset_id": analysis.assets[0].id, "statement": "ok", "confidence": 5,
+                                                          "evidence": [analysis.observations[0].id], "provenance": "OBSERVED"}]})
+        infs, warns = to_inferences(hostile, analysis, ["silence_cleanup"])
+        self.assertEqual(len(analysis.observations), n_obs, "no observation was added")
+        self.assertEqual(len(infs), 1)
+        self.assertEqual(infs[0].provenance, "AI_GENERATED")
+        self.assertEqual(infs[0].evidence, [analysis.observations[0].id])
+        self.assertEqual(infs[0].confidence, 1.0, "confidence clamped to 0..1")
+        self.assertTrue(any("no existing observation" in w for w in warns))
+        # provenance value AI_GENERATED is distinct from OBSERVED/INFERRED at the model level
+        from video_agent.models import PROVENANCE
+        self.assertIn("AI_GENERATED", PROVENANCE)
+
+    # D + E + F + G — the provider layer cannot reach tools, compiler, execution or a shell
+    def test_provider_layer_has_no_path_to_execution(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        forbidden_imports = ("tools", "execution", "jobs", "subprocess", "shlex", "ffmpeg")
+        forbidden_calls = ("subprocess", "os.system", "os.popen", "exec(", "eval(", "compile_ir", "Executor(", "ToolRouter", "ToolAdapter", "__import__")
+        for rel in ("providers/base.py", "agent/ai_reasoning.py"):
+            lines = [l.split("#", 1)[0] for l in (root / rel).read_text(encoding="utf-8").splitlines()]
+            for l in lines:
+                if l.startswith(("import ", "from ")):
+                    for f in forbidden_imports:
+                        self.assertNotIn(f, l, f"{rel} must not import {f}: {l}")
+                for f in forbidden_calls:
+                    self.assertNotIn(f, l, f"{rel} must not call {f}: {l}")
+        from video_agent.providers import AIProvider
+        self.assertFalse(any(hasattr(AIProvider, m) for m in ("run", "execute", "compile", "render", "select_tool")))
+
+    # G — argv / shell / tool ids / commands in a response are dropped before anything downstream sees them
+    def test_ai_generated_tool_ids_and_commands_are_ignored(self):
+        prov = FakeAIProvider(intent="silence_cleanup", params={"tool": "ffmpeg-skill/cut", "argv": ["ffmpeg", "-y"], "command": "rm -rf /", "risk": "LOW", "approval": "AUTO", "keep": "x"},
+                              extra=[{"intent": "ffmpeg-skill/cut", "statement": "run cut", "confidence": 1}, {"intent": "shell", "statement": "ffmpeg -i in out", "confidence": 1}])
+        svc = self._svc(prov)
+        ir = svc.plan([self.src], "youtube")
+        ai_infs = [i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED"]
+        self.assertEqual(len(ai_infs), 1)
+        self.assertEqual(set(ai_infs[0]["data"]["params"]), {"keep"}, "tool / argv / command / risk / approval keys stripped")
+        self.assertTrue(any("not a registered production skill" in w for w in ir.doc["analysis"]["warnings"]))
+        text = json.dumps(ir.doc)
+        self.assertNotIn("rm -rf", text)
+        self.assertNotIn('"argv"', text)
+        # plan tools still come from the registry only
+        self.assertEqual({st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}["silence_cleanup"], "ffmpeg-skill/cut")
+
+    # H + I — skill selection stays in the registry; AI recommendation → inference → decision evidence → registry tool
+    def test_recommendation_flows_through_the_system_pipeline(self):
+        prov = FakeAIProvider(intent="silence_cleanup")
+        svc = self._svc(prov)
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual(len(prov.requests), 1)
+        req = prov.requests[0]
+        self.assertEqual(req.task_type, "production_recommendation")
+        self.assertNotIn("ffmpeg", json.dumps(req.inputs).lower().replace("ffmpeg-skill/", ""), "the provider sees evidence, not engines")
+        self.assertIn("silence_cleanup", req.context["allowed_intents"])
+        ai = next(i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED")
+        lead = next(d for d in ir.doc["decisions"] if d["subject"] == "silence.leading")
+        self.assertIn(ai["id"], lead["evidence"], "corroborating recommendation is attached as evidence")
+        self.assertEqual((lead["approval"], lead["risk"], lead["provenance"]), ("AUTO", "LOW", "INFERRED"), "measured decision unchanged")
+        self.assertFalse([d for d in ir.doc["decisions"] if d["subject"].startswith("ai.")], "no separate review item when measurement covers it")
+        steps = {st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}
+        self.assertEqual(steps["silence_cleanup"], "ffmpeg-skill/cut")
+        self.assertTrue(svc.validate(ir).ok)
+        ops, _ = compile_ir(ir, "/w/jobs/j")
+        self.assertEqual([o.tool for o in ops if o.skill == "silence_cleanup"], ["ffmpeg-skill/cut"])
+
+    # N — policy is not bypassed: an uncorroborated recommendation is a CONFIRM review item, not an operation
+    def test_uncorroborated_recommendation_needs_confirmation_and_executes_nothing(self):
+        prov = FakeAIProvider(intent="visual_inspection", params={"approval": "AUTO", "risk": "LOW"})
+        svc = self._svc(prov)
+        ir = svc.plan([self.src], "youtube")
+        review = next(d for d in ir.doc["decisions"] if d["subject"] == "ai.visual_inspection")
+        self.assertEqual((review["approval"], review["provenance"], review["params"]["executable"]), ("CONFIRM", "AI_GENERATED", False))
+        self.assertEqual(review["risk"], svc.registry.get("visual_inspection").risk_level)
+        self.assertFalse([st for st in ir.doc["plan"]["steps"] if st["skill"] == "visual_inspection"])
+        p = str(Path(self.tmp) / "ai.json")
+        save_ir(ir, p)
+        out = svc.render(ir, p)
+        self.assertEqual(out["status"], "WAITING_FOR_APPROVAL", out.get("status"))
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED")
+        self.assertFalse([o for o in out["execution"]["results"] if "look" in o["tool"]], "approving a review item still runs no operation for it")
+
+    # N — BLOCK from policy / capability wins over an AI "go"
+    def test_ai_cannot_bypass_block(self):
+        prov = FakeAIProvider(intent="delivery_export", params={"approval": "AUTO"})
+        svc = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(missing={"encoder:libx264"}), provider=prov)
+        ir = svc.plan([self.src], "youtube")
+        self.assertTrue(ir.blocked())
+        p = str(Path(self.tmp) / "blk.json")
+        save_ir(ir, p)
+        out = svc.render(ir, p, approve=["all"])
+        self.assertIn(out["status"], ("BLOCKED", "FAILED"))
+        self.assertIsNone(out.get("execution"), "nothing executed")
+
+    # J — provider failures are AI-domain, degrade to a deterministic plan, and are recorded once (no retry)
+    def test_provider_failure_is_recorded_and_not_retried(self):
+        for kind in ("TIMEOUT", "RATE_LIMIT", "UNAVAILABLE", "AUTH", "crash"):
+            prov = FakeAIProvider(fail=kind)
+            svc = self._svc(prov)
+            ir = svc.plan([self.src], "youtube")
+            self.assertEqual(len(prov.requests), 1, f"{kind}: exactly one attempt")
+            calls = ir.doc["provenance"]["ai_calls"]
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(calls[0]["ok"])
+            self.assertEqual(calls[0]["error"]["kind"], "MALFORMED" if kind == "crash" else kind)
+            self.assertTrue(any("provider fake failed" in w for w in ir.doc["analysis"]["warnings"]))
+            self.assertFalse([i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED"])
+            self.assertTrue([st for st in ir.doc["plan"]["steps"]], "deterministic plan still produced")
+            self.assertNotIn("INCIDENT", json.dumps(ir.doc["qa"]))
+        # malformed structured result
+        prov = FakeAIProvider(raw_result={"garbage": 1})
+        ir = self._svc(prov).plan([self.src], "youtube")
+        self.assertTrue(any("no recommendations list" in w for w in ir.doc["analysis"]["warnings"]))
+
+    # K — budget
+    def test_ai_call_budget_stops_calls(self):
+        from video_agent.agent.ai_reasoning import AIReasoner, build_request
+        from video_agent.providers import AIProviderError
+        analysis = self._analysis()
+        prov = FakeAIProvider(recommendations=[])
+        r = AIReasoner(prov, max_calls=2)
+        req = build_request(analysis, ["silence_cleanup"])
+        r.ask(req)
+        r.ask(req)
+        with self.assertRaises(AIProviderError) as cm:
+            r.ask(req)
+        self.assertEqual(cm.exception.kind, "BUDGET")
+        self.assertEqual(len(prov.requests), 2, "the provider is not called once the budget is spent")
+        self.assertEqual([c["ok"] for c in r.calls], [True, True, False])
+        self.assertEqual(r.calls[-1]["error"]["kind"], "BUDGET")
+        # policy: max_ai_calls = 0 means no AI call at all
+        svc = self._svc(FakeAIProvider(intent="silence_cleanup"))
+        ir = svc.plan([self.src], "youtube", user_requirements=None)
+        self.assertEqual(len(ir.doc["provenance"]["ai_calls"]), 1)
+        # revisions reuse recorded AI inferences and spend no calls
+        p = str(Path(self.tmp) / "b.json")
+        save_ir(ir, p)
+        svc.reject(load_ir(p), p, ["all"], reason="test")
+        svc.revise(load_ir(p), p)
+        v2 = load_ir(p)
+        self.assertEqual(len(svc.provider.requests), 1, "revise did not call the provider")
+        self.assertEqual(len(v2.doc["provenance"]["ai_calls"]), 1)
+
+    # L + M — provenance carries provider / model / hash / usage / latency and never a secret
+    def test_ai_provenance_without_secrets(self):
+        prov = FakeAIProvider(intent="silence_cleanup")
+        svc = self._svc(prov)
+        ir = svc.plan([self.src], "youtube")
+        p = str(Path(self.tmp) / "p.json")
+        save_ir(ir, p)
+        out = svc.render(ir, p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED")
+        job_prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        c = job_prov["ai_calls"][0]
+        self.assertEqual((c["provider"], c["model"], c["task_type"], c["ok"]), ("fake", "fake-model-1", "production_recommendation", True))
+        self.assertEqual(len(c["response_hash"]), 64)
+        self.assertEqual(c["usage"]["input_tokens"], 120)
+        self.assertIn("latency_s", c)
+        self.assertEqual(job_prov["ai_provider"]["provider"], "fake")
+        self.assertTrue(job_prov["plan_hash"] and job_prov["ir_hash"])
+        for text in (Path(p).read_text(), json.dumps(job_prov), json.dumps(out, default=str)):
+            self.assertNotIn(prov.api_key, text)
+            self.assertNotIn("SECRET", text)
+        # validator: an observation claiming an AI source is rejected
+        ir.doc["analysis"]["observations"][0]["source"] = "ai:fake"
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
+        self.assertTrue(any("only tool measurements may be OBSERVED" in e for e in rep.errors))
+
+    # O — NullProvider: no AI, byte-identical behaviour for the deterministic pipeline
+    def test_null_provider_changes_nothing(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual(ir.doc["provenance"]["ai_calls"], [])
+        self.assertIsNone(ir.doc["provenance"]["ai_provider"])
+        self.assertFalse([i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED"])

@@ -18,8 +18,12 @@ future skills          = 独立した専門 Skill（未実装、ドキュメン�
 | **Registry** | Skill package と production skill を登録・列挙し、環境ごとに tool を選ぶ | `SkillRegistry` | — |
 | **Router** | 選択された tool id を対応 adapter へ dispatch する | `tools/router.py` の `ToolRouter` | — |
 | **Agent** | Production 全体として何をすべきか判断する | `agent/`, `service.py` | — |
+| **AI Provider** | reasoning / model interface。production intent と evidence 付き inference を提供する。Skill / Tool 選択・command 生成・approval には関与しない | `providers/base.py`（`AIProvider` / `AIRequest` / `AIResponse` / `AIUsage`）、`agent/ai_reasoning.py` | `NullProvider`（既定）、テストの `FakeAIProvider` |
 
 Skill と Tool を混同しない: `ffmpeg-skill` は package、`ffmpeg-skill/cut` は tool。Tool id は概念名であり、実装 engine（ffmpeg / sox / …）は adapter の内側。
+
+AI ≠ Tool executor / AI ≠ Skill registry / AI ≠ Compiler / AI ≠ final execution authority。AI は production intent（registry の production skill 名）を evidence 付きで提案するだけで、
+どの Skill / Tool を使うかは SkillRegistry / CapabilityResolver / ToolRouter が決める（ADR-018、MASTER_SPEC §42）。将来 Skill が増えても AI 側の契約は変わらない。
 
 ## 選択と実行の流れ（PR #5 の境界を維持）
 

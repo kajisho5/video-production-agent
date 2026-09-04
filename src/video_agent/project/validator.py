@@ -113,6 +113,16 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
             rep.errors.append(f"delivery target {t['id']} has no export step")
+    # observations are measurements: their source is a tool id + version, never an AI provider; AI output is AI_GENERATED
+    for o in d["analysis"].get("observations") or []:
+        src = str(o.get("source") or "")
+        if "@" not in src or src.startswith("ai"):
+            rep.errors.append(f"observation {o.get('id')} has no tool source ({src!r}); only tool measurements may be OBSERVED")
+    for i in d["analysis"].get("inferences") or []:
+        if str(i.get("kind", "")).startswith("ai_recommendation:") and i.get("provenance") != "AI_GENERATED":
+            rep.errors.append(f"inference {i.get('id')} from an AI provider must carry provenance AI_GENERATED")
+        if not i.get("evidence"):
+            rep.errors.append(f"inference {i.get('id')} cites no evidence")
     # paths
     if check_paths:
         for a in assets.values():
