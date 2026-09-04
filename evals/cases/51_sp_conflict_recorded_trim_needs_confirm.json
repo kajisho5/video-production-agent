@@ -1,0 +1,51 @@
+{
+ "name": "sp_conflict_recorded_trim_needs_confirm",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    1.0,
+    8.8,
+    "a"
+   ],
+   [
+    12.3,
+    13.5,
+    "b"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "speech": {
+   "inferences": {
+    "speech_silence_conflict": 1,
+    "internal_silence_removable": 1
+   },
+   "confirm_subjects": [
+    "silence.leading"
+   ],
+   "plan_status": "REVIEW"
+  }
+ }
+}

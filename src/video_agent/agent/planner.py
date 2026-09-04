@@ -62,19 +62,37 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if d.subject == "silence.trailing":
                 end, dec_ids = min(end, d.params["start"]), dec_ids + [d.id]
                 removed.append([round(d.params["start"], 3), round(dur, 3)])
+        internal = sorted(([round(d.params["start"], 3), round(d.params["end"], 3)], d.id) for d in decisions
+                          if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
         current = asset.id
         last_step: Optional[str] = None
-        if dec_ids and end > start:
+        if (dec_ids or internal) and end > start:
             keep = [[round(start, 3), round(end, 3)]]
+            for (rs, re_), did in internal:   # cut each removal out of the kept ranges; the decision carries the range, the planner only subtracts
+                nxt: List[List[float]] = []
+                for ks, ke in keep:
+                    if re_ <= ks or rs >= ke:
+                        nxt.append([ks, ke])
+                        continue
+                    if rs > ks:
+                        nxt.append([ks, rs])
+                    if re_ < ke:
+                        nxt.append([re_, ke])
+                keep = nxt
+                removed.append([rs, re_])
+                dec_ids.append(did)
+            keep = [k for k in keep if k[1] > k[0]]
             video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": bool(frame_accurate), "decision_ids": dec_ids})
             order += 1
             st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill="silence_cleanup", tool=tool_for("silence_cleanup"), inputs=[current],
                                 params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": bool(frame_accurate)}, outputs=[f"{asset.id}_trim"],
                                 depends_on=[], evidence=evidence_of(dec_ids), decision_ids=dec_ids, decision_id=dec_ids[0],
-                                temporal_scope={"start": keep[0][0], "end": keep[0][1]})
+                                temporal_scope={"start": keep[0][0], "end": keep[-1][1]})
             steps.append(st)
             current, last_step = st.outputs[0], st.id
-            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - (end - start):.2f}s of technical silence)")
+            kept_total = sum(e - s for s, e in keep)
+            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s of silence"
+                           + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + ")")
         for d in decisions:
             if d.subject == "audio.loudness" and d.params.get("asset_id") == asset.id and d.decision.startswith("normalize"):
                 audio_ops.append({"type": "audio.loudness", "asset": asset.id, "target_lufs": d.params["target_lufs"], "true_peak": d.params["true_peak"], "decision_ids": [d.id]})

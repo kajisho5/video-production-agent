@@ -1,0 +1,54 @@
+{
+ "name": "sp_speech_interval_inference",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    3.5,
+    5.0,
+    "a"
+   ],
+   [
+    5.3,
+    8.8,
+    "b"
+   ],
+   [
+    12.3,
+    13.5,
+    "c"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "speech": {
+   "inferences": {
+    "speech_interval": 2,
+    "speech_activity": 1,
+    "internal_silence_removable": 1,
+    "speech_silence_conflict": 0
+   }
+  }
+ }
+}

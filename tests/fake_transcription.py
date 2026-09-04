@@ -48,6 +48,9 @@ def transcript(params: dict, fp: str) -> dict:
     words = [{"start": 0.5, "end": 0.9, "text": "本日", "confidence": 0.9}, {"start": 0.9, "end": 1.4, "text": "の", "confidence": 0.8}] if params.get("word_timestamps") else None
     segs = [{"id": "seg_0001", "start": 0.5, "end": 3.2, "text": "本日の公園を始めます", "raw_text": "本日の公園を始めます", "confidence": 0.72, "words": words, "speaker_id": None},
             {"id": "seg_0002", "start": 4.0, "end": 8.4, "text": "会場の音教設備についてご説明します", "raw_text": "会場の音教設備についてご説明します", "confidence": 0.68, "words": None, "speaker_id": None}]
+    if os.environ.get("FAKE_TS_SEGMENTS"):   # [[start, end, text], ...] → canned segments with a fixed confidence (temporal-structure tests)
+        segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7, "words": None, "speaker_id": None}
+                for i, (a, b, t) in enumerate(json.loads(os.environ["FAKE_TS_SEGMENTS"]), 1)]
     tid = "tr_" + hashlib.sha256((fp + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:12]
     prov_params = {"language": params.get("language"), "word_timestamps": bool(params.get("word_timestamps")), "temperature": params.get("temperature", 0.0),
                    "initial_prompt": params.get("initial_prompt"), "beam_size": params.get("beam_size", 5)}
