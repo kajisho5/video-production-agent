@@ -151,6 +151,19 @@ def pinned_contract() -> Dict[str, Any]:
 PACKAGE = package_from_contract(pinned_contract())
 
 
+def _has_symlink(path: str) -> bool:
+    """Any component of the absolute path is a symlink / junction (the escape case); a mere spelling difference between
+    the absolute and the resolved path, e.g. a Windows short name, is not."""
+    cur = path
+    while True:
+        if os.path.islink(cur):
+            return True
+        parent = os.path.dirname(cur)
+        if not parent or parent == cur:
+            return False
+        cur = parent
+
+
 def _within(root: str, path: str) -> bool:
     try:
         return os.path.commonpath([os.path.normcase(root), os.path.normcase(path)]) == os.path.normcase(root)
@@ -251,7 +264,7 @@ class TranscriptionAdapter(ToolAdapter):
             absolute = os.path.abspath(raw)
             resolved = os.path.realpath(absolute)
             if not any(_within(root, resolved) for root in self.allowed_inputs):
-                reason = "symlink_escape" if os.path.islink(absolute) or os.path.normcase(os.path.normpath(absolute)) != os.path.normcase(resolved) else "outside_allowed_roots"
+                reason = "symlink_escape" if _has_symlink(absolute) else "outside_allowed_roots"
                 raise ToolError(f"transcription: input is outside the allowed roots ({reason}): {os.path.basename(raw)}")
             return resolved
         return os.path.realpath(os.path.abspath(raw))
