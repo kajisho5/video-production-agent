@@ -1,0 +1,141 @@
+{
+ "id": "transcription-skill",
+ "name": "Transcription Skill",
+ "version": "0.2.0",
+ "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
+ "capabilities": [
+  "speech_recognition",
+  "word_timestamps",
+  "language_detection",
+  "speech_intervals",
+  "transcript_validation",
+  "transcript_export:json",
+  "transcript_export:srt",
+  "transcript_export:vtt",
+  "deterministic_cache",
+  "offline_mode",
+  "engine_registry",
+  "input_path_policy"
+ ],
+ "engine_contract": {
+  "schema": "transcription-skill/engine-spec/0.1",
+  "execution_modes": [
+   "local",
+   "remote"
+  ],
+  "capabilities": [
+   "local_execution",
+   "remote_execution",
+   "network_required",
+   "local_model",
+   "model_download",
+   "word_timestamps",
+   "language_detection"
+  ],
+  "offline": false
+ },
+ "engines": [
+  {
+   "id": "faster_whisper",
+   "version": null,
+   "execution_mode": "local",
+   "description": "Whisper via CTranslate2, running locally on CPU/GPU. Reference local engine.",
+   "available": false,
+   "unavailable_reason": "pinned snapshot: availability comes from the installed Skill's contract / doctor",
+   "requires_network": false,
+   "deterministic": true,
+   "capabilities": [
+    "local_execution"
+   ],
+   "supported_languages": [],
+   "supported_models": [],
+   "default_model": "base",
+   "models": []
+  }
+ ],
+ "tools": [
+  {
+   "name": "transcription/transcribe",
+   "description": "Transcribe an audio or video file into a validated Transcript.",
+   "input": {
+    "input": "path",
+    "language": "iso639-1 | null",
+    "engine": "engine id",
+    "model": "model name",
+    "word_timestamps": "bool",
+    "temperature": "0..1",
+    "initial_prompt": "str | null",
+    "beam_size": "1..10",
+    "asset_id": "str | null",
+    "budget": {
+     "timeout": "seconds",
+     "max_audio_seconds": "seconds"
+    },
+    "cache": "bool",
+    "workspace": "path | null",
+    "offline": "bool",
+    "allowed_input_roots": "list[dir] | null",
+    "dry_run": "bool"
+   },
+   "output": {
+    "transcript": "Transcript",
+    "cache_hit": "bool",
+    "cache_key": "sha256 hex",
+    "warnings": "list[str]"
+   },
+   "deterministic": true,
+   "side_effects": [
+    "writes cache under workspace"
+   ]
+  },
+  {
+   "name": "transcription/segments",
+   "description": "Derive SpeechEvent-compatible candidates from a Transcript (one per segment, optional gap merge).",
+   "input": {
+    "transcript": "Transcript | path",
+    "merge_gap": "seconds >= 0"
+   },
+   "output": {
+    "events": "list[SpeechEvent]"
+   },
+   "deterministic": true,
+   "side_effects": []
+  },
+  {
+   "name": "transcription/export",
+   "description": "Render a Transcript as json, srt or vtt (plain timed text, no styling).",
+   "input": {
+    "transcript": "Transcript | path",
+    "format": "json|srt|vtt",
+    "output": "path"
+   },
+   "output": {
+    "output": "path",
+    "format": "str"
+   },
+   "deterministic": true,
+   "side_effects": [
+    "writes output file"
+   ]
+  },
+  {
+   "name": "transcription/check",
+   "description": "Validate a Transcript document against the contract.",
+   "input": {
+    "transcript": "Transcript | path"
+   },
+   "output": {
+    "ok": "bool",
+    "errors": "list[str]",
+    "warnings": "list[str]"
+   },
+   "deterministic": true,
+   "side_effects": []
+  }
+ ],
+ "schemas": {
+  "transcript": "transcription-skill/transcript/0.1",
+  "speech_event": "transcription-skill/speech-event/0.1",
+  "engine_spec": "transcription-skill/engine-spec/0.1"
+ }
+}

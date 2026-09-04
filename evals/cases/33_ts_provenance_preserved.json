@@ -1,0 +1,22 @@
+{
+ "name": "ts_provenance_preserved",
+ "transcription": {
+  "mode": "ok",
+  "params": {
+   "language": "ja",
+   "word_timestamps": true
+  }
+ },
+ "expect": {
+  "transcript": {
+   "provenance": "OBSERVED",
+   "engine": "faster_whisper",
+   "execution_mode": "local",
+   "model": "base",
+   "external": true,
+   "cache_owner": "transcription"
+  },
+  "shared_asset": true,
+  "agent_cache_untouched": true
+ }
+}

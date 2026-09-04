@@ -65,12 +65,32 @@ def cmd_skills(args, svc: Service) -> int:
     return 0
 
 
+def cmd_transcribe(args, svc: Service) -> int:
+    """Speech recognition through transcription-skill as an analysis of kind `transcript` (+ the core kinds): typed options only;
+    the result is an Observation and SpeechEvents, never a decision, a subtitle or a command."""
+    params = {"language": args.language, "engine": args.engine, "model": args.model, "word_timestamps": True if args.word_timestamps else None,
+              "offline": True if args.offline else None, "initial_prompt": args.initial_prompt, "beam_size": args.beam_size, "timeout": args.timeout,
+              "max_audio_seconds": args.max_audio_seconds}
+    args.kinds = ["transcript"] + list(args.kinds or [])
+    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds,
+                                           params=params, allowed_inputs=args.allowed_inputs)
+    if args.json:
+        _print(analysis.to_dict(), True)
+        return 0
+    args.kinds = None
+    return _print_analysis(analysis)
+
+
 def cmd_analyze(args, svc: Service) -> int:
     profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds)
     doc = analysis.to_dict()
     if args.json:
         _print(doc, True)
         return 0
+    return _print_analysis(analysis)
+
+
+def _print_analysis(analysis) -> int:
     for a in analysis.assets:
         t = a.technical
         v, au = t.get("video") or {}, t.get("audio") or {}
@@ -82,6 +102,15 @@ def cmd_analyze(args, svc: Service) -> int:
     for o in analysis.observations:
         ext = f"  skill {o.skill}@{o.skill_version}  ext {o.external_id}  cache {o.cache.get('status')}" if o.skill_version else ""
         print(f"  observation {o.id}  {o.kind:15s} {o.source}{ext}")
+        if o.kind == "transcript":
+            tr = o.data
+            prov = tr.get("provenance") or {}
+            print(f"    transcript {tr.get('id')}  language {tr.get('language')} ({tr.get('language_source')})  {len(tr.get('segments') or [])} segment(s)  "
+                  f"engine {tr.get('engine')}@{tr.get('engine_version')} {prov.get('execution_mode')}  model {prov.get('model')}  speaker_id null (recognition only)")
+            for seg in (tr.get("segments") or [])[:20]:
+                print(f"      {seg['start']:8.3f}-{seg['end']:8.3f}  {seg.get('text', '')[:100]}")
+            if len(tr.get("segments") or []) > 20:
+                print(f"      … {len(tr['segments']) - 20} more segment(s)")
     for e in analysis.timeline.query():
         r = e.range
         print(f"  {e.kind:8s} {e.type:16s} {r['start']:8.3f}-{(r['end'] if r['end'] is not None else r['start']):8.3f}  {json.dumps(e.metadata, default=str)[:80]}")
@@ -100,7 +129,7 @@ def cmd_analyze(args, svc: Service) -> int:
 
 def cmd_plan(args, svc: Service) -> int:
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
-                  strategy=args.strategy, use_cache=not args.no_cache)
+                  strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None})
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
         out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")
@@ -414,6 +443,21 @@ def cmd_explain(args, svc: Service) -> int:
                 print(f"{'  ' * (row['level'] + 2)}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}" + (f"  source {row['source']}" if row.get("source") else ""))
         return 0
     ir = load_ir(args.project)
+    if getattr(args, "observation", None):
+        try:
+            info = svc.explain_observation(ir.doc, args.observation)
+        except KeyError:
+            print("no such observation", file=sys.stderr)
+            return 1
+        if args.json:
+            _print(info, True)
+            return 0
+        o = info["observation"]
+        print(f"Observation {o['id']}  {o['kind']}  {o['source']}  provenance {o.get('provenance')}")
+        for row in info["chain"]:
+            print(f"{'  ' * (row['level'] + 1)}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}" + (f"  source {row['source']}" if row.get("source") else ""))
+        print(f"  boundary: {info['boundary']}")
+        return 0
     if getattr(args, "step", None):
         from video_agent.agent.production_plan import explain_step
         try:
@@ -489,6 +533,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-cache", action="store_true", help="do not read or write the observation cache")
     p.add_argument("--kind", action="append", dest="kinds", help="analysis kind(s) to run in addition to the core kinds (e.g. duration, integrity, scene_detection)")
     p.set_defaults(fn=cmd_analyze)
+    p = sub.add_parser("transcribe", help="speech recognition through transcription-skill → transcript Observation + SpeechEvents (recognition only)")
+    p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources")
+    p.add_argument("--language", help="ISO 639-1 code (ja, en, …); default: the engine detects it")
+    p.add_argument("--engine", help="engine id declared by the Skill's contract (default: the Skill's default engine)")
+    p.add_argument("--model", help="model name for the engine (never a path)")
+    p.add_argument("--offline", action="store_true", help="hard constraint: no remote engine, no model download (missing model → unavailable)")
+    p.add_argument("--word-timestamps", action="store_true", help="also record per-word timestamps")
+    p.add_argument("--initial-prompt", help="vocabulary hint passed to the decoder (names, terms); not an instruction")
+    p.add_argument("--beam-size", type=int); p.add_argument("--timeout", type=float, help="budget: seconds the engine may run"); p.add_argument("--max-audio-seconds", type=float)
+    p.add_argument("--allowed-input", action="append", dest="allowed_inputs", metavar="DIR", help="input roots for the Skills' path policy (repeatable; default: the inputs' directories)")
+    p.add_argument("--strategy", choices=["FULL", "TARGETED", "CACHED_ONLY"]); p.add_argument("--no-cache", action="store_true", help="do not read or write caches (the Skill's included)")
+    p.add_argument("--kind", action="append", dest="kinds", help="additional analysis kind(s)")
+    p.set_defaults(fn=cmd_transcribe)
     p = sub.add_parser("plan", help="analyze, decide and write a Project IR")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--request", help="free-text request (only unambiguous phrases are used)")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="explicit USER requirement, e.g. audio.loudness.target_lufs=-16 or edit.trim_leading_silence=true")
@@ -497,6 +554,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-hash", action="store_true")
     p.add_argument("--strategy", choices=["FULL", "TARGETED", "CACHED_ONLY"], help="analysis strategy (default: profile policy analysis.strategy, else FULL)")
     p.add_argument("--no-cache", action="store_true", help="do not read or write the observation cache")
+    p.add_argument("--kind", action="append", dest="kinds", help="additional analysis kind(s) to record in the IR (e.g. transcript, duration)")
+    p.add_argument("--language", help="transcript kind: ISO 639-1 code for recognition (default: detected by the engine)")
+    p.add_argument("--offline", action="store_true", help="transcript kind: no remote engine, no model download")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("validate", help="validate a Project IR (schema, semantics, capabilities)")
     p.add_argument("project"); p.add_argument("--no-paths", action="store_true", help="do not require asset paths to exist")
@@ -529,6 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("explain", help="why was this decided? show reason, evidence, alternatives")
     p.add_argument("project", nargs="?"); p.add_argument("--decision", help="decision id or subject"); p.add_argument("--step", help="production step id: show its evidence chain")
     p.add_argument("--artifact", help="artifact id: show artifact -> job -> operations -> step -> decisions -> evidence")
+    p.add_argument("--observation", help="observation id (or the Skill's external id, e.g. a transcript id): observation -> skill -> tool -> engine/model -> asset -> events")
     p.set_defaults(fn=cmd_explain)
     p = sub.add_parser("artifacts", help="registered artifacts (of a project IR, or all)")
     p.add_argument("project", nargs="?"); p.add_argument("--job"); p.set_defaults(fn=cmd_artifacts)

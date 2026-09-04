@@ -1,0 +1,12 @@
+{
+ "name": "ts_malformed_result_rejected",
+ "transcription": {
+  "mode": "two_docs"
+ },
+ "expect": {
+  "transcript_failed": {
+   "kind": "ANALYSIS_INVALID_RESULT",
+   "skill_error": "INVALID_RESULT"
+  }
+ }
+}

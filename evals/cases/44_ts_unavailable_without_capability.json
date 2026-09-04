@@ -1,0 +1,16 @@
+{
+ "name": "ts_unavailable_without_capability",
+ "transcription": {
+  "mode": "ok",
+  "no_capability": true
+ },
+ "expect": {
+  "unavailable_skills": [
+   "speech_transcription"
+  ],
+  "selected_tools": {
+   "media_probe": "ffmpeg-skill/probe"
+  },
+  "analysis_error": "speech_transcription"
+ }
+}

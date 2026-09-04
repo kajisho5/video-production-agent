@@ -1,0 +1,18 @@
+{
+ "name": "ts_offline_restriction",
+ "transcription": {
+  "mode": "ok",
+  "offline": true,
+  "params": {
+   "model": "small",
+   "offline": false
+  }
+ },
+ "expect": {
+  "transcript_failed": {
+   "kind": "ANALYZER_UNAVAILABLE",
+   "skill_error": "MODEL_UNAVAILABLE",
+   "availability": "MODEL_MISSING"
+  }
+ }
+}

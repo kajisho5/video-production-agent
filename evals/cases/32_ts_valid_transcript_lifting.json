@@ -1,0 +1,29 @@
+{
+ "name": "ts_valid_transcript_lifting",
+ "transcription": {
+  "mode": "ok",
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "transcript": {
+   "skill": "transcription",
+   "skill_version": "0.2.0",
+   "tool": "transcription/transcribe",
+   "provenance": "OBSERVED",
+   "source": "transcription/transcribe@0.2.0",
+   "cache_status": "miss",
+   "cache_owner": "transcription",
+   "external": true,
+   "engine": "faster_whisper",
+   "execution_mode": "local",
+   "model": "base",
+   "language": "ja",
+   "segments": 2,
+   "schema": "transcription-skill/transcript/0.1"
+  },
+  "speaker_null": true,
+  "speech_events": 2
+ }
+}

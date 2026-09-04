@@ -19,6 +19,7 @@ pip install -e .
 # ffmpeg-skill を用意（どちらか）
 npx ffmpeg-skill                       # ~/.claude/skills/ffmpeg-skill — first Reference Skill（外部 OSS）
 git clone https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill   # 観測 Skill（VIDEO_AGENT_MEDIA_ANALYSIS_DIR で指定、任意）
+git clone https://github.com/kajisho5/transcription-skill ../transcription-skill     # 認識 Skill（VIDEO_AGENT_TRANSCRIPTION_DIR で指定、任意。engine は pip install "transcription-skill[faster-whisper]"）
 export VIDEO_AGENT_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill
 export VIDEO_AGENT_WORKSPACE=./video-agent-work   # 省略可
 video-agent doctor
@@ -27,7 +28,10 @@ video-agent doctor
 ## 使い方
 
 ```bash
-video-agent skills                                      # Skill package（ffmpeg-skill / media-analysis）と production skill の状態、選択された tool
+video-agent skills                                      # Skill package（ffmpeg-skill / media-analysis / transcription）と production skill の状態、選択された tool
+video-agent transcribe input.mp4 --language ja --offline   # transcription-skill で認識 → transcript Observation + SpeechEvent（認識まで。話者・字幕・編集は判断しない）
+video-agent plan input.mp4 --profile youtube --kind transcript --language ja   # IR に transcript / SPEECH を記録（plan には影響しない）
+video-agent explain <ir.json> --observation <obs_id | tr_id>   # observation → skill → tool → engine → model → transcript → asset → events
 video-agent analyze input.mp4
 video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.youtube.project.json
 video-agent plan input.mp4 --profile conference --set audio.loudness.target_lufs=-18

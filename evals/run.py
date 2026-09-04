@@ -101,6 +101,117 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    ts = case.get("transcription")
+    if ts:
+        # external recognition Skill (ADR-024) through the fake transcription process: contract, lifting, provenance, SpeechEvents, refusals
+        import os
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.transcription import ContractError, TranscriptionAdapter, TranscriptionSkill
+        for k in ("FAKE_TS_MODE", "FAKE_TS_CACHE"):
+            os.environ.pop(k, None)
+        if ts.get("mode"):
+            os.environ["FAKE_TS_MODE"] = ts["mode"]
+        if ts.get("cache"):
+            os.environ["FAKE_TS_CACHE"] = ts["cache"]
+        skill = TranscriptionSkill([sys.executable, str(ROOT / "tests" / "fake_transcription.py")], None, {})
+        roots = [str(src.parent)] if ts.get("roots", True) else None
+        try:
+            ad = TranscriptionAdapter(skill, workspace=str(Path(tmp) / "cache" / "transcription"), allowed_inputs=roots, offline=bool(ts.get("offline")))
+        except ContractError as e:
+            os.environ.pop("FAKE_TS_MODE", None)
+            if exp.get("contract_refused") and exp["contract_refused"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e}"]}
+        if exp.get("contract_refused"):
+            return {"case": case["name"], "ok": False, "failures": ["an incompatible contract was accepted"]}
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if ts.get("no_capability") else ["transcription"])
+        svc = Service(workspace=tmp, adapter=ToolRouter([FakeAdapter(**fake), ad]), caps=caps, provider=provider)
+        tools = svc.tools_for()
+        for sk in exp.get("unavailable_skills", []):
+            if sk in tools:
+                failures.append(f"skill {sk} unexpectedly available")
+        for sk, tool in (exp.get("selected_tools") or {}).items():
+            if tools.get(sk) != tool:
+                failures.append(f"skill {sk} tool {tools.get(sk)} != {tool}")
+        if exp.get("path_refused"):
+            outside = Path(tmp) / "outside" / "x.mp4"
+            outside.parent.mkdir(exist_ok=True); outside.write_bytes(b"0" * 16)
+            link = src.parent / "link.mp4"
+            try:
+                link.symlink_to(outside)
+                targets = {"outside_allowed_roots": str(outside), "symlink_escape": str(link), "traversal": str(src.parent / ".." / "outside" / "x.mp4")}
+            except OSError:
+                targets = {"outside_allowed_roots": str(outside), "traversal": str(src.parent / ".." / "outside" / "x.mp4")}
+            for reason, path in targets.items():
+                r = ad.measure("transcription/transcribe", {"input": path, "asset_id": "a"})
+                if r.ok or r.data["error"]["code"] != "INVALID_INPUT" or reason not in r.data["error"]["message"]:
+                    failures.append(f"{reason}: not refused ({r.data.get('error')})")
+            if not ad.measure("transcription/transcribe", {"input": str(src), "asset_id": "a"}).ok:
+                failures.append("input inside the allowed root was refused")
+            os.environ.pop("FAKE_TS_MODE", None)
+            return {"case": case["name"], "ok": not failures, "failures": failures}
+        kinds = ts.get("kinds") or ["transcript"]
+        params = ts.get("params") or {}
+        if exp.get("analysis_error") or exp.get("transcript_failed"):
+            try:
+                _, _, an = svc.analyze([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+            except (RuntimeError, Exception) as e:   # noqa: BLE001 — the eval records what happened
+                if exp.get("analysis_error") and exp["analysis_error"] in str(e):
+                    os.environ.pop("FAKE_TS_MODE", None)
+                    return {"case": case["name"], "ok": True, "failures": []}
+                os.environ.pop("FAKE_TS_MODE", None)
+                return {"case": case["name"], "ok": False, "failures": [f"unexpected error {e!s:.160}"]}
+            row = next((r for r in an.analyses[0]["rows"] if r["kind"] == "transcript"), None)
+            tf = exp.get("transcript_failed") or {}
+            if not row or row["status"] != "FAILED":
+                failures.append(f"transcript row not FAILED: {row}")
+            elif tf.get("kind") and row["error"]["kind"] != tf["kind"]:
+                failures.append(f"failure kind {row['error']['kind']} != {tf['kind']}")
+            elif tf.get("skill_error") and row["error"].get("skill_error") != tf["skill_error"]:
+                failures.append(f"skill error {row['error'].get('skill_error')} != {tf['skill_error']}")
+            elif tf.get("availability") and (row["error"].get("skill_details") or {}).get("availability") != tf["availability"]:
+                failures.append(f"model availability {(row['error'].get('skill_details') or {}).get('availability')} != {tf['availability']}")
+            if any(o.kind == "transcript" for o in an.observations) or an.timeline.query(type="SPEECH"):
+                failures.append("a failed recognition still produced a transcript observation or SpeechEvents")
+            os.environ.pop("FAKE_TS_MODE", None)
+            return {"case": case["name"], "ok": not failures, "failures": failures}
+        _, _, an = svc.analyze([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+        t = next((o for o in an.observations if o.kind == "transcript"), None)
+        if t is None:
+            failures.append("no transcript observation")
+        else:
+            got = {"skill": t.skill, "skill_version": t.skill_version, "tool": t.tool, "provenance": t.provenance, "source": t.source, "cache_status": (t.cache or {}).get("status"),
+                   "cache_owner": (t.cache or {}).get("owner"), "external": bool(t.external_id and t.external_id != t.id and t.external_id == t.data.get("id")),
+                   "engine": t.parameters.get("engine"), "execution_mode": t.parameters.get("execution_mode"), "model": t.parameters.get("model"),
+                   "language": t.data.get("language"), "segments": len(t.data.get("segments") or []), "schema": t.data.get("schema")}
+            for k, v in (exp.get("transcript") or {}).items():
+                if got.get(k) != v:
+                    failures.append(f"transcript.{k} {got.get(k)!r} != {v!r}")
+            if exp.get("shared_asset") and not (t.asset_id == an.assets[0].id and t.fingerprint == an.assets[0].hash and len(an.assets) == 1):
+                failures.append("transcript does not share the asset identity (asset id / fingerprint)")
+            if exp.get("speaker_null") and any(s.get("speaker_id") is not None for s in t.data.get("segments") or []):
+                failures.append("a segment carries a speaker id")
+            sp = an.timeline.query(type="SPEECH")
+            if "speech_events" in exp and len(sp) != exp["speech_events"]:
+                failures.append(f"speech events {len(sp)} != {exp['speech_events']}")
+            for e in sp:
+                if e.provenance != "OBSERVED" or e.evidence != [t.id] or e.metadata.get("speaker_id") is not None or e.event_type != "SpeechEvent":
+                    failures.append(f"speech event {e.id} malformed: {e.provenance} {e.evidence} {e.metadata.get('speaker_id')} {e.event_type}")
+                if any(k in json.dumps(e.to_dict()) for k in ("argv", "command", "ffmpeg ", "speaker_name", "camera")):
+                    failures.append(f"speech event {e.id} carries command / identity content")
+            if exp.get("agent_cache_untouched") and any(r.get("kind") == "transcript" and (r.get("produced_by") or r.get("cache_owner") != "transcription") for r in an.analyses[0]["rows"]):
+                failures.append("the agent's own cache took part in recognition")
+        if exp.get("no_speech_decisions"):
+            ir = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+            d = ir.doc
+            sp_ids = {e["id"] for e in d["timeline"]["events"] if e["type"] == "SPEECH"}
+            blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "decisions": d["decisions"], "inferences": d["analysis"]["inferences"]})
+            if any(x in blob for x in ("SPEECH", "transcription", "speaker")) or any(i in blob for i in sp_ids):
+                failures.append("SpeechEvents reached inferences / decisions / the plan")
+            if not svc.validate(ir).ok:
+                failures.append(f"IR with transcript is invalid: {svc.validate(ir).errors}")
+        os.environ.pop("FAKE_TS_MODE", None); os.environ.pop("FAKE_TS_CACHE", None)
+        return {"case": case["name"], "ok": not failures, "failures": failures}
     else:
         svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())), provider=provider)
     ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))

@@ -1,0 +1,17 @@
+{
+ "name": "ts_shared_asset_identity",
+ "transcription": {
+  "mode": "ok",
+  "kinds": [
+   "silence",
+   "loudness",
+   "transcript"
+  ]
+ },
+ "expect": {
+  "shared_asset": true,
+  "transcript": {
+   "external": true
+  }
+ }
+}

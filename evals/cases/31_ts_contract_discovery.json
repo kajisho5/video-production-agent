@@ -1,0 +1,17 @@
+{
+ "name": "ts_contract_discovery",
+ "transcription": {
+  "mode": "ok"
+ },
+ "expect": {
+  "selected_tools": {
+   "speech_transcription": "transcription/transcribe",
+   "media_probe": "ffmpeg-skill/probe"
+  },
+  "transcript": {
+   "skill": "transcription",
+   "skill_version": "0.2.0",
+   "tool": "transcription/transcribe"
+  }
+ }
+}

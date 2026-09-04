@@ -199,3 +199,24 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 transcription-skill: 未接続。理由は main に実装・contract が無いため（stub / 推測 contract は作らない）。SpeechEvent 型（PR #9）と registry の package 受け入れは既に存在し、contract が release されれば同じ手順（adapter + capability + registry 候補 + register 1 行）で接続できる。
 
 テスト: unit（adapter protocol を fake process で: contract discovery / 互換 / tool mapping / request / response / lifting / provenance / malformed 9 種 / timeout / unavailable / cache metadata）、integration（実 media-analysis-skill 0.1.0 + talk.mp4: duration / silence / loudness / video_format / audio_format / integrity / scene_detection の Observation、AudioEvent、provenance chain、2 回目 cache hit）、evals 追加。
+
+## 14. PR #13 — External Skill Integration: transcription-skill（2026-09-04 追記）
+
+外部 repository の実態（clone して確認）:
+- `kajisho5/transcription-skill` main = 0.2.0（PR #1 merge 済み）。`skill --json` が contract（tools 4 / engines 1: faster_whisper local / schemas transcript・engine-spec・speech-event 0.1）、`doctor --json [--offline] [--allowed-input]`、`run -`（`{"tool","params"}` → `{"ok","tool","result"}`、exit 0 / 1 / 2）。指示書の `contract --json` / `run - --json` は存在しない → 実物に合わせた（ADR-024）。
+- 子プロセスへは PATH / HOME 等の最小 env しか渡さない設計（Skill 側）。proxy 経由 CA が必要な環境では model download が失敗する → air-gapped 手順（HF cache へ事前配置、`--offline`）で検証。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G61 認識 Skill の adapter が無い | transcription 未接続 | `tools/transcription/`（locate / contract / 互換検査 / typed request / process / response 検証 / check_transcript）。import 無し、engine 直接実行無し |
+| G62 Transcript の Observation 化が無い | — | `kind=transcript`（needs_audio）、`_lift_transcript`（provenance 一式、fingerprint 照合、cache は Skill 所有） |
+| G63 SpeechEvent が schema のみ | IMPLEMENTED_CODES に SPEECH 無し | `events_from_observation(transcript)` → SPEECH（segment ごと、speaker_id null、confidence）。SPEAKER は未実装のまま |
+| G64 registry / capability | — | production skill `speech_transcription`（caps ffmpeg / ffprobe / transcription、LOW / AUTO）、capability `transcription`（Skill の doctor: AVAILABLE / DEGRADED / MISSING、engines / models evidence） |
+| G65 CLI / explain | — | `video-agent transcribe`（typed options のみ、`--allowed-input`、`--offline`）、`analyze / plan --kind transcript`、`explain --observation`（observation → skill → tool → engine → model → transcript → asset → analysis → events） |
+| G66 入力境界の一貫性 | ffmpeg-skill PathPolicy のみ | adapter が roots（allowed inputs + workspace）を固定して Skill に渡す。traversal / outside / symlink escape を adapter と Skill の両方が拒否 |
+
+未実装（意図的）: AI / LLM、diarization / speaker identity、字幕、編集判断、cloud / whisper.cpp、MCP / plugin loader、ranking。SpeechEvent → Inference → Decision → Plan は次 PR。
+
+既知の別件: ffmpeg-skill の silencedetect が container duration を超える end を返す fixture（transcription-skill の lecture_short.mp4）では `plan` が validation error（event range exceeds asset duration）になる。base branch でも同じ（本 PR の変更ではない）。
+
+テスト: unit（fake transcription process 21 モード: valid / empty / text / two_docs / wrong schema・skill・version・engine・asset / bad source / no transcript / invalid provenance / speaker_id / bad segments / timeout / hang / crash / non-zero / model・engine unavailable、SpeechEvent、cached-only、allowed roots + symlink escape（adapter と Skill 双方）、registry / resolver / Service(offline)、explain chain、静的境界）、integration（実 transcription-skill 0.2.0 + faster-whisper 1.2.1 + base model local: contract / doctor / path policy は常時、実認識・lifting・provenance・cache hit・SpeechEvent・shared identity・CLI は model が local のときのみ。CI は clone のみで model download を強制しない）、evals 15 件（negative 中心）。
