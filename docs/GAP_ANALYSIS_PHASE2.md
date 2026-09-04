@@ -263,7 +263,16 @@ transcription-skill: 未接続。理由は main に実装・contract が無い�
 - 話者・カメラ・スライド等の新しい decision domain（Event 種別の観測が先）
 - 単語タイムスタンプでの発話境界精緻化（PR #14 の残課題）
 - `video.*.approval` を request から設定可能にするか（現状は profile のみ。REQUIREMENT_PREFIXES に "video." は無い）
-- base PR（#5–#12）の ffmpeg-skill 0.9.x 対応
 
 既知・未対応: silencedetect end > duration（別 PR）。
+
+## 18. PR #17 — ffmpeg-skill 0.9.x compatibility / CI stabilization（2026-09-04 追記）
+
+| 事実 | 対応 |
+|---|---|
+| CI は ffmpeg-skill の HEAD（0.9.0）を clone する。PR #4–#12 の `SUPPORTED_MAX_EXCLUSIVE = (0, 9, 0)` は 0.9.0 を範囲外とし、contract test `test_version_and_scripts` が失敗する（他の integration は 0.9.0 で全件通過。version 判定は runtime では強制されておらず、宣言 + テストのみ） | PR #13 の hunk（`(0, 10, 0)` + 根拠コメント）をそのまま PR #4–#12 の各 branch に移植（同一テキストのため stacked merge で衝突しない）。CI を各 branch で dispatch |
+| 範囲の妥当性を unit で固定していない | `AdapterTests.test_ffmpeg_skill_version_range_is_explicit`（0.8.4 / 0.9.x accepted、0.8.3 / 0.10 / 不正値 rejected、範囲定数を明示） |
+| docs/skills.md が `< 0.9` のまま | `< 0.10` に更新 |
+
+main（287b685）も `(0, 9, 0)` のままで同じ理由で赤になるが、main への直接変更はルール上行わない（PR #4 のマージで解消）。ffmpeg-skill / media-analysis-skill / transcription-skill は変更していない。
 
