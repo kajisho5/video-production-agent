@@ -643,6 +643,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    for stream in (sys.stdout, sys.stderr):   # statements carry Unicode (≥, →, Japanese); a cp1252 console must not turn a report into a crash
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (ValueError, AttributeError):
+                pass
     args = build_parser().parse_args(argv)
     try:
         svc = Service(workspace=args.workspace, ffmpeg_skill_dir=args.ffmpeg_skill_dir)
