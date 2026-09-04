@@ -59,6 +59,13 @@ class Service:
     def skills(self) -> List[Dict[str, Any]]:
         return self.registry.availability(self.caps.resolve(), self.adapter([]).supports)
 
+    def require_tools(self, tools: Dict[str, str], needed: List[str], router: ToolRouter) -> None:
+        """Fail early with the registry's reason when a skill this command depends on has no executable tool here."""
+        missing = [n for n in needed if n not in tools]
+        if missing:
+            reasons = "; ".join(f"{n}: {self.registry.select_tool(n, self.caps.resolve(), router.supports)[1]}" for n in missing)
+            raise RuntimeError(f"required skill(s) unavailable — {reasons}. Run `video-agent doctor` / `video-agent skills`.")
+
     def tool_versions(self) -> Dict[str, str]:
         caps = self.caps.resolve()
         return {"ffmpeg": caps["ffmpeg"].detail if caps["ffmpeg"].status == "AVAILABLE" else "missing",
@@ -70,9 +77,7 @@ class Service:
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter([str(Path(p).resolve().parent) for p in inputs])
         tools = self.tools_for(adapter)
-        for needed in ("media_probe", "silence_analysis", "loudness_analysis"):
-            if needed not in tools:
-                raise RuntimeError(f"analysis skill {needed} is not available: " + self.registry.select_tool(needed, self.caps.resolve(), adapter.supports)[1])
+        self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"], adapter)
         # Phase 1 analyses whole files (silence + loudness over the full duration); a budgeted TARGETED strategy is Phase 2,
         # so the recorded strategy says what actually happened rather than what the profile asked for.
         analyzer = MediaAnalyzer(adapter, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), strategy="FULL_ANALYSIS", hash_sources=hash_sources, tools=tools)
@@ -328,7 +333,9 @@ class Service:
         else:
             job.transition("QA")
             checks = {op.args["input"]: r for op in ops if op.skill == "delivery_check" for r in result.results if r.op_id == op.id}
-            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=self.tools_for(adapter))
+            qa_tools = self.tools_for(adapter)
+            self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter)
+            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools)
             out["qa"] = qa.to_dict()
             artifacts = []
             for asset_id in ir.doc["assets"]:
@@ -369,6 +376,7 @@ class Service:
     def check(self, path: str, platform: str = "custom") -> Dict[str, Any]:
         adapter = self.adapter([str(Path(path).resolve().parent)])
         tools = self.tools_for(adapter)
+        self.require_tools(tools, ["media_probe", "delivery_check"], adapter)
         pr = adapter.measure(tools["media_probe"], {"inputs": [str(Path(path).resolve())]})
         ck = adapter.measure(tools["delivery_check"], {"input": str(Path(path).resolve()), "platform": platform})
         return {"probe": pr.data if pr.ok else {"error": pr.stderr_tail}, "check": ck.data if ck.data else {"error": ck.stderr_tail}}

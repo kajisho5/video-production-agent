@@ -67,8 +67,11 @@ def cmd_analyze(args, svc: Service) -> int:
     for a in analysis.assets:
         t = a.technical
         v, au = t.get("video") or {}, t.get("audio") or {}
-        print(f"{a.path}\n  type {a.type} ({a.classification.get('confidence')}), {t.get('duration')}s, video {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps"
-              + (" VFR?" if v.get("variable_frame_rate_suspected") else "") + (f" [{v.get('hdr_format')}]" if v.get("hdr") else "") + f", audio {au.get('codec')} {au.get('channels')}ch" if au else "")
+        line = f"{a.path}\n  type {a.type} ({a.classification.get('confidence')}), {t.get('duration')}s, "
+        line += f"video {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps" if v else "no video"
+        line += (" VFR?" if v.get("variable_frame_rate_suspected") else "") + (f" [{v.get('hdr_format')}]" if v.get("hdr") else "")
+        line += f", audio {au.get('codec')} {au.get('channels')}ch" if au else ", no audio"
+        print(line)
     for e in analysis.timeline.query():
         r = e.range
         print(f"  {e.kind:8s} {e.type:16s} {r['start']:8.3f}-{(r['end'] if r['end'] is not None else r['start']):8.3f}  {json.dumps(e.metadata, default=str)[:80]}")
@@ -264,7 +267,7 @@ def cmd_check(args, svc: Service) -> int:
     else:
         p = out["probe"]
         v, a = p.get("video") or {}, p.get("audio") or {}
-        print(f"{args.output}: {p.get('duration')}s, {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps, audio {a.get('codec')} {a.get('channels')}ch")
+        print(f"{args.output}: {p.get('duration')}s, {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps, " + (f"audio {a.get('codec')} {a.get('channels')}ch" if a else "no audio"))
         for r in out["check"].get("checks", []):
             print(f"  {r['status']:4s} {r['check']:14s} {r['value']}  (expected {r['expected']})" + (f"  -> {r['fix']}" if r["status"] != "PASS" and r.get("fix") else ""))
     return 0 if out["check"].get("ok") else 1

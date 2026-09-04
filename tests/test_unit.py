@@ -853,6 +853,18 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertIn("no registered adapter", blocked[0]["reason"])
         self.assertEqual(blocked[0]["params"]["skill"], "delivery_export")
 
+    def test_missing_engine_gives_a_clear_error_not_a_keyerror(self):
+        class Nothing(FakeAdapter):
+            def supports(self, tool):
+                return False
+        svc = make_service(self.tmp, adapter=Nothing())
+        with self.assertRaises(RuntimeError) as cm:
+            svc.check(self.src, "youtube")
+        self.assertIn("media_probe", str(cm.exception))
+        self.assertIn("no registered adapter", str(cm.exception))
+        with self.assertRaises(RuntimeError):
+            svc.plan([self.src], "youtube")
+
     def test_router_dispatches_by_adapter_support(self):
         from video_agent.tools import ToolRouter, ToolError
         a = FakeAdapter()
