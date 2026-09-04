@@ -1,0 +1,20 @@
+{
+ "name": "ma_skill_cache_hit_is_provenance",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "ok",
+  "cache": "hit"
+ },
+ "expect": {
+  "observations": {
+   "silence": {
+    "cache_status": "hit",
+    "provenance": "OBSERVED"
+   },
+   "media_probe": {
+    "cache_status": "hit"
+   }
+  },
+  "agent_cache_untouched": true
+ }
+}

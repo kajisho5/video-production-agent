@@ -17,7 +17,8 @@ Request → Requirements → Intent → Analysis(probe / silence / loudness) →
 ```bash
 pip install -e .
 # ffmpeg-skill を用意（どちらか）
-npx ffmpeg-skill                       # ~/.claude/skills/ffmpeg-skill — first Reference Skill（外部 OSS、実装済みの唯一の Skill package）
+npx ffmpeg-skill                       # ~/.claude/skills/ffmpeg-skill — first Reference Skill（外部 OSS）
+git clone https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill   # 観測 Skill（VIDEO_AGENT_MEDIA_ANALYSIS_DIR で指定、任意）
 export VIDEO_AGENT_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill
 export VIDEO_AGENT_WORKSPACE=./video-agent-work   # 省略可
 video-agent doctor
@@ -26,7 +27,7 @@ video-agent doctor
 ## 使い方
 
 ```bash
-video-agent skills                                      # Skill package（実装済みは ffmpeg-skill のみ）と production skill の状態、選択された tool
+video-agent skills                                      # Skill package（ffmpeg-skill / media-analysis）と production skill の状態、選択された tool
 video-agent analyze input.mp4
 video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.youtube.project.json
 video-agent plan input.mp4 --profile conference --set audio.loudness.target_lufs=-18

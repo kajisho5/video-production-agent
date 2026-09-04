@@ -26,11 +26,85 @@ def run_case(case: dict) -> dict:
     src.parent.mkdir(parents=True)
     src.write_bytes(b"0" * 16)
     provider = FakeAIProvider(**case["ai"]) if case.get("ai") else None
-    svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())), provider=provider)
-    ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))
-    d = ir.doc
+    ma = case.get("media_analysis")
     failures = []
     exp = case["expect"]
+    if ma:
+        # external observation Skill (ADR-023) through the fake media-analysis process: contract discovery, lifting, provenance, failures
+        import os
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.media_analysis import ContractError, MediaAnalysisAdapter, MediaAnalysisSkill
+        from video_agent.tools.base import ToolError
+        os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
+        if ma.get("mode"):
+            os.environ["FAKE_MA_MODE"] = ma["mode"]
+        if ma.get("cache"):
+            os.environ["FAKE_MA_CACHE"] = ma["cache"]
+        skill = MediaAnalysisSkill([sys.executable, str(ROOT / "tests" / "fake_media_analysis.py")], None, {})
+        try:
+            ad = MediaAnalysisAdapter(skill, workspace=tmp)
+        except ContractError as e:
+            ad = None
+            if exp.get("contract_refused") and (exp["contract_refused"] in str(e)):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e}"]}
+        if exp.get("contract_refused"):
+            return {"case": case["name"], "ok": False, "failures": ["an incompatible contract was accepted"]}
+        adapters = [ad] if ma.get("only") else [FakeAdapter(**fake), ad]
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if ma.get("no_capability") else ["media-analysis"])
+        svc = Service(workspace=tmp, adapter=ToolRouter(adapters), caps=caps, provider=provider)
+        if ma.get("prefer", True):
+            for name, tool in (("media_probe", "media-analysis/probe"), ("silence_analysis", "media-analysis/silence"), ("loudness_analysis", "media-analysis/loudness")):
+                svc.registry.get(name).tools = [tool]
+        tools = svc.tools_for()
+        for sk in exp.get("unavailable_skills", []):
+            if sk in tools:
+                failures.append(f"skill {sk} unexpectedly available")
+        for sk, tool in (exp.get("selected_tools") or {}).items():
+            if tools.get(sk) != tool:
+                failures.append(f"skill {sk} tool {tools.get(sk)} != {tool}")
+        if exp.get("analysis_error"):
+            from video_agent.media import AnalysisError
+            try:
+                svc.analyze([str(src)], case.get("profile", "generic"), kinds=ma.get("kinds"))
+                failures.append("analysis succeeded although the Skill result is invalid")
+            except (AnalysisError, RuntimeError) as e:
+                if exp["analysis_error"] not in str(e):
+                    failures.append(f"analysis error {e!s:.120} does not mention {exp['analysis_error']}")
+            os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
+            return {"case": case["name"], "ok": not failures, "failures": failures}
+        _, _, an = svc.analyze([str(src)], case.get("profile", "generic"), kinds=ma.get("kinds"))
+        obs = {o.kind: o for o in an.observations}
+        for kind, want in (exp.get("observations") or {}).items():
+            o = obs.get(kind)
+            if o is None:
+                failures.append(f"missing observation {kind}")
+                continue
+            got = {"skill": o.skill, "skill_version": o.skill_version, "tool": o.tool, "provenance": o.provenance, "source": o.source, "cache_status": (o.cache or {}).get("status"),
+                   "external": bool(o.external_id and o.external_id != o.id), "fingerprint": o.fingerprint}
+            for k, v in want.items():
+                if got.get(k) != v:
+                    failures.append(f"observation {kind}.{k} {got.get(k)!r} != {v!r}")
+        if exp.get("shared_fingerprint") and len({o.fingerprint for o in an.observations}) != 1:
+            failures.append("observations of one asset carry different fingerprints")
+        ev = sorted({e.type for e in an.timeline.events})
+        for t in exp.get("events", []):
+            if t not in ev:
+                failures.append(f"missing event {t} in {ev}")
+        for e in an.timeline.events:
+            if any(k in json.dumps(e.to_dict()) for k in ("argv", "command", "ffmpeg ")):
+                failures.append(f"event {e.type} carries command-like content")
+        if "measure_calls" in exp and an.analyses[0]["budget"]["calls"] != exp["measure_calls"]:
+            failures.append(f"measure calls {an.analyses[0]['budget']['calls']} != {exp['measure_calls']}")
+        if exp.get("agent_cache_untouched") and (an.analyses[0]["cache"]["hits"] + an.analyses[0]["cache"]["misses"]):
+            failures.append("the agent's own cache was consulted for Skill-owned measurements")
+        os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
+        if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
+            return {"case": case["name"], "ok": not failures, "failures": failures}
+    else:
+        svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())), provider=provider)
+    ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))
+    d = ir.doc
     if "intent" in exp and d["intent"]["primary"] != exp["intent"]:
         failures.append(f"intent {d['intent']['primary']} != {exp['intent']}")
     subjects = {x["subject"]: x for x in d["decisions"]}

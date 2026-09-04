@@ -137,11 +137,11 @@ class SkillRegistry:
 def default_registry() -> SkillRegistry:
     r = SkillRegistry()
     r.register(SkillSpec("media_probe", "1.0", "Inspect media (duration, codecs, fps, HDR, audio)", {"asset": "media"}, {"observation": "probe"},
-                         ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/probe"]))
+                         ["ffmpeg", "ffprobe"], "LOW", True, "AUTO", ["ffmpeg-skill/probe", "media-analysis/probe"]))
     r.register(SkillSpec("silence_analysis", "1.0", "Detect silences (list only)", {"asset": "media"}, {"events": "AUDIO_SILENCE"},
-                         ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/silence"]))
+                         ["ffmpeg"], "LOW", True, "AUTO", ["ffmpeg-skill/silence", "media-analysis/silence"]))
     r.register(SkillSpec("loudness_analysis", "1.0", "Measure integrated loudness / true peak", {"asset": "media"}, {"observation": "loudness"},
-                         ["ffmpeg", "ffmpeg-skill", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness"]))
+                         ["ffmpeg", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness", "media-analysis/loudness"]))
     r.register(SkillSpec("silence_cleanup", "1.0", "Trim technical leading/trailing silence", {"asset": "video|audio", "keep": "ranges"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/cut"]))
     r.register(SkillSpec("loudness_normalization", "1.0", "Two-pass EBU R128 normalisation", {"asset": "video|audio", "target_lufs": "float"}, {"artifact": "INTERMEDIATE"},
@@ -152,6 +152,17 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/check"]))
     r.register(SkillSpec("visual_inspection", "1.0", "Contact sheet for human/AI review", {"artifact": "video"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/look"]))
+    # measurement skills only media-analysis-skill provides (external observation Skill; tool ids from its contract)
+    for name, kind, tool, caps, desc in (
+        ("stream_layout_analysis", "stream_layout", "media-analysis/streams", ["ffprobe", "media-analysis"], "Every stream: index, type, codec, language, dimensions, rate, channels"),
+        ("video_format_analysis", "video_format", "media-analysis/video", ["ffprobe", "media-analysis"], "Resolution, fps, pixel format, colour, SAR / DAR, CFR / VFR"),
+        ("audio_format_analysis", "audio_format", "media-analysis/audio", ["ffprobe", "media-analysis"], "Sample rate, channels, layout, codec, sample format, bitrate"),
+        ("duration_analysis", "duration", "media-analysis/timing", ["ffprobe", "media-analysis"], "Container / stream durations and start times"),
+        ("integrity_analysis", "integrity", "media-analysis/integrity", ["ffmpeg", "ffprobe", "media-analysis"], "Full decode error count, frame counts, timestamp monotonicity (PASS / WARN / FAIL)"),
+        ("scene_analysis", "scene_detection", "media-analysis/scenes", ["ffmpeg", "ffprobe", "media-analysis"], "Visual cuts with score (not semantic scenes)"),
+        ("timing_analysis", "timing", "media-analysis/timing", ["ffprobe", "media-analysis"], "Packet timestamps, gaps, A/V duration mismatch"),
+    ):
+        r.register(SkillSpec(name, "1.0", desc, {"asset": "media"}, {"observation": kind}, caps, "LOW", True, "AUTO", [tool]))
     # declared, not implemented in Phase 1 (registry keeps the contract visible)
     r.register(SkillSpec("multi_source_sync", "0.1", "Align cameras/recorders by audio", {"assets": "media[]"}, {"timeline": "offsets"},
                          ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/sync", "ffmpeg-skill/multicam"], phase=2))

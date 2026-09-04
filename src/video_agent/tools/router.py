@@ -55,3 +55,11 @@ class ToolRouter(ToolAdapter):
 
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         return self._need(tool).measure(tool, args, paths, timeout)
+
+    def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
+        a = self.adapter_for(tool)
+        return a.measurement_args(tool, kind, path, asset_id, parameters, analysis_id, cache_policy) if a else None
+
+    def owns_cache_for(self, tool: str) -> bool:
+        a = self.adapter_for(tool)
+        return bool(getattr(a, "owns_cache", False)) if a else False

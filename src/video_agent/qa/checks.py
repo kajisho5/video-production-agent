@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..media.analysis import loudness_facts, probe_facts
 from ..models import Incident, ToolResult
 from ..tools.base import ToolAdapter, ToolError
 
@@ -56,10 +57,22 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
     rep = QAReport()
     check_by_artifact = check_by_artifact or {}
 
-    def measure(tool: str, args: Dict[str, Any]) -> ToolResult:
-        r = adapter.measure(tool, args)
-        rep.measurements.append({"tool": tool, "args": args, "ok": r.ok, "exit_code": r.exit_code, "seconds": r.seconds, "commands": r.commands})
+    def measure(tool: str, args: Dict[str, Any], kind: Optional[str] = None, artifact: Optional[str] = None) -> ToolResult:
+        """One measurement through the adapter boundary. A measurement Skill that shapes its own request (media-analysis:
+        asset id / kind / declared parameters) gets the typed arguments through `measurement_args`; QA never builds argv."""
+        shaped = None
+        if kind and artifact and hasattr(adapter, "measurement_args"):
+            path = args.get("input") or (args.get("inputs") or [None])[0]
+            shaped = adapter.measurement_args(tool, kind, path, artifact, {}, f"qa-{artifact}", "use")
+        r = adapter.measure(tool, shaped if shaped is not None else args)
+        rep.measurements.append({"tool": tool, "args": shaped if shaped is not None else args, "ok": r.ok, "exit_code": r.exit_code, "seconds": r.seconds, "commands": r.commands})
         return r
+
+    def facts(r: ToolResult) -> Dict[str, Any]:
+        """The measured facts: an external Skill's observation data, or the engine's result data."""
+        d = r.data if isinstance(r.data, dict) else {}
+        o = d.get("observation")
+        return dict(o.get("data") or {}) if isinstance(o, dict) and isinstance(o.get("data"), dict) else d
     th = ir_doc["qa"].get("thresholds") or {}
     dur_tol = float(th.get("duration_tolerance_s", 0.5))
     lu_tol = float(th.get("loudness_tolerance_lu", 2.0))
@@ -76,12 +89,12 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
             path = paths.get(art)
             if not path:
                 continue
-            pr = measure(tools["media_probe"], {"inputs": [path]})
+            pr = measure(tools["media_probe"], {"inputs": [path]}, kind="media_probe", artifact=art)
             if not pr.ok:
                 rep.items.append(QAItem("video", "probe", "FAIL", pr.stderr_tail, "readable file", artifact=art))
                 rep.incidents.append(Incident(type="CORRUPTED_FRAME", severity="HIGH", evidence=[art], possible_cause="output unreadable by the probe tool", recommended_action="re-run the export; inspect the tool log"))
                 continue
-            p = pr.data
+            p = probe_facts(facts(pr))
             v, a = p.get("video") or {}, p.get("audio") or {}
             if "video" in required:
                 got = p.get("duration") or 0.0
@@ -110,9 +123,10 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                     sa = (asset.get("technical") or {}).get("audio") or {}
                     if sa.get("channels") and a.get("channels") and a["channels"] < min(2, sa["channels"]):
                         rep.items.append(QAItem("audio", "channels", "WARN", a["channels"], sa["channels"], artifact=art))
-                    m = measure(tools["loudness_analysis"], {"input": path, "measure_only": True})
-                    if m.ok and not m.data.get("silent"):
-                        lufs, tp = _f(m.data.get("input_i")), _f(m.data.get("input_tp"))
+                    m = measure(tools["loudness_analysis"], {"input": path, "measure_only": True}, kind="loudness", artifact=art)
+                    lf = loudness_facts(facts(m)) if m.ok else {}
+                    if m.ok and not lf["silent"]:
+                        lufs, tp = lf["lufs"], lf["true_peak"]
                         if target_lufs is not None and lufs is not None:
                             ok = abs(lufs - target_lufs) <= lu_tol
                             rep.items.append(QAItem("audio", "loudness", "PASS" if ok else "FAIL", lufs, f"{target_lufs:g} ± {lu_tol}", kind="judgement", artifact=art))

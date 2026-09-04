@@ -180,3 +180,22 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 やっていないこと: 外部 delivery（YouTube / S3 / NAS / FTP …）、圧縮 archive、artifact-skill 等の Skill 化、`approved` stage の運用（定義は既存のまま）、複数 delivery target の naming 衝突解決以上のもの。
 
 テスト: unit 111/111（ArtifactLifecycleTests 8 件）、integration 16/16（実メディアで sha256 / deliver / archive / explain --artifact / resume 再利用 / revision 分離 / 音声無し WARN）、evals 22/22（10 件追加）。
+
+## 13. PR #12 — External Skill Integration: media-analysis（2026-09-04 追記）
+
+外部 repository の実態（clone して確認）:
+- `kajisho5/media-analysis-skill` main = 0.1.0（PR #1 merge 済み）。`contract --json` は `media-analysis/contract@1`、10 kind / 9 tool、`run - --json`、`doctor --json`。未 merge の phase2 branch（hardening 5 commit、version 0.1.0 のまま）は対象外。
+- `kajisho5/transcription-skill` main = README のみ（"Initial commit"）。設計 branch に 0.1.0 相当の実装はあるが未 merge で、released contract が存在しない。指示にある `transcript/0.1` / `engine-spec/0.1` は main 上に無い。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G55 外部観測 Skill の adapter が無い | 計測は ffmpeg-skill のみ | `tools/media_analysis/`（locate / contract 取得 / 互換検査 / request 生成 / response 検証 / ToolResult 変換）。process boundary のみ、import 無し |
+| G56 contract の二重管理 | — | tools / kinds / kind_to_tool / capabilities / version / schema はすべて `contract --json` から。`contract_0.1.0.json` は識別用 snapshot |
+| G57 Observation に外部 provenance が無い | source のみ | `skill` / `skill_version` / `tool` / `external_id` / `fingerprint` / `parameters` / `cache` を追加（後方互換） |
+| G58 AnalysisKind が 3 種固定 | — | 10 kind。CORE_KINDS（FULL の既定）は 3 種のまま、他は `--kind` / `kinds=` で明示要求 |
+| G59 request 生成が analyzer に散在 | ffmpeg-skill 専用引数 | `ToolAdapter.measurement_args` hook（adapter が request 形を決める）、`owns_cache`（Skill 所有 cache は agent が二重化しない） |
+| G60 doctor / skills に外部 Skill が出ない | — | capability `media-analysis`（version / contract / tools / kinds / execution / doctor status）、package 一覧に media-analysis |
+
+transcription-skill: 未接続。理由は main に実装・contract が無いため（stub / 推測 contract は作らない）。SpeechEvent 型（PR #9）と registry の package 受け入れは既に存在し、contract が release されれば同じ手順（adapter + capability + registry 候補 + register 1 行）で接続できる。
+
+テスト: unit（adapter protocol を fake process で: contract discovery / 互換 / tool mapping / request / response / lifting / provenance / malformed 9 種 / timeout / unavailable / cache metadata）、integration（実 media-analysis-skill 0.1.0 + talk.mp4: duration / silence / loudness / video_format / audio_format / integrity / scene_detection の Observation、AudioEvent、provenance chain、2 回目 cache hit）、evals 追加。

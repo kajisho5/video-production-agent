@@ -28,11 +28,12 @@ from video_agent.tools.base import ToolError  # noqa: E402
 
 
 class FakeCaps:
-    def __init__(self, missing=()):
+    def __init__(self, missing=(), extra=()):
         self.missing = set(missing)
+        self.extra = list(extra)   # e.g. "media-analysis": the external observation Skill's capability (resolved by its doctor in production)
 
     def resolve(self, refresh=False):
-        names = ["python", "ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:libx264", "encoder:libx265", "encoder:prores_ks", "filter:loudnorm", "font:cjk-ja"]
+        names = ["python", "ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:libx264", "encoder:libx265", "encoder:prores_ks", "filter:loudnorm", "font:cjk-ja"] + self.extra
         return {n: Capability(n, "MISSING" if n in self.missing else "AVAILABLE", "fake", {"version": "0.8.4-fake"} if n == "ffmpeg-skill" else {}) for n in names}
 
 
@@ -1004,13 +1005,14 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["ffmpeg-skill"], "exactly one implemented package: the Reference Skill")
+        self.assertEqual(list(pkgs), ["ffmpeg-skill", "media-analysis"], "implemented packages: the Reference Skill and the observation Skill (PR #12)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
-        rows = svc.packages()
-        self.assertEqual([r["skill_id"] for r in rows], ["ffmpeg-skill"])
-        self.assertTrue(rows[0]["implemented"] and rows[0]["available"])
-        self.assertEqual(rows[0]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertEqual(sorted(rows), ["ffmpeg-skill", "media-analysis"])
+        self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
+        self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
+        self.assertTrue(rows["media-analysis"]["implemented"] and not rows["media-analysis"]["available"], "adapter exists; no installation in unit tests")
 
     # Test B — its tools are recognised, typed, and consistent with the adapter
     def test_reference_skill_tools(self):
@@ -1034,8 +1036,10 @@ class EcosystemContractTests(unittest.TestCase):
             if not spec.implemented:
                 continue   # declared future skills may cite tools that are not catalogued yet; they are never selected
             for t in spec.tools:
-                self.assertEqual(t.split("/", 1)[0], svc.registry.tool(t).skill_id)
-                self.assertIs(router.adapter_for(t).__class__, FakeAdapter)
+                self.assertEqual(t.split("/", 1)[0], svc.registry.tool(t).skill_id, "every candidate belongs to a registered package")
+            selected = svc.tools_for(router).get(spec.name)
+            if selected:
+                self.assertIs(router.adapter_for(selected).__class__, FakeAdapter)
         rows = {r["skill"]: r for r in svc.skills()}
         self.assertEqual(rows["silence_cleanup"]["packages"], ["ffmpeg-skill"])
 
@@ -1046,8 +1050,8 @@ class EcosystemContractTests(unittest.TestCase):
         for name in ("multi_source_sync", "caption_generation", "semantic_deletion"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
         src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
-        future = ("media-analysis-skill", "transcription-skill", "subtitle-skill", "video-editing-skill", "audio-production-skill",
-                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")
+        future = ("transcription-skill", "subtitle-skill", "video-editing-skill", "audio-production-skill",
+                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill is integrated (PR #12)
         hits = [f"{py.relative_to(src)}: {n}" for py in src.rglob("*.py") for n in future if n in py.read_text(encoding="utf-8")]
         self.assertEqual(hits, [], "future skill packages must not appear in production code")
 
@@ -1082,7 +1086,7 @@ class EcosystemContractTests(unittest.TestCase):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
         # the only "core" change a new package needs: a production skill cites its tool as a candidate
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill", "media-analysis"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube")
         self.assertTrue(svc.validate(ir).ok)
@@ -1105,7 +1109,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill", "media-analysis"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):
@@ -1356,7 +1360,10 @@ class ObservationAnalysisTests(unittest.TestCase):
     # 1-2 request / kind validation
     def test_analysis_request_and_kind_validation(self):
         from video_agent.media import AnalysisRequest, AnalysisError, ANALYSIS_KINDS
-        self.assertEqual(sorted(ANALYSIS_KINDS), ["loudness", "media_probe", "silence"], "only implemented kinds exist")
+        from video_agent.media.analysis import CORE_KINDS
+        self.assertEqual(CORE_KINDS, ("media_probe", "silence", "loudness"), "FULL runs the core kinds")
+        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "stream_layout", "timing", "video_format"],
+                         "every kind maps to a production skill with a real tool (media-analysis-skill contract@1)")
         r = AnalysisRequest(inputs=[self.src], kinds=["silence"], strategy="FULL_ANALYSIS")
         self.assertEqual((r.strategy, r.kinds, r.cache_policy), ("FULL", ["media_probe", "silence"], "use"))
         self.assertEqual(AnalysisRequest(inputs=[self.src], strategy="CACHED_ONLY").cache_policy, "only")
@@ -1372,7 +1379,8 @@ class ObservationAnalysisTests(unittest.TestCase):
         svc, an = self._analyzer()
         self.assertIsInstance(an, Analyzer)
         self.assertEqual((an.id, an.version, an.identity), ("media", "1.0", "media@1.0"))
-        self.assertEqual(an.supported_kinds, ("media_probe", "silence", "loudness"))
+        self.assertEqual(an.supported_kinds[:3], ("media_probe", "silence", "loudness"))
+        self.assertEqual(len(an.supported_kinds), 10)
         with self.assertRaises(NotImplementedError):
             Analyzer().analyze(None)
         self.assertFalse(any(hasattr(Analyzer, m) for m in ("decide", "approve", "compile", "render", "complete")))
@@ -1512,8 +1520,14 @@ class ObservationAnalysisTests(unittest.TestCase):
     def test_unsupported_and_analyzer_failure(self):
         from video_agent.media import AnalysisRequest, AnalysisError
         with self.assertRaises(AnalysisError) as cm:
-            AnalysisRequest(inputs=[self.src], kinds=["scene_detection"])
+            AnalysisRequest(inputs=[self.src], kinds=["speaker_detection"])
         self.assertEqual(cm.exception.kind, "ANALYSIS_UNSUPPORTED")
+        # a kind whose Skill is not installed here is refused per measurement, not by fabricating an observation
+        _, an0 = self._analyzer(cache=False)
+        r0 = an0.run(AnalysisRequest(inputs=[self.src], kinds=["scene_detection"]))
+        row0 = next(x for x in r0.analyses[0]["rows"] if x["kind"] == "scene_detection")
+        self.assertEqual((row0["status"], row0["error"]["kind"]), ("FAILED", "ANALYZER_UNAVAILABLE"))
+        self.assertEqual([o.kind for o in r0.observations], ["media_probe"])
         _, an = self._analyzer(adapter=FakeAdapter(fail_tools={"ffmpeg-skill/loudness": 9}), cache=False)
         r = an.run(AnalysisRequest(inputs=[self.src]))
         rows = {x["kind"]: x for x in r.analyses[0]["rows"]}
@@ -2293,3 +2307,202 @@ class ArtifactLifecycleTests(unittest.TestCase):
                         self.assertNotIn(f, code, f"{rel} must not import {f}: {l}")
                 for f in forbidden_calls:
                     self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
+
+
+class MediaAnalysisAdapterTests(unittest.TestCase):
+    """External observation Skill boundary (ADR-023): protocol, contract compatibility, lifting, provenance, failures —
+    verified against a fake media-analysis process that speaks contract@1 / response@1 (no ffmpeg, no import)."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_media_analysis.py")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+        os.environ.pop("FAKE_MA_MODE", None)
+        os.environ.pop("FAKE_MA_CACHE", None)
+
+    def tearDown(self):
+        os.environ.pop("FAKE_MA_MODE", None)
+        os.environ.pop("FAKE_MA_CACHE", None)
+
+    def _skill(self):
+        from video_agent.tools.media_analysis import MediaAnalysisSkill
+        return MediaAnalysisSkill([sys.executable, self.FAKE], None, {})
+
+    def _adapter(self, **kw):
+        from video_agent.tools.media_analysis import MediaAnalysisAdapter
+        return MediaAnalysisAdapter(self._skill(), workspace=self.tmp, **kw)
+
+    # contract discovery + compatibility + package / tool mapping / capabilities
+    def test_contract_discovery_package_and_tool_mapping(self):
+        from video_agent.tools.media_analysis import PACKAGE, check_contract, pinned_contract
+        ad = self._adapter()
+        self.assertEqual(check_contract(ad.contract), [])
+        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.0", "media-analysis/contract@1"))
+        pkg = ad.package()
+        self.assertEqual(pkg.validate(), [])
+        self.assertEqual(set(pkg.tool_ids()), set(ad.contract["kind_to_tool"].values()), "every kind maps to a declared tool (timing serves two kinds)")
+        self.assertEqual(pkg.tool_ids(), PACKAGE.tool_ids(), "the pinned snapshot and the live contract agree")
+        self.assertEqual(pkg.capabilities, ["ffprobe"])
+        self.assertEqual(ad.kinds_of("media-analysis/timing"), ["duration", "timing"])
+        self.assertTrue(all(not t.produces_output and t.kind == "measure" for t in pkg.tools))
+        self.assertTrue(ad.supports("media-analysis/silence") and not ad.supports("media-analysis/cut") and not ad.supports("ffmpeg-skill/probe"))
+        self.assertEqual(pinned_contract()["skill_id"], "media-analysis")
+        # capability names of the contract are CapabilityResolver names
+        self.assertTrue(set(ad.contract["capability_names"]) <= {"ffmpeg", "ffprobe", "filter:ebur128", "filter:scdet", "filter:silencedetect"})
+
+    def test_contract_incompatibility_is_refused(self):
+        from video_agent.tools.media_analysis import ContractError, MediaAnalysisAdapter, check_contract, pinned_contract
+        for mode in ("wrong_version", "wrong_schema_contract"):
+            os.environ["FAKE_MA_MODE"] = mode
+            with self.assertRaises(ContractError):
+                MediaAnalysisAdapter(self._skill(), workspace=self.tmp)
+        os.environ.pop("FAKE_MA_MODE")
+        c = pinned_contract()
+        for mutate, needle in ((lambda x: x.update(skill_id="other"), "skill_id"), (lambda x: x["execution"].update(mode="http"), "execution.mode"),
+                               (lambda x: x["tools"][0].update(writes_media=True), "writes"), (lambda x: x.update(provenance="INFERRED"), "provenance"),
+                               (lambda x: x["kind_to_tool"].update(extra="media-analysis/none"), "disagree"), (lambda x: x["execution"].update(ai=True), "ai")):
+            d = json.loads(json.dumps(c)); mutate(d)
+            self.assertTrue(any(needle in e for e in check_contract(d)), needle)
+
+    # JSON request: typed args → AnalysisRequest; forbidden fields never cross
+    def test_request_construction_and_refusals(self):
+        from video_agent.tools import ToolError
+        ad = self._adapter()
+        req = ad.build_request("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "parameters": {"threshold_db": -45}, "analysis_id": "ana_x", "cache_policy": "only", "timeout": 5})
+        self.assertEqual(sorted(req), ["analysis_id", "asset_id", "cache_policy", "input", "kind", "parameters", "timeout"])
+        self.assertEqual((req["kind"], req["cache_policy"], req["parameters"]), ("silence", "only", {"threshold_db": -45}))
+        self.assertTrue(os.path.isabs(req["input"]))
+        with self.assertRaises(ToolError):
+            ad.build_request("media-analysis/timing", {"input": self.src, "asset_id": "a"})          # two kinds: must be explicit
+        for bad in ({"command": "rm -rf /"}, {"argv": ["ffmpeg"]}, {"executable": "/bin/sh"}, {"api_key": "sk"}, {"shell": "x"}):
+            with self.assertRaises(ToolError):
+                ad.build_request("media-analysis/probe", {"input": self.src, "asset_id": "a", **bad})
+        with self.assertRaises(ToolError):
+            ad.build_request("media-analysis/probe", {"input": self.src, "asset_id": "bad id!"})
+        shaped = ad.measurement_args("media-analysis/silence", "silence", self.src, "asset_1", {"threshold_db": -40, "min_silence": 0.5, "bogus": 1}, "ana_1", "use")
+        self.assertEqual(shaped["parameters"], {"threshold_db": -40}, "only the tool's declared parameters are forwarded")
+        self.assertIn("run - --json", ad.preview(Operation(tool="media-analysis/probe", args={"input": self.src, "asset_id": "a"}, inputs=[], outputs=[]), {})[0])
+
+    # JSON response → ToolResult, Observation lifting with provenance, cache metadata
+    def test_response_and_observation_lifting(self):
+        from video_agent.media import AnalysisRequest, MediaAnalyzer
+        from video_agent.tools import ToolRouter
+        ad = self._adapter()
+        r = ad.measure("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "kind": "silence"})
+        self.assertTrue(r.ok and r.exit_code == 0)
+        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.0")
+        self.assertEqual(r.data["cache"]["status"], "miss")
+        self.assertEqual(r.commands, ["ffprobe: metadata"], "the Skill reports what it ran; the agent never built it")
+        # through the analyzer: lifted Observation keeps the external identity and provenance; agent cache is not used
+        svc = make_service(self.tmp, caps=FakeCaps(extra=["media-analysis"]), adapter=ToolRouter([ad]))
+        svc.registry.get("media_probe").tools = ["media-analysis/probe"]
+        svc.registry.get("silence_analysis").tools = ["media-analysis/silence"]
+        svc.registry.get("loudness_analysis").tools = ["media-analysis/loudness"]
+        an = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=self.tmp)
+        res = an.run(AnalysisRequest(inputs=[self.src], kinds=["silence", "loudness", "duration", "scene_detection"]))   # explicit kinds run exactly as requested (+ probe)
+        obs = {o.kind: o for o in res.observations}
+        self.assertEqual(sorted(obs), ["duration", "loudness", "media_probe", "scene_detection", "silence"])
+        sil = obs["silence"]
+        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.0", "media-analysis/silence", "media-analysis/silence@0.1.0"))
+        self.assertTrue(sil.external_id.startswith("obs_") and sil.external_id != sil.id)
+        self.assertEqual(sil.fingerprint, "f" * 64)
+        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.0")
+        self.assertEqual(sil.cache["status"], "miss")
+        self.assertEqual(sil.data["segments"][0]["type"], "leading", "facts as measured; no interpretation added")
+        rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
+        self.assertEqual(rows["silence"]["cache_owner"], "media-analysis")
+        self.assertEqual(an.cache.misses + an.cache.hits, 0, "the agent's own cache is not consulted for Skill-owned measurements")
+        self.assertEqual(res.assets[0].technical["duration"], 16.0)
+        self.assertEqual({e.type for e in res.timeline.events}, {"AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE"})
+        sil_ev = next(e for e in res.timeline.events if e.type == "AUDIO_SILENCE")
+        self.assertEqual((sil_ev.range, sil_ev.evidence, sil_ev.source), ({"start": 0.0, "end": 3.0}, [sil.id], sil.source))
+        os.environ["FAKE_MA_CACHE"] = "hit"
+        res2 = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=self.tmp).run(AnalysisRequest(inputs=[self.src]))
+        self.assertTrue(all(x["cache_hit"] for x in res2.analyses[0]["rows"] if x["status"] == "OK"))
+        self.assertEqual(next(o for o in res2.observations if o.kind == "silence").cache["status"], "hit")
+
+    # malformed responses, error results, timeout, unavailable skill
+    def test_malformed_responses_timeouts_and_unavailability(self):
+        from video_agent.tools import ToolError
+        from video_agent.tools.media_analysis import MediaAnalysisAdapter, MediaAnalysisSkill, locate_media_analysis
+        ad = self._adapter()
+        for mode in ("empty", "text", "two_docs", "wrong_schema", "wrong_skill", "wrong_kind", "no_observation", "bad_source", "crash"):
+            os.environ["FAKE_MA_MODE"] = mode
+            r = ad.measure("media-analysis/probe", {"input": self.src, "asset_id": "a"})
+            self.assertFalse(r.ok, mode)
+            self.assertIn(r.data["error"]["code"], ("INVALID_RESULT", "ANALYSIS_FAILED"), mode)
+            self.assertIsNone(r.data.get("observation") if mode != "bad_source" else None, mode)
+        os.environ["FAKE_MA_MODE"] = "error_result"
+        r = ad.measure("media-analysis/probe", {"input": self.src, "asset_id": "a"})
+        self.assertFalse(r.ok)
+        self.assertEqual((r.data["error"]["code"], r.data["error_kind"]), ("ANALYZER_UNAVAILABLE", "ANALYZER_UNAVAILABLE"))
+        os.environ["FAKE_MA_MODE"] = "hang"
+        r = ad.measure("media-analysis/probe", {"input": self.src, "asset_id": "a"}, timeout=1.0)
+        self.assertEqual((r.ok, r.exit_code, r.data["error"]["code"]), (False, 124, "ANALYZER_TIMEOUT"))
+        os.environ.pop("FAKE_MA_MODE")
+        self.assertIsNone(locate_media_analysis("/nonexistent", env={"PATH": "/nonexistent"}))
+        with self.assertRaises(ToolError):
+            MediaAnalysisAdapter(MediaAnalysisSkill([sys.executable, "-c", "import sys; sys.exit(3)"], None, {}), workspace=self.tmp)
+        # the analyzer maps Skill failures into the analysis failure domain and keeps going
+        from video_agent.media import AnalysisRequest, MediaAnalyzer
+        from video_agent.tools import ToolRouter
+        os.environ["FAKE_MA_MODE"] = "error_result"
+        svc = make_service(self.tmp, caps=FakeCaps(extra=["media-analysis"]), adapter=ToolRouter([self._adapter()]))
+        for name, tool in (("media_probe", "media-analysis/probe"), ("silence_analysis", "media-analysis/silence"), ("loudness_analysis", "media-analysis/loudness")):
+            svc.registry.get(name).tools = [tool]
+        from video_agent.media import AnalysisError
+        with self.assertRaises(AnalysisError):
+            MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=None).run(AnalysisRequest(inputs=[self.src]))   # the probe cannot be skipped
+
+    # service / registry / doctor integration with the fake skill; ffmpeg-skill stays first
+    def test_service_registration_selection_and_capability(self):
+        from video_agent.capabilities.resolver import CapabilityResolver
+        from video_agent.tools import ToolRouter
+        ad = self._adapter()
+        svc = make_service(self.tmp, caps=FakeCaps(extra=["media-analysis"]), adapter=ToolRouter([FakeAdapter(), ad]))
+        tools = svc.tools_for()
+        self.assertEqual(tools["media_probe"], "ffmpeg-skill/probe", "the Reference Skill stays the first candidate")
+        self.assertEqual(tools["duration_analysis"], "media-analysis/timing")
+        self.assertEqual(tools["scene_analysis"], "media-analysis/scenes")
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertTrue(rows["media-analysis"]["implemented"] and rows["media-analysis"]["available"])
+        self.assertEqual(rows["media-analysis"]["version"], "0.1.0")
+        sk = {r["skill"]: r for r in svc.skills()}
+        self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
+        # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution
+        res = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, media_analysis_dir="/nonexistent")
+        cap = res.resolve()["media-analysis"]
+        self.assertEqual(cap.status, "MISSING")
+        # explicit extra kinds via the service, and Skill / Tool version distinction
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"])
+        profile, rules, an = svc.analyze([self.src], "youtube", kinds=["duration"])
+        d = next(o for o in an.observations if o.kind == "duration")
+        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.0"))
+        self.assertNotEqual(svc.registry.tool("media-analysis/timing").version, "", "tool version recorded separately from the skill version")
+
+    # boundaries: no import, no engine invocation, no event → command; observation ≠ inference
+    def test_boundaries_static_and_dynamic(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        for rel in ("tools/media_analysis/adapter.py", "tools/media_analysis/locate.py"):
+            text = (root / rel).read_text(encoding="utf-8")
+            for l in text.splitlines():
+                code = l.split("#", 1)[0]
+                if code.lstrip().startswith(("import ", "from ")):
+                    self.assertNotIn("media_analysis_skill", code); self.assertNotIn("media_analysis.", code.replace("tools.media_analysis", "").replace("from .", ""))
+                    self.assertNotIn("providers", code); self.assertNotIn("execution", code)
+            self.assertNotIn("shell=True", text)
+            body = "\n".join(l for l in text.splitlines() if "FORBIDDEN_ARG_KEYS" not in l)   # the refusal list names ffprobe as a forbidden key
+            self.assertNotIn('"ffprobe"', body); self.assertNotIn("subprocess.Popen", text.replace("run_process_group", ""))
+        src_all = "\n".join((root / p).read_text(encoding="utf-8") for p in ("media/analyzer.py", "media/analysis.py", "temporal/events.py"))
+        self.assertNotIn("import media_analysis", src_all)
+        # a media-analysis silence observation yields events, never operations; the plan comes only from decisions
+        from video_agent.tools import ToolRouter
+        svc = make_service(self.tmp, caps=FakeCaps(extra=["media-analysis"]), adapter=ToolRouter([FakeAdapter(), self._adapter()]))
+        ir = svc.plan([self.src], "youtube")
+        self.assertFalse(any("media-analysis" in st["tool"] for st in ir.doc["plan"]["steps"]), "measurement tools never appear as production steps")
+        ops, _ = compile_ir(ir, "/w/jobs/j")
+        self.assertFalse(any(o.tool.startswith("media-analysis/") for o in ops))
+        self.assertTrue(all(i["provenance"] in ("INFERRED", "AI_GENERATED") for i in ir.doc["analysis"]["inferences"]))
+        self.assertTrue(all(o["provenance"] == "OBSERVED" for o in ir.doc["analysis"]["observations"]))

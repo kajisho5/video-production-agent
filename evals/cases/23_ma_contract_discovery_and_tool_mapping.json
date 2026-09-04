@@ -1,0 +1,23 @@
+{
+ "name": "ma_contract_discovery_and_tool_mapping",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "ok",
+  "prefer": false
+ },
+ "expect": {
+  "selected_tools": {
+   "media_probe": "ffmpeg-skill/probe",
+   "duration_analysis": "media-analysis/timing",
+   "timing_analysis": "media-analysis/timing",
+   "scene_analysis": "media-analysis/scenes",
+   "integrity_analysis": "media-analysis/integrity",
+   "stream_layout_analysis": "media-analysis/streams"
+  },
+  "observations": {
+   "media_probe": {
+    "skill": "ffmpeg-skill"
+   }
+  }
+ }
+}

@@ -1434,6 +1434,45 @@ motion-graphics-skill, color-grading-skill, thumbnail-skill, qc-skill.
 Not part of the ecosystem contract (deliberately absent): plugin manager, package installer, dynamic import, marketplace,
 remote registry, arbitrary code loading. A package becomes known through its adapter module and one registration line.
 
+### External observation Skill: media-analysis-skill (implemented, ADR-023)
+
+| Skill | Role | Status |
+|---|---|---|
+| ffmpeg-skill | deterministic media **execution** (hands) | Reference Skill, integrated (ADR-001 / ADR-016 / ADR-017) |
+| media-analysis-skill | deterministic **measurement / observation** (eyes / meters) | integrated: `tools/media_analysis/`, contract `media-analysis/contract@1`, 0.1.x |
+| transcription-skill | speech recognition / transcript | **not integrated**: its `main` carries no implementation or contract yet (README only); no adapter, no stub |
+| video-production-agent | orchestration / inference / decision / planning | this repository |
+
+- Boundary: an external process. The adapter runs `media-analysis contract --json` / `doctor --json` once and
+  `media-analysis run - --json` per measurement (AnalysisRequest JSON on stdin, exactly one response document on
+  stdout). The agent never imports the package, never runs ffprobe / ffmpeg for it, never forwards commands, argv,
+  executable paths or credentials; the Skill's own `--workspace` / `--allowed-input` policy is passed through, not bypassed.
+- Contract is the source of truth: tools, analysis kinds, kind → tool, capabilities, versions and schemas come from
+  `contract --json` (`package_from_contract`); a pinned snapshot (`tools/media_analysis/contract_0.1.0.json`) gives the
+  package its identity when no installation is present. `check_contract` refuses another skill id, contract / schema
+  version, execution mode, tool ownership, a tool that writes media, or a provenance other than OBSERVED.
+- Selection stays in the registry: `media-analysis/probe|silence|loudness` are second candidates for the core
+  measurement skills (ffmpeg-skill first, unchanged behaviour); `stream_layout`, `video_format`, `audio_format`,
+  `duration`, `integrity`, `scene_detection`, `timing` are measurement skills only media-analysis provides.
+  `AnalysisRequest.kinds` may add them explicitly (`video-agent analyze --kind …`); FULL still runs the core kinds.
+- Lifting: `response.observations[]` become agent Observations without simplification — `source`
+  (`media-analysis/<tool>@<version>`), `skill` / `skill_version`, `tool`, `external_id` (the Skill's observation id),
+  `fingerprint`, effective `parameters`, `cache` status, `analyzer@version`; provenance stays OBSERVED. Facts only:
+  no interpretation is added (a leading silence is a segment, not a cut).
+- Cache ownership: the Skill's (`--cache-dir <workspace>/cache/media-analysis`); the agent records `cache_owner` and the
+  Skill's cache status per measurement and does not store those observations in its own cache.
+- Failures map to the analysis failure domain (`ANALYZER_TIMEOUT`, `ANALYSIS_BUDGET_EXCEEDED`, `ANALYSIS_CACHE_INVALID`,
+  `ANALYSIS_INVALID_RESULT`, `ANALYZER_UNAVAILABLE`); a malformed response (empty, text, several documents, wrong
+  schema / skill / version / kind, missing observation, non-tool source) is never an observation.
+- Events: a silence observation from either Skill becomes `AudioEvent(silence)` / `AudioEvent(active)` through the
+  same deterministic transformation; no event becomes a command.
+- One vocabulary for consumers, facts untouched: `media.analysis.loudness_facts` / `probe_facts` read a loudness or
+  probe fact whichever tool measured it (`lufs` / `input_i` / `integrated_lufs`, container-based probe layouts).
+  Inference and QA go through these views; the Observation keeps the tool's own keys.
+- QA measures through the same boundary: `run_qa` asks the adapter for `measurement_args` (asset id, kind, declared
+  parameters) so a measurement Skill can probe / meter intermediates and artifacts; the Skill's input roots are the
+  agent's allowed inputs plus the workspace, the same boundary as the engine's `PathPolicy`.
+
 The Brain includes an **AI Provider** (reasoning / model interface, §42): it contributes production intent and
 inferences with evidence and confidence; it never selects a skill or tool, never emits commands, and never bypasses
 policy. ffmpeg-skill, the first Reference Skill, is external OSS (100+ GitHub stars at the time of writing) — the

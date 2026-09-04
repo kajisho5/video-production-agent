@@ -1,0 +1,21 @@
+{
+ "name": "ma_unavailable_without_capability",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "ok",
+  "prefer": false,
+  "no_capability": true
+ },
+ "expect": {
+  "unavailable_skills": [
+   "duration_analysis",
+   "scene_analysis",
+   "integrity_analysis",
+   "timing_analysis"
+  ],
+  "selected_tools": {
+   "media_probe": "ffmpeg-skill/probe",
+   "silence_analysis": "ffmpeg-skill/silence"
+  }
+ }
+}

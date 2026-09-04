@@ -1,0 +1,49 @@
+{
+ "name": "ma_observation_lifting_with_provenance",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "ok",
+  "kinds": [
+   "duration",
+   "scene_detection",
+   "integrity"
+  ]
+ },
+ "expect": {
+  "observations": {
+   "silence": {
+    "skill": "media-analysis",
+    "skill_version": "0.1.0",
+    "tool": "media-analysis/silence",
+    "source": "media-analysis/silence@0.1.0",
+    "provenance": "OBSERVED",
+    "cache_status": "miss",
+    "external": true
+   },
+   "loudness": {
+    "tool": "media-analysis/loudness",
+    "provenance": "OBSERVED"
+   },
+   "duration": {
+    "tool": "media-analysis/timing",
+    "provenance": "OBSERVED"
+   },
+   "scene_detection": {
+    "tool": "media-analysis/scenes",
+    "provenance": "OBSERVED"
+   },
+   "integrity": {
+    "tool": "media-analysis/integrity",
+    "provenance": "OBSERVED"
+   }
+  },
+  "shared_fingerprint": true,
+  "events": [
+   "AUDIO_SILENCE",
+   "AUDIO_ACTIVE",
+   "LOUDNESS_MEASURE"
+  ],
+  "measure_calls": 6,
+  "agent_cache_untouched": true
+ }
+}

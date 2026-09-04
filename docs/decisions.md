@@ -112,3 +112,11 @@
 - QA（正しいか）と Delivery（納品可能へ昇格したか）と Archive（履歴として保持）を分離。stage は working → candidate → final → archive、delivery_status はその view。final は integrity ok・QA not FAIL・plan APPROVED（現行版）のときだけ。外部 upload は作らず、`channel` を将来の delivery adapter の境界とする。
 - 出力 path は compiler が決める。Artifact 層は manifest（`<workspace>/artifacts/registry`）と archive 索引（`<workspace>/archive`）を書くだけで、media を動かさない。naming template は安全な納品ファイル名（metadata）を生成する。
 - plan_hash（plan identity）/ ir_hash（execution contract identity）/ artifact sha256（bytes identity）は別物。
+
+## ADR-023 External observation Skills cross a process boundary; their contract is the source of truth
+- 事実: media-analysis-skill 0.1.0 が `contract --json` / `run - --json` / `doctor --json` を公開している。transcription-skill には released contract が無い。
+- 決定: 外部 Skill は `ToolAdapter` として process boundary（JSON stdin / stdout）だけで接続し、Python import はしない。tools / kinds / capabilities / version / schema は Skill の contract から取り、agent 側で再宣言しない。互換検査（skill id / contract・schema version / execution mode / tool 所有 / provenance）に通らない installation は使わない（silent fallback 無し）。
+- Observation の lifting は provenance を簡略化しない（skill / skill_version / tool / external id / fingerprint / parameters / cache）。Skill が所有する cache を agent は二重化せず、状態を記録するだけ。
+- 選択は SkillRegistry のまま（ffmpeg-skill を第一候補に維持、media-analysis を第二候補、media-analysis 固有の計測は専用 production skill）。Event は同じ変換で生成し、Event から command は作らない。
+- 計測語彙は消費側で正規化する（`loudness_facts` / `probe_facts`）。Observation の data は tool が返した通りに保持し、inference / QA だけが共通 view を読む。QA も同じ adapter boundary（`measurement_args`）で計測する。
+- contract が無い Skill（transcription-skill）は接続しない。stub・推測 contract・fake event は作らない。
