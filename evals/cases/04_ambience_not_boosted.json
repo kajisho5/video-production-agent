@@ -1,0 +1,3 @@
+{"name": "ambience_not_boosted", "profile": "youtube",
+ "fake": {"silences": [], "lufs": -46.0},
+ "expect": {"decisions": {"audio.loudness": {"decision": "skip", "risk": "MEDIUM"}}, "no_decisions": ["silence.leading", "silence.trailing"], "plan": {"video_ops": 0, "audio_ops": 0}}}

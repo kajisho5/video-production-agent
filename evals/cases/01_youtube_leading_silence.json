@@ -1,0 +1,6 @@
+{"name": "youtube_leading_silence", "profile": "youtube", "request": "",
+ "fake": {"silences": [[0.0, 3.0], [13.7, null]], "lufs": -11.0},
+ "expect": {"intent": "clean_and_deliver",
+   "decisions": {"silence.leading": {"approval": "AUTO", "risk": "LOW", "provenance": "INFERRED"}, "silence.trailing": {"approval": "AUTO"},
+                 "audio.loudness": {"decision_startswith": "normalize to -14"}, "delivery.youtube": {"approval": "AUTO", "provenance": "PROFILE"}},
+   "requirement_provenance": {"audio.loudness.target_lufs": "PROFILE"}, "plan": {"video_ops": 1, "audio_ops": 1}, "blocked": false}}

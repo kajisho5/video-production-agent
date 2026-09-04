@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-production-agent"
+version = "0.1.0"
+description = "AI video production orchestrator that plans, validates and executes productions through ffmpeg-skill"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+  "jsonschema>=4.17",
+]
+
+[project.scripts]
+video-agent = "video_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+video_agent = ["../../schemas/*.json", "../../profiles/*.json"]

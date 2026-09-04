@@ -1,0 +1,3 @@
+{"name": "missing_capability_blocks", "profile": "youtube", "missing_capabilities": ["encoder:libx264"],
+ "fake": {"silences": [[0.0, 3.0]], "lufs": -11.0},
+ "expect": {"blocked": true, "decisions": {"capability.delivery_export.youtube": {"approval": "BLOCK", "status": "BLOCKED"}}}}
