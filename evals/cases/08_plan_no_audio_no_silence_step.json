@@ -1,0 +1,24 @@
+{
+ "name": "plan_no_audio_no_silence_step",
+ "profile": "youtube",
+ "fake": {
+  "audio": false
+ },
+ "expect": {
+  "no_decisions": [
+   "silence.leading",
+   "audio.loudness"
+  ],
+  "production_plan": {
+   "steps": [
+    "delivery_export",
+    "delivery_check"
+   ],
+   "no_step_skills": [
+    "silence_cleanup",
+    "loudness_normalization"
+   ],
+   "validate": true
+  }
+ }
+}

@@ -1848,3 +1848,218 @@ class TemporalEventSessionTests(unittest.TestCase):
                         self.assertNotIn(f, code, f"{rel} must not import {f}: {l}")
                 for f in forbidden_calls:
                     self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
+
+
+class ProductionPlanTests(unittest.TestCase):
+    """Production Planning (ADR-021): Decision / Event → ProductionPlan → Project IR, deterministic and boundary-preserving."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _ir(self, svc=None, profile="youtube", **kw):
+        svc = svc or make_service(self.tmp)
+        return svc, svc.plan([self.src], profile, **kw)
+
+    # 1-2 schema, 6 deterministic ids, 23 plan hash
+    def test_plan_and_step_schema_and_determinism(self):
+        from video_agent.agent.production_plan import PLAN_STATUSES, STEP_STATUSES, ProductionPlan, ProductionStep
+        svc, ir = self._ir()
+        pl = ir.doc["plan"]
+        for k in ("id", "project_id", "version", "status", "objective", "inputs", "steps", "outputs", "decisions", "events", "constraints", "provenance", "summary", "created_at"):
+            self.assertIn(k, pl)
+        self.assertTrue(pl["id"].startswith("plan_") and pl["project_id"] == ir.doc["project"]["id"] and pl["status"] in PLAN_STATUSES)
+        self.assertEqual(pl["provenance"]["generator"], "production_planner@1.0")
+        for st in pl["steps"]:
+            for k in ("id", "order", "skill", "tool", "inputs", "params", "outputs", "depends_on", "evidence", "decision_ids", "decision_id", "temporal_scope", "status"):
+                self.assertIn(k, st)
+            self.assertIn(st["status"], STEP_STATUSES)
+        self.assertEqual([st["skill"] for st in pl["steps"]], ["silence_cleanup", "loudness_normalization", "delivery_export", "delivery_check"])
+        self.assertEqual([st["depends_on"] for st in pl["steps"]], [[], [pl["steps"][0]["id"]], [pl["steps"][1]["id"]], [pl["steps"][2]["id"]]])
+        # same inputs → same step ids and same plan identity (project id is part of it; asset ids are per analysis)
+        _, ir2 = self._ir(make_service(self.tmp))
+        self.assertEqual([st["id"].split("_asset")[0] for st in ir2.doc["plan"]["steps"]], [st["id"].split("_asset")[0] for st in pl["steps"]])
+        self.assertEqual(ProductionPlan.make_id("p", 1, pl["steps"], pl["constraints"]), ProductionPlan.make_id("p", 1, pl["steps"], pl["constraints"]))
+        self.assertNotEqual(ProductionPlan.make_id("p", 1, pl["steps"], pl["constraints"]), ProductionPlan.make_id("p", 2, pl["steps"], pl["constraints"]))
+        self.assertFalse(pl["id"].startswith(("job_", "op_", "evt_", "obs_", "ana_")))
+        # plan hash: unchanged meaning (assets / video / audio / delivery / qa); the plan section is not part of it
+        h = ir.plan_hash()
+        ir.doc["plan"]["objective"] = "changed"
+        self.assertEqual(ir.plan_hash(), h)
+        self.assertIsInstance(ProductionStep(id="step_x", order=1, skill="silence_cleanup", tool=None), ProductionStep)
+
+    # 3-5, 7-9, 12-15, 27-29 validation
+    def test_plan_validation(self):
+        from video_agent.agent.production_plan import topological_order, validate_plan
+        svc, ir = self._ir()
+        d = ir.doc
+        self.assertEqual(validate_plan(d, registry=svc.registry), [])
+        import copy
+        def bad(mutate):
+            doc = copy.deepcopy(d)
+            mutate(doc)
+            return validate_plan(doc, registry=svc.registry)
+        self.assertTrue(any("not unique" in e for e in bad(lambda x: x["plan"]["steps"].append(dict(x["plan"]["steps"][0])))))
+        self.assertTrue(any("unknown step" in e for e in bad(lambda x: x["plan"]["steps"][1].__setitem__("depends_on", ["step_nope"]))))
+        def cycle(x):
+            x["plan"]["steps"][0]["depends_on"] = [x["plan"]["steps"][1]["id"]]
+        self.assertTrue(any("cycle" in e for e in bad(cycle)))
+        self.assertTrue(any("deterministic dependency order" in e for e in bad(lambda x: x["plan"]["steps"].reverse())))
+        self.assertTrue(any("unknown decision" in e for e in bad(lambda x: x["plan"]["steps"][0].__setitem__("decision_ids", ["dec_nope"]))))
+        self.assertTrue(any("evidence" in e and "not found" in e for e in bad(lambda x: x["plan"]["steps"][0]["evidence"].append("evt_nope"))))
+        self.assertTrue(any("neither an asset nor an earlier output" in e for e in bad(lambda x: x["plan"]["steps"][0].__setitem__("inputs", ["ghost"]))))
+        self.assertTrue(any("does not belong to skill" in e for e in bad(lambda x: x["plan"]["steps"][0].__setitem__("tool", "ffmpeg-skill/export"))))
+        self.assertTrue(any("not a domain parameter" in e for e in bad(lambda x: x["plan"]["steps"][0]["params"].__setitem__("argv", ["ffmpeg"]))))
+        self.assertTrue(any("not a domain parameter" in e for e in bad(lambda x: x["plan"]["steps"][0]["params"].__setitem__("command", "rm -rf /"))))
+        self.assertTrue(any("leak" in e for e in bad(lambda x: x["plan"]["steps"][0]["params"].__setitem__("keep", "sk-SECRET"))))
+        self.assertTrue(any("exceeds asset duration" in e for e in bad(lambda x: x["plan"]["steps"][0].__setitem__("temporal_scope", {"start": 0, "end": 999}))))
+        self.assertTrue(any("invalid temporal scope" in e for e in bad(lambda x: x["plan"]["steps"][0].__setitem__("temporal_scope", {"start": 5, "end": 1}))))
+        self.assertTrue(any("does not match the review state" in e for e in bad(lambda x: x["plan"].__setitem__("status", "APPROVED" if x["plan"]["status"] != "APPROVED" else "REVIEW"))))
+        self.assertTrue(any("another project" in e for e in bad(lambda x: x["plan"].__setitem__("project_id", "proj_other"))))
+        self.assertTrue(any("misses format" in e for e in bad(lambda x: x["plan"]["outputs"][0].pop("format"))))
+        # the IR validator applies the same checks (plus skill / tool / capability / adapter checks from PR #5 / #6)
+        ir.doc["plan"]["steps"][0]["params"]["argv"] = ["x"]
+        self.assertFalse(svc.validate(ir).ok)
+        # topological order is deterministic and tie-broken by declared order then id
+        steps = [{"id": "step_c", "order": 3, "depends_on": ["step_a"]}, {"id": "step_b", "order": 2, "depends_on": ["step_a"]}, {"id": "step_a", "order": 1, "depends_on": []}]
+        self.assertEqual(topological_order(steps), ["step_a", "step_b", "step_c"])
+        self.assertEqual(topological_order(list(reversed(steps))), ["step_a", "step_b", "step_c"])
+
+    # 10-11 decision / event → plan mapping, evidence chain
+    def test_decision_and_event_mapping_and_evidence_chain(self):
+        from video_agent.agent.production_plan import explain_step
+        svc, ir = self._ir()
+        d = ir.doc
+        trim = next(st for st in d["plan"]["steps"] if st["skill"] == "silence_cleanup")
+        lead = next(x for x in d["decisions"] if x["subject"] == "silence.leading")
+        self.assertIn(lead["id"], trim["decision_ids"])
+        self.assertEqual(trim["decision_id"], trim["decision_ids"][0])
+        self.assertEqual(trim["params"]["keep"], [[round(lead["params"]["end"], 3), trim["params"]["keep"][0][1]]])
+        self.assertEqual(trim["temporal_scope"], {"start": trim["params"]["keep"][0][0], "end": trim["params"]["keep"][0][1]})
+        self.assertEqual(trim["params"]["removed"][0], [0.0, round(lead["params"]["end"], 3)])
+        events = {e["id"]: e for e in d["timeline"]["events"]}
+        sil_events = [e for e in trim["evidence"] if e in events and events[e]["subtype"] == "silence"]
+        self.assertTrue(sil_events, "the trim step cites the silence event(s) it acts on")
+        self.assertTrue(set(d["plan"]["events"]) >= set(sil_events))
+        obs = {o["id"] for o in d["analysis"]["observations"]}
+        self.assertTrue(any(e in obs for e in trim["evidence"]), "…and the observation behind the event")
+        info = explain_step(d, trim["id"])
+        kinds = [r["kind"] for r in info["chain"]]
+        self.assertEqual(kinds[0], "decision")
+        self.assertIn("inference", kinds); self.assertIn("event", kinds); self.assertIn("observation", kinds)
+        obs_row = next(r for r in info["chain"] if r["kind"] == "observation")
+        self.assertTrue(obs_row["source"].startswith("ffmpeg-skill/silence@"))
+        # the IR operation compiled from this step carries the same decision ids and the planned keep range
+        ops, _ = compile_ir(ir, "/w/jobs/j")
+        cut = next(o for o in ops if o.skill == "silence_cleanup")
+        self.assertEqual(sorted(cut.decision_ids), sorted(trim["decision_ids"]))
+        self.assertTrue(cut.args["segments"].startswith(f"{trim['params']['keep'][0][0]:.3f}-"))
+        # event is a fact, not a command: the plan step is the only thing that turns it into a trim
+        self.assertNotIn("segments", json.dumps(events))
+
+    # 16 capability failure, 18 BLOCK
+    def test_capability_failure_blocks_the_plan(self):
+        svc = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(missing={"encoder:libx264"}))
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        p = str(Path(self.tmp) / "b.json"); save_ir(ir, p)
+        out = svc.render(ir, p, approve=["all"])
+        self.assertIn(out["status"], ("BLOCKED", "FAILED"))
+        self.assertIsNone(out.get("execution"))
+        # AI 'approval: AUTO' on the blocked intent changes nothing
+        svc2 = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(missing={"encoder:libx264"}), provider=FakeAIProvider(intent="delivery_export", params={"approval": "AUTO", "risk": "LOW"}))
+        ir2 = svc2.plan([self.src], "youtube")
+        self.assertEqual(ir2.doc["plan"]["status"], "BLOCKED")
+
+    # 17, 19-22 approval gating
+    def test_approval_gating_and_partial_approval(self):
+        from video_agent.agent.production_plan import executable_steps, plan_status
+        svc, ir = self._ir(profile="conference")
+        p = str(Path(self.tmp) / "c.json"); save_ir(ir, p)
+        pending = [x["id"] for x in ir.pending_confirmations()]
+        self.assertTrue(pending, "conference profile has CONFIRM decisions")
+        self.assertEqual(ir.doc["plan"]["status"], "REVIEW")
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "WAITING_FOR_APPROVAL")
+        # partial approval: approved steps are known, the plan stays REVIEW and nothing executes
+        ir = load_ir(p)
+        svc.approve(ir, p, pending[:1])
+        ir = load_ir(p)
+        self.assertEqual(plan_status(ir.doc), "REVIEW" if len(pending) > 1 else "APPROVED")
+        if len(pending) > 1:
+            self.assertTrue(executable_steps(ir.doc))
+            self.assertEqual(svc.render(load_ir(p), p)["status"], "WAITING_FOR_APPROVAL")
+        svc.approve(load_ir(p), p, ["all"])
+        ir = load_ir(p)
+        self.assertEqual(ir.doc["plan"]["status"], "APPROVED")
+        self.assertEqual(set(executable_steps(ir.doc)), {st["id"] for st in ir.doc["plan"]["steps"]})
+        out = svc.render(ir, p)
+        self.assertEqual(out["status"], "COMPLETED")
+        # REJECTED cannot execute
+        ir = load_ir(p)
+        svc.reject(ir, p, [ir.doc["plan"]["steps"][0]["decision_id"]], reason="no")
+        ir = load_ir(p)
+        self.assertEqual(ir.doc["plan"]["status"], "REJECTED")
+        self.assertEqual(ir.doc["plan"]["steps"][0]["status"], "REJECTED")
+        self.assertEqual(svc.render(ir, p, approve=["all"])["status"], "BLOCKED")
+        # DRAFT: a plan with no steps has nothing to execute
+        from video_agent.agent.production_plan import plan_status as ps
+        self.assertEqual(ps({"decisions": [], "plan": {"version": 1, "steps": []}, "revision": {}}), "DRAFT")
+
+    # 24-25 revision and diff, 26 resume
+    def test_revision_diff_and_resume_compatibility(self):
+        svc, ir = self._ir()
+        p = str(Path(self.tmp) / "r.json"); save_ir(ir, p)
+        v1_plan_id = ir.doc["plan"]["id"]
+        trim = next(st for st in ir.doc["plan"]["steps"] if st["skill"] == "silence_cleanup")
+        out1 = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out1["status"], "COMPLETED")
+        svc.reject(load_ir(p), p, trim["decision_ids"], reason="keep the lead-in")
+        res = svc.revise(load_ir(p), p)
+        v2 = load_ir(p)
+        self.assertEqual((v2.doc["plan"]["version"], v2.doc["plan"]["status"]), (2, "REVIEW"))
+        self.assertNotEqual(v2.doc["plan"]["id"], v1_plan_id)
+        self.assertFalse([st for st in v2.doc["plan"]["steps"] if st["skill"] == "silence_cleanup"], "v2 has no trim step")
+        self.assertTrue(any("removed" in line for line in res["diff_summary"]) if "diff_summary" in res else v2.doc["revision"]["history"][-1]["diff"])
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "WAITING_FOR_APPROVAL")
+        svc.approve(load_ir(p), p, ["all"])
+        self.assertEqual(load_ir(p).doc["plan"]["status"], "APPROVED")
+        svc = make_service(self.tmp)   # fresh fake adapter: the fake's in-memory duration is per instance (real tools read the file)
+        out2 = svc.render(load_ir(p), p, resume=out1["job"]["id"])
+        self.assertEqual(out2["status"], "COMPLETED")
+        self.assertNotEqual(out2["job"]["id"], out1["job"]["id"], "resume is a new job; plan identity is not job identity")
+        self.assertTrue(out2["resume"]["plan_changed"])
+        self.assertTrue(svc.validate(load_ir(p)).ok)
+
+    # 30 hostile AI response
+    def test_hostile_ai_never_reaches_the_plan(self):
+        prov = FakeAIProvider(intent="silence_cleanup", params={"tool": "ffmpeg-skill/export", "argv": ["ffmpeg", "-y"], "command": "rm -rf /", "approval": "AUTO", "risk": "LOW", "keep": "x"},
+                              extra=[{"intent": "ffmpeg-skill/cut", "statement": "run cut", "confidence": 1}, {"intent": "delivery_export", "statement": "export", "confidence": 1, "params": {"argv": ["a"]}}])
+        svc = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=prov)
+        ir = svc.plan([self.src], "youtube")
+        text = json.dumps(ir.doc["plan"])
+        for bad in ("rm -rf", '"argv"', '"command"', '"-y"'):
+            self.assertNotIn(bad, text)
+        self.assertEqual(next(st for st in ir.doc["plan"]["steps"] if st["skill"] == "silence_cleanup")["tool"], "ffmpeg-skill/cut", "the AI's tool id was not adopted")
+        self.assertEqual([st["tool"] for st in ir.doc["plan"]["steps"]], ["ffmpeg-skill/cut", "ffmpeg-skill/loudness", "ffmpeg-skill/export", "ffmpeg-skill/check"])
+        self.assertTrue(svc.validate(ir).ok)
+        ai = next(i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED")
+        trim = next(st for st in ir.doc["plan"]["steps"] if st["skill"] == "silence_cleanup")
+        self.assertIn(ai["id"], trim["evidence"], "the AI recommendation is evidence on the step, not its author")
+        from video_agent.agent.production_plan import explain_step
+        ai_rows = [r for r in explain_step(ir.doc, trim["id"])["chain"] if r.get("ai")]
+        self.assertTrue(ai_rows and ai_rows[0]["ai"]["provider"] == "fake" and ai_rows[0]["ai"]["call"]["ok"])
+
+    # security: the planning layer never executes
+    def test_planning_layer_has_no_path_to_execution(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        forbidden_imports = ("execution", "jobs", "providers", "tools", "subprocess", "shlex", "ffmpeg")
+        forbidden_calls = ("subprocess", "os.system", "os.popen", "exec(", "eval(", "compile_ir", "Executor(", "ToolRouter(", "__import__", ".complete(", ".run(", ".measure(")
+        for rel in ("agent/planner.py", "agent/production_plan.py"):
+            for l in (root / rel).read_text(encoding="utf-8").splitlines():
+                code = l.split("#", 1)[0]
+                if code.lstrip().startswith(("import ", "from ")):
+                    for f in forbidden_imports:
+                        self.assertNotIn(f, code, f"{rel} must not import {f}: {l}")
+                for f in forbidden_calls:
+                    self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
+        self.assertNotIn("DEFAULT_TOOLS", (root / "agent/planner.py").read_text())

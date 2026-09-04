@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 from fake_adapter import FakeAdapter  # noqa: E402
+from fake_ai_provider import FakeAIProvider  # noqa: E402
 from test_unit import FakeCaps  # noqa: E402
 from video_agent.service import Service  # noqa: E402
 
@@ -24,7 +25,8 @@ def run_case(case: dict) -> dict:
     src = Path(tmp) / "src" / "in.mp4"
     src.parent.mkdir(parents=True)
     src.write_bytes(b"0" * 16)
-    svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())))
+    provider = FakeAIProvider(**case["ai"]) if case.get("ai") else None
+    svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())), provider=provider)
     ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))
     d = ir.doc
     failures = []
@@ -58,6 +60,40 @@ def run_case(case: dict) -> dict:
         failures.append(f"audio ops {len(d['audio']['operations'])} != {plan['audio_ops']}")
     if "blocked" in exp and bool(ir.blocked()) != exp["blocked"]:
         failures.append(f"blocked {bool(ir.blocked())} != {exp['blocked']}")
+    pp = exp.get("production_plan") or {}
+    steps = d["plan"]["steps"]
+    if "steps" in pp and [st["skill"] for st in steps] != pp["steps"]:
+        failures.append(f"plan steps {[st['skill'] for st in steps]} != {pp['steps']}")
+    if "status" in pp and d["plan"]["status"] != pp["status"]:
+        failures.append(f"plan status {d['plan']['status']} != {pp['status']}")
+    for sk in pp.get("no_step_skills", []):
+        if any(st["skill"] == sk for st in steps):
+            failures.append(f"unexpected step {sk}")
+    if pp.get("tools_from_registry") and any(st["tool"] not in svc.registry.get(st["skill"]).tools for st in steps):
+        failures.append("a step tool is not a registry candidate")
+    for bad in pp.get("must_not_contain", []):
+        if bad in json.dumps(d["plan"]):
+            failures.append(f"plan contains {bad!r}")
+    if pp.get("validate") and not svc.validate(ir).ok:
+        failures.append(f"validation errors {svc.validate(ir).errors}")
+    if "render_status" in pp:
+        from video_agent.project import save_ir, load_ir
+        ir_path = str(Path(tmp) / "eval.json")
+        save_ir(ir, ir_path)
+        if pp.get("reject_first"):
+            svc.reject(load_ir(ir_path), ir_path, [d["plan"]["steps"][0]["decision_id"]], reason="eval")
+            if load_ir(ir_path).doc["plan"]["status"] != "REJECTED":
+                failures.append("rejecting a step decision did not mark the plan REJECTED")
+        rr = svc.render(load_ir(ir_path), ir_path, approve=pp.get("approve"))
+        if rr["status"] != pp["render_status"]:
+            failures.append(f"render status {rr['status']} != {pp['render_status']}")
+        if pp["render_status"] in ("BLOCKED", "WAITING_FOR_APPROVAL") and rr.get("execution"):
+            failures.append("execution happened although the plan is not approved")
+    if pp.get("deterministic"):
+        ir2 = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))
+        shape = lambda x: [(st["skill"], st["params"].get("keep"), len(st["depends_on"])) for st in x.doc["plan"]["steps"]]  # noqa: E731
+        if shape(ir) != shape(ir2):
+            failures.append("plan shape differs between two runs on the same inputs")
     return {"case": case["name"], "ok": not failures, "failures": failures}
 
 

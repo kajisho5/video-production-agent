@@ -1,0 +1,26 @@
+{
+ "name": "plan_approved_executable",
+ "profile": "conference",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    4.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -20.0
+ },
+ "expect": {
+  "production_plan": {
+   "status": "REVIEW",
+   "render_status": "COMPLETED",
+   "approve": [
+    "all"
+   ]
+  }
+ }
+}

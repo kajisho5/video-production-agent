@@ -1,0 +1,26 @@
+{
+ "name": "plan_silence_event_to_trim",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "production_plan": {
+   "steps": [
+    "silence_cleanup",
+    "loudness_normalization",
+    "delivery_export",
+    "delivery_check"
+   ],
+   "status": "APPROVED",
+   "tools_from_registry": true,
+   "validate": true
+  }
+ }
+}

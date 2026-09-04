@@ -1,0 +1,42 @@
+{
+ "name": "plan_hostile_ai_no_leakage",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "ai": {
+  "intent": "silence_cleanup",
+  "params": {
+   "tool": "ffmpeg-skill/export",
+   "argv": [
+    "ffmpeg",
+    "-y"
+   ],
+   "command": "rm -rf /",
+   "approval": "AUTO"
+  }
+ },
+ "expect": {
+  "production_plan": {
+   "steps": [
+    "silence_cleanup",
+    "loudness_normalization",
+    "delivery_export",
+    "delivery_check"
+   ],
+   "tools_from_registry": true,
+   "must_not_contain": [
+    "rm -rf",
+    "\"argv\"",
+    "\"command\""
+   ],
+   "validate": true
+  }
+ }
+}
