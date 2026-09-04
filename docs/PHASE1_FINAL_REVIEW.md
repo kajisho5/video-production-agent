@@ -172,3 +172,22 @@ Phase 2 開始前に**人手で必要**なこと:
 4. Phase 2 の最初の PR は **schema 1.1 + resume** に限定し、conference 機能と AI Provider はそれぞれ別 PR にする。
 
 これらは判断を要する事項ではなく確認事項であり、1 と 2 の結果が揃えば着手できる。
+
+---
+
+## 追記: CI 実行結果（2026-09-04, run 33870052758, head 1f31d70）
+
+`tests.yml` を `workflow_dispatch` で PR ブランチに対して手動実行した。ワークフローは default branch に無いと dispatch できない（404）ため、同一ファイルだけを PR #2 として main に先行マージしてから実行した。
+
+| job | 結果 | 内容 |
+|---|---|---|
+| unit (ubuntu-latest, 3.9) | success | 23 tests OK, evals 6/6 |
+| unit (ubuntu-latest, 3.11) | success | 23 tests OK, evals 6/6 |
+| unit (windows-latest, 3.9) | success | 23 tests OK, evals 6/6（ログで件数確認） |
+| unit (windows-latest, 3.11) | success | 23 tests OK, evals 6/6 |
+| integration (ubuntu-latest, ffmpeg apt + ffmpeg-skill clone) | success | 6 tests OK（38.8 s） |
+
+- Windows unit が green のため、「Phase 2 開始前の第 0 項（Windows 修正）」は不要。
+- 警告: actions/checkout@v4 と setup-python@v5 の Node 20 非推奨警告のみ（動作影響なし。次回 CI 更新時に v5/v6 へ）。
+- 未検証のまま残るもの: Windows での integration（ffmpeg 実行、`taskkill /T`）。unit は FakeAdapter のため OS 依存コードの一部（プロセスグループ kill）は Windows で実行されていない。
+- 開始条件 1〜4 のうち、2 は本追記で充足。1 は PR #1 のマージで充足する。
