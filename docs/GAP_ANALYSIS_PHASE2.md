@@ -249,3 +249,21 @@ transcription-skill: 未接続。理由は main に実装・contract が無い�
 - 単語タイムスタンプでの発話境界精緻化（PR #14 の残課題）
 
 既知・未対応: silencedetect end > duration（別 PR）。
+
+## 17. PR #16 — Production Decision Engine（2026-09-04 追記）
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G75 decision の生成規則が暗黙（evidence 空の decision が生成され得る） | `decide()` 手続き内の個別実装 | `agent/decision_engine.py`: evidence 必須・根拠クラス検査・AI 単独は REVIEW・type 語彙・BLOCK ⇔ BLOCKED・leak 検査 |
+| G76 approval の policy 解決に provenance / 未知値 / floor の規則が無い | `rules.get(key, "AUTO")` の直接参照 | `resolve_approval`（DEFAULT 明示、未知値 → CONFIRM、BLOCK* → BLOCK、floor は上げるのみ、waiver は CONSTRAINT に不適用）と basis 記録 |
+| G77 Decision → Policy / Preference / Constraint / Intent の説明が無い | evidence 一覧のみ | `basis` + `explain --decision`（basis → evidence chain → plan step / IR operation） |
+| G78 IR 上で decision 不変条件が検査されない | BLOCK / CONFIRM の warning のみ | `check_decisions` を validator に組込み |
+
+別 PR 候補（本 PR では扱わない）:
+- 話者・カメラ・スライド等の新しい decision domain（Event 種別の観測が先）
+- 単語タイムスタンプでの発話境界精緻化（PR #14 の残課題）
+- `video.*.approval` を request から設定可能にするか（現状は profile のみ。REQUIREMENT_PREFIXES に "video." は無い）
+- base PR（#5–#12）の ffmpeg-skill 0.9.x 対応
+
+既知・未対応: silencedetect end > duration（別 PR）。
+

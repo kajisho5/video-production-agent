@@ -929,3 +929,90 @@ class ProductionContextRealTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", ir_path, "--context", pause_ctx.id], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("observation", r.stdout)
+
+
+class ProductionDecisionEngineRealTests(unittest.TestCase):
+    """PR #16 on real media: Transcript → SpeechEvent → ProductionContext → Inference → Decision (typed, grounded, policy-resolved
+    with provenance) → ProductionPlan → IR → explain --decision. Same two-take fixture as SpeechToPlanRealTests; recognition runs
+    only when the engine and its default model are local."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.transcription import TranscriptionAdapter
+        cls.tmp = tempfile.mkdtemp(prefix="va_de_")
+        src_dir = Path(cls.tmp) / "src"
+        src_dir.mkdir()
+        fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
+        cls.ready = fixture.is_file()
+        if cls.ready:
+            cls.src = str(src_dir / "two_takes.wav")
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fixture), "-i", str(fixture), "-filter_complex",
+                            "[0:a]apad=pad_dur=3[a0];[a0][1:a]concat=n=2:v=0:a=1[a1];[a1]apad=pad_dur=3[a]", "-map", "[a]", "-c:a", "pcm_s16le", cls.src], check=True)
+            ad = TranscriptionAdapter(workspace=str(Path(cls.tmp) / "ws" / "cache" / "transcription"), allowed_inputs=[str(src_dir)], offline=True)
+            rows = {c.get("check"): c for c in ad.doctor().get("checks") or []}
+            eng = next((e for e in ad.engine_status() if e.get("id") == "faster_whisper"), {})
+            cls.ready = bool(eng.get("available")) and (rows.get(f"model:faster_whisper:{eng.get('default_model') or 'base'}") or {}).get("status") == "AVAILABLE"
+
+    def test_decisions_on_real_media_are_typed_grounded_and_explainable(self):
+        if not self.ready:
+            self.skipTest("needs the transcription-skill fixture, faster-whisper and a local default model")
+        from video_agent.agent.decision_engine import DECISION_TYPES, EXECUTABLE_TYPES, check_decisions
+        ws = str(Path(self.tmp) / "ws")
+        svc = Service(workspace=ws, offline=True)
+        ir = svc.plan([self.src], "conference", kinds=["transcript"], params={"language": "ja"})
+        d = ir.doc
+        rep = svc.validate(ir)
+        self.assertEqual(rep.errors, [], rep.errors)
+        self.assertEqual(check_decisions(d), [])
+        decs = {x["subject"]: x for x in d["decisions"]}
+        self.assertIn("speech.continuity", decs)
+        for x in d["decisions"]:
+            self.assertIn(x["type"], DECISION_TYPES, x["subject"])
+            self.assertTrue(x["evidence"] and x["basis"]["engine"] == "decision_engine@1.0", x["subject"])
+            self.assertEqual(x["basis"]["approval"]["resolved"], x["approval"])
+        # conference policy: lead / tail trims CONFIRM from the profile (PROFILE provenance), recorded on the decision, plan in REVIEW
+        trims = [x for x in d["decisions"] if x["subject"] in ("silence.leading", "silence.trailing")]
+        self.assertTrue(trims, [x["subject"] for x in d["decisions"]])
+        for t in trims:
+            self.assertEqual((t["type"], t["approval"]), ("REMOVE", "CONFIRM"), t["subject"])
+            self.assertEqual(t["basis"]["approval"]["provenance"], "PROFILE")
+            self.assertEqual(next(s for s in t["basis"]["settings"] if s["key"] == f"{t['subject']}.approval")["rule_id"], f"conf.{t['subject']}.approval")
+        self.assertEqual(d["plan"]["status"], "REVIEW")
+        # only executable types reach steps; KEEP decisions (speech continuity, disputed intervals) never do
+        cited = {did for s in d["plan"]["steps"] for did in s["decision_ids"]}
+        self.assertTrue(all(decs_by_id["type"] in EXECUTABLE_TYPES for decs_by_id in d["decisions"] if decs_by_id["id"] in cited))
+        self.assertNotIn(decs["speech.continuity"]["id"], cited)
+        # explain --decision: basis rows (policy / constraint / approval / intent / requirement / risk) and the evidence chain down to the
+        # transcript observation and the asset; the decision names ranges, never a command
+        info = Service.explain_decision(d, trims[0]["subject"])[0]
+        self.assertTrue({"policy", "approval", "intent", "requirement", "risk"} <= {b["kind"] for b in info["basis"]})
+        kinds = {r["kind"] for r in info["evidence"]}
+        self.assertTrue({"inference", "event", "observation", "asset", "context"} <= kinds, kinds)
+        self.assertTrue(any(r["kind"] == "observation" and r["source"].startswith("ffmpeg-skill/silence@") for r in info["evidence"]))
+        if any(r["kind"] == "inference" and "overlaps recognised speech" in (r.get("detail") or "") for r in info["evidence"]):
+            self.assertTrue(any(r["kind"] == "observation" and r["detail"] == "transcript" for r in info["evidence"]), "a disputed trim cites the transcript observation through the conflict")
+            self.assertTrue(any("recognised speech overlaps" in n for n in trims[0]["basis"]["approval"]["notes"]) or trims[0]["basis"]["approval"]["provenance"] == "PROFILE")
+        self.assertEqual([s["skill"] for s in info["plan"]["steps"]], ["silence_cleanup"])
+        blob = json.dumps(info)
+        for bad in ("argv", "ffmpeg -", "subprocess", self.src):
+            self.assertNotIn(bad, blob)
+        # CLI on the recorded IR
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=ws)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--decision", trims[0]["id"]], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for frag in ("[REMOVE]", "basis:", "policy", "approval", "evidence:", "AudioEvent/silence", "plan:", "boundary"):
+            self.assertIn(frag, r.stdout, frag)
+        # approve → the plan executes (nothing in the basis changes what is compiled); the cut receives ranges only. The generic
+        # profile is used for the render: the conference presets are video exports and this fixture is audio-only.
+        ir_g = svc.plan([self.src], "generic", kinds=["transcript"], params={"language": "ja"})
+        self.assertEqual(svc.validate(ir_g).errors, [])
+        pg = str(Path(self.tmp) / "g.json"); save_ir(ir_g, pg)
+        svc.approve(load_ir(pg), pg, ["all"])
+        out = svc.render(load_ir(pg), pg)
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution"))   # REVIEW = QA judgement on the result, not an execution failure
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        cut = next(op for op in out["execution"]["results"] if op["tool"] == "ffmpeg-skill/cut")
+        self.assertTrue(cut["ok"])
+        out2 = svc.render(load_ir(pg), pg, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])

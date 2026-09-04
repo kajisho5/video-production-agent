@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from . import __version__
 from .agent import build_plan, decide, extract_requirements, infer, resolve_intent
 from .agent.ai_reasoning import AIReasoner, build_request, to_inferences
+from .agent.decision_engine import basis_rows
 from .agent.production_plan import plan_status
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
@@ -596,6 +597,81 @@ class Service:
             if set(d.get("evidence") or []) & inf_ids:
                 chain.append({"level": 2, "kind": "decision", "id": d["id"], "provenance": d.get("provenance"), "detail": f"{d['subject']}: {d['decision']}", "approval": d.get("approval"), "status": d.get("status")})
         return {"context": ctx, "chain": chain, "boundary": "context → inference → decision only; a context never becomes a step, an operation or a command"}
+
+    @staticmethod
+    def explain_decision(doc: Dict[str, Any], ref: str) -> List[Dict[str, Any]]:
+        """Why was this decided, on what basis, and what does it move? For each decision matching `ref` (id or subject):
+        decision (type / rationale / risk / approval / status / provenance) → basis (policy / preference / constraint values with
+        provenance, approval resolution, intent, requirements, risk) → evidence chain (inference → contexts → events → observations
+        → asset; requirements; rules) → plan steps and IR operations that cite it (Decision → Plan → Step → IR)."""
+        decs = [x for x in doc.get("decisions") or [] if x["id"] == ref or x["subject"] == ref]
+        if not decs:
+            raise KeyError(ref)
+        infs = {i["id"]: i for i in doc["analysis"].get("inferences") or []}
+        obs = {o["id"]: o for o in doc["analysis"].get("observations") or []}
+        events = {e["id"]: e for e in doc["timeline"].get("events") or []}
+        ctxs = {c["id"]: c for c in doc["analysis"].get("contexts") or []}
+        reqs = {r["id"]: r for r in doc.get("requirements") or []}
+        rules = {r["id"]: r for r in ((doc.get("policy") or {}).get("effective") or {}).values()}
+        for c in (doc.get("policy") or {}).get("conflicts") or []:
+            rules.setdefault(c["constraint"]["id"], c["constraint"]); rules.setdefault(c["attempted"]["id"], c["attempted"])
+        reviews = (doc.get("execution") or {}).get("reviews") or {}
+        out: List[Dict[str, Any]] = []
+        for d in decs:
+            chain: List[Dict[str, Any]] = []
+            seen: set = set()
+
+            def walk(eid: str, depth: int) -> None:
+                if eid in seen:
+                    return
+                seen.add(eid)
+                if eid in infs:
+                    i = infs[eid]
+                    chain.append({"level": depth, "kind": "inference", "id": eid, "provenance": i.get("provenance"), "detail": i.get("statement"), "confidence": i.get("confidence")})
+                    for cid in (i.get("data") or {}).get("context_ids") or []:
+                        c = ctxs.get(cid)
+                        if c and cid not in seen:
+                            seen.add(cid)
+                            chain.append({"level": depth + 1, "kind": "context", "id": cid, "provenance": c.get("provenance"),
+                                          "detail": f"{c['timeline_id']} {c['scope']['start']}–{c['scope']['end']} [{'+'.join(sorted(t['event_type'] + '/' + t['subtype'] for t in c['tracks'])) or 'nothing'}]"})
+                    for x in i.get("evidence") or []:
+                        walk(x, depth + 1)
+                elif eid in events:
+                    e = events[eid]
+                    chain.append({"level": depth, "kind": "event", "id": eid, "provenance": e.get("provenance"), "detail": f"{e.get('event_type')}/{e.get('subtype')} {e['range']}", "source": e.get("source")})
+                    for cid, c in ctxs.items():
+                        if eid in (c.get("event_ids") or []) and cid not in seen:
+                            seen.add(cid)
+                            chain.append({"level": depth + 1, "kind": "context", "id": cid, "provenance": c.get("provenance"), "detail": f"{c['scope']['start']}–{c['scope']['end']}"})
+                    for x in e.get("evidence") or []:
+                        walk(x, depth + 1)
+                elif eid in obs:
+                    o = obs[eid]
+                    chain.append({"level": depth, "kind": "observation", "id": eid, "provenance": o.get("provenance", "OBSERVED"), "detail": o.get("kind"), "source": o.get("source")})
+                    a = (doc.get("assets") or {}).get(o.get("asset_id")) or {}
+                    if o.get("asset_id") and o["asset_id"] not in seen:
+                        seen.add(o["asset_id"])
+                        chain.append({"level": depth + 1, "kind": "asset", "id": o["asset_id"], "detail": f"{Path(a.get('path', '')).name} sha256 {(a.get('hash') or '-')[:16]}"})
+                elif eid in reqs:
+                    r = reqs[eid]
+                    chain.append({"level": depth, "kind": "requirement", "id": eid, "provenance": r.get("provenance"), "detail": f"{r['key']} = {json.dumps(r.get('value'), default=str)[:80]}", "source": r.get("source")})
+                elif eid in rules:
+                    r = rules[eid]
+                    chain.append({"level": depth, "kind": str(r.get("kind", "rule")).lower(), "id": eid, "provenance": r.get("scope"), "detail": f"{r['key']} = {json.dumps(r.get('value'), default=str)[:80]}", "source": r.get("source")})
+                else:
+                    chain.append({"level": depth, "kind": "reference", "id": eid})
+
+            for e in d.get("evidence") or []:
+                walk(e, 1)
+            steps = [s for s in (doc.get("plan") or {}).get("steps") or [] if d["id"] in (s.get("decision_ids") or [])]
+            ops = [{"section": sec, "type": op.get("type") or f"delivery.{op.get('id')}", "asset": op.get("asset"), "keep": op.get("keep"), "target_lufs": op.get("target_lufs"), "preset": op.get("preset")}
+                   for sec, key in (("video", "operations"), ("audio", "operations"), ("delivery", "targets")) for op in (doc.get(sec) or {}).get(key) or [] if d["id"] in (op.get("decision_ids") or [])]
+            out.append({"decision": {k: d.get(k) for k in ("id", "subject", "type", "decision", "reason", "confidence", "risk", "approval", "status", "provenance", "params", "alternatives")},
+                        "basis": basis_rows(d), "review": reviews.get(d["id"]), "evidence": chain,
+                        "plan": {"steps": [{"id": s["id"], "skill": s["skill"], "tool": s.get("tool"), "status": s.get("status"), "params": s.get("params")} for s in steps], "operations": ops},
+                        "executable": d.get("type") in ("REMOVE", "TRANSFORM", "DELIVER") and d.get("approval") != "BLOCK" and d.get("status") not in ("REJECTED", "BLOCKED"),
+                        "boundary": "inference = what is happening; decision = what production should do; plan / IR = how it is executed; no command line or tool argument exists at this layer"})
+        return out
 
     @staticmethod
     def explain_observation(doc: Dict[str, Any], obs_id: str) -> Dict[str, Any]:

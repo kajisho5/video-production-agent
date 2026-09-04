@@ -3,7 +3,7 @@
 Design rules (docs/MASTER_SPEC.md §6-§16, docs/ARCHITECTURE_REVIEW.md §7-§10):
 - Observation and Inference are distinct types; an Inference always references evidence ids.
 - Requirements carry provenance so USER input is never confused with DEFAULT/PROFILE/INFERRED values.
-- Decisions carry risk and approval independently of confidence.
+- Decisions carry risk and approval independently of confidence, a type from the engine vocabulary and the basis they were resolved from.
 """
 from __future__ import annotations
 
@@ -130,6 +130,8 @@ class Decision(Model):
     provenance: str = "SYSTEM"
     status: str = "PROPOSED"   # PROPOSED | APPROVED | REJECTED | BLOCKED
     params: Dict[str, Any] = field(default_factory=dict)
+    type: str = ""             # DECISION_TYPES (agent/decision_engine.py): KEEP | REMOVE | TRANSFORM | DELIVER | SKIP | REVIEW | BLOCK
+    basis: Dict[str, Any] = field(default_factory=dict)   # how it was resolved: settings (policy / preference / constraint + provenance), approval, intent, requirements
     id: str = field(default_factory=lambda: new_id("dec"))
 
 

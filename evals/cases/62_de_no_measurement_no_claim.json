@@ -1,0 +1,40 @@
+{
+ "name": "de_no_measurement_no_claim",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0,
+  "fail_tools": {
+   "ffmpeg-skill/loudness": 9
+  }
+ },
+ "expect": {
+  "no_decisions": [
+   "audio.loudness"
+  ],
+  "decisions": {
+   "silence.leading": {
+    "type": "REMOVE"
+   }
+  },
+  "engine": {
+   "basis": {}
+  },
+  "plan": {
+   "video_ops": 1,
+   "audio_ops": 0
+  },
+  "production_plan": {
+   "validate": true
+  }
+ }
+}

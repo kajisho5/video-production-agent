@@ -53,7 +53,9 @@ video-agent check output.mp4 --platform youtube
 
 終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。revise: 5 = 新版なし。
 
-Production Plan（Decision / Event → plan → IR の決定論的橋渡し、`video-agent explain --step`）: ADR-021 / MASTER_SPEC §21。Artifact / Delivery / Archive（`video-agent artifacts` / `artifact` / `deliver` / `archive` / `explain --artifact`）: ADR-022 / MASTER_SPEC §36。AI Provider contract（AI は提案のみ、execution authority ではない）: ADR-018 / MASTER_SPEC §42。Revision workflow: `docs/revision.md`。Skill / Capability / Tool と将来 Skill の追加手順: `docs/skills.md`、Gap 分析: `docs/GAP_ANALYSIS_PHASE2.md`。
+Production Decision Engine（Inference = 何が起きているか / Decision = 制作として何をすべきか / Plan = どう実行するか。decision は evidence 必須・type 語彙・policy 解決の provenance と basis を保持、`video-agent explain --decision <id|subject>` で policy / preference / constraint / intent / evidence / plan step まで辿れる）: ADR-027 / MASTER_SPEC「Production Decision Engine」。Production Plan（Decision / Event → plan → IR の決定論的橋渡し、`video-agent explain --step`）: ADR-021 / MASTER_SPEC §21。Artifact / Delivery / Archive（`video-agent artifacts` / `artifact` / `deliver` / `archive` / `explain --artifact`）: ADR-022 / MASTER_SPEC §36。AI Provider contract（AI は提案のみ、execution authority ではない）: ADR-018 / MASTER_SPEC §42。Revision workflow: `docs/revision.md`。Skill / Capability / Tool と将来 Skill の追加手順: `docs/skills.md`、Gap 分析: `docs/GAP_ANALYSIS_PHASE2.md`。
+
+Policy / Preference / Constraint（`policy/rules.py`）: **Policy** は運用上の規則（例 `silence.leading.approval`）、**Preference** は好み（例 conference の `-16 LUFS`、request の `--set`）、**Constraint** は上書き不可の制約（例 conference の `silence.internal.approval=CONFIRM`、system の preserve_source）。precedence は GLOBAL → … → PROFILE → REQUEST、Constraint に反する下位規則は conflict として `policy.<key>` decision（CONFIRM）になる。decision の `basis` に消費した設定の kind / value / provenance（USER / PROFILE / SYSTEM / DEFAULT）が残る。
 
 監査結果と既知の制限: `docs/AUDIT_PHASE1.md`、最終レビューと Phase 2 開始条件: `docs/PHASE1_FINAL_REVIEW.md`。
 

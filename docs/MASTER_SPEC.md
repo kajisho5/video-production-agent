@@ -1635,6 +1635,62 @@ stable across plan versions). A Session is a grouping a person or the system dec
   timeline takes part; no analysis Skill was added or changed. Cross-asset situations on the master timeline need the
   existing `TimelineMap` offsets from a multi-source sync capability (not available yet; recorded in GAP §16).
 
+### Production Decision Engine (implemented, ADR-027)
+
+```
+Inference (what is happening) + Policy / Preference / Constraint + Intent + Risk ─→ Decision (what production should do) ─→ ProductionPlan (how) ─→ IR
+```
+
+**Inference = what is happening. Decision = what production should do. Plan = how it is executed.** The generic engine
+(`agent/decision_engine.py`, tool- and domain-independent) does not know silence, speech, loudness or delivery; the
+domain layer (`agent/decision.py`) says *which* decision a situation calls for and constructs every one of them through
+the engine, which enforces *how* a decision may exist:
+
+- **Vocabulary (`type`, additive on the existing Decision model):** KEEP / REMOVE / TRANSFORM / DELIVER / SKIP / REVIEW /
+  BLOCK. Only REMOVE / TRANSFORM / DELIVER are executable (may be cited by a step or an IR operation); the validator
+  refuses any other citation. Existing decisions map 1:1 (`speech.continuity` KEEP, `silence.internal.<range>` REMOVE,
+  `silence.leading` REMOVE, `audio.loudness` TRANSFORM / SKIP / KEEP, `delivery.*` DELIVER, `capability.*` BLOCK,
+  `ai.*` REVIEW, `policy.<key>` KEEP). Their subjects, texts, approvals and plan effects are unchanged.
+- **Evidence is mandatory and classed** (observation / event / inference / requirement / rule / capability / ai). A
+  decision without evidence is refused at construction. An executable decision must rest on a measured fact or on a
+  requirement of the request; a PREFERENCE / POLICY rule alone, an intent alone, or AI output alone never grounds one
+  (AI-only evidence yields a REVIEW item with `executable: false`; AI-proposed parameters that look like a command or a
+  credential are dropped, never interpreted). A missing measurement therefore yields no decision — e.g. when the
+  loudness analysis failed, there is no "within tolerance" decision any more; the analysis warning records the failure.
+- **Approval from policy with a safe default and recorded provenance.** `resolve_approval(rules, key, DEFAULT, floor,
+  explicit)`: AUTO / CONFIRM as stated, `BLOCK*` → BLOCK (no implicit exception for a suffix), any other value → CONFIRM,
+  `floor` only raises, BLOCK is never lowered. The existing waiver (a USER requirement asking for exactly this edit turns
+  a CONFIRM POLICY into AUTO, eval 03) stays, is recorded as a note, and never applies to a CONSTRAINT. RuleSet
+  precedence (GLOBAL → … → PROFILE → REQUEST, constraints never overridden) is untouched; the engine only reports what
+  it resolved. Keys and explicit defaults: `silence.leading.approval` AUTO, `silence.trailing.approval` AUTO,
+  `silence.internal.approval` CONFIRM (floor CONFIRM), `audio.loudness.approval` AUTO, `delivery.export.approval` AUTO,
+  `video.vfr.approval` AUTO, `video.hdr.approval` CONFIRM, `ai.recommendation.approval` CONFIRM. No-op decisions (KEEP /
+  SKIP) are AUTO by construction and create no operation.
+- **Confidence ≠ risk ≠ approval.** Confidence comes from the inference; risk and approval from policy and the kind of
+  change. The same trim is AUTO on `generic` and CONFIRM on `conference` with identical confidence.
+- **Conflicts** (a request or preference against a CONSTRAINT) stay a `policy.<key>` KEEP decision with approval CONFIRM
+  and the reason; a trim overlapping a speech / silence conflict is raised to CONFIRM. No new implicit rule.
+- **Basis (recorded on every decision, `basis`):** engine id, type, evidence classes, the settings consulted (key, value,
+  kind POLICY / PREFERENCE / CONSTRAINT or DEFAULT, provenance USER / PROFILE / SYSTEM / DEFAULT, rule id, source,
+  hard), the approval resolution (key, provenance, notes such as "raised AUTO → CONFIRM: recognised speech overlaps this
+  silence" or "unknown approval value … CONFIRM (safe default)"), the intent (primary, secondary, provenance, which one
+  this decision serves — None for a fact-backed / safety decision), the requirements consulted with provenance, and the
+  risk with `independent_of_confidence: true`. The basis is decision content, not plan content: `plan_hash` ignores it.
+- **Validator (`check_decisions`)** re-checks the invariants on a recorded IR: type known, evidence present and known,
+  grounding, AI-only → REVIEW, BLOCK ⇔ BLOCKED, no executable / credential material, only executable types cited.
+  REJECTED decisions carried as history by `revise` keep their earlier version's evidence and are exempt from the
+  unknown-evidence check (their evidence lived in the snapshotted version; no operation cites them).
+- **Explain (`explain --decision <id|subject>`, `Service.explain_decision`):** decision (type / rationale / risk /
+  approval / status / provenance / executable) → basis rows (policy / preference / constraint / default / approval /
+  intent / requirement / risk) → evidence chain (inference → contexts → events → observations → asset; requirements;
+  rules) → the plan steps and IR operations that cite it (Decision → Plan → Step → IR). `--json` returns the same
+  structure.
+- **Security:** decision subject / text / params are scanned (`leak_scan`) for command, argv, shell, executable or
+  credential material and refused; the engine imports no tool, execution, provider, speech or context module.
+- **Not here:** AI / LLM, speaker identification, camera / slide / source selection, new decision domains or genre-
+  specific decisions, MCP, plugin loader, ranking, direct ffmpeg, Skill changes, Artifact redesign, the silencedetect
+  end > duration issue.
+
 ## 52. Architecture / Repository
 
 A possible structure:

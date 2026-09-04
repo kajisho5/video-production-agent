@@ -19,6 +19,56 @@ from test_unit import FakeCaps  # noqa: E402
 from video_agent.service import Service  # noqa: E402
 
 
+def _engine_checks(d: dict, subjects: dict, eng) -> list:
+    """PR #16: every decision typed and grounded with a recorded basis; policy provenance; explain chain; IR invariants."""
+    if not eng:
+        return []
+    from video_agent.agent.decision_engine import DECISION_TYPES, EXECUTABLE_TYPES, check_decisions
+    failures = []
+    for x in d["decisions"]:
+        if x.get("type") not in DECISION_TYPES or not x.get("basis") or not x.get("evidence"):
+            failures.append(f"decision {x['subject']} lacks type / basis / evidence")
+        if x.get("basis", {}).get("approval", {}).get("resolved") != x["approval"] or x["basis"].get("risk", {}).get("independent_of_confidence") is not True:
+            failures.append(f"decision {x['subject']}: basis does not match approval / risk")
+    failures += [f"IR invariant: {e}" for e in check_decisions(d)]
+    cited = {did for s in d["plan"]["steps"] for did in s["decision_ids"]}
+    if any(x["id"] in cited and x["type"] not in EXECUTABLE_TYPES for x in d["decisions"]):
+        failures.append("a non-executable decision type is cited by a plan step")
+    for subj, want in (eng.get("basis") or {}).items():
+        got = subjects.get(subj)
+        if got is None:
+            failures.append(f"missing decision {subj}")
+            continue
+        b = got["basis"]
+        checks = {"approval_provenance": b["approval"].get("provenance"), "approval_key": b["approval"].get("key"), "served": b["intent"].get("served"),
+                  "evidence_classes": b.get("evidence_classes"), "settings": {s["key"]: s["provenance"] for s in b.get("settings") or []}}
+        for k, v in want.items():
+            if k == "note_contains":
+                if not any(v in n for n in b["approval"].get("notes") or []):
+                    failures.append(f"{subj}: approval note lacks {v!r}: {b['approval'].get('notes')}")
+            elif k == "settings":
+                for key, prov in v.items():
+                    if checks["settings"].get(key) != prov:
+                        failures.append(f"{subj}: setting {key} provenance {checks['settings'].get(key)!r} != {prov!r}")
+            elif checks.get(k) != v:
+                failures.append(f"{subj}.basis.{k} {checks.get(k)!r} != {v!r}")
+    if eng.get("explain"):
+        info = Service.explain_decision(d, eng["explain"])[0]
+        kinds = {r["kind"] for r in info["evidence"]}
+        for k in eng.get("explain_kinds") or ("inference", "event", "observation", "asset"):
+            if k not in kinds:
+                failures.append(f"explain --decision {eng['explain']} lacks {k} in {sorted(kinds)}")
+        bkinds = {r["kind"] for r in info["basis"]}
+        for k in ("approval", "intent", "risk"):
+            if k not in bkinds:
+                failures.append(f"explain --decision basis lacks {k}")
+        if "executable" in eng and info["executable"] != eng["executable"]:
+            failures.append(f"explain executable {info['executable']} != {eng['executable']}")
+        if json.dumps(info).count("argv") or "ffmpeg -" in json.dumps(info):
+            failures.append("explain output carries command material")
+    return failures
+
+
 def run_case(case: dict) -> dict:
     tmp = tempfile.mkdtemp()
     fake = case.get("fake", {})
@@ -243,7 +293,7 @@ def run_case(case: dict) -> dict:
             # PR #14: SpeechEvent → Inference → Decision → ProductionPlan → IR, reviewable and traceable; never AUTO for a removal
             from video_agent.agent.production_plan import executable_steps, explain_step
             from video_agent.project import load_ir, save_ir
-            ir = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+            ir = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params, user_requirements=case.get("requirements"))
             d = ir.doc
             infs = d["analysis"]["inferences"]
             by_kind = {}
@@ -279,6 +329,25 @@ def run_case(case: dict) -> dict:
             for x in d["decisions"]:
                 if x["subject"] in sp_exp.get("confirm_subjects", []) and x["approval"] != "CONFIRM":
                     failures.append(f"{x['subject']} should be CONFIRM, is {x['approval']}")
+            for subj, typ in (sp_exp.get("types") or {}).items():
+                hit = [x for x in d["decisions"] if x["subject"] == subj or x["subject"].startswith(subj)]
+                if not hit or any(x["type"] != typ for x in hit):
+                    failures.append(f"{subj} type {[x.get('type') for x in hit]} != {typ}")
+            failures += _engine_checks(d, {x["subject"]: x for x in d["decisions"]}, sp_exp.get("engine"))
+            for c in cands:
+                if "candidate_status" in sp_exp and c["status"] != sp_exp["candidate_status"]:
+                    failures.append(f"candidate status {c['status']} != {sp_exp['candidate_status']}")
+                if "candidate_approval_provenance" in sp_exp and c["basis"]["approval"]["provenance"] != sp_exp["candidate_approval_provenance"]:
+                    failures.append(f"candidate approval provenance {c['basis']['approval']['provenance']} != {sp_exp['candidate_approval_provenance']}")
+            if sp_exp.get("conflict_decision"):
+                cd = next((x for x in d["decisions"] if x["subject"] == sp_exp["conflict_decision"]), None)
+                if not cd or cd["approval"] != "CONFIRM" or cd["type"] != "KEEP" or "never overridden" not in cd["reason"]:
+                    failures.append(f"constraint conflict decision {sp_exp['conflict_decision']} missing or not CONFIRM/KEEP with reason")
+            if sp_exp.get("render_blocked"):
+                ir_path = str(Path(tmp) / "blk.json"); save_ir(ir, ir_path)
+                rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
+                if rr["status"] != "BLOCKED" or rr.get("execution"):
+                    failures.append(f"a BLOCK policy still rendered: {rr['status']}")
             blob = json.dumps({"plan": d["plan"], "video": d["video"]})
             if any(k in blob for k in ("SPEECH", "speaker", "transcription", "argv", "command")):
                 failures.append("plan / operations carry event, speaker, transcript or command material")
@@ -365,6 +434,7 @@ def run_case(case: dict) -> dict:
     for subj in exp.get("no_decisions", []):
         if subj in subjects:
             failures.append(f"unexpected decision {subj}")
+    failures += _engine_checks(d, subjects, exp.get("engine"))
     for key, prov in (exp.get("requirement_provenance") or {}).items():
         r = [x for x in d["requirements"] if x["key"] == key]
         top = sorted(r, key=lambda x: {"USER": 3, "PROFILE": 2, "DEFAULT": 1}.get(x["provenance"], 0))[-1] if r else None

@@ -1,0 +1,48 @@
+{
+ "name": "de_conference_policy_confirm",
+ "profile": "conference",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    4.0
+   ],
+   [
+    12.0,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "decisions": {
+   "silence.leading": {
+    "type": "REMOVE",
+    "approval": "CONFIRM",
+    "provenance": "INFERRED",
+    "risk": "LOW"
+   },
+   "delivery.master": {
+    "type": "DELIVER"
+   }
+  },
+  "engine": {
+   "basis": {
+    "silence.leading": {
+     "approval_provenance": "PROFILE",
+     "settings": {
+      "silence.leading.approval": "PROFILE",
+      "silence.leading.min_seconds": "PROFILE"
+     }
+    },
+    "audio.loudness": {
+     "served": "clean_and_deliver"
+    }
+   }
+  },
+  "production_plan": {
+   "status": "REVIEW",
+   "validate": true
+  }
+ }
+}

@@ -1,0 +1,78 @@
+{
+ "name": "de_explain_decision_chain",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    3.5,
+    8.8,
+    "本日の講演を始めます"
+   ],
+   [
+    12.3,
+    13.5,
+    "以上です"
+   ]
+  ],
+  "kinds": [
+   "transcript"
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "speech": {
+   "candidates": 1,
+   "chain": true,
+   "plan_status": "REVIEW",
+   "engine": {
+    "explain": "silence.internal.9.000-12.000",
+    "explain_kinds": [
+     "inference",
+     "event",
+     "context",
+     "observation",
+     "asset"
+    ],
+    "executable": true,
+    "basis": {
+     "silence.internal.9.000-12.000": {
+      "served": "clean_and_deliver",
+      "settings": {
+       "silence.internal.approval": "PROFILE",
+       "silence.internal.removable_min_seconds": "DEFAULT",
+       "silence.margin_seconds": "DEFAULT"
+      }
+     },
+     "speech.continuity": {
+      "served": null,
+      "evidence_classes": [
+       "inference",
+       "observation"
+      ]
+     }
+    }
+   },
+   "approve_then": "APPROVED"
+  }
+ }
+}

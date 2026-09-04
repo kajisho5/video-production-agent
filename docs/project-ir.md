@@ -16,7 +16,7 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 | `analysis` | observations[]（測定）, inferences[]（解釈, evidence 必須）, strategy, warnings | MediaAnalyzer / Inferencer |
 | `intent` | primary, secondary, confidence, provenance | IntentResolver |
 | `constraints[]` / `policy` | 解決済み Rule と conflicts | policy/rules.py |
-| `decisions[]` | subject, decision, reason, confidence, evidence, alternatives, risk, approval, status, params | DecisionEngine |
+| `decisions[]` | subject, type (KEEP / REMOVE / TRANSFORM / DELIVER / SKIP / REVIEW / BLOCK), decision, reason, confidence, evidence, alternatives, risk, approval, status, params, basis (settings / approval / intent / requirements / risk with provenance, ADR-027) | DecisionEngine |
 | `plan` | version, steps[{skill, tool, decision_ids, params}], summary[] (人間向け) | Planner |
 | `timeline` | timelines{id: offset, drift_ratio}, events[] | MediaAnalyzer, approve() |
 | `video.operations[]` | `video.trim {asset, keep[[s,e]], decision_ids}` | Planner |
