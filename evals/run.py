@@ -89,6 +89,87 @@ def run_case(case: dict) -> dict:
             failures.append(f"render status {rr['status']} != {pp['render_status']}")
         if pp["render_status"] in ("BLOCKED", "WAITING_FOR_APPROVAL") and rr.get("execution"):
             failures.append("execution happened although the plan is not approved")
+    ar = exp.get("artifact") or {}
+    if ar:
+        import os
+        from video_agent.project import save_ir, load_ir
+        from video_agent.artifacts import ArtifactError, artifact_id, safe_filename
+        ir_path = str(Path(tmp) / "art.json")
+        save_ir(ir, ir_path)
+        if ar.get("reject_first"):
+            svc.reject(load_ir(ir_path), ir_path, [d["plan"]["steps"][0]["decision_id"]], reason="eval")
+        rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
+        arts = rr.get("artifacts") or []
+        if ar.get("count") is not None and len(arts) != ar["count"]:
+            failures.append(f"artifacts {len(arts)} != {ar['count']}")
+        a = arts[0] if arts else None
+        if a:
+            if a["id"] != artifact_id(d["project"]["id"], d["plan"]["id"], a["logical_name"], a["hash"]):
+                failures.append("artifact id is not the deterministic identity")
+            if ar.get("qa") and a["qa_status"] != ar["qa"]:
+                failures.append(f"artifact qa {a['qa_status']} != {ar['qa']}")
+            if ar.get("delivery_status") and a["delivery_status"] != ar["delivery_status"]:
+                failures.append(f"delivery {a['delivery_status']} != {ar['delivery_status']}")
+            if ar.get("provenance"):
+                info = svc.explain_artifact(a["id"])
+                if not (info["jobs"] == [rr["job"]["id"]] and info["operations"] and info["step"] and info["step"]["chain"] and info["step"]["chain"][0]["kind"] == "decision"):
+                    failures.append("artifact provenance chain incomplete")
+            if ar.get("deliver") is not None:
+                try:
+                    r2 = svc.promote_artifact(a["id"], "final", who="eval")
+                    ok = r2["delivery_status"] == "DELIVERED"
+                except ArtifactError:
+                    ok = False
+                if ok != ar["deliver"]:
+                    failures.append(f"deliverable {ok} != {ar['deliver']}")
+            if ar.get("archive"):
+                try:
+                    if svc.archive_artifact(a["id"], who="eval")["delivery_status"] != "ARCHIVED":
+                        failures.append("archive did not mark ARCHIVED")
+                    idx = svc.artifact_store().archive_index(d["project"]["id"])
+                    if not any(e["artifact_id"] == a["id"] and e["sha256"] == a["hash"] for e in idx["entries"]):
+                        failures.append("archive index misses the artifact")
+                except ArtifactError as e:
+                    failures.append(f"archive failed: {e}")
+            if ar.get("hash_mismatch"):
+                Path(a["path"]).write_bytes(b"tampered")
+                if svc.artifact(a["id"])["integrity"]["error"] != "ARTIFACT_HASH_MISMATCH":
+                    failures.append("hash mismatch not detected")
+                try:
+                    svc.promote_artifact(a["id"], "final", who="eval"); failures.append("tampered artifact was delivered")
+                except ArtifactError:
+                    pass
+            if ar.get("resume_reuse"):
+                from fake_adapter import FakeAdapter as _FA
+                svc2 = Service(workspace=tmp, adapter=_FA(**fake), caps=FakeCaps(case.get("missing_capabilities", ())))
+                r3 = svc2.render(load_ir(ir_path), ir_path, resume=rr["job"]["id"])
+                b = (r3.get("artifacts") or [{}])[0]
+                if b.get("id") != a["id"] or b.get("jobs") != [rr["job"]["id"], r3["job"]["id"]]:
+                    failures.append("resume did not reuse the artifact identity")
+            if ar.get("revision_separation"):
+                svc.reject(load_ir(ir_path), ir_path, [d["plan"]["steps"][0]["decision_id"]], reason="eval")
+                svc.revise(load_ir(ir_path), ir_path); svc.approve(load_ir(ir_path), ir_path, ["all"])
+                from fake_adapter import FakeAdapter as _FA
+                r4 = Service(workspace=tmp, adapter=_FA(**fake), caps=FakeCaps(case.get("missing_capabilities", ()))).render(load_ir(ir_path), ir_path)
+                b = (r4.get("artifacts") or [{}])[0]
+                if b.get("id") == a["id"] or b.get("plan_id") == a["plan_id"] or not svc.artifact(a["id"])["integrity"]["ok"]:
+                    failures.append("revision artifacts not separated or v1 damaged")
+            if ar.get("deterministic_metadata"):
+                keep = {k: a[k] for k in ("id", "logical_name", "type", "format", "name", "plan_id", "step_id", "decision_ids")}
+                from fake_adapter import FakeAdapter as _FA
+                r5 = Service(workspace=tmp, adapter=_FA(**fake), caps=FakeCaps(case.get("missing_capabilities", ()))).render(load_ir(ir_path), ir_path)
+                b = (r5.get("artifacts") or [{}])[0]
+                if {k: b.get(k) for k in keep} != keep:
+                    failures.append("artifact metadata differs between two executions of the same plan")
+        if ar.get("path_traversal"):
+            st = svc.artifact_store()
+            for bad in (str(Path(tmp) / ".." / "x.mp4"), "/etc/passwd", "rel.mp4"):
+                try:
+                    st.check_path(bad); failures.append(f"path accepted: {bad}")
+                except ArtifactError:
+                    pass
+            if safe_filename("../../evil") != "evil" or safe_filename("CON") != "_CON":
+                failures.append("unsafe file name accepted")
     if pp.get("deterministic"):
         ir2 = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))
         shape = lambda x: [(st["skill"], st["params"].get("keep"), len(st["depends_on"])) for st in x.doc["plan"]["steps"]]  # noqa: E731

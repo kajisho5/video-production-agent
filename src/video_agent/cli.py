@@ -305,6 +305,70 @@ def _print_plan(doc) -> None:
             print(f"  {o['role']:10s} {o['logical']}  format={o['format']}  expected={json.dumps(o.get('expected') or {}, default=str)}")
 
 
+def _art_line(a) -> str:
+    return f"{a['id']}  {a.get('type', ''):9s} {a.get('logical_name', '')}  v{a.get('plan_version', '?')}  qa={a.get('qa_status')}  {a.get('stage')}/{a.get('delivery_status')}  sha256={(a.get('hash') or '')[:12]}  {a.get('name', '')}"
+
+
+def cmd_artifacts(args, svc: Service) -> int:
+    ir = load_ir(args.project) if args.project else None
+    rows = svc.artifacts(ir, job_id=args.job)
+    if args.json:
+        _print(rows, True)
+        return 0
+    for a in rows:
+        print(_art_line(a))
+    if not rows:
+        print("no registered artifacts")
+    return 0
+
+
+def cmd_artifact(args, svc: Service) -> int:
+    a = svc.artifact(args.artifact_id)
+    if args.json:
+        _print(a, True)
+        return 0
+    print(_art_line(a))
+    print(f"  path      : {a['path']}\n  size      : {a['size']}  format {a['format']}  tool {a['tool']}@{a['tool_version']}")
+    print(f"  plan      : {a['plan_id']} v{a['plan_version']}  step {a.get('step_id')}  decisions {','.join(a.get('decision_ids') or [])}")
+    print(f"  jobs      : {','.join(a['jobs'])}  operations {','.join(a.get('operations') or [])}")
+    print(f"  qa        : {a['qa'].get('status')} (pass {a['qa'].get('pass')} warn {a['qa'].get('warn')} fail {a['qa'].get('fail')})")
+    print(f"  integrity : {'ok' if a['integrity']['ok'] else a['integrity']['error']}")
+    for h in a.get("delivery_history") or []:
+        print(f"  history   : {h}")
+    return 0
+
+
+def cmd_deliver(args, svc: Service) -> int:
+    try:
+        a = svc.promote_artifact(args.artifact_id, "final", who=args.by, reason=args.reason or "", channel=args.channel)
+    except Exception as e:  # noqa: BLE001 — surfaced as exit code 3 with the lifecycle reason
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    _print(a, True) if args.json else print(_art_line(a))
+    return 0
+
+
+def cmd_archive(args, svc: Service) -> int:
+    if args.artifact_id:
+        try:
+            a = svc.archive_artifact(args.artifact_id, who=args.by, reason=args.reason or "")
+        except Exception as e:  # noqa: BLE001
+            print(f"error: {e}", file=sys.stderr)
+            return 3
+        _print(a, True) if args.json else print(_art_line(a))
+        return 0
+    ir = load_ir(args.project)
+    idx = svc.artifact_store().archive_index(ir.doc["project"]["id"])
+    if args.json:
+        _print(idx, True)
+        return 0
+    for e in idx["entries"]:
+        print(f"{e['artifact_id']}  {e['logical_name']}  plan {e['plan_id']} v{e['plan_version']}  jobs {','.join(e['jobs'])}  qa={e['qa_status']}  sha256={e['sha256'][:12]}  archived {e['archived_at']}")
+    if not idx["entries"]:
+        print("archive is empty for this project")
+    return 0
+
+
 def cmd_events(args, svc: Service) -> int:
     ir = load_ir(args.project)
     events = ir.doc["timeline"].get("events") or []
@@ -330,6 +394,22 @@ def cmd_sessions(args, svc: Service) -> int:
 
 
 def cmd_explain(args, svc: Service) -> int:
+    if getattr(args, "artifact", None):
+        info = svc.explain_artifact(args.artifact)
+        if args.json:
+            _print(info, True)
+            return 0
+        a = info["artifact"]
+        print(f"Artifact {a['id']}  {a['logical_name']}  sha256 {a['hash']}  qa {a['qa_status']}  {a['stage']}/{a['delivery_status']}")
+        print(f"  jobs {','.join(info['jobs'])}  plan {a['plan_id']} v{a['plan_version']}")
+        for op in info["operations"]:
+            print(f"  operation {op.get('what')}  skill {op.get('skill')}  decisions {','.join(op.get('decision') or [])}")
+        if info.get("step"):
+            st = info["step"]["step"]
+            print(f"  step {st['id']}  {st['skill']} -> {st.get('tool')}")
+            for row in info["step"]["chain"]:
+                print(f"{'  ' * (row['level'] + 2)}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}" + (f"  source {row['source']}" if row.get("source") else ""))
+        return 0
     ir = load_ir(args.project)
     if getattr(args, "step", None):
         from video_agent.agent.production_plan import explain_step
@@ -443,8 +523,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sessions", help="temporal sessions recorded in a Project IR")
     p.add_argument("project"); p.set_defaults(fn=cmd_sessions)
     p = sub.add_parser("explain", help="why was this decided? show reason, evidence, alternatives")
-    p.add_argument("project"); p.add_argument("--decision", help="decision id or subject"); p.add_argument("--step", help="production step id: show its evidence chain")
+    p.add_argument("project", nargs="?"); p.add_argument("--decision", help="decision id or subject"); p.add_argument("--step", help="production step id: show its evidence chain")
+    p.add_argument("--artifact", help="artifact id: show artifact -> job -> operations -> step -> decisions -> evidence")
     p.set_defaults(fn=cmd_explain)
+    p = sub.add_parser("artifacts", help="registered artifacts (of a project IR, or all)")
+    p.add_argument("project", nargs="?"); p.add_argument("--job"); p.set_defaults(fn=cmd_artifacts)
+    p = sub.add_parser("artifact", help="one artifact manifest with an integrity check")
+    p.add_argument("artifact_id"); p.set_defaults(fn=cmd_artifact)
+    p = sub.add_parser("deliver", help="promote a QA-passed artifact of an approved plan to DELIVERED (recorded; no upload)")
+    p.add_argument("artifact_id"); p.add_argument("--by"); p.add_argument("--reason"); p.add_argument("--channel", default="local"); p.set_defaults(fn=cmd_deliver)
+    p = sub.add_parser("archive", help="archive an artifact, or list a project's archive index")
+    p.add_argument("project", nargs="?"); p.add_argument("--artifact", dest="artifact_id"); p.add_argument("--by"); p.add_argument("--reason"); p.set_defaults(fn=cmd_archive)
     return ap
 
 

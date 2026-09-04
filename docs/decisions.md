@@ -105,3 +105,10 @@
 - Event は事実、Decision は判断、ProductionStep は制作工程、IR の video / audio / delivery は実行契約。AI は Inference までで、plan / tool / argv / command / IR / execution に到達できない（validator の domain parameter 限定と leak 検査で強制）。
 - plan の status は reviews / approvals から導出する（別の approval 系を作らない）。APPROVED のみ compiler に進み、BLOCK / REJECTED は誰にも覆せない。partial approval は decision 単位のまま。
 - Observation ≠ Event ≠ Inference ≠ Decision ≠ ProductionPlan ≠ Project IR ≠ Execution。
+
+## ADR-022 Artifact is a production result with content identity, distinct from File, QA, Delivery and Archive
+- 事実: 生成物は path 名の dict として job に記録されるだけで、identity・integrity・provenance 連鎖・delivery / archive の状態が無かった。
+- 決定: Artifact の identity は (project, plan, logical name, sha256) の hash。path / job id / timestamp は identity に含めない。同じ plan と同じ bytes は同じ artifact（resume の再利用は job を追記）、revision や内容変更は別 artifact。QA PASS 後の artifact は不変で、promote 前に bytes を再検証する。
+- QA（正しいか）と Delivery（納品可能へ昇格したか）と Archive（履歴として保持）を分離。stage は working → candidate → final → archive、delivery_status はその view。final は integrity ok・QA not FAIL・plan APPROVED（現行版）のときだけ。外部 upload は作らず、`channel` を将来の delivery adapter の境界とする。
+- 出力 path は compiler が決める。Artifact 層は manifest（`<workspace>/artifacts/registry`）と archive 索引（`<workspace>/archive`）を書くだけで、media を動かさない。naming template は安全な納品ファイル名（metadata）を生成する。
+- plan_hash（plan identity）/ ir_hash（execution contract identity）/ artifact sha256（bytes identity）は別物。

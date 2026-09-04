@@ -159,3 +159,24 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 やっていないこと: AI による plan 生成、部分実行（approval は decision 単位、render は plan が APPROVED になるまで待つ — PR #4 の仕様を維持）、Artifact / Delivery 本実装、追加 intent（silence_cleanup / loudness_normalization / delivery_export / delivery_check 以外）。
 
 テスト: unit 102/102（ProductionPlanTests 7 件で指示の 30 項目を網羅）、integration 15/15（vertical slice: 実 talk.mp4 の 3 s 無音 → event → decision → plan → IR → ffmpeg-skill → QA PASS → explain、音声無し素材、敵対的 AI）、evals 12/12（6 件追加）。
+
+## 12. PR #11 — Artifact / Delivery / Archive（2026-09-04 追記）
+
+調査: `models.Artifact`（path / type / hash / source / generation / tool / tool_version / qa_status / stage）は存在し、render が delivery 出力ごとに job.json へ記録していた。identity は論理名（path 相当）のみで、plan / job / operation / step との関係、manifest、integrity 検証、delivery / archive の状態遷移、naming、path security、explain は無かった。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G47 Artifact identity が path 相当 | id = "<asset>_delivery_<target>" | `artifact_id(project, plan, logical_name, sha256)`。revision は別 artifact、resume の再利用は同一 artifact に job を追記 |
+| G48 Artifact が job 内 dict のみ | 登録・取得・一覧が無い | `ArtifactStore`（manifest registry、integrity、register / get / list / verify / promote / archive_index） |
+| G49 provenance 連鎖が無い | artifact から step / decision に辿れない | `operations` / `step_id` / `decision_ids` / `provenance` を保持、`Service.explain_artifact` と `explain --artifact` |
+| G50 QA と delivery の混同 | stage は QA 結果から直接決まるだけ | QA（PASS / WARN / FAIL / UNKNOWN）と lifecycle（working / candidate / final / archive、view NOT_READY / READY / DELIVERED / ARCHIVED）を分離。promote の gate（integrity / QA / plan status / 遷移） |
+| G51 immutability が無い | 同 id で内容変更可能 | sha256 が identity の一部、promote 前に再検証、同 id 異内容の登録は ARTIFACT_CONFLICT |
+| G52 naming / path security が無い | profile の naming template は未使用 | `safe_filename` / `delivery_name`（traversal / 無効文字 / Windows 予約名 / 長さ）、`check_path`（絶対・非 traversal・非 symlink・workspace 内） |
+| G53 登録失敗時の整合 | 出力が無くても COMPLETED になり得た | 登録失敗は job FAILED + `artifact_error`、artifact は登録されない |
+| G54 archive が無い | — | stage archive + `<workspace>/archive/<project>.json` 索引（論理 archive、コピー / 圧縮なし） |
+
+変更なし: compiler の出力 path 決定、executor / idempotency、QA 判定、plan_hash / ir_hash の意味、AI boundary、ffmpeg-skill。schema は Artifact に任意フィールドを追加したのみ（job.json）。
+
+やっていないこと: 外部 delivery（YouTube / S3 / NAS / FTP …）、圧縮 archive、artifact-skill 等の Skill 化、`approved` stage の運用（定義は既存のまま）、複数 delivery target の naming 衝突解決以上のもの。
+
+テスト: unit 111/111（ArtifactLifecycleTests 8 件）、integration 16/16（実メディアで sha256 / deliver / archive / explain --artifact / resume 再利用 / revision 分離 / 音声無し WARN）、evals 22/22（10 件追加）。

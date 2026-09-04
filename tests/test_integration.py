@@ -269,6 +269,65 @@ class RealMediaTests(unittest.TestCase):
         prov3 = json.loads((Path(self.ws) / "jobs" / out3["job"]["id"] / "provenance.json").read_text())
         self.assertNotIn("-i x", " ".join(" ".join(e["result"]["commands"]) for e in prov3["operations"] if e.get("result")))
 
+    def test_artifact_lifecycle_on_real_media(self):
+        """talk.mp4 → plan → render → artifact registration (real sha256) → QA PASS → deliver (READY → DELIVERED) → archive;
+        original untouched; explain --artifact reaches the observation; a revision yields a separate artifact; resume reuses."""
+        import hashlib
+        before = hashlib.sha256(Path(self.src).read_bytes()).hexdigest()
+        ws = str(Path(self.tmp) / "ws_art")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.src], "youtube")
+        p = str(Path(ws) / "art.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED")
+        a = out["artifacts"][0]
+        self.assertEqual(a["hash"], hashlib.sha256(Path(a["path"]).read_bytes()).hexdigest())
+        self.assertEqual((a["qa_status"], a["stage"], a["delivery_status"]), ("PASS", "candidate", "READY"))
+        self.assertEqual(a["media"].get("video_stream"), "h264")
+        self.assertTrue(a["name"].endswith(".mp4"))
+        self.assertEqual(hashlib.sha256(Path(self.src).read_bytes()).hexdigest(), before)
+        m = svc.artifact(a["id"])
+        self.assertTrue(m["integrity"]["ok"] and m["integrity"]["size"] == a["size"])
+        info = svc.explain_artifact(a["id"])
+        self.assertTrue(info["step"] and info["step"]["step"]["skill"] == "delivery_export")
+        self.assertTrue(any(o["skill"] == "delivery_export" for o in info["operations"]))
+        d = svc.promote_artifact(a["id"], "final", who="tester", reason="approved for upload")
+        self.assertEqual(d["delivery_status"], "DELIVERED")
+        arch = svc.archive_artifact(a["id"], who="tester")
+        self.assertEqual(arch["delivery_status"], "ARCHIVED")
+        idx = svc.artifact_store().archive_index(ir.doc["project"]["id"])
+        self.assertEqual(idx["entries"][0]["sha256"], a["hash"])
+        env = dict(os.environ); env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        for cmd in (["artifacts", p], ["artifact", a["id"]], ["explain", "--artifact", a["id"]], ["archive", p], ["--json", "artifacts", p]):
+            r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--workspace", ws] + cmd, capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(a["id"], r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--workspace", ws, "deliver", a["id"]], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 3, "archived artifact cannot be delivered again")
+        # resume: same bytes -> same artifact identity, second job appended
+        out2 = Service(workspace=ws).render(load_ir(p), p, resume=out["job"]["id"], timeout=600)
+        self.assertEqual(out2["status"], "COMPLETED")
+        self.assertEqual(out2["artifacts"][0]["id"], a["id"])
+        self.assertEqual(out2["artifacts"][0]["jobs"], [out["job"]["id"], out2["job"]["id"]])
+        # revision: v2 artifact is separate, v1 still intact
+        svc.reject(load_ir(p), p, [ir.doc["plan"]["steps"][0]["decision_id"]], reason="keep lead-in")
+        svc.revise(load_ir(p), p); svc.approve(load_ir(p), p, ["all"])
+        out3 = Service(workspace=ws).render(load_ir(p), p, timeout=600)
+        self.assertEqual(out3["status"], "COMPLETED")
+        b = out3["artifacts"][0]
+        self.assertNotEqual(b["id"], a["id"]); self.assertEqual(b["plan_version"], 2)
+        self.assertTrue(svc.artifact(a["id"])["integrity"]["ok"])
+        v2 = load_ir(p)
+        scope = next(st for st in v2.doc["plan"]["steps"] if st["skill"] == "silence_cleanup")["temporal_scope"]   # only the trailing trim remains in v2
+        self.assertEqual(scope["start"], 0.0)
+        self.assertAlmostEqual(svc.check(b["path"])["probe"]["duration"], scope["end"] - scope["start"], delta=0.6)
+        # no-audio media keeps QA WARN and a READY (WARN) artifact
+        silent = str(Path(self.tmp) / "src" / "noaudio2.mp4")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=3", "-c:v", "libx264", "-preset", "veryfast", silent], check=True)
+        ir4 = svc.plan([silent], "youtube"); p4 = str(Path(ws) / "na.json"); save_ir(ir4, p4)
+        out4 = svc.render(load_ir(p4), p4, timeout=600)
+        self.assertEqual((out4["status"], out4["artifacts"][0]["qa_status"], out4["artifacts"][0]["delivery_status"]), ("COMPLETED", "WARN", "READY"))
+
     def test_resume_reuses_real_intermediates(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube", hash_sources=False)
