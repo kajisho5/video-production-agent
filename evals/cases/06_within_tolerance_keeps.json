@@ -1,0 +1,3 @@
+{"name": "within_tolerance_keeps", "profile": "youtube",
+ "fake": {"silences": [[0.0, 0.4]], "lufs": -14.8},
+ "expect": {"decisions": {"audio.loudness": {"decision": "keep", "provenance": "OBSERVED"}}, "no_decisions": ["silence.leading"], "plan": {"video_ops": 0, "audio_ops": 0}}}

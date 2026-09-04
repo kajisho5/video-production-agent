@@ -1,0 +1,6 @@
+{"name": "conference_confirm", "profile": "conference",
+ "fake": {"silences": [[0.0, 4.0], [7.0, 9.5], [13.7, null]], "lufs": -20.0},
+ "expect": {"intent": "clean_and_deliver",
+   "decisions": {"silence.leading": {"approval": "CONFIRM", "risk": "LOW"}, "silence.internal": {"decision": "keep", "approval": "AUTO"},
+                 "audio.loudness": {"decision_startswith": "normalize to -16"}, "delivery.master": {"approval": "AUTO"}, "delivery.web": {"approval": "AUTO"}},
+   "no_decisions": ["silence.trailing"], "plan": {"video_ops": 1, "audio_ops": 1}, "blocked": false}}

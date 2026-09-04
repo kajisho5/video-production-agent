@@ -1,0 +1,12 @@
+{
+  "name": "youtube",
+  "version": "1.0",
+  "extends": "generic",
+  "description": "1080p H.264/AAC for YouTube, -14 LUFS.",
+  "rules": [
+    {"id": "youtube.loudness.target", "kind": "PREFERENCE", "key": "audio.loudness.target_lufs", "value": -14},
+    {"id": "youtube.loudness.tp", "kind": "PREFERENCE", "key": "audio.loudness.true_peak", "value": -1}
+  ],
+  "delivery": {"targets": [{"id": "youtube", "preset": "youtube", "platform": "youtube", "artifact_type": "YOUTUBE"}]},
+  "naming": "{project}_{target}_{date}_{version}"
+}

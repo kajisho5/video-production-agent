@@ -1,0 +1,18 @@
+{
+  "name": "generic",
+  "version": "1.0",
+  "description": "Single video, keep the source format unless asked. Conservative defaults.",
+  "rules": [
+    {"id": "generic.silence.leading.min", "kind": "POLICY", "key": "silence.leading.min_seconds", "value": 1.0},
+    {"id": "generic.silence.threshold", "kind": "POLICY", "key": "silence.threshold_db", "value": -40},
+    {"id": "generic.silence.leading.approval", "kind": "POLICY", "key": "silence.leading.approval", "value": "AUTO"},
+    {"id": "generic.silence.trailing.approval", "kind": "POLICY", "key": "silence.trailing.approval", "value": "AUTO"},
+    {"id": "generic.silence.internal.approval", "kind": "POLICY", "key": "silence.internal.approval", "value": "CONFIRM"},
+    {"id": "generic.loudness.tolerance", "kind": "POLICY", "key": "audio.loudness.tolerance_lu", "value": 2.0},
+    {"id": "generic.analysis.strategy", "kind": "POLICY", "key": "analysis.strategy", "value": "TARGETED"},
+    {"id": "generic.analysis.budget.time", "kind": "POLICY", "key": "analysis.budget.max_processing_time", "value": 600}
+  ],
+  "delivery": {"targets": [{"id": "main", "preset": null, "platform": "custom", "artifact_type": "MASTER"}]},
+  "naming": "{project}_{target}_{version}",
+  "semantic_deletion": "CONFIRM"
+}

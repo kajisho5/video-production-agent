@@ -1,0 +1,94 @@
+{
+  "name": "conference",
+  "version": "0.1",
+  "extends": "generic",
+  "description": "Conference / medical lecture. Phase 1 skeleton: only the safety rules and delivery targets are active; the session/multicam/slide pipeline lands in Phase 2+.",
+  "rules": [
+    {
+      "id": "conf.loudness.target",
+      "kind": "PREFERENCE",
+      "key": "audio.loudness.target_lufs",
+      "value": -16
+    },
+    {
+      "id": "conf.loudness.tp",
+      "kind": "PREFERENCE",
+      "key": "audio.loudness.true_peak",
+      "value": -1.5
+    },
+    {
+      "id": "conf.silence.leading.approval",
+      "kind": "POLICY",
+      "key": "silence.leading.approval",
+      "value": "CONFIRM"
+    },
+    {
+      "id": "conf.silence.trailing.approval",
+      "kind": "POLICY",
+      "key": "silence.trailing.approval",
+      "value": "CONFIRM"
+    },
+    {
+      "id": "conf.silence.internal.approval",
+      "kind": "CONSTRAINT",
+      "key": "silence.internal.approval",
+      "value": "CONFIRM"
+    },
+    {
+      "id": "conf.semantic.approval",
+      "kind": "CONSTRAINT",
+      "key": "edit.semantic_deletion.approval",
+      "value": "BLOCK_UNLESS_EXPLICIT"
+    },
+    {
+      "id": "conf.silence.leading.min",
+      "kind": "POLICY",
+      "key": "silence.leading.min_seconds",
+      "value": 3.0
+    }
+  ],
+  "delivery": {
+    "targets": [
+      {
+        "id": "master",
+        "preset": "prores",
+        "platform": "custom",
+        "artifact_type": "MASTER",
+        "note": "broadcast (-23 LUFS) check needs per-target loudness; Phase 2"
+      },
+      {
+        "id": "web",
+        "preset": "youtube",
+        "platform": "youtube",
+        "artifact_type": "WEB"
+      }
+    ]
+  },
+  "naming": "{event}_{session}_{speaker}_{date}_{version}_{target}",
+  "asset_roles": [
+    "camera_a",
+    "camera_b",
+    "camera_c",
+    "presentation",
+    "slides",
+    "presentation_audio",
+    "room_audio",
+    "logo"
+  ],
+  "pipeline_future": [
+    "asset_classification",
+    "synchronization",
+    "session_segmentation",
+    "slide_detection",
+    "speaker_detection",
+    "camera_selection",
+    "audio_processing",
+    "caption",
+    "chapter",
+    "master",
+    "web",
+    "youtube",
+    "qa",
+    "delivery"
+  ]
+}

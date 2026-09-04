@@ -1,0 +1,5 @@
+{"name": "user_explicit_overrides", "profile": "conference", "request": "先頭の無音をカットして、-18 LUFSに揃えて",
+ "requirements": {"audio.loudness.target_lufs": -18},
+ "fake": {"silences": [[0.0, 4.0]], "lufs": -12.0},
+ "expect": {"decisions": {"silence.leading": {"approval": "AUTO", "provenance": "USER"}, "audio.loudness": {"decision_startswith": "normalize to -18", "provenance": "USER"}},
+   "requirement_provenance": {"audio.loudness.target_lufs": "USER", "edit.trim_leading_silence": "USER"}, "plan": {"video_ops": 1, "audio_ops": 1}}}
