@@ -1,0 +1,31 @@
+# Manual trigger only for now (the account's Actions minutes are limited; ffmpeg-skill's CI uses the same policy).
+# Add `pull_request:` under `on:` when minutes are available.
+name: tests
+on:
+  workflow_dispatch:
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.11"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ matrix.python }}"}
+      - run: pip install -e .
+      - run: python -m unittest -v tests/test_unit.py
+      - run: python evals/run.py
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: pip install -e .
+      - run: python -m unittest -v tests/test_integration.py
+        env: {VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"}
