@@ -234,3 +234,18 @@ transcription-skill: 未接続。理由は main に実装・contract が無い�
 既知・未対応: silencedetect end > duration（別 PR）。実メディアでは Whisper segment が無音側へ伸びるため conflict になりやすい（単語タイムスタンプでの精緻化は次 PR 候補）。
 
 テスト: unit 4 件（fake: 統合、conflict、候補 → CONFIRM → approve / reject / revise / render / resume、境界・決定性・silencedetect 未修正）、evals 8 件、integration 1 件（実 transcription-skill + ffmpeg-skill、ja_short ×2 + 3 s 無音）。
+
+## 16. PR #15 — ProductionContext / Situation Understanding（2026-09-04 追記）
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G72 複数種別 Event の同時状況を表す層が無い | Event / Session のみ | `context/` ProductionContext（参照中心、DERIVED、決定的 id）、`build_contexts` |
+| G73 ドメイン非依存の inference が無い | speech 専用 inference のみ | `context/inference.py`: source_activity / source_inactivity / transition / conflict |
+| G74 Context の provenance / explain | — | IR `analysis.contexts`、validator、`explain --context`、`explain --observation` に context 行、`context` CLI |
+
+別 PR で追加すべき Capability（今回 Skill は変更しない）:
+- 複数ソース同期（TimelineMap offset）: master timeline 上でのクロスアセット context に必要
+- SceneEvent / SlideEvent / CameraEvent を生成する観測（scene_detection は media-analysis に存在するが Event 変換は未実装）
+- 単語タイムスタンプでの発話境界精緻化（PR #14 の残課題）
+
+既知・未対応: silencedetect end > duration（別 PR）。

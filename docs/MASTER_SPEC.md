@@ -1586,6 +1586,55 @@ Observation(silence)    ─→ AudioEvent ──┘
   tightening of segment boundaries (a follow-up: Whisper extends segments into pauses, which on real recordings yields
   conflicts rather than candidates), the silencedetect end > duration issue.
 
+### ProductionContext: situation understanding (implemented, ADR-026)
+
+```
+Observation ─→ Event ─┐
+                      ├─→ ProductionContext (what is observed here, at the same time) ─→ generic inference ─┐
+Observation ─→ Event ─┘                                                                                      ├─→ Decision ─→ ProductionPlan ─→ IR
+                                                              domain inference (speech, silence, loudness) ──┘
+```
+
+**ProductionContext ≠ Observation ≠ Event ≠ Inference ≠ Decision ≠ ProductionPlan; Event ≠ command.** A context is the
+agent's intermediate representation of the production situation: for one timeline and one time scope, which kinds of
+events are active at the same time, which observations they rest on, which assets they belong to, and which inferences
+already cite them. It replaces nothing and copies nothing: every field is a reference, the scope is bounded by the
+events' own timestamps, provenance is DERIVED, and the id is a hash of timeline + scope + active events (deterministic,
+stable across plan versions). A Session is a grouping a person or the system declares; a context is derived.
+
+- **Construction (`context/builder.py`):** for each asset timeline the events' start / end points (and 0 / duration)
+  are the boundaries; each elementary interval is one context with its active events grouped into tracks by domain
+  type / subtype (`AudioEvent/silence`, `SpeechEvent/speech`, later `SceneEvent/visual_change`, `CameraEvent/camera`,
+  `SlideEvent/slide`, `IncidentEvent/*`, `CaptionEvent/caption` — the same Temporal Model, no new event types). An
+  interval where nothing is active is a context too. `UserDecisionEvent`s are review history, not a situation. Nothing
+  is snapped, corrected, merged heuristically or resolved; a point event marks a boundary.
+- **Generic inference (`context/inference.py`, deterministic, INFERRED, generator `context_inference@1.0`, domain
+  neutral):** `source_activity` / `source_inactivity` per (timeline, event type / subtype) — where that kind of event is
+  and is not observed; `transition` — a boundary where the set of active kinds changes; `conflict` — two events whose
+  codes are declared mutually exclusive (`EXCLUSIVE_PAIRS`, today `AUDIO_SILENCE` × `SPEECH`) overlap: recorded with
+  both events as evidence, never resolved. Whole-programme measurements (`loudness`) yield no activity. Every inference
+  cites existing events; `data.context_ids` names the situations it was derived from.
+- **What it never does:** read transcript text, name a speaker, pick a source / camera / slide, propose an edit, read
+  policy or preferences, create an event, change a timestamp, decide. "Source B is active" is an inference;
+  "use source B" is a decision the decision engine may or may not make from policy, preference and constraints. No
+  decision is created from generic inferences in this version; the domain layer (ADR-025) keeps producing the speech /
+  silence decisions and cites the same events.
+- **AI boundary:** an AI provider may later produce inferences of these kinds only through the existing reasoning
+  boundary (provenance `AI_GENERATED`, validated evidence ids, no tool / command / approval / path). The generator on
+  deterministic inferences and the provenance on AI ones keep the two apart; the validator refuses an AI inference
+  recorded as OBSERVED.
+- **Project IR:** `analysis.contexts[]` (schema additive); the validator checks every context (references exist,
+  scope inside the asset, active events overlap the scope, id matches content). Revisions rebuild contexts from the
+  same events and get the same ids. Contexts are not plan content: `plan_hash` is unchanged, the planner, compiler and
+  executor never read them.
+- **Explain:** `explain --context <id>` walks context → tracks → events (timestamps as recorded) → observations, then
+  the inferences citing its events and the decisions resting on those inferences; `explain --observation` ends with
+  the contexts an observation's events take part in; `explain --step` rows show `contexts` on inferences derived from
+  situations. `video-agent context <ir> [--at s | --between a b] [--timeline …]` lists situations.
+- **Genericity:** any asset (video, audio, screen capture, image, caption file) whose analysis yields events on a
+  timeline takes part; no analysis Skill was added or changed. Cross-asset situations on the master timeline need the
+  existing `TimelineMap` offsets from a multi-source sync capability (not available yet; recorded in GAP §16).
+
 ## 52. Architecture / Repository
 
 A possible structure:
