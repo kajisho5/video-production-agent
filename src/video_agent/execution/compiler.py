@@ -16,8 +16,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
     paths: Dict[str, str] = {}
     job = Path(job_dir)
     frame_accurate = any(r.get("key") == "edit.precision" and r.get("value") == "frame" for r in d["requirements"])
-    for asset_id, asset in d["assets"].items():
+    for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
         paths[asset_id] = asset["path"]
+        stem = f"{idx:02d}_{Path(asset['path']).stem}"  # index keeps two inputs with the same file name apart
         current = asset_id
         src_hash = asset.get("hash") or ""
         gen = 0
@@ -26,7 +27,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
                 continue
             gen += 1
             out_id = f"{asset_id}_trim"
-            paths[out_id] = str(job / "ops" / f"{gen:02d}_trim" / f"{Path(asset['path']).stem}_trim.mp4")
+            paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_trim" / f"{stem}_trim.mp4")
             segs = ",".join(f"{s:.3f}-{e:.3f}" for s, e in op["keep"])
             args: Dict[str, Any] = {"input": current, "segments": segs, "output": out_id}
             if frame_accurate:
@@ -40,7 +41,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
                 continue
             gen += 1
             out_id = f"{asset_id}_loudnorm"
-            paths[out_id] = str(job / "ops" / f"{gen:02d}_loudness" / f"{Path(asset['path']).stem}_loudnorm.mp4")
+            paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_loudness" / f"{stem}_loudnorm.mp4")
             args = {"input": current, "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
             o = Operation(tool="ffmpeg-skill/loudness", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []))
             o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
@@ -51,7 +52,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
             if t.get("preset"):
                 gen += 1
                 ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
-                paths[art_id] = str(job / "artifacts" / f"{Path(asset['path']).stem}_{t['id']}.{ext}")
+                paths[art_id] = str(job / "artifacts" / f"{stem}_{t['id']}.{ext}")
                 args = {"input": current, "preset": t["preset"], "output": art_id}
                 o = Operation(tool="ffmpeg-skill/export", args=args, inputs=[current], outputs=[art_id], decision_ids=list(t.get("decision_ids") or []))
                 o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])

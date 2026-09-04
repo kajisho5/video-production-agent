@@ -39,13 +39,15 @@ class QAReport:
         return {"status": self.status, "items": [i.to_dict() for i in self.items], "incidents": [i.to_dict() for i in self.incidents], "sheets": self.sheets}
 
 
-def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], sheet_dir: Optional[str] = None) -> QAReport:
+def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], sheet_dir: Optional[str] = None,
+           check_by_artifact: Optional[Dict[str, ToolResult]] = None) -> QAReport:
+    """check_by_artifact maps artifact id -> the check.py ToolResult the executor already produced, so QA does not measure twice."""
     rep = QAReport()
+    check_by_artifact = check_by_artifact or {}
     th = ir_doc["qa"].get("thresholds") or {}
     dur_tol = float(th.get("duration_tolerance_s", 0.5))
     lu_tol = float(th.get("loudness_tolerance_lu", 2.0))
     required = set(ir_doc["qa"]["required"])
-    check_results = {r.op_id: r for r in results if r.tool == "ffmpeg-skill/check"}
     for asset_id, asset in ir_doc["assets"].items():
         src_dur = (asset.get("technical") or {}).get("duration") or 0.0
         kept = src_dur
@@ -71,8 +73,9 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 rep.items.append(QAItem("video", "duration", "PASS" if ok else "FAIL", round(got, 3), f"{kept:.3f} ± {dur_tol}", kind="judgement", artifact=art,
                                         fix_hint="" if ok else "trim landed on a keyframe or the export trimmed to a platform maximum"))
                 if not ok:
-                    rep.incidents.append(Incident(type="UNEXPECTED_SILENCE" if got > kept else "WRONG_FPS", severity="MEDIUM", start=min(got, kept), end=max(got, kept), evidence=[art],
-                                                  possible_cause="duration mismatch between plan and output", recommended_action="review the trim decision or use frame-accurate cuts"))
+                    rep.incidents.append(Incident(type="DURATION_MISMATCH", severity="MEDIUM", start=min(got, kept), end=max(got, kept), evidence=[art],
+                                                  possible_cause="output duration differs from the planned kept duration (keyframe snap, platform maximum, or a lost segment)",
+                                                  recommended_action="review the trim decision or use frame-accurate cuts"))
                 rep.items.append(QAItem("video", "video_stream", "PASS" if v else "FAIL", v.get("codec"), "present", artifact=art))
                 sv = (asset.get("technical") or {}).get("video") or {}
                 if v and sv:
@@ -109,8 +112,8 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                         rep.items.append(QAItem("audio", "silence", "WARN", "silent", "programme audio", artifact=art))
                         rep.incidents.append(Incident(type="UNEXPECTED_SILENCE", severity="HIGH", start=0.0, end=p.get("duration"), evidence=[art], possible_cause="output audio is silent", recommended_action="verify the source track and the audio mapping"))
             if "delivery" in required and t.get("preset"):
-                cr = next((r for r in check_results.values() if paths.get(r.data.get("input", ""), None) == path or (r.data.get("platform") == t.get("platform") and art in str(r.op_id + str(r.data)))), None)
-                if cr is None:
+                cr = check_by_artifact.get(art)
+                if cr is None or not cr.data.get("checks"):
                     cr = adapter.measure("ffmpeg-skill/check", {"input": path, "platform": t.get("platform", "custom")})
                 if cr and cr.data.get("checks"):
                     for row in cr.data["checks"]:

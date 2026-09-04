@@ -64,10 +64,27 @@ class RealMediaTests(unittest.TestCase):
         self.assertAlmostEqual(chk["probe"]["duration"], 11.0, delta=0.6)
         # the source was never touched
         self.assertEqual(ir.doc["provenance"]["source_hashes"][list(ir.doc["assets"])[0]], __import__("video_agent.media.analyzer", fromlist=["sha256_file"]).sha256_file(self.src))
-        # idempotent re-run of the same IR skips completed operations
+        # provenance links every executed operation to its commands
         prov = json.loads((Path(self.ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         self.assertTrue(all(e["result"]["ok"] for e in prov["operations"]))
         self.assertTrue(any("ffmpeg" in c for e in prov["operations"] for c in (e["result"]["commands"] or [])))
+
+    @unittest.skipIf(os.name == "nt", "process-group check uses ps")
+    def test_timeout_kills_the_whole_process_group(self):
+        svc = Service(workspace=self.ws)
+        ir = svc.plan([self.src], "youtube", hash_sources=False)
+        ir_path = str(Path(self.ws) / "timeout.json")
+        save_ir(ir, ir_path)
+        out = svc.render(load_ir(ir_path), ir_path, timeout=1.0)
+        self.assertEqual(out["status"], "FAILED")
+        self.assertTrue(all(r["class"] == "TIMEOUT" for r in out["execution"]["recovery"]), out["execution"]["recovery"])
+        job_dir = Path(self.ws) / "jobs" / out["job"]["id"]
+        import time
+        time.sleep(0.5)
+        ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+        self.assertNotIn(str(job_dir), ps, "an ffmpeg writing into the job dir survived the timeout")
+        partial = list((job_dir / "ops").rglob("*.mp4"))
+        self.assertEqual(partial, [], "half-written outputs must not be left for a retry to collide with")
 
     def test_hdr_and_vfr_are_observed_and_decided(self):
         hdr = str(Path(self.tmp) / "src" / "hdr.mp4")

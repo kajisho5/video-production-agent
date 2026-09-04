@@ -190,8 +190,50 @@ class PipelineTests(unittest.TestCase):
         ir = svc.plan([self.src], "generic")
         ops, paths = compile_ir(ir, "/w/jobs/j")
         tools = [o.tool for o in ops]
-        self.assertEqual(tools, ["ffmpeg-skill/cut", "ffmpeg-skill/loudness"] if ir.doc["audio"]["operations"] else ["ffmpeg-skill/cut"])
+        # generic: technical silence is trimmed; the profile sets no loudness target, so -11 LUFS is left alone
+        # (a target must come from a profile or an explicit --set audio.loudness.target_lufs)
+        self.assertEqual(tools, ["ffmpeg-skill/cut"])
+        self.assertFalse([x for x in ir.doc["decisions"] if x["subject"] == "audio.loudness"])
+        ir2 = svc.plan([self.src], "generic", user_requirements={"audio.loudness.target_lufs": -16})
+        self.assertEqual([o.tool for o in compile_ir(ir2, "/w/jobs/j")[0]], ["ffmpeg-skill/cut", "ffmpeg-skill/loudness"])
         self.assertNotIn("ffmpeg-skill/export", tools)
+        art = [k for k in paths if k.endswith("_delivery_main")]
+        self.assertEqual(len(art), 1)
+        self.assertEqual(paths[art[0]], paths[ops[-1].outputs[0]], "the last intermediate is the deliverable")
+
+    def test_same_file_name_twice_gets_distinct_paths(self):
+        a = fake_media(self.tmp, "camA/clip.mp4")
+        b = fake_media(self.tmp, "camB/clip.mp4")
+        svc = make_service(self.tmp)
+        ir = svc.plan([a, b], "youtube")
+        ops, paths = compile_ir(ir, "/w/jobs/j")
+        outs = [paths[o] for op in ops for o in op.outputs]
+        self.assertEqual(len(outs), len(set(outs)), outs)
+        self.assertEqual(len([o for o in ops if o.tool == "ffmpeg-skill/export"]), 2)
+
+    def test_unknown_requirement_key_is_rejected(self):
+        svc = make_service(self.tmp)
+        with self.assertRaises(ValueError):
+            svc.plan([self.src], "youtube", user_requirements={"api_key": "sk-secret"})
+
+    def test_interrupt_marks_job_cancelled_and_persists(self):
+        class Interrupting(FakeAdapter):
+            def run(self, op, paths, timeout=None, dry_run=False, attempt=1):
+                if op.tool == "ffmpeg-skill/loudness" and not op.args.get("measure_only"):
+                    raise KeyboardInterrupt
+                return super().run(op, paths, timeout, dry_run, attempt)
+        svc = make_service(self.tmp, adapter=Interrupting())
+        ir = svc.plan([self.src], "youtube")
+        ir_path = str(Path(self.tmp) / "i.json")
+        save_ir(ir, ir_path)
+        out = svc.render(load_ir(ir_path), ir_path)
+        self.assertEqual(out["status"], "CANCELLED")
+        self.assertEqual(out["job"]["state"], "CANCELLED")
+        self.assertEqual(out["execution"]["recovery"][-1]["class"], "INTERRUPTED")
+        job_file = Path(out["job"]["workspace"]) / "jobs" / out["job"]["id"] / "job.json"
+        self.assertEqual(json.loads(job_file.read_text())["state"], "CANCELLED")
+        self.assertTrue((job_file.parent / "provenance.json").exists())
+        self.assertEqual(load_ir(ir_path).doc["provenance"]["runs"][-1]["status"], "CANCELLED")
 
     def test_schema_rejects_bad_ir(self):
         svc = make_service(self.tmp)
@@ -219,6 +261,16 @@ class PipelineTests(unittest.TestCase):
 
 
 class ExecutorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def test_analysis_strategy_is_honest(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual(ir.doc["analysis"]["strategy"], "FULL_ANALYSIS")
+        self.assertFalse(ir.doc["analysis"]["budget"]["enforced"])
+
     def test_recovery_retries_once_then_blocks(self):
         ad = FakeAdapter(fail_tools={"ffmpeg-skill/cut": 1})
         op = Operation(tool="ffmpeg-skill/cut", args={"input": "a", "segments": "1-2", "output": "o"}, inputs=["a"], outputs=["o"], idempotency_key="k1")

@@ -52,12 +52,17 @@ class Service:
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter([str(Path(p).resolve().parent) for p in inputs])
-        analyzer = MediaAnalyzer(adapter, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), strategy=str(rules.get("analysis.strategy", "TARGETED")) + ("_ANALYSIS" if not str(rules.get("analysis.strategy", "")).endswith("_ANALYSIS") else ""), hash_sources=hash_sources)
+        # Phase 1 analyses whole files (silence + loudness over the full duration); a budgeted TARGETED strategy is Phase 2,
+        # so the recorded strategy says what actually happened rather than what the profile asked for.
+        analyzer = MediaAnalyzer(adapter, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), strategy="FULL_ANALYSIS", hash_sources=hash_sources)
         analysis = analyzer.analyze(inputs)
         return profile, rules, analysis
 
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True) -> ProjectIR:
+        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
+        if bad:
+            raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources)
         caps = self.caps.resolve()
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
@@ -75,7 +80,8 @@ class Service:
         d["source"] = {"agent_version": __version__, "tool_versions": self.tool_versions(), "generator": "video-agent plan"}
         d["assets"] = {a.id: a.to_dict() for a in analysis.assets}
         d["analysis"] = {"observations": [o.to_dict() for o in analysis.observations], "inferences": [i.to_dict() for i in inferences], "strategy": analysis.strategy,
-                         "budget": {"max_processing_time": rules.get("analysis.budget.max_processing_time")}, "warnings": analysis.warnings, "tool_calls": analysis.tool_calls}
+                         "budget": {"max_processing_time": rules.get("analysis.budget.max_processing_time"), "requested_strategy": rules.get("analysis.strategy"), "enforced": False},
+                         "warnings": analysis.warnings, "tool_calls": analysis.tool_calls}
         d["intent"] = intent.to_dict()
         d["constraints"] = [r.to_dict() for r in rules.all_rules if r.hard]
         d["policy"] = rules.to_dict()
@@ -116,7 +122,8 @@ class Service:
                 "warnings": self.validate(ir).warnings + ir.doc["analysis"].get("warnings", []), "pending_confirmations": [d["id"] for d in ir.pending_confirmations()], "blocked": [d["id"] for d in ir.blocked()],
                 "estimate": {"source_seconds": round(total, 1), "full_reencodes": reencodes, "note": "processing time ≈ source duration × re-encodes on a laptop CPU (see ffmpeg-skill devices.md)"}}
 
-    def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, dry_run: bool = False, timeout: Optional[float] = None, who: str = "user") -> Dict[str, Any]:
+    def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None) -> Dict[str, Any]:
+        who = who or _default_who()
         store = JobStore(self.workspace)
         job = store.create()
         job.ir_path = ir_path
@@ -137,7 +144,7 @@ class Service:
             store.save(job)
             return {"job": job.to_dict(), "status": "BLOCKED", "blocked": ir.blocked(), "approved": approved}
         pending = ir.pending_confirmations()
-        if pending and not dry_run:
+        if pending:
             job.transition("WAITING_FOR_APPROVAL", f"{len(pending)} decision(s) need confirmation")
             store.save(job)
             save_ir(ir, ir_path)
@@ -148,18 +155,18 @@ class Service:
         ops, paths = compile_ir(ir, str(job.dir), ir.doc["source"]["tool_versions"].get("ffmpeg-skill", ""))
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or [])
         ex = Executor(adapter, max_attempts=int(ir.doc["execution"]["recovery_policy"]["max_attempts"]), timeout=timeout, completed_keys=job.completed_ops)
-        result = ex.run(ops, paths, dry_run=dry_run)
-        job.completed_ops = ex.completed
+        try:
+            result = ex.run(ops, paths)
+        finally:
+            job.completed_ops = ex.completed
+            store.save(job)  # whatever happens next, the job file reflects the operations that completed
         out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths}
         if result.status != "COMPLETED":
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"op {result.failed_op}")
-        elif dry_run:
-            job.transition("QA", "dry run")
-            job.transition("COMPLETED", "dry run, nothing executed")
-            out["dry_run"] = True
         else:
             job.transition("QA")
-            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"))
+            checks = {op.args["input"]: r for op in ops if op.tool == "ffmpeg-skill/check" for r in result.results if r.op_id == op.id}
+            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks)
             out["qa"] = qa.to_dict()
             artifacts = []
             for asset_id in ir.doc["assets"]:
@@ -179,7 +186,7 @@ class Service:
             if qa.status == "FAIL":
                 out["status"] = "REVIEW"
         prov = build_provenance(ir.doc, ops, result.results, paths, result.recovery, out.get("qa", {}), who=who)
-        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "dry_run": dry_run})
+        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who})
         ir.doc["provenance"]["recovery"] = result.recovery
         save_ir(ir, ir_path)
         save_ir(ir, str(job.dir / "ir.json"))
@@ -196,6 +203,17 @@ class Service:
         pr = adapter.measure("ffmpeg-skill/probe", {"inputs": [str(Path(path).resolve())]})
         ck = adapter.measure("ffmpeg-skill/check", {"input": str(Path(path).resolve()), "platform": platform})
         return {"probe": pr.data if pr.ok else {"error": pr.stderr_tail}, "check": ck.data if ck.data else {"error": ck.stderr_tail}}
+
+
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.")
+
+
+def _default_who() -> str:
+    try:
+        import getpass
+        return f"user:{getpass.getuser()}"
+    except Exception:  # noqa: BLE001
+        return "user"
 
 
 def _request_rules(user_requirements: Dict[str, Any]) -> List[Rule]:

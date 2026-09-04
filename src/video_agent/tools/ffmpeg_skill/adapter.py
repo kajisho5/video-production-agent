@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -29,17 +30,23 @@ class PathPolicy:
         self.allowed_inputs = [str(Path(p).resolve()) for p in allowed_inputs]
         self.workspace = str(Path(workspace).resolve())
 
+    @staticmethod
+    def _norm(p: str) -> str:
+        # normcase: Windows paths compare case-insensitively (C:\\ vs c:\\), POSIX unchanged
+        return os.path.normcase(str(Path(p).resolve()))
+
     def check_input(self, p: str) -> None:
-        rp = str(Path(p).resolve())
-        if not any(rp == a or rp.startswith(a + os.sep) for a in self.allowed_inputs + [self.workspace]):
+        rp = self._norm(p)
+        roots = [os.path.normcase(a) for a in self.allowed_inputs] + [os.path.normcase(self.workspace)]
+        if not any(rp == a or rp.startswith(a + os.sep) for a in roots):
             raise ToolError(f"input outside allowed roots: {p}")
 
     def check_output(self, p: str, inputs: List[str]) -> None:
-        rp = str(Path(p).resolve())
-        if not rp.startswith(self.workspace + os.sep):
+        rp = self._norm(p)
+        if not rp.startswith(os.path.normcase(self.workspace) + os.sep):
             raise ToolError(f"output outside workspace: {p}")
         for i in inputs:
-            if str(Path(i).resolve()) == rp:
+            if self._norm(i) == rp:
                 raise ToolError(f"output would overwrite its input: {p}")
 
 
@@ -126,11 +133,12 @@ class FfmpegSkillAdapter(ToolAdapter):
         cmd = self.command(op.tool, op.args, paths, dry_run=dry_run)
         script = op.tool[len(PREFIX):]
         t0 = time.time()
-        try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-            code, out, err = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as exc:
-            code, out, err = 124, (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""), f"timeout after {timeout}s"
+        out_path = paths.get(op.args["output"], op.args["output"]) if isinstance(op.args.get("output"), str) else None
+        code, out, err = run_process_group(cmd, timeout)
+        if code != 0 and out_path and not dry_run and code != 124 and os.path.exists(out_path) and _is_fresh(out_path, t0):
+            _remove_partial(out_path)
+        if code == 124 and out_path and os.path.exists(out_path) and _is_fresh(out_path, t0):
+            _remove_partial(out_path)  # never let a retry write next to a half-written file
         data = _parse_json(out)
         exit_is_result = CATALOG[script].get("exit_code_means_fail") and data is not None
         ok = code == 0 or bool(exit_is_result)
@@ -145,6 +153,64 @@ class FfmpegSkillAdapter(ToolAdapter):
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         op = Operation(tool=tool, args=args, inputs=[], outputs=[], kind="measure")
         return self.run(op, paths or {}, timeout=timeout)
+
+
+CHILD_ENV = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}  # ffmpeg-skill prints UTF-8 JSON; Windows consoles default to cp932 etc.
+
+
+def run_process_group(cmd: List[str], timeout: Optional[float]) -> "tuple[int, str, str]":
+    """Run cmd in its own process group so a timeout or an interrupt kills the script AND the ffmpeg it spawned.
+    Returns (exit_code, stdout, stderr); exit 124 means timeout, 130 means interrupted."""
+    env = dict(os.environ, **CHILD_ENV)
+    kw: Dict[str, Any] = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
+    if os.name == "nt":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kw["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kw)
+    try:
+        out_b, err_b = proc.communicate(timeout=timeout)
+        return proc.returncode, _dec(out_b), _dec(err_b)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        out_b, err_b = proc.communicate()
+        return 124, _dec(out_b), f"timeout after {timeout}s\n" + _dec(err_b)
+    except KeyboardInterrupt:
+        kill_tree(proc)
+        proc.communicate()
+        raise
+
+
+def kill_tree(proc: "subprocess.Popen[bytes]") -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _dec(b: Optional[bytes]) -> str:
+    return (b or b"").decode("utf-8", errors="replace")
+
+
+def _is_fresh(path: str, t0: float) -> bool:
+    try:
+        return os.path.getmtime(path) >= t0 - 1
+    except OSError:
+        return False
+
+
+def _remove_partial(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _parse_json(stdout: str) -> Any:

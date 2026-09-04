@@ -70,7 +70,7 @@ def cmd_plan(args, svc: Service) -> int:
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash)
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
-        out = str(Path(svc.workspace) / "plans" / (Path(args.inputs[0]).stem + ".project.json"))
+        out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")
     save_ir(ir, out)
     rep = svc.validate(ir)
     if args.json:
@@ -147,9 +147,10 @@ def cmd_render(args, svc: Service) -> int:
         for r in ex.get("recovery", []):
             print(f"  recovery: op {r['op']} {r['class']} → {r['action']}: {r['reason']}")
         if ex.get("failed_op"):
-            last = [x for x in ex["results"] if x["op_id"] == ex["failed_op"]][-1]
-            print("  failed:", last["tool"], "\n   ", last["stderr_tail"].replace("\n", "\n    "))
-    return {"COMPLETED": 0, "WAITING_FOR_APPROVAL": 4, "BLOCKED": 3, "REVIEW": 5}.get(out["status"], 1)
+            hits = [x for x in ex["results"] if x["op_id"] == ex["failed_op"]]
+            if hits:
+                print("  failed:", hits[-1]["tool"], "\n   ", hits[-1]["stderr_tail"].replace("\n", "\n    "))
+    return {"COMPLETED": 0, "WAITING_FOR_APPROVAL": 4, "BLOCKED": 3, "REVIEW": 5, "CANCELLED": 130}.get(out["status"], 1)
 
 
 def cmd_check(args, svc: Service) -> int:

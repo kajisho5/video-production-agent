@@ -59,6 +59,11 @@ class Executor:
             while True:
                 try:
                     r = self.adapter.run(Operation(tool=op.tool, args=args, inputs=op.inputs, outputs=op.outputs, decision_ids=op.decision_ids, kind=op.kind, id=op.id), paths, timeout=timeout, dry_run=dry_run, attempt=attempt)
+                except KeyboardInterrupt:
+                    # the adapter has already killed the tool's process group; leave intermediates, record the interruption
+                    res.status, res.failed_op = "CANCELLED", op.id
+                    res.recovery.append({"op": op.id, "attempt": attempt, "class": "INTERRUPTED", "action": "CANCEL", "reason": "interrupted by user (SIGINT)", "at": now_iso(), "stderr": ""})
+                    return res
                 except ToolError as exc:
                     r = ToolResult(op_id=op.id, tool=op.tool, ok=False, exit_code=-1, output=None, data={}, commands=[], stderr_tail=str(exc), seconds=0.0, attempt=attempt, dry_run=dry_run)
                 res.results.append(r)

@@ -38,12 +38,12 @@ class AnalysisResult:
 
 
 class MediaAnalyzer:
-    def __init__(self, adapter: ToolAdapter, silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "TARGETED_ANALYSIS",
+    def __init__(self, adapter: ToolAdapter, silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",
                  hash_sources: bool = True):
         self.adapter = adapter
         self.threshold = silence_threshold_db
         self.min_silence = min_silence
-        self.strategy = strategy if strategy in STRATEGIES else "TARGETED_ANALYSIS"
+        self.strategy = strategy if strategy in STRATEGIES else "FULL_ANALYSIS"
         self.hash_sources = hash_sources
         self.src = f"ffmpeg-skill@{getattr(adapter, 'version', '?')}"
 

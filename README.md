@@ -27,17 +27,19 @@ video-agent doctor
 
 ```bash
 video-agent analyze input.mp4
-video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.project.json
+video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.youtube.project.json
 video-agent plan input.mp4 --profile conference --set audio.loudness.target_lufs=-18
-video-agent validate <workspace>/plans/input.project.json
-video-agent render <workspace>/plans/input.project.json --dry-run
-video-agent render <workspace>/plans/input.project.json            # CONFIRM が残れば WAITING_FOR_APPROVAL (exit 4)
-video-agent render <workspace>/plans/input.project.json --approve all
-video-agent explain <workspace>/plans/input.project.json [--decision <id>]
+video-agent validate <workspace>/plans/input.youtube.project.json
+video-agent render <workspace>/plans/input.youtube.project.json --dry-run
+video-agent render <workspace>/plans/input.youtube.project.json            # CONFIRM が残れば WAITING_FOR_APPROVAL (exit 4)
+video-agent render <workspace>/plans/input.youtube.project.json --approve all
+video-agent explain <workspace>/plans/input.youtube.project.json [--decision <id>]
 video-agent check output.mp4 --platform youtube
 ```
 
-終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 1 その他。
+終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。
+
+監査結果と既知の制限: `docs/AUDIT_PHASE1.md`。
 
 ## テスト
 
