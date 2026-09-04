@@ -322,7 +322,8 @@ Project → Asset → Analysis → Observation → Event → Session → (Produc
   preserved, AI_GENERATED excluded, metadata scrubbed); an AI response can cite existing event ids but never creates an
   event. Its output stays an Inference (ADR-018).
 - Project IR: `timeline.events` / `timeline.sessions` record the temporal layer; it is not plan content (`plan_hash`
-  unchanged) and never an execution instruction. Production planning from events is future work.
+  unchanged) and never an execution instruction. Speech / silence events reach the plan only through inferences and
+  decisions (ADR-025); no event is ever lowered to an operation directly.
 - Incidents remain QA-domain objects (`qa.incidents`); an `IncidentEvent` would reference them by id (schema only today).
 
 Observation = measured fact · Event = temporal domain occurrence · Inference = interpretation · Decision = production
@@ -1548,6 +1549,42 @@ Agent → SkillRegistry (speech_transcription) → TranscriptionAdapter → `tra
 - **Not in scope (deliberately absent):** AI / LLM, speaker identification / diarization, speaker naming, camera
   switching, subtitle rendering / burn-in, semantic segmentation, chapters, automatic editing, new or cloud engines,
   whisper.cpp, MCP, plugin loader, ranking, arbitrary command execution.
+
+### SpeechEvent → Inference → Decision → ProductionPlan (implemented, ADR-025)
+
+```
+Observation(transcript) ─→ SpeechEvent ─┐
+                                        ├─→ speech inferences ─→ decisions ─→ ProductionStep ─→ Project IR ─→ Compiler ─→ Tool
+Observation(silence)    ─→ AudioEvent ──┘
+```
+
+- **Inference (deterministic, `agent/speech_inference.py`, provenance INFERRED, never AI):**
+  `speech_interval` (consecutive SPEECH events with gaps ≤ `speech.merge_gap_seconds` form one logical interval; an
+  interval operation on the events' own timestamps), `speech_activity` (per asset: intervals, seconds, coverage),
+  `internal_silence_removable` (a measured internal silence strictly between two speech intervals, overlapping none,
+  lasting ≥ `silence.internal.removable_min_seconds`; the proposed range keeps `silence.margin_seconds` of air on each
+  side), `speech_silence_conflict` (recognised speech overlapping a measured silence: recorded, never resolved). Every
+  inference cites its SpeechEvents / silence event / transcript observation; `speaker_id` is null throughout and a
+  SpeechEvent carrying one is refused. No transcript text is read. Thresholds come from policy with an explicit
+  DEFAULT (`speech.merge_gap_seconds` 0.5, `silence.internal.removable_min_seconds` 2.0, margin 0.15) and their value +
+  provenance (PROFILE / USER / DEFAULT) are recorded in the inference data.
+- **Silence stays the silence tool's fact.** The silence observation and its events are never modified or re-timed;
+  a transcript never becomes a silence; a disagreement is a conflict inference.
+- **Decision (`agent/decision.py`):** `speech.continuity` (keep all speech intervals; AUTO, LOW, no operation),
+  `silence.internal.<start>-<end>` (`remove … (candidate)`; risk MEDIUM; approval from `silence.internal.approval`,
+  CONFIRM in every profile, floored at CONFIRM here and BLOCK when the policy says so; one decision per pause),
+  `silence.conflict.<start>-<end>` (keep; AUTO). A leading / trailing trim that overlaps a conflict is raised to CONFIRM
+  (risk MEDIUM) whatever the policy says. "Speech was recognised" ≠ "this pause must go".
+- **Plan (`agent/planner.py`):** a removal candidate that is not REJECTED becomes an extra removed range of the same
+  `silence_cleanup` step (keep = complement, multi-range `video.trim`); the step's decisions include the candidate, so
+  the step is PROPOSED and the plan REVIEW until it is approved (partial approval: other AUTO steps keep their
+  semantics). Approve → APPROVED, `plan_hash` unchanged; reject → REJECTED, render BLOCKED, `revise` drops the
+  candidate (suppressed by subject + asset). The compiler lowers the kept ranges (`segments`), nothing else.
+- **Provenance:** `explain --step` walks step → decision → `internal_silence_removable` → silence event + the two
+  `speech_interval` inferences → SPEECH events → transcript observation; `explain --observation` still ends at facts.
+- **Not here:** AI / LLM, speaker identification, camera choice, semantic segmentation, chapters, subtitles, word-level
+  tightening of segment boundaries (a follow-up: Whisper extends segments into pauses, which on real recordings yields
+  conflicts rather than candidates), the silencedetect end > duration issue.
 
 ## 52. Architecture / Repository
 

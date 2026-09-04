@@ -127,3 +127,10 @@
 - Transcript は認識事実として Observation(kind=transcript, provenance=OBSERVED) に無加工で保存し、provenance（skill / skill_version / tool / transcript id / fingerprint / engine / engine_version / execution_mode / model / model_version / parameters / cache）を保持する。asset identity は fingerprint（Skill の sha256 = agent の asset hash）で照合し、別 asset を作らない。
 - SpeechEvent は segment ごとに 1 つ、`speaker_id` は常に null。SpeechEvent ≠ speaker identification。inference / decision / planner / compiler / executor は SpeechEvent を読まない（静的テスト）。Event → command は存在しない。
 - transcription 結果は AI inference ではない。AI / LLM / diarization / 字幕 / 編集判断はこの PR に含まれず、SpeechEvent → Inference → Decision は次の段階。
+
+## ADR-025 SpeechEvent は Inference → Decision を経てのみ ProductionPlan に届く（Event → command 無し）
+- 事実: PR #13 で SpeechEvent（segment ごと、speaker_id null）が timeline に記録されるが、inference / decision / planner は読んでいなかった。無音は ffmpeg-skill / media-analysis の計測 Event（AUDIO_SILENCE）として同じ timeline にある。閾値は profile に `silence.internal.approval`（generic / conference とも CONFIRM）と `silence.internal.min_seconds`（既定 1.0）があり、発話統合・削除候補の閾値は存在しなかった。
+- 決定: `agent/speech_inference.py`（決定的・証拠ベース・AI 無し）が speech_interval / speech_activity / internal_silence_removable / speech_silence_conflict を生成する。閾値は policy キー `speech.merge_gap_seconds`（DEFAULT 0.5）/ `silence.internal.removable_min_seconds`（DEFAULT 2.0）/ 既存 `silence.margin_seconds` を使い、値と provenance を inference data に記録する。
+- Decision: 削除候補は `silence.internal.<start>-<end>`（区間付き subject。PlanDiff / revise の suppression が subject@asset キーのため）、approval は policy（CONFIRM）を下限 CONFIRM で適用し AUTO にはしない。conflict と重なる lead / tail trim は CONFIRM に上げる。`speech.continuity` は operation を持たない事実裏付けの decision。
+- Plan: 候補は既存 `silence_cleanup` step の removed 区間として keep の補集合になり、step は候補の承認まで PROPOSED（plan REVIEW）。Compiler / Tool 境界は変更なし。
+- 実メディア（ja_short ×2 + 3 s 無音）では Whisper の segment が無音側に伸びるため conflict が記録され候補は出ない（安全側）。単語タイムスタンプでの境界精緻化は次 PR 候補。silencedetect end > duration は本 PR で扱わない。
