@@ -91,6 +91,30 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(len(third["execution"]["skipped"]), 3)
         self.assertEqual([r["tool"] for r in third["execution"]["results"]], ["ffmpeg-skill/check"])
 
+    def test_reject_revise_approve_render_real_media(self):
+        ws = str(Path(self.tmp) / "ws_rev")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.src], "conference", hash_sources=False)
+        ir_path = str(Path(ws) / "conf.json")
+        save_ir(ir, ir_path)
+        lead = next(d for d in ir.doc["decisions"] if d["subject"] == "silence.leading")
+        self.assertEqual(svc.reject(load_ir(ir_path), ir_path, [lead["id"]], reason="chair introduction")["rejected"], [lead["id"]])
+        self.assertEqual(svc.render(load_ir(ir_path), ir_path)["status"], "BLOCKED")
+        out = svc.revise(load_ir(ir_path), ir_path)
+        self.assertTrue(out["created"])
+        self.assertTrue(any(l.startswith("VIDEO") for l in out["diff"]["summary"]), out["diff"]["summary"])
+        self.assertEqual(svc.render(load_ir(ir_path), ir_path)["status"], "WAITING_FOR_APPROVAL")
+        self.assertTrue(svc.approve(load_ir(ir_path), ir_path, ["all"])["renderable"])
+        res = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(res["status"], "COMPLETED", res.get("execution"))
+        tools = [r["tool"] for r in res["execution"]["results"]]
+        self.assertNotIn("ffmpeg-skill/cut", tools)
+        self.assertIn("ffmpeg-skill/loudness", tools)
+        # the delivered file keeps the full 16 s: the rejected trim really did not run
+        self.assertAlmostEqual(svc.check(res["artifacts"][0]["path"])["probe"]["duration"], 16.0, delta=0.3)
+        self.assertEqual(res["qa"]["status"], "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
+        self.assertTrue(Path(str(Path(ir_path).with_name("conf.v1.json"))).exists())
+
     @unittest.skipIf(os.name == "nt", "process-group check uses ps")
     def test_timeout_kills_the_whole_process_group(self):
         svc = Service(workspace=self.ws)
@@ -144,6 +168,28 @@ class FfmpegSkillContractTests(unittest.TestCase):
         self.assertTrue(skill.version_supported(), f"ffmpeg-skill {skill.version} outside the supported range")
         for name in CATALOG:
             self.assertIn(name, skill.scripts, f"script {name}.py missing")
+
+    def test_revision_workflow_invokes_no_tool(self):
+        """Contract: reject / revise / approve / diff never spawn ffmpeg-skill (they are pure IR transformations)."""
+        import shutil as _sh
+        skill = locate_ffmpeg_skill()
+        broken = Path(tempfile.mkdtemp()) / "skill"
+        (broken / "scripts").mkdir(parents=True)
+        for name in skill.scripts:
+            (broken / "scripts" / f"{name}.py").write_text("import sys; sys.exit(99)")
+        (broken / "package.json").write_text('{"version": "0.8.4"}')
+        ws = tempfile.mkdtemp()
+        src = str(Path(ws) / "in.mp4")
+        make_media(src)
+        good = Service(workspace=ws)
+        ir = good.plan([src], "conference", hash_sources=False)
+        p = str(Path(ws) / "c.json")
+        save_ir(ir, p)
+        bad = Service(workspace=ws, ffmpeg_skill_dir=str(broken))
+        lead = next(d for d in ir.doc["decisions"] if d["subject"] == "silence.leading")
+        bad.reject(load_ir(p), p, [lead["id"]], reason="x")
+        self.assertTrue(bad.revise(load_ir(p), p)["created"])
+        self.assertTrue(bad.approve(load_ir(p), p, ["all"])["renderable"])
 
     def test_help_declares_every_catalog_flag(self):
         skill = locate_ffmpeg_skill()

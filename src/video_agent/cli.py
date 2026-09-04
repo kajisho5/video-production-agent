@@ -138,6 +138,10 @@ def cmd_render(args, svc: Service) -> int:
         if out["status"] == "BLOCKED":
             for d in out.get("blocked", []):
                 print(f"  BLOCKED {d['id']} {d['subject']}: {d['reason']}")
+            for did, reason in (out.get("rejected") or {}).items():
+                print(f"  REJECTED {did}: {reason}")
+            if out.get("hint"):
+                print("  " + out["hint"])
         if out.get("validation") and not out["validation"]["ok"]:
             print("  validation:", *out["validation"]["errors"], sep="\n    ")
         for a in out.get("artifacts", []):
@@ -154,6 +158,92 @@ def cmd_render(args, svc: Service) -> int:
             if hits:
                 print("  failed:", hits[-1]["tool"], "\n   ", hits[-1]["stderr_tail"].replace("\n", "\n    "))
     return {"COMPLETED": 0, "WAITING_FOR_APPROVAL": 4, "BLOCKED": 3, "REVIEW": 5, "CANCELLED": 130}.get(out["status"], 1)
+
+
+def _ids(s: str) -> List[str]:
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+
+def cmd_approve(args, svc: Service) -> int:
+    ir = load_ir(args.project)
+    try:
+        out = svc.approve(ir, args.project, _ids(args.decision), who=args.by, reason=args.reason or "")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    if args.json:
+        _print(out, True)
+    else:
+        print(f"approved {len(out['approved'])} decision(s) on plan v{out['plan_version']}: {', '.join(out['approved']) or '-'}")
+        if out["pending"]:
+            print("still pending:", ", ".join(out["pending"]))
+        print("renderable:", out["renderable"], f"(approved_plan_version={out['approved_plan_version']})")
+    return 0 if out["renderable"] else 4
+
+
+def cmd_reject(args, svc: Service) -> int:
+    ir = load_ir(args.project)
+    try:
+        out = svc.reject(ir, args.project, _ids(args.decision), reason=args.reason, who=args.by)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(out, True)
+    else:
+        print(f"rejected {len(out['rejected'])} decision(s) on plan v{out['plan_version']} by {out['by']}: {', '.join(out['rejected'])}")
+        print(f"reason: {out['reason']}")
+        print(f"{out['cited_operations']} operation(s) still cite rejected decisions; {out['hint']}")
+    return 0
+
+
+def cmd_revise(args, svc: Service) -> int:
+    ir = load_ir(args.project)
+    try:
+        out = svc.revise(ir, args.project, feedback=args.feedback or "", user_requirements=_kv(args.set), who=args.by)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(out, True)
+        return 0 if out["created"] else 5
+    if not out["created"]:
+        print(f"no new plan version: {out['reason']} (still v{out['version']})")
+        return 5
+    print(f"plan v{out['version']} written to {args.project}; previous version preserved at {out['snapshot']}")
+    _print_diff(out["diff"])
+    if out.get("dropped_proposals"):
+        print("suppressed (rejected earlier):", "; ".join(f"{d['subject']}@{d['asset_id']}: {d['decision']}" for d in out["dropped_proposals"]))
+    print(out["hint"])
+    return 0
+
+
+def _print_diff(diff: Dict[str, Any]) -> None:
+    print(f"PlanDiff v{diff['from_version']} → v{diff['to_version']}:" + (" (no changes)" if diff["empty"] else ""))
+    for line in diff["summary"]:
+        print("  ", line)
+
+
+def cmd_diff(args, svc: Service) -> int:
+    from video_agent.project.diff import plan_diff
+    from video_agent.project.ir import snapshot_path
+    cur = load_ir(args.project)
+    to_doc = cur.doc
+    if args.to is not None and args.to != cur.version:
+        to_doc = load_ir(snapshot_path(args.project, args.to)).doc
+    from_v = args.__dict__["from"] if args.__dict__.get("from") is not None else to_doc["plan"]["version"] - 1
+    if from_v < 1:
+        print("nothing to compare: this is plan v1", file=sys.stderr)
+        return 2
+    from_doc = load_ir(snapshot_path(args.project, from_v)).doc if from_v != cur.version else cur.doc
+    diff = plan_diff(from_doc, to_doc)
+    hist = next((h for h in to_doc["revision"]["history"] if h["version"] == to_doc["plan"]["version"]), None)
+    if hist:
+        for did, reason in (hist.get("rejection_reasons") or {}).items():
+            dec = next((d for d in to_doc["decisions"] if d["id"] == did), None)
+            diff["summary"].insert(0, f"REJECTED {dec['subject'] if dec else did}: {dec['decision'] if dec else ''} — {reason}")
+    _print(diff, True) if args.json else _print_diff(diff)
+    return 0
 
 
 def cmd_check(args, svc: Service) -> int:
@@ -184,8 +274,12 @@ def cmd_explain(args, svc: Service) -> int:
     if args.json:
         _print([{**d, "evidence_detail": [evidence.get(e, e) for e in d["evidence"]]} for d in decs], True)
         return 0
+    reviews = ir.doc["execution"].get("reviews") or {}
     for d in decs:
         print(f"{d['id']}  {d['subject']}\n  decision : {d['decision']}\n  why      : {d['reason']}\n  confidence {d['confidence']:.2f}  risk {d['risk']}  approval {d['approval']}  status {d['status']}  provenance {d['provenance']}")
+        rv = reviews.get(d["id"])
+        if rv:
+            print(f"  review   : {rv['action']} by {rv['by']} at {rv['at']} (plan v{rv['plan_version']})" + (f" — {rv['reason']}" if rv.get("reason") else ""))
         for e in d["evidence"]:
             ev = evidence.get(e)
             if isinstance(ev, dict):
@@ -226,6 +320,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, help="per-operation timeout in seconds")
     p.add_argument("--resume", metavar="JOB_ID|last", help="reuse completed operations of a previous job (outputs are reused only when their chained key and file still match)")
     p.set_defaults(fn=cmd_render)
+    p = sub.add_parser("approve", help="approve CONFIRM decisions; approves the plan version when nothing is pending")
+    p.add_argument("project"); p.add_argument("--decision", required=True, help="comma separated decision ids, or 'all'"); p.add_argument("--reason", help="optional note"); p.add_argument("--by", help="actor (default: OS user)")
+    p.set_defaults(fn=cmd_approve)
+    p = sub.add_parser("reject", help="reject decisions with a reason; the plan must then be revised")
+    p.add_argument("project"); p.add_argument("--decision", required=True, help="comma separated decision ids, or 'all'"); p.add_argument("--reason", required=True); p.add_argument("--by")
+    p.set_defaults(fn=cmd_reject)
+    p = sub.add_parser("revise", help="produce the next plan version from rejections and feedback (previous version is preserved)")
+    p.add_argument("project"); p.add_argument("--feedback", help="free-text feedback (only unambiguous phrases are interpreted)")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", help="structured feedback, e.g. audio.loudness.target_lufs=-16"); p.add_argument("--by")
+    p.set_defaults(fn=cmd_revise)
+    p = sub.add_parser("diff", help="show the PlanDiff between two plan versions (default: previous → current)")
+    p.add_argument("project"); p.add_argument("--from", type=int, dest="from"); p.add_argument("--to", type=int)
+    p.set_defaults(fn=cmd_diff)
     p = sub.add_parser("check", help="probe + platform compliance of an output file")
     p.add_argument("output"); p.add_argument("--platform", default="custom")
     p.set_defaults(fn=cmd_check)

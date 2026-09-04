@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Tuple
 
-CURRENT = "1.1"
+CURRENT = "1.2"
 
 
 def _v10_to_v11(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -16,7 +16,19 @@ def _v10_to_v11(doc: Dict[str, Any]) -> Dict[str, Any]:
     return doc
 
 
-MIGRATIONS: Dict[str, Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = {"1.0": ("1.1", _v10_to_v11)}
+def _v11_to_v12(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """1.2 adds the revision section (feedback, history, approved_plan_version) and execution.reviews.
+    Existing approvals become APPROVED review records; a v1 plan whose decisions were all approved is treated as approved."""
+    doc["schema_version"] = "1.2"
+    ex = doc.setdefault("execution", {})
+    reviews = ex.setdefault("reviews", {})
+    for did, a in (ex.get("approvals") or {}).items():
+        reviews.setdefault(did, {"action": "APPROVED", "by": a.get("by", "user"), "at": a.get("at", ""), "reason": "", "plan_version": doc.get("plan", {}).get("version", 1)})
+    doc.setdefault("revision", {"feedback": [], "history": [], "approved_plan_version": None})
+    return doc
+
+
+MIGRATIONS: Dict[str, Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = {"1.0": ("1.1", _v10_to_v11), "1.1": ("1.2", _v11_to_v12)}
 
 
 def migrate(doc: Dict[str, Any]) -> Dict[str, Any]:

@@ -36,6 +36,18 @@ class AnalysisResult:
         return {"assets": [a.to_dict() for a in self.assets], "observations": [o.to_dict() for o in self.observations],
                 "timeline": self.timeline.to_dict(), "strategy": self.strategy, "warnings": self.warnings, "tool_calls": self.tool_calls}
 
+    @classmethod
+    def from_ir(cls, doc: Dict[str, Any]) -> "AnalysisResult":
+        """Rebuild the analysis from a Project IR (assets, observations, timeline) so a revision re-plans from the same
+        evidence without re-reading media. USER_DECISION events are dropped from the working timeline copy; they are
+        kept in the IR itself."""
+        assets = [Asset.from_dict(a) for a in doc["assets"].values()]
+        obs = [Observation.from_dict(o) for o in doc["analysis"]["observations"]]
+        tl = Timeline.from_dict(doc["timeline"])
+        tl.events = [e for e in tl.events if e.type != "USER_DECISION"]
+        return cls(assets=assets, observations=obs, timeline=tl, strategy=doc["analysis"].get("strategy", "FULL_ANALYSIS"),
+                   warnings=list(doc["analysis"].get("warnings") or []), tool_calls=list(doc["analysis"].get("tool_calls") or []))
+
 
 class MediaAnalyzer:
     def __init__(self, adapter: ToolAdapter, silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",

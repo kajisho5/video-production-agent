@@ -3,10 +3,10 @@
   "$id": "https://github.com/kajisho5/video-production-agent/schemas/project.schema.json",
   "title": "video-production-agent Project IR",
   "type": "object",
-  "required": ["schema_version", "project", "request", "requirements", "source", "assets", "analysis", "intent", "constraints", "policy", "decisions", "plan", "timeline", "video", "audio", "captions", "graphics", "color", "delivery", "qa", "execution", "provenance"],
+  "required": ["schema_version", "project", "request", "requirements", "source", "assets", "analysis", "intent", "constraints", "policy", "decisions", "plan", "timeline", "video", "audio", "captions", "graphics", "color", "delivery", "qa", "execution", "provenance", "revision"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"type": "string", "pattern": "^1\\.1$"},
+    "schema_version": {"type": "string", "pattern": "^1\\.2$"},
     "project": {"type": "object", "required": ["id", "kind", "name", "created_at", "profile"], "properties": {
       "id": {"type": "string"}, "kind": {"enum": ["single", "production"]}, "name": {"type": "string"}, "created_at": {"type": "string"},
       "profile": {"type": "object", "required": ["name", "version"], "properties": {"name": {"type": "string"}, "version": {"type": "string"}, "chain": {"type": "array", "items": {"type": "string"}}}},
@@ -43,9 +43,14 @@
     "execution": {"type": "object", "required": ["workspace", "budgets", "recovery_policy"], "properties": {
       "workspace": {"type": "string"}, "dry_run": {"type": "boolean"}, "allowed_inputs": {"type": "array", "items": {"type": "string"}},
       "budgets": {"type": "object"}, "recovery_policy": {"type": "object", "required": ["max_attempts"], "properties": {"max_attempts": {"type": "integer", "minimum": 1, "maximum": 5}}},
-      "approvals": {"type": "object"}, "resume_from": {"type": ["string", "null"]}}},
+      "approvals": {"type": "object"}, "resume_from": {"type": ["string", "null"]},
+      "reviews": {"type": "object", "additionalProperties": {"type": "object", "required": ["action", "by", "at", "reason", "plan_version"], "properties": {"action": {"enum": ["APPROVED", "REJECTED"]}, "by": {"type": "string"}, "at": {"type": "string"}, "reason": {"type": "string"}, "plan_version": {"type": "integer"}}}}}},
     "provenance": {"type": "object", "required": ["source_hashes", "profile_version", "skill_versions", "tool_versions"], "properties": {
-      "source_hashes": {"type": "object"}, "profile_version": {"type": "string"}, "skill_versions": {"type": "object"}, "tool_versions": {"type": "object"}, "created_by": {"type": "string"}, "ir_hash": {"type": "string"}, "plan_hash": {"type": "string"}, "recovery": {"type": "array"}, "runs": {"type": "array"}}}
+      "source_hashes": {"type": "object"}, "profile_version": {"type": "string"}, "skill_versions": {"type": "object"}, "tool_versions": {"type": "object"}, "created_by": {"type": "string"}, "ir_hash": {"type": "string"}, "plan_hash": {"type": "string"}, "recovery": {"type": "array"}, "runs": {"type": "array"}}},
+    "revision": {"type": "object", "required": ["feedback", "history", "approved_plan_version"], "properties": {
+      "feedback": {"type": "array", "items": {"type": "object", "required": ["id", "plan_version", "target", "text", "by", "at"], "properties": {"structured": {"type": ["object", "null"]}}}},
+      "history": {"type": "array", "items": {"type": "object", "required": ["version", "from_version", "created_at", "by", "feedback_ids", "rejected_decision_ids", "diff", "plan_hash", "snapshot"]}},
+      "approved_plan_version": {"type": ["integer", "null"]}}}
   },
   "$defs": {
     "rule": {"type": "object", "required": ["id", "kind", "scope", "key"], "properties": {"kind": {"enum": ["POLICY", "PREFERENCE", "CONSTRAINT"]}, "scope": {"type": "string"}, "hard": {"type": "boolean"}}},
@@ -56,7 +61,7 @@
       "risk": {"enum": ["LOW", "MEDIUM", "HIGH"]}, "approval": {"enum": ["AUTO", "CONFIRM", "BLOCK"]}, "status": {"enum": ["PROPOSED", "APPROVED", "REJECTED", "BLOCKED"]},
       "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "alternatives": {"type": "array"}, "params": {"type": "object"}, "provenance": {"type": "string"}}},
     "event": {"type": "object", "required": ["id", "type", "timeline_id", "range", "source", "kind"], "properties": {"range": {"type": "object", "required": ["start"], "properties": {"start": {"type": "number", "minimum": 0}, "end": {"type": ["number", "null"]}}}, "kind": {"enum": ["OBSERVED", "INFERRED", "USER"]}}},
-    "video_op": {"type": "object", "required": ["type", "asset"], "properties": {"type": {"enum": ["video.trim"]}, "asset": {"type": "string"}, "keep": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": 0}}}, "decision_ids": {"type": "array"}}},
+    "video_op": {"type": "object", "required": ["type", "asset"], "properties": {"type": {"enum": ["video.trim"]}, "asset": {"type": "string"}, "keep": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": 0}}}, "accurate": {"type": "boolean"}, "decision_ids": {"type": "array"}}},
     "audio_op": {"type": "object", "required": ["type", "asset"], "properties": {"type": {"enum": ["audio.loudness"]}, "asset": {"type": "string"}, "target_lufs": {"type": "number", "maximum": 0, "minimum": -70}, "true_peak": {"type": "number", "maximum": 0, "minimum": -20}, "decision_ids": {"type": "array"}}}
   }
 }

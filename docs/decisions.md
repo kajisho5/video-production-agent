@@ -52,3 +52,9 @@
 - 完了記録は出力の size / mtime を持ち、一致しない限り再利用しない。`--no-hash` の場合は source を size+mtime で指紋化する。
 - resume は元 Job を書き換えず新 Job を作る（履歴と provenance を壊さない）。plan_hash が異なっても key が自己検証するので、一致する操作だけが再利用される。
 - 出力の無い operation（check）は常に再実行する。上流が同一引数で再生成された場合、その下流の記録が無傷なら再利用する（key は計画に対して定義され、バイト列に対してではない）。
+
+## ADR-015 revision は再計画、rejected decision は履歴として次版に残す
+- `revise` は記録済みの Observation / Timeline から再計画する（メディアは読まない）。却下された (subject, asset) は planner の提案から除外し、却下 decision 自体は status REJECTED のまま次版に残す（理由・actor・時刻は `execution.reviews`）。
+- v(n) は `<stem>.v<n>.json` に保存してから置き換える。
+- v≥2 は `approved_plan_version == plan.version` になるまで render できない。承認は decision 単位、plan 版の承認は「pending も rejected-cited も無い」ときに自動的に成立する。
+- plan_hash は approve/reject で不変、revise で変わる。schema_version はハッシュに含めない。

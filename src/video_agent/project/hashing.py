@@ -8,7 +8,8 @@ from typing import Any, Dict
 
 from ..models import stable_hash
 
-PLAN_SECTIONS = ("schema_version", "assets", "video", "audio", "delivery", "qa")
+# schema_version is deliberately excluded: the same plan content must hash identically before and after a migration.
+PLAN_SECTIONS = ("assets", "video", "audio", "delivery", "qa")
 
 
 def plan_hash(doc: Dict[str, Any]) -> str:

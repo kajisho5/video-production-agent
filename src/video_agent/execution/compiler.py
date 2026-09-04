@@ -35,7 +35,6 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
     paths: Dict[str, str] = {}
     keys: Dict[str, str] = {}      # artifact id -> idempotency key of the op that produces it ("" for sources)
     job = Path(job_dir)
-    frame_accurate = any(r.get("key") == "edit.precision" and r.get("value") == "frame" for r in d["requirements"])
 
     def add(tool: str, args: Dict[str, Any], inputs: List[str], outputs: List[str], decision_ids: List[str], fp: str, kind: str = "transform") -> Operation:
         o = Operation(tool=tool, args=args, inputs=inputs, outputs=outputs, decision_ids=decision_ids, kind=kind, id=_op_id(tool, args, inputs))
@@ -61,8 +60,8 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
             paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_trim" / f"{stem}_trim.mp4")
             segs = ",".join(f"{s:.3f}-{e:.3f}" for s, e in op["keep"])
             args: Dict[str, Any] = {"input": current, "segments": segs, "output": out_id}
-            if frame_accurate:
-                args["accurate"] = True
+            if op.get("accurate"):
+                args["accurate"] = True   # frame-accurate cut is part of the plan content (hashed, diffed), not a side channel
             add("ffmpeg-skill/cut", args, [current], [out_id], list(op.get("decision_ids") or []), fp)
             current = out_id
         for op in d["audio"]["operations"]:

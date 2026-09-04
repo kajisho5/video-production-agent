@@ -15,10 +15,13 @@ from .capabilities import CapabilityResolver
 from .execution import Executor, compile_ir
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
-from .models import Artifact, Request, now_iso
+from .models import Artifact, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
 from .profiles import load_profile
 from .project import ProjectIR, load_ir, save_ir, validate_ir
+from .project.diff import plan_diff
+from .project.ir import snapshot_path
+from .media.analyzer import AnalysisResult
 from .qa import run_qa
 from .skills import default_registry
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
@@ -64,16 +67,37 @@ class Service:
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources)
-        caps = self.caps.resolve()
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
+        ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
+        self._fill(ir, request, profile, rules, analysis, plan_version=1)
+        return ir
+
+    def _reason(self, request: Request, profile, rules, analysis: AnalysisResult, suppressed: Optional[List[Dict[str, Any]]] = None):
+        """Requirements → Intent → Inference → Decision → Plan. `suppressed` lists (subject, asset_id) pairs the user rejected:
+        the planner must not propose them again. Returns (reqs, intent, inferences, decisions, plan, dropped)."""
+        caps = self.caps.resolve()
         reqs = extract_requirements(request, profile, rules)
         rm = requirement_map(reqs)
         intent = resolve_intent(reqs)
         target = rm.get("audio.loudness.target_lufs")
         inferences = infer(analysis, rules, target_lufs=float(target.value) if target else None, tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry)
-        plan = build_plan(decisions, analysis)
-        ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
+        dropped: List[Dict[str, Any]] = []
+        if suppressed:
+            keys = {(s["subject"], s.get("asset_id")) for s in suppressed}
+            keep = []
+            for dcs in decisions:
+                if (dcs.subject, dcs.params.get("asset_id")) in keys:
+                    dropped.append({"subject": dcs.subject, "asset_id": dcs.params.get("asset_id"), "decision": dcs.decision})
+                else:
+                    keep.append(dcs)
+            decisions = keep
+        precision = rm.get("edit.precision")
+        plan = build_plan(decisions, analysis, frame_accurate=bool(precision and precision.value == "frame"))
+        return reqs, intent, inferences, decisions, plan, dropped
+
+    def _fill(self, ir: ProjectIR, request: Request, profile, rules, analysis: AnalysisResult, plan_version: int, suppressed=None):
+        reqs, intent, inferences, decisions, plan, dropped = self._reason(request, profile, rules, analysis, suppressed)
         d = ir.doc
         d["request"] = request.to_dict()
         d["requirements"] = [r.to_dict() for r in reqs]
@@ -86,18 +110,108 @@ class Service:
         d["constraints"] = [r.to_dict() for r in rules.all_rules if r.hard]
         d["policy"] = rules.to_dict()
         d["decisions"] = [x.to_dict() for x in decisions]
-        d["plan"] = {"version": plan["version"], "steps": plan["steps"], "summary": plan["summary"]}
+        d["plan"] = {"version": plan_version, "steps": plan["steps"], "summary": plan["summary"]}
         d["timeline"] = analysis.timeline.to_dict()
         d["video"] = {"operations": plan["video_ops"]}
         d["audio"] = {"operations": plan["audio_ops"]}
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
-        d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in inputs})
+        d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in (request.args or {}).get("inputs", [])})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
                                 "skill_versions": {s.name: s.version for s in self.registry.all() if s.phase == 1}, "tool_versions": d["source"]["tool_versions"]})
         ir.finalize_hash()
-        return ir
+        return dropped
+
+    # ---- review workflow
+    def approve(self, ir: ProjectIR, ir_path: str, ids: List[str], who: Optional[str] = None, reason: str = "") -> Dict[str, Any]:
+        who = who or _default_who()
+        if ir.rejected_cited():
+            raise ValueError("plan cites REJECTED decisions; run `revise` before approving")
+        done = ir.approve(ids, who, reason)
+        save_ir(ir, ir_path)
+        return {"approved": done, "pending": [d["id"] for d in ir.pending_confirmations()], "plan_version": ir.version,
+                "approved_plan_version": ir.doc["revision"]["approved_plan_version"], "renderable": not ir.needs_reapproval() and not ir.pending_confirmations()}
+
+    def reject(self, ir: ProjectIR, ir_path: str, ids: List[str], reason: str, who: Optional[str] = None) -> Dict[str, Any]:
+        who = who or _default_who()
+        done = ir.reject(ids, who, reason)
+        if not done:
+            raise ValueError("no decision matched (already rejected, blocked, or unknown id)")
+        save_ir(ir, ir_path)
+        return {"rejected": done, "reason": reason, "by": who, "plan_version": ir.version, "cited_operations": len(ir.rejected_cited()),
+                "hint": "run `video-agent revise <project>` to produce the next plan version without the rejected operations"}
+
+    def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None) -> Dict[str, Any]:
+        """Plan v(n) → v(n+1): re-plan from the recorded analysis with the rejections and feedback applied. v(n) is snapshotted
+        first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations)."""
+        who = who or _default_who()
+        old = json.loads(json.dumps(ir.doc))
+        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
+        if bad:
+            raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
+        fb_ids: List[str] = []
+        duplicate_feedback = False
+        if feedback or user_requirements:
+            same = [f for f in ir.doc["revision"]["feedback"] if f["plan_version"] == ir.version and f["text"] == (feedback or "") and (f.get("structured") or None) == (user_requirements or None)]
+            if same:
+                duplicate_feedback = True   # identical feedback on the same version: recorded once, not twice
+                fb_ids = [same[-1]["id"]]
+            else:
+                fb = {"id": new_id("fb"), "plan_version": ir.version, "target": "global", "text": feedback or "", "structured": user_requirements or None, "by": who, "at": now_iso()}
+                ir.doc["revision"]["feedback"].append(fb)
+                fb_ids.append(fb["id"])
+        # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
+        prev_req = dict((old["request"].get("args") or {}).get("requirements") or {})
+        prev_req.update(user_requirements or {})
+        raw = (old["request"].get("raw") or "")
+        if feedback:
+            raw = (raw + "\n" + feedback).strip()
+        profile = load_profile(old["project"]["profile"]["name"])
+        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(prev_req))
+        analysis = AnalysisResult.from_ir(old)
+        rejected = [d for d in old["decisions"] if d["status"] == "REJECTED"]
+        suppressed = [{"subject": d["subject"], "asset_id": (d.get("params") or {}).get("asset_id")} for d in rejected]
+        request = Request(raw=raw, received_at=old["request"]["received_at"], channel=old["request"]["channel"],
+                          args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso()})
+        new_version = ir.version + 1
+        fresh = ProjectIR.new(old["project"]["name"], old["project"]["profile"], self.workspace)
+        dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed)
+        nd = fresh.doc
+        # carry identity, history and the audit trail
+        nd["project"] = old["project"]
+        nd["timeline"]["events"] += [e for e in old["timeline"]["events"] if e["type"] == "USER_DECISION"]
+        nd["decisions"] = rejected + nd["decisions"]            # rejected decisions stay visible, with their reviews
+        nd["execution"]["reviews"] = {k: v for k, v in (old["execution"].get("reviews") or {}).items() if k in {d["id"] for d in rejected}}
+        nd["execution"]["approvals"] = {}
+        nd["execution"]["allowed_inputs"] = old["execution"].get("allowed_inputs", [])
+        nd["revision"] = {"feedback": list(ir.doc["revision"]["feedback"]), "history": list(old["revision"]["history"]), "approved_plan_version": None}
+        nd["provenance"]["runs"] = list(old["provenance"].get("runs") or [])
+        nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
+        nd["analysis"] = old["analysis"]
+        fresh.finalize_hash()
+        diff = plan_diff(old, nd)
+        applied_before = set(old["revision"]["history"][-1]["rejected_decision_ids"]) if old["revision"]["history"] else set()
+        new_rejections = [d for d in rejected if d["id"] not in applied_before]
+        for d in new_rejections:
+            diff["summary"].insert(0, f"REJECTED {d['subject']}: {d['decision']} — {(old['execution'].get('reviews') or {}).get(d['id'], {}).get('reason', '')}")
+        # a new version exists only when the plan actually changed or a new rejection was applied. Feedback that produces no
+        # plan change is kept in revision.feedback (once) but never creates an empty version.
+        if diff["empty"] and not new_rejections:
+            if fb_ids and not duplicate_feedback:
+                save_ir(ir, ir_path)   # persist the recorded feedback without a version bump
+            reason = ("feedback recorded but it changed nothing in the plan" + ("; the proposal it would re-enable was rejected earlier" if dropped else "")) if fb_ids else "no new feedback or rejections since the last revision"
+            return {"version": ir.version, "created": False, "diff": diff, "reason": reason, "dropped_proposals": dropped, "feedback_ids": fb_ids}
+        snap = snapshot_path(ir_path, ir.version)
+        if not Path(snap).exists():
+            Path(snap).write_text(json.dumps(old, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        nd["revision"]["history"].append({"version": new_version, "from_version": ir.version, "created_at": now_iso(), "by": who, "feedback_ids": fb_ids,
+                                          "rejected_decision_ids": [d["id"] for d in rejected], "rejection_reasons": {d["id"]: (old["execution"].get("reviews") or {}).get(d["id"], {}).get("reason", "") for d in rejected},
+                                          "dropped_proposals": dropped, "diff": diff, "plan_hash": fresh.plan_hash(), "ir_hash_before": old["provenance"].get("ir_hash"), "snapshot": snap})
+        ir.doc = nd
+        save_ir(ir, ir_path)
+        return {"version": new_version, "created": True, "snapshot": snap, "diff": diff, "dropped_proposals": dropped, "pending": [d["id"] for d in ir.pending_confirmations()],
+                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering"}
 
     def validate(self, ir: ProjectIR, check_paths: bool = True):
         return validate_ir(ir, self.caps.resolve(), check_paths=check_paths)
@@ -139,6 +253,7 @@ class Service:
         job = store.create()
         job.ir_path = ir_path
         job.plan_hash = ir.plan_hash()
+        job.plan_version = ir.version
         if prior is not None:
             job.resumed_from = prior.id
             job.completed_ops = dict(prior.completed_ops)
@@ -146,6 +261,11 @@ class Service:
         job.transition("INGESTING", "render requested")
         job.transition("ANALYZING")
         job.transition("PLANNING")
+        if ir.rejected_cited():
+            reasons = {d["id"]: (ir.doc["execution"].get("reviews") or {}).get(d["id"], {}).get("reason") for d in ir.rejected()}
+            job.transition("BLOCKED", "plan cites REJECTED decisions; revise before rendering")
+            store.save(job)
+            return {"job": job.to_dict(), "status": "BLOCKED", "rejected": reasons, "approved": [], "hint": "run `video-agent revise <project>`"}
         rep = self.validate(ir)
         if not rep.ok:
             job.transition("FAILED", "validation failed")
@@ -160,6 +280,12 @@ class Service:
             store.save(job)
             return {"job": job.to_dict(), "status": "BLOCKED", "blocked": ir.blocked(), "approved": approved}
         pending = ir.pending_confirmations()
+        if not pending and ir.needs_reapproval():
+            job.transition("WAITING_FOR_APPROVAL", f"plan v{ir.version} has not been approved")
+            store.save(job)
+            save_ir(ir, ir_path)
+            return {"job": job.to_dict(), "status": "WAITING_FOR_APPROVAL", "pending": [], "approved": approved, "plan_version": ir.version,
+                    "hint": f"plan v{ir.version} is a revision: approve it with `video-agent approve <project> --decision all` (or render --approve all)"}
         if pending:
             job.transition("WAITING_FOR_APPROVAL", f"{len(pending)} decision(s) need confirmation")
             store.save(job)
@@ -205,7 +331,9 @@ class Service:
         prov["resume"] = resume_note
         prov["skipped"] = result.skipped
         prov["reused"] = result.reused
-        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash,
+        prov["plan_version"] = ir.version
+        prov["reviews"] = ir.doc["execution"].get("reviews", {})
+        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash, "plan_version": ir.version,
                                              "resumed_from": job.resumed_from, "skipped": result.skipped})
         ir.doc["provenance"]["recovery"] = result.recovery
         save_ir(ir, ir_path)

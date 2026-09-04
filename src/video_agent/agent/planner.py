@@ -8,7 +8,7 @@ from ..media.analyzer import AnalysisResult
 from ..models import Decision
 
 
-def build_plan(decisions: List[Decision], analysis: AnalysisResult, version: int = 1) -> Dict[str, Any]:
+def build_plan(decisions: List[Decision], analysis: AnalysisResult, version: int = 1, frame_accurate: bool = False) -> Dict[str, Any]:
     steps: List[Dict[str, Any]] = []
     video_ops: List[Dict[str, Any]] = []
     audio_ops: List[Dict[str, Any]] = []
@@ -27,7 +27,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, version: int
             if d.subject == "silence.trailing":
                 end, dec_ids = min(end, d.params["start"]), dec_ids + [d.id]
         if dec_ids and end > start:
-            video_ops.append({"type": "video.trim", "asset": asset.id, "keep": [[round(start, 3), round(end, 3)]], "decision_ids": dec_ids})
+            video_ops.append({"type": "video.trim", "asset": asset.id, "keep": [[round(start, 3), round(end, 3)]], "accurate": bool(frame_accurate), "decision_ids": dec_ids})
             steps.append({"id": f"step_trim_{asset.id}", "skill": "silence_cleanup", "tool": "ffmpeg-skill/cut", "decision_ids": dec_ids, "params": {"asset": asset.id, "keep": [[start, end]]}})
             summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - (end - start):.2f}s of technical silence)")
         for d in decisions:
