@@ -1,0 +1,50 @@
+{
+ "name": "cx_contexts_from_events",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    3.5,
+    8.8,
+    "a"
+   ],
+   [
+    12.3,
+    13.5,
+    "b"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "context": {
+   "min_contexts": 8,
+   "at": {
+    "5.0": "AudioEvent/active+AudioEvent/loudness+SpeechEvent/speech",
+    "10.0": "AudioEvent/active+AudioEvent/loudness+AudioEvent/silence",
+    "1.0": "AudioEvent/loudness+AudioEvent/silence"
+   },
+   "deterministic": true
+  }
+ }
+}

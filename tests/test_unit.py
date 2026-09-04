@@ -2840,7 +2840,8 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertTrue(all(dec["decision"] in ("keep",) or dec["decision"].startswith(("keep", "remove", "trim")) for dec in citing))
         info = Service.explain_observation(d, t["id"])
         kinds = [row["kind"] for row in info["chain"]]
-        self.assertEqual(kinds, ["observation", "skill", "tool", "engine", "model", "transcript", "asset", "analysis", "event", "event"])
+        self.assertEqual(kinds[:10], ["observation", "skill", "tool", "engine", "model", "transcript", "asset", "analysis", "event", "event"])
+        self.assertTrue(kinds[10:] and set(kinds[10:]) == {"context"}, "PR #15: the contexts the transcript's events take part in follow")
         self.assertTrue(next(row for row in info["chain"] if row["kind"] == "asset")["shared_identity"])
         self.assertEqual(next(row for row in info["chain"] if row["kind"] == "engine")["id"], "faster_whisper@1.2.1-fake")
         self.assertEqual(Service.explain_observation(d, t["external_id"])["observation"]["id"], t["id"], "the Skill's transcript id resolves too")
@@ -2940,7 +2941,7 @@ class SpeechInferenceDecisionPlanTests(unittest.TestCase):
         self.assertTrue(any(i["kind"] == "internal_silence_candidate" and i["data"]["start"] == 9.0 for i in d["analysis"]["inferences"]))
         self.assertEqual([x["subject"] for x in d["decisions"] if x["subject"].startswith("silence.internal")], ["silence.internal.9.000-12.000"], "one decision per pause: the candidate replaces the keep")
         blob = json.dumps(d["analysis"]["inferences"])
-        for bad in ("speaker_name", "camera", "who is speaking", "ffmpeg", "argv"):
+        for bad in ("speaker_name", "camera", "who is speaking", "ffmpeg -", "argv", "cut.py"):   # tool sources ("ffmpeg-skill/silence@…") are provenance, not commands
             self.assertNotIn(bad, blob)
         self.assertNotRegex(blob, r'"speaker_id": "')
         # merging: two segments closer than the merge gap form one logical interval; farther apart stay separate
@@ -3101,3 +3102,239 @@ class SpeechInferenceDecisionPlanTests(unittest.TestCase):
         sil["range"]["end"] = 16.5
         ir_bad = load_ir(ir_path); ir_bad.doc = bad
         self.assertTrue(any("exceeds asset duration" in e for e in validate_ir(ir_bad).errors), "still reported, not silently clamped")
+
+
+class ProductionContextTests(unittest.TestCase):
+    """PR #15: ProductionContext (situation understanding) and generic deterministic inference over any event type (ADR-026).
+    Fixture: FakeAdapter silences 0-3 / 9-12 / 13.7-end + fake transcript speech 3.5-8.8 / 12.3-13.5 (same as PR #14)."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_transcription.py")
+    SEGMENTS = json.dumps([[3.5, 8.8, "本日の講演を始めます"], [12.3, 13.5, "以上です"]])
+    SILENCES = [[0.0, 3.0], [9.0, 12.0], [13.7, None]]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+        os.environ["FAKE_TS_SEGMENTS"] = self.SEGMENTS
+        for k in ("FAKE_TS_MODE", "FAKE_TS_CACHE"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("FAKE_TS_SEGMENTS", "FAKE_TS_MODE", "FAKE_TS_CACHE"):
+            os.environ.pop(k, None)
+
+    def _service(self, silences=None, transcription=True, **fake):
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        adapters = [FakeAdapter(silences=silences if silences is not None else self.SILENCES, **fake)]
+        if transcription:
+            adapters.append(TranscriptionAdapter(TranscriptionSkill([sys.executable, self.FAKE], None, {}), workspace=str(Path(self.tmp) / "ws" / "cache" / "transcription")))
+        return make_service(self.tmp, caps=FakeCaps(extra=["transcription"]), adapter=ToolRouter(adapters))
+
+    def _analysis(self, svc=None):
+        svc = svc or self._service()
+        _, _, an = svc.analyze([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        return svc, an
+
+    # 1-6: contexts from several event types; scope, references, provenance, asset identity, determinism
+    def test_context_construction_references_and_determinism(self):
+        from video_agent.context import ProductionContext, build_contexts, contexts_at, contexts_between, validate_context
+        svc, an = self._analysis()
+        ctxs = build_contexts(an.timeline.events, an.assets, an.observations, [])
+        self.assertTrue(len(ctxs) >= 8, [c.scope for c in ctxs])
+        tl = f"asset:{an.assets[0].id}"
+        self.assertTrue(all(c.timeline_id == tl and c.asset_ids == [an.assets[0].id] for c in ctxs), "every context names the asset it describes")
+        # contiguous cover of the asset from 0 to its duration, in order, no overlap, timestamps exactly the events' own
+        bounds = [(c.scope["start"], c.scope["end"]) for c in ctxs]
+        self.assertEqual(bounds[0][0], 0.0); self.assertEqual(bounds[-1][1], 16.0)
+        self.assertTrue(all(a[1] == b[0] for a, b in zip(bounds, bounds[1:])))
+        event_points = {p for e in an.timeline.events if e.event_type != "UserDecisionEvent" for p in (e.range["start"], e.range["end"]) if p is not None}
+        self.assertTrue({b for pair in bounds for b in pair} <= event_points | {0.0, 16.0}, "boundaries come from the events, never from a heuristic")
+        # the situation while speech is recognised inside audio activity: three event kinds active at once
+        at = contexts_at(ctxs, 5.0)
+        self.assertEqual(len(at), 1)
+        c = at[0]
+        self.assertEqual(c.signature, "AudioEvent/active+AudioEvent/loudness+SpeechEvent/speech")
+        self.assertEqual((c.scope["start"], c.scope["end"]), (3.5, 8.8))
+        sp = next(e for e in an.timeline.events if e.type == "SPEECH" and e.range["start"] == 3.5)
+        self.assertIn(sp.id, c.event_ids)
+        track = next(t for t in c.tracks if t["event_type"] == "SpeechEvent")
+        self.assertEqual((track["event_ids"], track["sources"], track["provenance"]), ([sp.id], [sp.source], ["OBSERVED"]))
+        transcript = next(o for o in an.observations if o.kind == "transcript")
+        self.assertIn(transcript.id, c.observation_ids, "observation provenance travels with the context")
+        self.assertTrue(all(o in {x.id for x in an.observations} for o in c.observation_ids))
+        self.assertEqual(c.provenance, "DERIVED"); self.assertEqual(c.generator, "context_builder@1.0")
+        # the pause between the two speech intervals: silence measured, no speech
+        pause = contexts_at(ctxs, 10.0)[0]
+        self.assertEqual(pause.signature, "AudioEvent/active+AudioEvent/loudness+AudioEvent/silence")
+        self.assertEqual((pause.scope["start"], pause.scope["end"]), (9.0, 12.0))
+        self.assertEqual([(c.scope["start"], c.scope["end"]) for c in contexts_between(ctxs, 8.0, 12.5)], [(3.5, 8.8), (8.8, 9.0), (9.0, 12.0), (12.0, 12.3), (12.3, 13.5)])
+        # deterministic: same events → same contexts and ids; a second build is identical
+        again = build_contexts(an.timeline.events, an.assets, an.observations, [])
+        self.assertEqual([c.to_dict() for c in ctxs], [c.to_dict() for c in again])
+        self.assertEqual(c.id, ProductionContext.make_id(c.timeline_id, c.scope, c.event_ids))
+        self.assertTrue(all(x.id.startswith("ctx_") for x in ctxs))
+        # validation: references must exist, ids must match content, scope inside the asset
+        ev = {e.id: e for e in an.timeline.events}
+        durs = {an.assets[0].id: 16.0}
+        obs_ids = {o.id for o in an.observations}
+        self.assertEqual(validate_context(c, ev, durs, obs_ids, set()), [])
+        bad = ProductionContext.from_dict(c.to_dict()); bad.scope = {"start": 3.5, "end": 3.4}
+        self.assertTrue(any("end > start" in e or "invalid scope" in e for e in validate_context(bad, ev, durs, obs_ids, set())))
+        bad = ProductionContext.from_dict(c.to_dict()); bad.event_ids = bad.event_ids + ["evt_nope"]
+        self.assertTrue(any("unknown event" in e for e in validate_context(bad, ev, durs, obs_ids, set())))
+        bad = ProductionContext.from_dict(c.to_dict()); bad.scope = {"start": 3.5, "end": 20.0}
+        self.assertTrue(any("exceeds asset" in e for e in validate_context(bad, ev, durs, obs_ids, set())))
+        bad = ProductionContext.from_dict(c.to_dict()); bad.id = "ctx_edited"
+        self.assertTrue(any("does not match" in e for e in validate_context(bad, ev, durs, obs_ids, set())))
+        # a user decision is review history, not a situation; without any situation event there is no context
+        self.assertEqual(build_contexts([], an.assets, [], []), [])
+
+    # 7-12: generic inference from contexts: evidence, timestamps kept, conflicts kept, no speaker / intent semantics
+    def test_generic_inference_from_contexts(self):
+        from video_agent.context import GENERIC_KINDS, build_contexts, infer_from_contexts
+        svc, an = self._analysis()
+        ctxs = build_contexts(an.timeline.events, an.assets, an.observations, [])
+        ev = {e.id: e for e in an.timeline.events}
+        infs = infer_from_contexts(ctxs, ev, {an.assets[0].id: 16.0})
+        self.assertTrue(infs)
+        self.assertTrue(all(i.kind in GENERIC_KINDS and i.provenance == "INFERRED" and i.evidence and i.data["generator"] == "context_inference@1.0" for i in infs))
+        self.assertTrue(all(all(x in ev for x in i.evidence) for i in infs), "every piece of evidence is an existing event")
+        by = {}
+        for i in infs:
+            by.setdefault(i.kind, []).append(i)
+        act = {(i.data["event_type"], i.data["subtype"]): i for i in by["source_activity"]}
+        self.assertEqual(act[("SpeechEvent", "speech")].data["intervals"], [[3.5, 8.8], [12.3, 13.5]], "intervals are the events' own timestamps")
+        self.assertEqual(act[("AudioEvent", "silence")].data["intervals"], [[0.0, 3.0], [9.0, 12.0], [13.7, 16.0]])
+        self.assertNotIn(("AudioEvent", "loudness"), act, "a whole-programme measurement says nothing about time")
+        inact = {(i.data["event_type"], i.data["subtype"]): i for i in by["source_inactivity"]}
+        self.assertEqual(inact[("SpeechEvent", "speech")].data["intervals"], [[0.0, 3.5], [8.8, 12.3], [13.5, 16.0]])
+        self.assertTrue(all(cid in {c.id for c in ctxs} for i in infs for cid in i.data.get("context_ids", [])), "context references resolve")
+        trans = sorted(by["transition"], key=lambda i: i.data["at"])
+        self.assertEqual([i.data["at"] for i in trans], [2.85, 3.0, 3.5, 8.8, 9.0, 12.0, 12.3, 13.5, 13.7, 13.85])
+        self.assertTrue(all(i.data["from_context"] in {c.id for c in ctxs} and i.data["to_context"] in {c.id for c in ctxs} for i in trans))
+        self.assertNotIn("conflict", by, "silence and speech do not overlap in this fixture")
+        # a conflict is recorded, never resolved: both events stay, neither timestamp changes, no preference
+        os.environ["FAKE_TS_SEGMENTS"] = json.dumps([[1.0, 8.8, "a"], [12.3, 13.5, "b"]])
+        svc2, an2 = self._analysis(self._service())
+        ctxs2 = build_contexts(an2.timeline.events, an2.assets, an2.observations, [])
+        infs2 = infer_from_contexts(ctxs2, {e.id: e for e in an2.timeline.events}, {an2.assets[0].id: 16.0})
+        conf = [i for i in infs2 if i.kind == "conflict"]
+        self.assertEqual(len(conf), 1)
+        self.assertEqual((conf[0].data["codes"], conf[0].data["overlap"]), (["AUDIO_SILENCE", "SPEECH"], [1.0, 3.0]))
+        sil = next(e for e in an2.timeline.events if e.type == "AUDIO_SILENCE" and e.range["start"] == 0.0)
+        spk = next(e for e in an2.timeline.events if e.type == "SPEECH" and e.range["start"] == 1.0)
+        self.assertEqual(sorted(conf[0].evidence), sorted([sil.id, spk.id]))
+        self.assertEqual((sil.range["end"], spk.range["start"]), (3.0, 1.0), "timestamps untouched")
+        self.assertIn("neither is preferred", conf[0].statement, "the conflict is recorded, not resolved")
+        blob = json.dumps([i.to_dict() for i in infs + infs2])
+        for bad in ("speaker_id\": \"", "speaker_name", "camera", "slide", "should", "cut ", "remove", "use source", "argv", "ffmpeg -"):
+            self.assertNotIn(bad, blob, bad)
+        # no situation events → no generic inference
+        self.assertEqual(infer_from_contexts([], {}, {}), [])
+
+    # 13-19: architecture boundaries — no event / context / inference → step, tool or command path; no AI; no paths
+    def test_boundaries_static_and_dynamic(self):
+        import ast
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        for rel in ("context/model.py", "context/builder.py", "context/inference.py"):
+            text = (root / rel).read_text(encoding="utf-8")
+            tree = ast.parse(text)
+            mods = [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)] + [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
+            for m in mods:
+                for bad in ("subprocess", "tools", "execution", "providers", "ai_reasoning", "planner", "decision", "compiler", "shutil", "pathlib", "socket", "http"):
+                    self.assertNotIn(bad, m, (rel, mods))
+                self.assertNotEqual(m, "os", (rel, mods))
+            code = text.split('"""', 2)[2]
+            for bad in ("argv", "shell", "subprocess", "ffmpeg", "Operation(", "ProductionStep", "Decision(", "camera", "slide", "speaker", "open(", "Path("):
+                self.assertNotIn(bad, code, (rel, bad))
+        for rel in ("agent/planner.py", "agent/production_plan.py", "execution/compiler.py", "execution/executor.py"):
+            t = (root / rel).read_text(encoding="utf-8")
+            self.assertNotIn("ProductionContext", t, f"{rel}: contexts never reach the plan / compiler / executor")
+            self.assertNotIn("build_contexts", t)
+        svc, ir = self._service(), None
+        ir = svc.plan([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        d = ir.doc
+        self.assertTrue(d["analysis"]["contexts"])
+        blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "delivery": d["delivery"]})
+        for bad in ("ctx_", "context", "SPEECH", "transition", "source_activity", "argv"):
+            self.assertNotIn(bad, blob, f"{bad!r} reached the plan / operations")
+        from video_agent.media.analysis import leak_scan
+        self.assertEqual(leak_scan({"contexts": d["analysis"]["contexts"], "inferences": d["analysis"]["inferences"]}), [])
+        self.assertNotIn(self.src, json.dumps(d["analysis"]["contexts"]), "no filesystem path in a context")
+        self.assertEqual(d["provenance"]["ai_calls"], [], "no AI provider is consulted")
+        self.assertTrue(all(i["provenance"] != "AI_GENERATED" for i in d["analysis"]["inferences"]))
+        # generic inferences never become decisions or steps by themselves: the decision set is PR #14's
+        subjects = sorted({x["subject"].split(".")[0] for x in d["decisions"]})
+        self.assertEqual(subjects, ["audio", "delivery", "silence", "speech"])
+        self.assertFalse([x for x in d["decisions"] if any(i["id"] in x["evidence"] for i in d["analysis"]["inferences"] if i["kind"] in ("source_activity", "source_inactivity", "transition"))],
+                         "situation inferences inform, they do not decide")
+        # an AI inference must never be recorded as OBSERVED / an event: the validator refuses it
+        from video_agent.project import validate_ir
+        bad = json.loads(json.dumps(d))
+        bad["analysis"]["inferences"].append({"kind": "ai_recommendation:silence_cleanup", "asset_id": list(bad["assets"])[0], "statement": "x", "confidence": 0.5,
+                                              "evidence": [bad["analysis"]["observations"][0]["id"]], "data": {}, "provenance": "OBSERVED", "id": "inf_ai_bad"})
+        p = str(Path(self.tmp) / "bad.json"); Path(p).write_text(json.dumps(bad), encoding="utf-8"); ir_bad = load_ir(p)
+        self.assertTrue(any("AI_GENERATED" in e for e in validate_ir(ir_bad).errors))
+
+    # 20-24: provenance chain observation → event → context → inference → decision → step; explain; regression on review flow
+    def test_provenance_chain_explain_and_regression(self):
+        from video_agent.agent.production_plan import explain_step
+        svc = self._service()
+        ir = svc.plan([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        ctxs = d["analysis"]["contexts"]
+        transcript = next(o for o in d["analysis"]["observations"] if o["kind"] == "transcript")
+        # observation → event → context: explain_observation ends with the contexts its events take part in
+        info = Service.explain_observation(d, transcript["id"])
+        ctx_rows = [r for r in info["chain"] if r["kind"] == "context"]
+        self.assertEqual(len(ctx_rows), 2, "each SpeechEvent lives in exactly one situation here")
+        self.assertTrue(all(r["provenance"] == "DERIVED" for r in ctx_rows))
+        # context → events → observations, and the inferences / decisions resting on it
+        pause = next(c for c in ctxs if c["scope"]["start"] == 9.0 and c["scope"]["end"] == 12.0)
+        info = Service.explain_context(d, pause["id"])
+        kinds = [r["kind"] for r in info["chain"]]
+        self.assertEqual(kinds[0], "context")
+        self.assertIn("track", kinds); self.assertIn("event", kinds); self.assertIn("observation", kinds); self.assertIn("inference", kinds); self.assertIn("decision", kinds)
+        self.assertTrue(any(r["kind"] == "decision" and r["id"].startswith("dec_") and "silence.internal." in r["detail"] for r in info["chain"]), "the removal candidate rests on this situation")
+        self.assertTrue(any(r["kind"] == "inference" and r.get("generator") == "context_inference@1.0" for r in info["chain"]))
+        self.assertIn("never becomes a step", info["boundary"])
+        with self.assertRaises(KeyError):
+            Service.explain_context(d, "ctx_nope")
+        # step → decision → inference → contexts (via data) → events → observation
+        trim = next(s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup")
+        chain = explain_step(d, trim["id"])["chain"]
+        self.assertTrue(any(r["kind"] == "observation" and r["detail"] == "transcript" for r in chain))
+        self.assertTrue(any(r["kind"] == "event" and "AudioEvent/silence" in r["detail"] for r in chain))
+        # contexts are valid IR content and survive the review flow: approve, reject → revise (v2 rebuilds its own contexts)
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        cand = next(x for x in d["decisions"] if x["subject"].startswith("silence.internal."))
+        svc.reject(load_ir(p), p, [cand["id"]], reason="keep it")
+        svc.revise(load_ir(p), p)
+        v2 = load_ir(p)
+        self.assertEqual(v2.version, 2)
+        self.assertEqual(svc.validate(v2).errors, [], svc.validate(v2).errors)
+        self.assertTrue(v2.doc["analysis"]["contexts"])
+        self.assertEqual({c["id"] for c in v2.doc["analysis"]["contexts"]}, {c["id"] for c in ctxs}, "same events → same situations across versions")
+        self.assertTrue(all(i in {x["id"] for x in v2.doc["analysis"]["inferences"]} for c in v2.doc["analysis"]["contexts"] for i in c["inference_ids"]))
+        svc.approve(load_ir(p), p, ["all"])
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])
+        # a context that cites a missing inference or event is refused by the validator (nothing is silently repaired)
+        bad = json.loads(json.dumps(d))
+        bad["analysis"]["contexts"][0]["inference_ids"] = ["inf_missing"]
+        pb = str(Path(self.tmp) / "badctx.json"); Path(pb).write_text(json.dumps(bad), encoding="utf-8")
+        from video_agent.project import validate_ir
+        self.assertTrue(any("unknown inference" in e for e in validate_ir(load_ir(pb)).errors))
+        # CLI: context listing, --at, and explain --context
+        import subprocess
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=self.tmp)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "context", p, "--at", "10"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("AudioEvent/silence", r.stdout); self.assertIn("9.000-  12.000", r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--context", pause["id"]], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("context", r.stdout); self.assertIn("never becomes a step", r.stdout)

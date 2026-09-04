@@ -21,7 +21,8 @@ from .model import ProductionContext
 CONTEXT_INFERENCE_ID = "context_inference@1.0"
 GENERIC_KINDS = ("source_activity", "source_inactivity", "transition", "conflict")
 # event codes that cannot be true of the same interval; a listed pair overlapping is a measurement disagreement
-EXCLUSIVE_PAIRS: Tuple[Tuple[str, str], ...] = (("AUDIO_SILENCE", "SPEECH"), ("AUDIO_SILENCE", "AUDIO_ACTIVE"))
+# AUDIO_SILENCE / AUDIO_ACTIVE are not listed: the silence tool's keep ranges include a margin of air inside the silence by design
+EXCLUSIVE_PAIRS: Tuple[Tuple[str, str], ...] = (("AUDIO_SILENCE", "SPEECH"),)
 WHOLE_ASSET_SUBTYPES = ("loudness",)   # measurements that cover the programme by definition: activity of these says nothing about time
 
 
@@ -99,7 +100,7 @@ def infer_from_contexts(contexts: Iterable[ProductionContext], events: Dict[str,
                     ea, eb = events[codes[a]], events[codes[b]]
                     ov = [max(float(ea.range["start"]), float(eb.range["start"])), min(float(ea.range["end"]), float(eb.range["end"]))]
                     out.append(Inference(kind="conflict", asset_id=aid or "", confidence=1.0,
-                                         statement=f"{a} ({ea.source}) and {b} ({eb.source}) overlap for {ov[1] - ov[0]:.2f}s at {ov[0]:.2f}s; the two measurements disagree and neither is preferred here",
+                                         statement=f"{a} and {b} overlap for {ov[1] - ov[0]:.2f}s at {ov[0]:.2f}s; the two measurements disagree and neither is preferred here",
                                          evidence=[ea.id, eb.id], data={"timeline_id": tl_id, "codes": [a, b], "overlap": ov, "sources": [ea.source, eb.source],
                                                                         "context_ids": [x.id for x in cs if codes[a] in x.event_ids and codes[b] in x.event_ids], "generator": CONTEXT_INFERENCE_ID}))
     return out

@@ -414,6 +414,26 @@ def cmd_events(args, svc: Service) -> int:
     return 0
 
 
+def cmd_context(args, svc: Service) -> int:
+    """The production situation recorded in an IR: per timeline scope, which kinds of events are active (references only)."""
+    from video_agent.context import contexts_at, contexts_between
+    ir = load_ir(args.project)
+    ctxs = Service.contexts_of(ir.doc)
+    if args.at is not None:
+        ctxs = contexts_at(ctxs, args.at, args.timeline)
+    elif args.between:
+        ctxs = contexts_between(ctxs, args.between[0], args.between[1], args.timeline)
+    elif args.timeline:
+        ctxs = [c for c in ctxs if c.timeline_id == args.timeline]
+    if args.json:
+        _print([c.to_dict() for c in ctxs], True)
+        return 0
+    for c in ctxs:
+        tracks = ", ".join(f"{t['event_type']}/{t['subtype']}×{len(t['event_ids'])}" for t in c.tracks) or "nothing observed"
+        print(f"{c.id}  {c.timeline_id:24s} {c.scope['start']:8.3f}-{c.scope['end']:8.3f}  {tracks}  obs={len(c.observation_ids)} inf={len(c.inference_ids)}")
+    return 0
+
+
 def cmd_sessions(args, svc: Service) -> int:
     ir = load_ir(args.project)
     sessions = ir.doc["timeline"].get("sessions") or []
@@ -443,6 +463,22 @@ def cmd_explain(args, svc: Service) -> int:
                 print(f"{'  ' * (row['level'] + 2)}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}" + (f"  source {row['source']}" if row.get("source") else ""))
         return 0
     ir = load_ir(args.project)
+    if getattr(args, "context", None):
+        try:
+            info = svc.explain_context(ir.doc, args.context)
+        except KeyError:
+            print("no such context", file=sys.stderr)
+            return 1
+        if args.json:
+            _print(info, True)
+            return 0
+        for row in info["chain"]:
+            extra = f"  source {row['source']}" if row.get("source") else ""
+            extra += f"  [{row['generator']}]" if row.get("generator") else ""
+            extra += f"  {row['approval']}/{row['status']}" if row.get("approval") else ""
+            print(f"{'  ' * row['level']}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}{extra}")
+        print(f"boundary: {info['boundary']}")
+        return 0
     if getattr(args, "observation", None):
         try:
             info = svc.explain_observation(ir.doc, args.observation)
@@ -584,12 +620,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_check)
     p = sub.add_parser("events", help="temporal events recorded in a Project IR (canonical order)")
     p.add_argument("project"); p.set_defaults(fn=cmd_events)
+    p = sub.add_parser("context", help="production contexts (situations) recorded in a Project IR: what is observed when")
+    p.add_argument("project"); p.add_argument("--at", type=float, help="the situation at this second"); p.add_argument("--between", type=float, nargs=2, metavar=("START", "END"))
+    p.add_argument("--timeline", help="asset:<id> or master"); p.set_defaults(fn=cmd_context)
     p = sub.add_parser("sessions", help="temporal sessions recorded in a Project IR")
     p.add_argument("project"); p.set_defaults(fn=cmd_sessions)
     p = sub.add_parser("explain", help="why was this decided? show reason, evidence, alternatives")
     p.add_argument("project", nargs="?"); p.add_argument("--decision", help="decision id or subject"); p.add_argument("--step", help="production step id: show its evidence chain")
     p.add_argument("--artifact", help="artifact id: show artifact -> job -> operations -> step -> decisions -> evidence")
     p.add_argument("--observation", help="observation id (or the Skill's external id, e.g. a transcript id): observation -> skill -> tool -> engine/model -> asset -> events")
+    p.add_argument("--context", help="context id: context -> tracks -> events -> observations, plus the inferences / decisions resting on it")
     p.set_defaults(fn=cmd_explain)
     p = sub.add_parser("artifacts", help="registered artifacts (of a project IR, or all)")
     p.add_argument("project", nargs="?"); p.add_argument("--job"); p.set_defaults(fn=cmd_artifacts)

@@ -15,6 +15,7 @@ from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, write_audit
 from .capabilities import CapabilityResolver
+from .context import ProductionContext, build_contexts, contexts_at, contexts_between, infer_from_contexts
 from .execution import CompileError, Executor, compile_ir
 from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
@@ -183,6 +184,9 @@ class Service:
         intent = resolve_intent(reqs)
         target = rm.get("audio.loudness.target_lufs")
         inferences = infer(analysis, rules, target_lufs=float(target.value) if target else None, tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
+        # situation understanding (ADR-026): events → ProductionContexts (derived, reference-centred) → generic deterministic inferences
+        contexts = build_contexts(analysis.timeline.events, analysis.assets, analysis.observations, inferences)
+        inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
         inferences += self._ai_inferences(analysis, rules, prior_ai)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports)
         dropped: List[Dict[str, Any]] = []
@@ -198,7 +202,7 @@ class Service:
         precision = rm.get("edit.precision")
         plan = build_plan(decisions, analysis, tools=tools, version=plan_version, frame_accurate=bool(precision and precision.value == "frame"), project_id=project_id,
                           constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences)
-        return reqs, intent, inferences, decisions, plan, dropped
+        return reqs, intent, inferences, decisions, plan, dropped, contexts
 
     def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
         """AI reasoning boundary. Recorded AI inferences (a revision) are reused: revising never spends AI calls. A provider
@@ -219,7 +223,7 @@ class Service:
         return infs
 
     def _fill(self, ir: ProjectIR, request: Request, profile, rules, analysis: AnalysisResult, plan_version: int, suppressed=None, prior_ai=None):
-        reqs, intent, inferences, decisions, plan, dropped = self._reason(request, profile, rules, analysis, suppressed, prior_ai, project_id=ir.doc["project"]["id"], plan_version=plan_version)
+        reqs, intent, inferences, decisions, plan, dropped, contexts = self._reason(request, profile, rules, analysis, suppressed, prior_ai, project_id=ir.doc["project"]["id"], plan_version=plan_version)
         d = ir.doc
         d["request"] = request.to_dict()
         d["requirements"] = [r.to_dict() for r in reqs]
@@ -227,7 +231,8 @@ class Service:
         d["assets"] = {a.id: a.to_dict() for a in analysis.assets}
         d["analysis"] = {"observations": [o.to_dict() for o in analysis.observations], "inferences": [i.to_dict() for i in inferences], "strategy": analysis.strategy,
                          "budget": {**(analysis.budget or {}), "requested_strategy": rules.get("analysis.strategy")},
-                         "warnings": analysis.warnings, "tool_calls": analysis.tool_calls, "analyses": analysis.analyses}
+                         "warnings": analysis.warnings, "tool_calls": analysis.tool_calls, "analyses": analysis.analyses,
+                         "contexts": [c.to_dict() for c in contexts]}   # ProductionContexts: the situation per timeline scope (references only)
         d["intent"] = intent.to_dict()
         d["constraints"] = [r.to_dict() for r in rules.all_rules if r.hard]
         d["policy"] = rules.to_dict()
@@ -319,7 +324,7 @@ class Service:
         nd["revision"] = {"feedback": list(ir.doc["revision"]["feedback"]), "history": list(old["revision"]["history"]), "approved_plan_version": None}
         nd["provenance"]["runs"] = list(old["provenance"].get("runs") or [])
         nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
-        nd["analysis"] = {**old["analysis"], "inferences": nd["analysis"]["inferences"]}   # same observations / analyses; the re-plan's inferences (AI ones reused)
+        nd["analysis"] = {**old["analysis"], "inferences": nd["analysis"]["inferences"], "contexts": nd["analysis"].get("contexts") or []}   # same observations / analyses; the re-plan's inferences (AI ones reused) and contexts
         fresh.finalize_hash()
         diff = plan_diff(old, nd)
         applied_before = set(old["revision"]["history"][-1]["rejected_decision_ids"]) if old["revision"]["history"] else set()
@@ -556,6 +561,43 @@ class Service:
         return self.promote_artifact(art_id, "archive", who, reason)
 
     @staticmethod
+    def contexts_of(doc: Dict[str, Any]) -> List[ProductionContext]:
+        return [ProductionContext.from_dict(c) for c in (doc.get("analysis") or {}).get("contexts") or []]
+
+    @staticmethod
+    def explain_context(doc: Dict[str, Any], ctx_id: str) -> Dict[str, Any]:
+        """Why does the agent think this situation holds? Context → tracks → events (with their timestamps as recorded) →
+        observations → tools; plus the inferences that cite its events and the decisions that rest on those inferences."""
+        ctx = next((c for c in (doc.get("analysis") or {}).get("contexts") or [] if c["id"] == ctx_id), None)
+        if ctx is None:
+            raise KeyError(ctx_id)
+        events = {e["id"]: e for e in doc["timeline"].get("events") or []}
+        obs = {o["id"]: o for o in doc["analysis"].get("observations") or []}
+        infs = {i["id"]: i for i in doc["analysis"].get("inferences") or []}
+        chain: List[Dict[str, Any]] = [{"level": 0, "kind": "context", "id": ctx["id"], "provenance": ctx.get("provenance"),
+                                        "detail": f"{ctx['timeline_id']} {ctx['scope']['start']}–{ctx['scope']['end']} [{'+'.join(sorted(t['event_type'] + '/' + t['subtype'] for t in ctx['tracks'])) or 'nothing'}]"}]
+        for t in ctx["tracks"]:
+            chain.append({"level": 1, "kind": "track", "id": f"{t['event_type']}/{t['subtype']}", "detail": f"{len(t['event_ids'])} event(s); sources {', '.join(t.get('sources') or [])}"})
+            for eid in t["event_ids"]:
+                e = events.get(eid)
+                if not e:
+                    chain.append({"level": 2, "kind": "reference", "id": eid})
+                    continue
+                chain.append({"level": 2, "kind": "event", "id": eid, "provenance": e.get("provenance"), "detail": f"{e['type']} {e['range'].get('start')}–{e['range'].get('end')} (as recorded)", "source": e.get("source")})
+                for oid in e.get("evidence") or []:
+                    o = obs.get(oid)
+                    if o:
+                        chain.append({"level": 3, "kind": "observation", "id": oid, "provenance": o.get("provenance"), "detail": o.get("kind"), "source": o.get("source")})
+        citing = [i for i in infs.values() if set(i.get("evidence") or []) & set(ctx["event_ids"]) or ctx["id"] in ((i.get("data") or {}).get("context_ids") or [])]
+        for i in citing:
+            chain.append({"level": 1, "kind": "inference", "id": i["id"], "provenance": i.get("provenance"), "detail": i.get("statement"), "generator": (i.get("data") or {}).get("generator")})
+        inf_ids = {i["id"] for i in citing}
+        for d in doc.get("decisions") or []:
+            if set(d.get("evidence") or []) & inf_ids:
+                chain.append({"level": 2, "kind": "decision", "id": d["id"], "provenance": d.get("provenance"), "detail": f"{d['subject']}: {d['decision']}", "approval": d.get("approval"), "status": d.get("status")})
+        return {"context": ctx, "chain": chain, "boundary": "context → inference → decision only; a context never becomes a step, an operation or a command"}
+
+    @staticmethod
     def explain_observation(doc: Dict[str, Any], obs_id: str) -> Dict[str, Any]:
         """Why does this observation exist? Observation → Skill package → tool → (engine → model for a transcript) → asset identity
         (fingerprint) → analysis request → the events derived from it. Facts only: no inference or decision is part of this chain."""
@@ -582,8 +624,12 @@ class Service:
         if analysis:
             chain.append({"level": 7, "kind": "analysis", "id": analysis["analysis_id"], "detail": f"{analysis['request']['strategy']} by {analysis.get('analyzer')}; row {json.dumps({k: row.get(k) for k in ('status', 'cache_hit', 'cache_owner')}, sort_keys=True) if row else '-'}"})
         events = [e for e in doc["timeline"]["events"] if o["id"] in (e.get("evidence") or [])]
+        ev_ids = {e["id"] for e in events}
         for e in events:
             chain.append({"level": 8, "kind": "event", "id": e["id"], "provenance": e.get("provenance"), "detail": f"{e['type']} {e['range'].get('start')}–{e['range'].get('end')}", "source": e.get("source")})
+        for c in (doc.get("analysis") or {}).get("contexts") or []:
+            if ev_ids & set(c.get("event_ids") or []):
+                chain.append({"level": 9, "kind": "context", "id": c["id"], "provenance": c.get("provenance"), "detail": f"{c['scope']['start']}–{c['scope']['end']} [{'+'.join(sorted(t['event_type'] + '/' + t['subtype'] for t in c['tracks']))}]"})
         return {"observation": o, "chain": chain, "events": [e["id"] for e in events], "asset": {"id": o["asset_id"], "path": asset.get("path"), "hash": asset.get("hash")},
                 "boundary": "observation → event only; no inference, decision, plan step or command derives from this chain"}
 
