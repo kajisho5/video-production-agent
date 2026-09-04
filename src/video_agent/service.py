@@ -122,11 +122,27 @@ class Service:
                 "warnings": self.validate(ir).warnings + ir.doc["analysis"].get("warnings", []), "pending_confirmations": [d["id"] for d in ir.pending_confirmations()], "blocked": [d["id"] for d in ir.blocked()],
                 "estimate": {"source_seconds": round(total, 1), "full_reencodes": reencodes, "note": "processing time ≈ source duration × re-encodes on a laptop CPU (see ffmpeg-skill devices.md)"}}
 
-    def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None) -> Dict[str, Any]:
+    def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None,
+               resume: Optional[str] = None) -> Dict[str, Any]:
+        """resume: a previous job id (or "last") whose completed operations may be reused. The new job stays a new job;
+        reuse is decided per operation by the chained idempotency key and by the recorded output still being intact."""
         who = who or _default_who()
         store = JobStore(self.workspace)
+        prior: Optional[Job] = None
+        resume_note: Optional[Dict[str, Any]] = None
+        if resume:
+            prior = store.latest(ir_path) if resume == "last" else store.load(resume)
+            if prior is None:
+                raise FileNotFoundError(f"no previous job to resume for {ir_path}")
+            resume_note = {"resumed_from": prior.id, "prior_state": prior.state, "prior_plan_hash": prior.plan_hash, "plan_hash": ir.plan_hash(),
+                           "plan_changed": bool(prior.plan_hash) and prior.plan_hash != ir.plan_hash(), "candidate_ops": len(prior.completed_ops)}
         job = store.create()
         job.ir_path = ir_path
+        job.plan_hash = ir.plan_hash()
+        if prior is not None:
+            job.resumed_from = prior.id
+            job.completed_ops = dict(prior.completed_ops)
+            ir.doc["execution"]["resume_from"] = prior.id
         job.transition("INGESTING", "render requested")
         job.transition("ANALYZING")
         job.transition("PLANNING")
@@ -160,7 +176,7 @@ class Service:
         finally:
             job.completed_ops = ex.completed
             store.save(job)  # whatever happens next, the job file reflects the operations that completed
-        out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths}
+        out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths, "resume": resume_note}
         if result.status != "COMPLETED":
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"op {result.failed_op}")
         else:
@@ -186,7 +202,11 @@ class Service:
             if qa.status == "FAIL":
                 out["status"] = "REVIEW"
         prov = build_provenance(ir.doc, ops, result.results, paths, result.recovery, out.get("qa", {}), who=who)
-        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who})
+        prov["resume"] = resume_note
+        prov["skipped"] = result.skipped
+        prov["reused"] = result.reused
+        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash,
+                                             "resumed_from": job.resumed_from, "skipped": result.skipped})
         ir.doc["provenance"]["recovery"] = result.recovery
         save_ir(ir, ir_path)
         save_ir(ir, str(job.dir / "ir.json"))
@@ -245,6 +265,11 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
         for a in out["artifacts"]:
             lines.append(f"- {a['type']} {a['path']} (stage {a['stage']}, qa {a['qa_status']}, sha256 {a['hash'][:12]}…)")
     ex = out.get("execution") or {}
+    if out.get("resume"):
+        r = out["resume"]
+        lines += ["", "## Resume", f"- resumed from job {r['resumed_from']} ({r['prior_state']}), plan {'changed' if r['plan_changed'] else 'unchanged'}, reused {len(ex.get('skipped', []))} operation(s)"]
+        for op_id, path in (ex.get("reused") or {}).items():
+            lines.append(f"  - {op_id} ← {path}")
     if ex.get("recovery"):
         lines += ["", "## Recovery", *[f"- op {r['op']} attempt {r.get('attempt')}: {r['class']} → {r['action']} ({r['reason']})" for r in ex["recovery"]]]
     return "\n".join(lines) + "\n"

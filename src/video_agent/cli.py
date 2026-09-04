@@ -123,11 +123,14 @@ def cmd_render(args, svc: Service) -> int:
                 print("Blocked decisions:", ", ".join(plan["blocked"]))
             print("Estimate:", json.dumps(plan["estimate"]))
         return 0 if not plan["blocked"] else 3
-    out = svc.render(ir, args.project, approve=approve, timeout=args.timeout)
+    out = svc.render(ir, args.project, approve=approve, timeout=args.timeout, resume=args.resume)
     if args.json:
         _print(out, True)
     else:
         print(f"Job {out['job']['id']}: {out['status']}")
+        if out.get("resume"):
+            r = out["resume"]
+            print(f"  resumed from {r['resumed_from']} ({r['prior_state']}); plan {'CHANGED' if r['plan_changed'] else 'unchanged'}; reused {len(out['execution']['skipped'])} of {r['candidate_ops']} completed operation(s)")
         if out["status"] == "WAITING_FOR_APPROVAL":
             for d in out["pending"]:
                 print(f"  CONFIRM {d['id']}  {d['subject']}: {d['decision']}\n    {d['reason']}")
@@ -221,6 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("render", help="execute a Project IR through ffmpeg-skill, then QA")
     p.add_argument("project"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--approve", help="comma separated decision ids, or 'all'")
     p.add_argument("--timeout", type=float, help="per-operation timeout in seconds")
+    p.add_argument("--resume", metavar="JOB_ID|last", help="reuse completed operations of a previous job (outputs are reused only when their chained key and file still match)")
     p.set_defaults(fn=cmd_render)
     p = sub.add_parser("check", help="probe + platform compliance of an output file")
     p.add_argument("output"); p.add_argument("--platform", default="custom")

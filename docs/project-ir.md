@@ -1,4 +1,4 @@
-# Project IR (schema 1.0)
+# Project IR (schema 1.1)
 
 Project IR は「推論・計画」と「決定論的実行」の間の契約。JSON、`schemas/project.schema.json` で検証する。
 `render.py` の project.json とは別物（理由: docs/ARCHITECTURE_REVIEW.md §1.3）。
@@ -40,3 +40,23 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 `execution/compiler.py` が asset ごとに trim → loudness → export → check の順で Operation を生成する。
 中間ファイルは `<workspace>/jobs/<job_id>/ops/NN_<stage>/`、納品物は `artifacts/`。
 Operation.args は adapter のカタログ型（`tools/ffmpeg_skill/catalog.py`）で検証され、ffmpeg のオプションはどこにも現れない。
+
+## schema 1.1（Phase 2 PR 1）
+
+追加のみ。1.0 → 1.1 の migration は `provenance.plan_hash` を計算し `execution.resume_from = null` を補う。
+
+| 追加 | 意味 |
+|---|---|
+| `provenance.plan_hash` | 実行内容（assets / video / audio / delivery / qa）のハッシュ。承認で変わらない。Job が「同じ計画」を実行したかの判定に使う |
+| `provenance.ir_hash` | plan_hash + decisions（status 含む）+ plan。承認で変わる |
+| `execution.resume_from` | resume 元の job id |
+| `provenance.runs[].plan_hash / resumed_from / skipped` | 実行履歴 |
+
+## 冪等キーと resume
+
+- `Operation.id = H(tool, args, inputs)`: compile ごとに安定。provenance と job 記録を照合できる。
+- `idempotency_key = H(source_fingerprint, tool, args, tool_version, 上流 op の key)`: 上流が変われば下流の key も変わる（trim を変えると loudness / export も再実行）。
+- `source_fingerprint`: sha256（`plan` 既定）または size+mtime（`--no-hash`）。
+- Job の `completed_ops[key] = {output, size, mtime}`。resume 時は key が一致し、かつ記録どおりのファイルが残っている場合のみスキップ。
+- `render --resume <job_id|last>` は**新しい Job** を作り、`resumed_from` で履歴を残す。再利用した出力は元 Job のディレクトリを参照する。
+- 出力を持たない operation（`check`）はキーを持たず常に再実行される。

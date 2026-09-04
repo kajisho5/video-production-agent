@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..models import Decision, new_id, now_iso, stable_hash
+from ..models import Decision, new_id, now_iso
+from .hashing import ir_hash as _ir_hash, plan_hash as _plan_hash
 from .migrations import CURRENT, migrate
 
 SECTIONS = ["schema_version", "project", "request", "requirements", "source", "assets", "analysis", "intent", "constraints", "policy", "decisions", "plan", "timeline",
@@ -30,8 +31,8 @@ class ProjectIR:
             "timeline": {"timelines": {"master": {"id": "master", "asset_id": None, "offset_seconds": 0.0, "drift_ratio": 1.0}}, "events": []},
             "video": {"operations": []}, "audio": {"operations": []}, "captions": {}, "graphics": {}, "color": {},
             "delivery": {"targets": [], "naming": ""}, "qa": {"required": ["video", "audio", "delivery"], "thresholds": {"duration_tolerance_s": 0.5, "loudness_tolerance_lu": 2.0}},
-            "execution": {"workspace": workspace, "dry_run": False, "allowed_inputs": [], "budgets": {}, "recovery_policy": {"max_attempts": 2}, "approvals": {}},
-            "provenance": {"source_hashes": {}, "profile_version": profile.get("version", "0"), "skill_versions": {}, "tool_versions": {}, "created_by": "video-agent", "recovery": [], "runs": []},
+            "execution": {"workspace": workspace, "dry_run": False, "allowed_inputs": [], "budgets": {}, "recovery_policy": {"max_attempts": 2}, "approvals": {}, "resume_from": None},
+            "provenance": {"source_hashes": {}, "profile_version": profile.get("version", "0"), "skill_versions": {}, "tool_versions": {}, "created_by": "video-agent", "recovery": [], "runs": [], "plan_hash": "", "ir_hash": ""},
         }
         return cls(d)
 
@@ -62,13 +63,16 @@ class ProjectIR:
         return done
 
     def ir_hash(self) -> str:
-        core = {k: self.doc[k] for k in ("schema_version", "assets", "decisions", "plan", "video", "audio", "delivery", "qa") if k in self.doc}
-        return stable_hash(core)
+        return _ir_hash(self.doc)
+
+    def plan_hash(self) -> str:
+        """Hash of what will execute; unchanged by approvals (used to judge whether a previous job can be resumed)."""
+        return _plan_hash(self.doc)
 
     def finalize_hash(self) -> str:
-        h = self.ir_hash()
-        self.doc["provenance"]["ir_hash"] = h
-        return h
+        self.doc["provenance"]["plan_hash"] = self.plan_hash()
+        self.doc["provenance"]["ir_hash"] = self.ir_hash()
+        return self.doc["provenance"]["ir_hash"]
 
 
 def save_ir(ir: ProjectIR, path: str) -> str:

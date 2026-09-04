@@ -120,7 +120,8 @@ class PipelineTests(unittest.TestCase):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "youtube")
         d = ir.doc
-        self.assertEqual(d["schema_version"], "1.0")
+        self.assertEqual(d["schema_version"], "1.1")
+        self.assertTrue(d["provenance"]["plan_hash"] and d["provenance"]["ir_hash"])
         kinds = {o["kind"] for o in d["analysis"]["observations"]}
         self.assertEqual(kinds, {"probe", "silence", "loudness"})
         inf = {i["kind"] for i in d["analysis"]["inferences"]}
@@ -282,6 +283,31 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_ir(p)
 
+    def test_migration_1_0_to_1_1(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        doc = json.loads(json.dumps(ir.doc))
+        doc["schema_version"] = "1.0"
+        doc["provenance"].pop("plan_hash")
+        doc["execution"].pop("resume_from")
+        p = str(Path(self.tmp) / "v10.json")
+        Path(p).write_text(json.dumps(doc))
+        loaded = load_ir(p)
+        self.assertEqual(loaded.doc["schema_version"], "1.1")
+        self.assertEqual(loaded.doc["provenance"]["plan_hash"], ir.plan_hash())
+        self.assertIsNone(loaded.doc["execution"]["resume_from"])
+        self.assertTrue(validate_ir(loaded, svc.caps.resolve()).ok)
+
+    def test_plan_hash_ignores_approval_ir_hash_does_not(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "conference")
+        ph, ih = ir.plan_hash(), ir.ir_hash()
+        ir.approve(["all"])
+        self.assertEqual(ir.plan_hash(), ph)
+        self.assertNotEqual(ir.ir_hash(), ih)
+        ir.doc["video"]["operations"][0]["keep"] = [[3.5, 13.0]]
+        self.assertNotEqual(ir.plan_hash(), ph)
+
     def test_dry_run_lists_operations_without_execution(self):
         ad = FakeAdapter()
         svc = make_service(self.tmp, adapter=ad)
@@ -342,3 +368,129 @@ class ExecutorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ResumeTests(unittest.TestCase):
+    """Job resume and idempotent skipping, checked on the actual failure/re-run paths."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _plan(self, svc, profile="youtube", name="p.json", **kw):
+        ir = svc.plan([self.src], profile, **kw)
+        p = str(Path(self.tmp) / name)
+        save_ir(ir, p)
+        return p
+
+    def test_resume_after_mid_run_failure_reuses_only_completed_ops(self):
+        failing = FakeAdapter(fail_tools={"ffmpeg-skill/export": 9})
+        svc = make_service(self.tmp, adapter=failing)
+        p = self._plan(svc)
+        first = svc.render(load_ir(p), p)
+        self.assertEqual(first["status"], "FAILED")
+        done_tools = [r["tool"] for r in first["execution"]["results"] if r["ok"]]
+        self.assertEqual(done_tools, ["ffmpeg-skill/cut", "ffmpeg-skill/loudness"])
+        self.assertEqual(len(first["job"]["completed_ops"]), 2)
+        healthy = FakeAdapter()
+        svc2 = make_service(self.tmp, adapter=healthy)
+        second = svc2.render(load_ir(p), p, resume=first["job"]["id"])
+        self.assertEqual(second["status"], "COMPLETED", second["execution"])
+        ran = [o.tool for o in healthy.calls if o.kind != "measure" and not o.args.get("measure_only") and o.tool != "ffmpeg-skill/probe"]
+        self.assertNotIn("ffmpeg-skill/cut", ran)
+        self.assertNotIn("ffmpeg-skill/loudness", ran[:1])
+        self.assertIn("ffmpeg-skill/export", ran)
+        self.assertEqual(len(second["execution"]["skipped"]), 2)
+        self.assertFalse(second["resume"]["plan_changed"])
+        self.assertEqual(second["job"]["resumed_from"], first["job"]["id"])
+        # the reused loudness output lives in the FIRST job's directory and feeds the export
+        reused = list(second["execution"]["reused"].values())
+        self.assertTrue(all(first["job"]["id"] in r for r in reused), reused)
+        prov = json.loads((Path(second["job"]["workspace"]) / "jobs" / second["job"]["id"] / "provenance.json").read_text())
+        self.assertEqual(prov["resume"]["resumed_from"], first["job"]["id"])
+        self.assertEqual(sorted(prov["skipped"]), sorted(second["execution"]["skipped"]))
+
+    def test_resume_same_ir_twice_skips_all_transforms_but_reruns_qa(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        first = svc.render(load_ir(p), p)
+        self.assertEqual(first["status"], "COMPLETED")
+        ad2 = FakeAdapter()
+        second = make_service(self.tmp, adapter=ad2).render(load_ir(p), p, resume="last")
+        self.assertEqual(second["status"], "COMPLETED")
+        transforms = [o.tool for o in ad2.calls if o.kind == "transform"]
+        self.assertEqual(transforms, [], "no transform re-ran")
+        self.assertIn("ffmpeg-skill/check", [o.tool for o in ad2.calls if o.kind == "qa"], "delivery check always re-runs")
+        self.assertEqual(len(second["execution"]["skipped"]), 3)
+        self.assertEqual(len(second["artifacts"]), 1)
+        self.assertTrue(os.path.exists(second["artifacts"][0]["path"]))
+
+    def test_changed_trim_invalidates_downstream_keys(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        first = svc.render(load_ir(p), p)
+        ir = load_ir(p)
+        ir.doc["video"]["operations"][0]["keep"] = [[3.5, 13.0]]
+        save_ir(ir, p)
+        ad2 = FakeAdapter()
+        second = make_service(self.tmp, adapter=ad2).render(load_ir(p), p, resume=first["job"]["id"])
+        self.assertEqual(second["status"], "COMPLETED")
+        self.assertTrue(second["resume"]["plan_changed"])
+        self.assertEqual(second["execution"]["skipped"], [], "trim changed: cut, loudness AND export must all re-run")
+        self.assertEqual([o.tool for o in ad2.calls if o.kind == "transform"], ["ffmpeg-skill/cut", "ffmpeg-skill/loudness", "ffmpeg-skill/export"])
+
+    def test_changed_loudness_target_keeps_cut_but_reruns_rest(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        first = svc.render(load_ir(p), p)
+        ir = load_ir(p)
+        ir.doc["audio"]["operations"][0]["target_lufs"] = -16
+        save_ir(ir, p)
+        ad2 = FakeAdapter()
+        second = make_service(self.tmp, adapter=ad2).render(load_ir(p), p, resume=first["job"]["id"])
+        self.assertEqual(len(second["execution"]["skipped"]), 1)
+        self.assertEqual([o.tool for o in ad2.calls if o.kind == "transform"], ["ffmpeg-skill/loudness", "ffmpeg-skill/export"])
+
+    def test_missing_or_tampered_output_is_not_reused(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        first = svc.render(load_ir(p), p)
+        recs = list(first["job"]["completed_ops"].values())
+        os.remove(recs[0]["output"])                                  # cut output deleted
+        Path(recs[1]["output"]).write_bytes(b"tampered-longer")         # loudness output replaced
+        ad2 = FakeAdapter()
+        second = make_service(self.tmp, adapter=ad2).render(load_ir(p), p, resume=first["job"]["id"])
+        self.assertEqual(second["status"], "COMPLETED")
+        # cut (deleted) and loudness (tampered) re-run; the export record is intact and its plan-level key is unchanged, so it is reused
+        rerun = [o.tool for o in ad2.calls if o.kind == "transform"]
+        self.assertEqual(rerun, ["ffmpeg-skill/cut", "ffmpeg-skill/loudness"])
+        self.assertEqual(len(second["execution"]["skipped"]), 1)
+
+    def test_replaced_source_without_hash_is_detected_by_stat(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc, hash_sources=False)
+        first = svc.render(load_ir(p), p)
+        self.assertEqual(len(first["job"]["completed_ops"]), 3)
+        Path(self.src).write_bytes(b"\x00" * 128)                   # different size => different fingerprint after re-plan
+        p2 = self._plan(make_service(self.tmp, adapter=FakeAdapter()), name="p2.json", hash_sources=False)
+        ad2 = FakeAdapter()
+        second = make_service(self.tmp, adapter=ad2).render(load_ir(p2), p2, resume=first["job"]["id"])
+        self.assertEqual(second["execution"]["skipped"], [])
+
+    def test_resume_unknown_job_is_an_error(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc)
+        with self.assertRaises(FileNotFoundError):
+            svc.render(load_ir(p), p, resume="last")
+        with self.assertRaises(FileNotFoundError):
+            svc.render(load_ir(p), p, resume="job_doesnotexist")
+
+    def test_legacy_string_records_are_never_trusted(self):
+        from video_agent.execution.executor import record_matches
+        self.assertFalse(record_matches("/some/path"))
+        self.assertFalse(record_matches({"output": "/nope", "size": 1, "mtime": 1.0}))
