@@ -1,0 +1,1451 @@
+# video-production-agent — Master Specification
+
+## 1. Purpose
+
+Build an **AI Video Production Orchestrator**, not a simple FFmpeg wrapper.
+
+The system should understand a user's production request, derive requirements, inspect media, distinguish observations from inference, consider policies and constraints, resolve available capabilities, select appropriate skills/tools, produce an explainable production plan, convert it into a validated Project IR, execute through media-processing tools such as `ffmpeg-skill`, verify the result, recover safely when possible, support human review/revision, and deliver reproducible artifacts.
+
+Core lifecycle:
+
+```text
+Understand
+→ Observe
+→ Analyze
+→ Infer
+→ Decide
+→ Plan
+→ Validate
+→ Execute
+→ Verify
+→ Recover
+→ Review
+→ Deliver
+→ Archive
+```
+
+## 2. Existing ffmpeg-skill
+
+Existing repository:
+
+`kajisho5/ffmpeg-skill`
+
+It must be investigated before architecture is finalized.
+
+Do not infer its interface from a README alone. Inspect its actual code, CLI, JSON/MCP contracts, tests, evals, references, examples, workflows, and supported operations.
+
+## 3. Responsibility boundary
+
+### ffmpeg-skill: Media Processing Engine / Hands
+
+Responsible for low-level media processing such as:
+
+- FFmpeg / FFprobe
+- probing
+- encoding/transcoding
+- cutting/joining
+- rendering
+- fitting
+- captions
+- audio processing
+- loudness
+- color
+- overlays
+- export
+- sync
+- multicam processing
+- silence processing
+- scene detection
+- visual inspection
+- verification
+- delivery checks
+- MCP
+- related deterministic media operations
+
+### video-production-agent: AI Production Brain / Orchestrator
+
+Responsible for:
+
+- request understanding
+- requirement extraction
+- intent
+- asset understanding/classification
+- analysis integration
+- observation/inference separation
+- production policy
+- constraints
+- decision making
+- planning
+- capability resolution
+- skill selection
+- tool selection
+- Project IR
+- execution orchestration
+- human approval
+- feedback/revision
+- recovery orchestration
+- QA integration
+- lifecycle
+- jobs/artifacts
+- audit/provenance
+- evals
+- AI provider abstraction
+- production profiles
+- domain-specific production logic
+
+## 4. Prohibitions
+
+Never:
+
+- copy ffmpeg-skill wholesale
+- unnecessarily reimplement its functionality
+- scatter raw FFmpeg commands through Agent code
+- allow an LLM to directly execute arbitrary shell commands
+- overwrite source media
+- turn guesses into facts
+- silently perform high-risk semantic edits
+- retry forever
+- hard-code secrets
+- make the system OS-specific without a strong reason
+- build a huge Web UI before the core engine is reliable
+- add dependencies without justification
+- claim planned features are implemented
+
+## 5. Architecture
+
+Target architecture:
+
+```text
+USER
+ ↓
+REQUEST
+ ↓
+REQUIREMENTS
+ ↓
+INTENT
+ ↓
+ASSET / MEDIA ANALYSIS
+ ↓
+OBSERVATION
+ ↓
+INFERENCE
+ ↓
+POLICY
+ ↓
+CONSTRAINTS
+ ↓
+DECISION ENGINE
+ ↓
+CAPABILITY RESOLVER
+ ↓
+SKILL SELECTOR
+ ↓
+TOOL SELECTOR
+ ↓
+PRODUCTION PLAN
+ ↓
+PROJECT IR
+ ↓
+VALIDATION
+ ↓
+EXECUTION COMPILER
+ ↓
+EXECUTION
+ ↓
+OBSERVATION
+ ↓
+QA
+ ↓
+RECOVERY / REVISION
+ ↓
+RE-QA
+ ↓
+REVIEW / APPROVAL
+ ↓
+DELIVERY
+ ↓
+REPORT
+ ↓
+ARCHIVE
+```
+
+AI should decide what should happen; validated execution layers should decide how it is safely executed.
+
+## 6. Request, Requirements, Intent
+
+Do not convert a raw user request directly into execution.
+
+Preserve:
+
+- original Request
+- derived Requirements
+- Intent
+
+Requirements must distinguish explicit user requirements from defaults, profile rules, system constraints, and AI inference.
+
+Suggested provenance categories:
+
+```text
+USER
+SYSTEM
+PROFILE
+DEFAULT
+OBSERVED
+INFERRED
+AI_GENERATED
+```
+
+## 7. Observation vs Inference
+
+These must be separate.
+
+Example:
+
+```text
+OBSERVED:
+audio below threshold for 8.2 seconds
+```
+
+is evidence.
+
+```text
+INFERRED:
+likely unwanted silence
+```
+
+is an interpretation.
+
+Never overwrite observed evidence with inference.
+
+## 8. Temporal Model
+
+Time is a first-class concept.
+
+Design a unified timeline capable of representing:
+
+```text
+Video Events
+Audio Events
+Speech Events
+Scene Events
+Slide Events
+Speaker Events
+Caption Events
+Incident Events
+Camera Events
+User Decision Events
+```
+
+Events should support, where appropriate:
+
+- start
+- end
+- type
+- source
+- confidence
+- evidence
+- metadata
+
+The model should support queries such as:
+
+- show the section where speaker A is speaking
+- find where slide 12 is displayed
+- find incidents between two timestamps
+- identify camera state during a speech event
+
+## 9. Event / Session / Project / Production
+
+Do not force conference concepts onto ordinary videos.
+
+For domain-heavy workflows, support:
+
+```text
+Production
+ └── Event
+      └── Session
+           ├── Presentation
+           ├── Q&A
+           └── Break
+```
+
+A generic single-video project should remain simple.
+
+## 10. Asset Model
+
+Treat media as Assets, not merely paths.
+
+An Asset should be extensible to include:
+
+- id
+- path
+- type
+- hash
+- technical metadata
+- analysis
+- classification
+- provenance
+- relationships
+- status
+
+Example types:
+
+```text
+CAMERA
+AUDIO
+SLIDE
+SCREEN_CAPTURE
+MUSIC
+BGM
+LOGO
+IMAGE
+GRAPHIC
+CAPTION
+UNKNOWN
+```
+
+Classification should support confidence and evidence.
+
+## 11. Asset Relationships
+
+Support relationships between assets.
+
+Examples:
+
+```text
+camera_a → Session A
+room_audio → Session A
+slides → Session A
+slide_12 → timestamp 00:12:03
+```
+
+Use a graph-friendly model without forcing a graph database in Phase 1.
+
+## 12. Skill / Capability / Tool
+
+These are different concepts.
+
+### Skill
+
+What the system knows how to accomplish.
+
+Examples:
+
+```text
+silence_cleanup
+caption_generation
+multicam_edit
+slide_sync
+loudness_normalization
+scene_detection
+```
+
+### Capability
+
+What is currently possible in this environment.
+
+Examples:
+
+```text
+HEVC encoder available
+GPU available
+Japanese font available
+libass available
+transcription available
+PowerPoint parser available
+```
+
+### Tool
+
+What actually performs an operation.
+
+Examples:
+
+```text
+ffmpeg-skill
+ffmpeg
+ffprobe
+Whisper
+OCR
+PowerPoint parser
+```
+
+Target relationship:
+
+```text
+Skill
+ ↓
+Capability Resolution
+ ↓
+Tool Selection
+ ↓
+Execution
+```
+
+## 13. Skill Registry
+
+Design a registry that can describe:
+
+- name
+- version
+- description
+- inputs
+- outputs
+- required capabilities
+- risk level
+- deterministic flag
+- approval requirement
+- tools
+
+Do not build a massive plugin framework prematurely; establish a clean contract.
+
+## 14. Capability Resolver
+
+Detect and expose available:
+
+- FFmpeg
+- FFprobe
+- codecs
+- encoders
+- decoders
+- GPU
+- hardware encoders
+- libass
+- zimg
+- ProRes
+- HEVC
+- AV1
+- fonts
+- Japanese fonts
+- optional AI tools
+
+Statuses:
+
+```text
+AVAILABLE
+MISSING
+DEGRADED
+UNKNOWN
+```
+
+A plan must not silently depend on unavailable capabilities.
+
+## 15. Decision Engine
+
+Decisions should be derived from:
+
+```text
+Requirements
++
+Observations
++
+Inferences
++
+Policy
++
+Constraints
++
+Capabilities
++
+Available Skills
+```
+
+A decision should support:
+
+```json
+{
+  "decision": "...",
+  "reason": "...",
+  "confidence": 0.95,
+  "evidence": [],
+  "alternatives": [],
+  "risk": "LOW",
+  "approval": "AUTO"
+}
+```
+
+## 16. Risk and Approval
+
+At minimum:
+
+```text
+AUTO
+CONFIRM
+BLOCK
+```
+
+Use risk independently from confidence.
+
+A high-confidence decision can still be high-risk.
+
+Examples:
+
+- codec detection → AUTO
+- removing a clearly detected technical leading silence → potentially AUTO
+- deleting a speaker's content based on meaning → CONFIRM
+- required capability unavailable → BLOCK
+
+## 17. Policy / Preference / Constraint
+
+Keep these distinct.
+
+### Policy
+
+A production rule.
+
+### Preference
+
+A user's or organization's preference.
+
+### Constraint
+
+A hard production limitation.
+
+Potential precedence may include:
+
+```text
+GLOBAL POLICY
+→ ORGANIZATION POLICY
+→ EVENT POLICY
+→ PROJECT POLICY
+→ PROFILE
+→ USER REQUEST
+```
+
+But do not invent precedence when conflicting requirements are ambiguous.
+
+User feedback must not automatically become permanent policy.
+
+## 18. Production Profiles
+
+At minimum, design for:
+
+```text
+generic
+youtube
+social
+conference
+webinar
+broadcast
+archive
+```
+
+Profiles should be extensible and should not be unnecessarily hard-coded.
+
+## 19. Conference Profile
+
+Conference production is a strategic domain.
+
+Potential inputs:
+
+```text
+camera_a
+camera_b
+camera_c
+presentation
+slides
+presentation_audio
+room_audio
+logo
+```
+
+Potential pipeline:
+
+```text
+Asset Classification
+→ Synchronization
+→ Session Segmentation
+→ Slide Detection
+→ Speaker Detection
+→ Camera Selection
+→ Audio Processing
+→ Caption
+→ Chapter
+→ Master
+→ Web
+→ YouTube
+→ QA
+→ Delivery
+```
+
+Do not implement the whole pipeline in Phase 1. Preserve clean boundaries for later implementation.
+
+## 20. PowerPoint Integration
+
+Design for future integration of:
+
+```text
+PowerPoint
++
+Camera
++
+Audio
++
+Recording
+```
+
+and relationships such as:
+
+```text
+slide_012
+→ video 00:12:03–00:13:42
+```
+
+Do not force full PowerPoint implementation into Phase 1.
+
+## 21. Production Plan vs Project IR
+
+Keep these separate.
+
+### Production Plan
+
+Human-readable intent and operation plan.
+
+Example:
+
+> Remove the 8.2-second leading silence and export a YouTube-compatible H.264/AAC file.
+
+### Project IR
+
+Machine-readable, validated Intermediate Representation.
+
+Example concept:
+
+```text
+operation:
+  type: trim
+  start: 8.2
+```
+
+The Project IR is the contract between reasoning/planning and deterministic execution.
+
+## 22. Project IR
+
+Suggested top-level concepts:
+
+```json
+{
+  "schema_version": "1.0",
+  "project": {},
+  "request": {},
+  "requirements": {},
+  "source": {},
+  "assets": {},
+  "analysis": {},
+  "intent": {},
+  "constraints": {},
+  "policy": {},
+  "decisions": [],
+  "plan": {},
+  "timeline": {},
+  "video": {},
+  "audio": {},
+  "captions": {},
+  "graphics": {},
+  "color": {},
+  "delivery": {},
+  "qa": {},
+  "execution": {},
+  "provenance": {}
+}
+```
+
+Treat this as a versioned IR, not a casual settings file.
+
+Use JSON Schema and migration support.
+
+## 23. Deterministic Execution
+
+After IR generation, execution should be as deterministic as practical.
+
+Reproducibility should account for:
+
+```text
+source hash
+project IR
+profile version
+skill version
+tool version
+```
+
+## 24. Execution Compiler
+
+Compile Project IR into execution operations.
+
+Do not allow raw FFmpeg command construction to leak across the Agent.
+
+Keep command/tool-specific logic behind compiler and adapter boundaries.
+
+## 25. ffmpeg-skill Adapter
+
+Centralize the integration with ffmpeg-skill.
+
+The Agent should be able to use an adapter rather than depend on implementation details scattered throughout the codebase.
+
+Design for future alternate renderers without building them prematurely.
+
+## 26. Dry Run
+
+Support:
+
+```bash
+video-agent plan input.mp4
+video-agent render project.json --dry-run
+```
+
+Dry Run should expose:
+
+- operations
+- required capabilities
+- expected outputs
+- risks
+- warnings
+- estimated processing characteristics where feasible
+
+## 27. Explainability
+
+The system should be able to answer:
+
+- Why was this cut?
+- Why this codec?
+- Why this camera?
+- Why does this require confirmation?
+- Why was this blocked?
+- What evidence supported the decision?
+
+Use reason, evidence, confidence, risk, alternatives, and provenance.
+
+## 28. Feedback and Revision
+
+Treat human feedback as a first-class object.
+
+Flow:
+
+```text
+Feedback
+→ Preference / Constraint candidate
+→ Plan Revision
+→ Plan Diff
+→ Approval
+→ Execution
+```
+
+Do not silently rewrite permanent preferences from one feedback event.
+
+## 29. Plan Versioning and Diff
+
+Support plan versions:
+
+```text
+Plan v1
+→ Feedback
+→ Plan v2
+```
+
+and machine-readable diffs such as:
+
+```text
+CAMERA
+12:03 A → B
+
+AUDIO
+-3 dB → -1 dB
+```
+
+## 30. QA
+
+Successful rendering is not successful production.
+
+QA should include:
+
+### Video QA
+
+- resolution
+- codec
+- fps
+- duration
+- pixel format
+- aspect ratio
+- black frames
+- freeze frames
+- corruption
+- unexpected frames
+- color issues
+
+### Audio QA
+
+- loudness
+- clipping
+- silence
+- dropout
+- channel loss
+- channel imbalance
+- phase
+- sample rate
+- channel layout
+
+### Semantic QA
+
+Future support for:
+
+- missing speaker
+- missing slide
+- caption mismatch
+- unexpected scene
+- transcript mismatch
+- semantic edit risk
+
+### Delivery QA
+
+- codec
+- resolution
+- duration
+- file size
+- container
+- filename
+- subtitle
+- audio
+- required assets
+- destination requirements
+
+## 31. Incident Model
+
+Use a first-class Incident model.
+
+Potential incident types:
+
+```text
+BLACK_FRAME
+FREEZE
+AUDIO_DROPOUT
+CLIPPING
+MISSING_CHANNEL
+WRONG_ASPECT
+WRONG_FPS
+WRONG_COLOR
+UNEXPECTED_SILENCE
+LOUDNESS_FAILURE
+CORRUPTED_FRAME
+MISSING_CAPTION
+MISSING_SLIDE
+CAMERA_FAILURE
+```
+
+An Incident should support:
+
+- id
+- type
+- severity
+- start
+- end
+- evidence
+- possible cause
+- recommended action
+- status
+
+## 32. Recovery
+
+Recovery flow:
+
+```text
+Error
+→ Classification
+→ Known Recovery Strategy
+→ Finite Retry
+→ Verification
+```
+
+Never retry indefinitely.
+
+Record recovery actions and results in provenance/audit.
+
+## 33. Cost and Performance Awareness
+
+The planner should eventually consider:
+
+```text
+quality
+accuracy
+processing time
+CPU
+GPU
+storage
+API cost
+```
+
+For long-form analysis, support strategies such as:
+
+```text
+FULL_ANALYSIS
+COARSE_ANALYSIS
+TARGETED_ANALYSIS
+```
+
+without forcing expensive AI analysis everywhere.
+
+## 34. Analysis Budget
+
+Design for budgets such as:
+
+```text
+max_processing_time
+max_ai_calls
+max_storage
+max_gpu_time
+max_api_cost
+```
+
+Budget exhaustion should produce a controlled state such as degraded/confirm/block rather than silently violating constraints.
+
+## 35. Cache and Incremental Rendering
+
+Support future cache keys based on:
+
+```text
+source_hash
+analysis_hash
+project_hash
+operation_hash
+tool_version
+profile_version
+skill_version
+```
+
+Architecture should permit incremental rendering, but Phase 1 does not need a fully optimized incremental renderer.
+
+## 36. Artifact Model
+
+Artifacts should be first-class objects.
+
+Potential fields:
+
+```text
+id
+path
+type
+hash
+source
+generation
+tool
+tool_version
+created_at
+qa_status
+```
+
+Potential package outputs:
+
+```text
+MASTER
+WEB
+YOUTUBE
+SOCIAL
+ARCHIVE
+CAPTIONS
+THUMBNAIL
+REPORT
+```
+
+## 37. Job and Lifecycle
+
+Support a job state machine such as:
+
+```text
+QUEUED
+INGESTING
+ANALYZING
+PLANNING
+WAITING_FOR_APPROVAL
+EXECUTING
+QA
+RECOVERY
+REVIEW
+DELIVERING
+COMPLETED
+FAILED
+BLOCKED
+CANCELLED
+```
+
+Support safe cancellation and future resume.
+
+Avoid destructive partial states.
+
+## 38. Idempotency
+
+Repeated execution of the same job should not destroy sources or create uncontrolled duplicate artifacts.
+
+## 39. Final Artifact Promotion
+
+Consider future states such as:
+
+```text
+working
+candidate
+approved
+final
+archive
+```
+
+Do not treat a merely rendered file as final until required QA/review gates are passed.
+
+## 40. Audit / Provenance
+
+Track important actions with:
+
+```text
+who
+what
+why
+when
+input
+output
+tool
+tool_version
+decision
+result
+qa
+```
+
+Link AI Decisions to executed Operations.
+
+## 41. Reproducibility
+
+A prior production should be reconstructable from its recorded:
+
+```text
+source hash
+Project IR
+profile version
+skill version
+tool version
+```
+
+as far as the underlying tools permit.
+
+## 42. AI Providers
+
+Use an adapter boundary for AI providers.
+
+Conceptually:
+
+```text
+AIProvider
+├── OpenAI
+├── Anthropic
+├── Local
+└── Future
+```
+
+Do not hard-wire core deterministic media functions to an AI API.
+
+## 43. Security and Workspace
+
+Design for:
+
+- allowed input
+- allowed output
+- workspace boundary
+- command execution boundary
+- secret handling
+
+The Agent must not have an unconstrained file or shell execution model.
+
+## 44. Evals
+
+Create an evaluation system separate from unit tests.
+
+An Eval case can contain:
+
+```text
+input
+expected intent
+expected requirements
+expected decisions
+expected warnings
+expected plan characteristics
+expected output characteristics
+```
+
+Include regression cases so improvements do not silently degrade prior behavior.
+
+## 45. Environment Doctor
+
+Provide:
+
+```bash
+video-agent doctor
+```
+
+to inspect:
+
+```text
+Python
+FFmpeg
+FFprobe
+ffmpeg-skill
+encoders
+decoders
+GPU
+fonts
+Japanese fonts
+libass
+zimg
+AI providers
+optional tools
+```
+
+with:
+
+```text
+AVAILABLE
+MISSING
+DEGRADED
+UNKNOWN
+```
+
+## 46. CLI
+
+Minimum target:
+
+```bash
+video-agent analyze <input>
+video-agent plan <input>
+video-agent plan <input> --profile youtube
+video-agent plan <input> --profile conference
+video-agent validate <project.json>
+video-agent render <project.json>
+video-agent render <project.json> --dry-run
+video-agent check <output>
+video-agent doctor
+```
+
+Future commands may include:
+
+```bash
+video-agent run
+video-agent jobs
+video-agent inspect
+video-agent explain
+video-agent diff
+video-agent revise
+video-agent archive
+```
+
+## 47. Web UI
+
+Do not build a large Web UI in Phase 1.
+
+Design future UI around:
+
+- Plan Review
+- Timeline Review
+- Decision Review
+- Approval
+- Job Monitoring
+- Artifact Review
+- QA
+- Plan Diff
+
+## 48. Production Knowledge
+
+Future architecture may support learned/reused production preferences such as:
+
+- camera switching preferences
+- loudness preferences
+- caption style
+- export settings
+- naming
+- graphics
+
+But explicit user approval should be required before turning feedback into durable policy.
+
+## 49. Conference / Medical Conference Safety
+
+Conference and medical content can be highly sensitive to semantic changes.
+
+Do not automatically delete or alter:
+
+- speaker statements
+- names
+- medical terminology
+- numbers
+- drug names
+- Q&A
+- important presentation content
+
+Semantic deletion should generally be CONFIRM.
+
+## 50. Naming and Delivery
+
+Profiles should be able to generate naming rules using concepts such as:
+
+```text
+project
+event
+session
+speaker
+date
+version
+format
+```
+
+## 51. Testing
+
+Use layers:
+
+```text
+Unit
+Integration
+Real Media
+Regression
+Evals
+```
+
+Consider representative media such as:
+
+- H.264
+- HEVC
+- ProRes
+- VFR
+- 10-bit
+- stereo
+- 5.1
+- rotated video
+- HDR
+- long-form
+- damaged media
+
+Keep fixtures practical in size.
+
+## 52. Architecture / Repository
+
+A possible structure:
+
+```text
+video-production-agent/
+├── CLAUDE.md
+├── README.md
+├── LICENSE
+├── pyproject.toml
+├── docs/
+│   ├── MASTER_SPEC.md
+│   ├── architecture.md
+│   ├── project-ir.md
+│   ├── requirements.md
+│   ├── decisions.md
+│   ├── temporal-model.md
+│   ├── skills.md
+│   ├── capabilities.md
+│   ├── profiles.md
+│   ├── lifecycle.md
+│   ├── qa.md
+│   ├── recovery.md
+│   ├── feedback.md
+│   └── evals.md
+├── schemas/
+│   └── project.schema.json
+├── src/
+│   └── video_agent/
+│       ├── agent/
+│       ├── media/
+│       ├── temporal/
+│       ├── production/
+│       ├── policy/
+│       ├── skills/
+│       ├── capabilities/
+│       ├── tools/
+│       ├── project/
+│       ├── execution/
+│       ├── qa/
+│       ├── jobs/
+│       ├── profiles/
+│       ├── providers/
+│       ├── audit/
+│       ├── evals/
+│       └── cli.py
+├── profiles/
+├── examples/
+├── tests/
+└── evals/
+```
+
+Change this if inspection shows a better design.
+
+## 53. Development Order
+
+Do not immediately implement every future feature.
+
+Recommended order:
+
+1. inspect ffmpeg-skill
+2. capability inventory
+3. responsibility matrix
+4. architecture
+5. Request model
+6. Requirements model
+7. Observation/Inference model
+8. Temporal/Event model
+9. Project IR
+10. JSON Schema
+11. validation
+12. Capability system
+13. Skill system
+14. Tool adapter
+15. Media Analyzer
+16. Intent
+17. Decision Engine
+18. Planner
+19. Compiler
+20. QA
+21. CLI
+22. tests
+23. Evals
+24. documentation
+
+## 54. Phase Roadmap
+
+### Phase 1
+
+Reliable end-to-end core:
+
+```text
+Request
+→ Requirements
+→ Intent
+→ Analysis
+→ Decision
+→ Plan
+→ Project IR
+→ Validation
+→ ffmpeg-skill
+→ QA
+→ Report
+```
+
+### Phase 2
+
+Conference profile.
+
+### Phase 3
+
+- multicam
+- slide detection
+- transcription
+- captions
+- chapters
+- highlights
+- incident detection
+
+### Phase 4
+
+- PowerPoint integration
+- semantic editing
+- AI multicam
+- slide synchronization
+- speaker detection
+- smart thumbnails
+- YouTube package
+- archive package
+
+### Phase 5+
+
+- human review UI
+- plan diff UI
+- job queue
+- batch production
+- distributed/cloud rendering
+- advanced AI providers
+- local AI
+- OCR
+- semantic search
+- production knowledge
+- event templates
+- organization profiles
+
+## 55. Quality Standard
+
+Do not define success as “the code runs.”
+
+Each phase should be evaluated for:
+
+```text
+Architecture
+Correctness
+Safety
+Reproducibility
+Testability
+QA
+Documentation
+```
+
+## 56. First Required Review
+
+Before substantial implementation, report:
+
+1. ffmpeg-skill feature inventory
+2. reusable components
+3. duplicated functionality to avoid
+4. responsibility boundary
+5. architecture
+6. Request → Requirements → Intent → Observation → Inference → Decision → Plan → IR data flow
+7. Temporal Model
+8. Event / Session / Project / Production model
+9. Skill / Capability / Tool model
+10. Decision model
+11. Policy / Preference / Constraint model
+12. Project IR
+13. Compiler / Adapter
+14. QA
+15. Recovery
+16. Artifact / Job / Lifecycle
+17. Feedback / Revision
+18. Conference profile
+19. Phase roadmap
+20. technical risks
+21. unresolved decisions
+22. minimum Phase 1 scope
+
+Do not write a large amount of implementation before this review.
+
+## 57. Final Product Vision
+
+A future user should be able to say:
+
+> “Take these three conference lecture recordings, combine them, clean up unwanted silence, switch cameras when speakers change, show the appropriate slide when the slide changes, add captions, produce versions for the conference website and YouTube, normalize the audio, and check for production accidents.”
+
+The system should eventually be able to perform:
+
+```text
+REQUEST
+→ REQUIREMENTS
+→ ASSET DISCOVERY
+→ ASSET CLASSIFICATION
+→ MEDIA ANALYSIS
+→ TIMELINE EVENTS
+→ INTENT
+→ POLICY
+→ CONSTRAINTS
+→ DECISION
+→ CAPABILITY CHECK
+→ SKILL SELECTION
+→ TOOL SELECTION
+→ PRODUCTION PLAN
+→ RISK ANALYSIS
+→ USER APPROVAL
+→ PROJECT IR
+→ VALIDATION
+→ EXECUTION
+→ OBSERVATION
+→ QA
+→ RECOVERY if needed
+→ RE-QA
+→ REVIEW
+→ DELIVERY
+→ REPORT
+→ ARCHIVE
+```
+
+The core principle is:
+
+**Do not build a system whose primary job is to make an AI write FFmpeg commands.**
+
+Build a system that models video production as a structured, explainable, verifiable workflow, with `ffmpeg-skill` serving as a powerful execution engine.
