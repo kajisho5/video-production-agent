@@ -29,6 +29,7 @@ class QAReport:
     items: List[QAItem] = field(default_factory=list)
     incidents: List[Incident] = field(default_factory=list)
     sheets: List[str] = field(default_factory=list)
+    measurements: List[Dict[str, Any]] = field(default_factory=list)   # every tool call QA made, for provenance
 
     @property
     def status(self) -> str:
@@ -36,7 +37,7 @@ class QAReport:
         return "FAIL" if "FAIL" in st else ("WARN" if "WARN" in st else "PASS")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"status": self.status, "items": [i.to_dict() for i in self.items], "incidents": [i.to_dict() for i in self.incidents], "sheets": self.sheets}
+        return {"status": self.status, "items": [i.to_dict() for i in self.items], "incidents": [i.to_dict() for i in self.incidents], "sheets": self.sheets, "measurements": self.measurements}
 
 
 def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], sheet_dir: Optional[str] = None,
@@ -44,6 +45,11 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
     """check_by_artifact maps artifact id -> the check.py ToolResult the executor already produced, so QA does not measure twice."""
     rep = QAReport()
     check_by_artifact = check_by_artifact or {}
+
+    def measure(tool: str, args: Dict[str, Any]) -> ToolResult:
+        r = adapter.measure(tool, args)
+        rep.measurements.append({"tool": tool, "args": args, "ok": r.ok, "exit_code": r.exit_code, "seconds": r.seconds, "commands": r.commands})
+        return r
     th = ir_doc["qa"].get("thresholds") or {}
     dur_tol = float(th.get("duration_tolerance_s", 0.5))
     lu_tol = float(th.get("loudness_tolerance_lu", 2.0))
@@ -60,7 +66,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
             path = paths.get(art)
             if not path:
                 continue
-            pr = adapter.measure("ffmpeg-skill/probe", {"inputs": [path]})
+            pr = measure("ffmpeg-skill/probe", {"inputs": [path]})
             if not pr.ok:
                 rep.items.append(QAItem("video", "probe", "FAIL", pr.stderr_tail, "readable file", artifact=art))
                 rep.incidents.append(Incident(type="CORRUPTED_FRAME", severity="HIGH", evidence=[art], possible_cause="output unreadable by ffprobe", recommended_action="re-run the export; inspect the tool log"))
@@ -94,7 +100,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                     sa = (asset.get("technical") or {}).get("audio") or {}
                     if sa.get("channels") and a.get("channels") and a["channels"] < min(2, sa["channels"]):
                         rep.items.append(QAItem("audio", "channels", "WARN", a["channels"], sa["channels"], artifact=art))
-                    m = adapter.measure("ffmpeg-skill/loudness", {"input": path, "measure_only": True})
+                    m = measure("ffmpeg-skill/loudness", {"input": path, "measure_only": True})
                     if m.ok and not m.data.get("silent"):
                         lufs, tp = _f(m.data.get("input_i")), _f(m.data.get("input_tp"))
                         if target_lufs is not None and lufs is not None:
@@ -114,7 +120,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
             if "delivery" in required and t.get("preset"):
                 cr = check_by_artifact.get(art)
                 if cr is None or not cr.data.get("checks"):
-                    cr = adapter.measure("ffmpeg-skill/check", {"input": path, "platform": t.get("platform", "custom")})
+                    cr = measure("ffmpeg-skill/check", {"input": path, "platform": t.get("platform", "custom")})
                 if cr and cr.data.get("checks"):
                     for row in cr.data["checks"]:
                         rep.items.append(QAItem("delivery", row["check"], row["status"], row["value"], row["expected"], kind=row.get("kind", "format"), fix_hint=row.get("fix", ""), artifact=art))
@@ -125,7 +131,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                     rep.items.append(QAItem("delivery", "check", "WARN", "no result", "check.py output", artifact=art))
             if sheet_dir and v:
                 sheet = f"{sheet_dir}/{art}_sheet.png"
-                lk = adapter.measure("ffmpeg-skill/look", {"input": path, "tiles": "4x2", "width": 1280, "output": sheet})
+                lk = measure("ffmpeg-skill/look", {"input": path, "tiles": "4x2", "width": 1280, "output": sheet})
                 if lk.ok:
                     rep.sheets.append(sheet)
                     rep.items.append(QAItem("visual", "contact_sheet", "PASS", sheet, "generated for human review", artifact=art))

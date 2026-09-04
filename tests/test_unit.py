@@ -235,6 +235,38 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue((job_file.parent / "provenance.json").exists())
         self.assertEqual(load_ir(ir_path).doc["provenance"]["runs"][-1]["status"], "CANCELLED")
 
+    def test_rejected_decision_blocks_render(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        lead = next(x for x in ir.doc["decisions"] if x["subject"] == "silence.leading")
+        lead["status"] = "REJECTED"
+        rep = validate_ir(ir, svc.caps.resolve())
+        self.assertFalse(rep.ok)
+        self.assertTrue(any("REJECTED" in e for e in rep.errors))
+        ir_path = str(Path(self.tmp) / "rej.json")
+        save_ir(ir, ir_path)
+        out = svc.render(load_ir(ir_path), ir_path)
+        self.assertEqual(out["status"], "FAILED")
+        self.assertFalse(out["job"]["completed_ops"])
+
+    def test_operation_ids_are_deterministic(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        a = [o.id for o in compile_ir(ir, "/w/jobs/j")[0]]
+        b = [o.id for o in compile_ir(ir, "/w/jobs/k")[0]]
+        self.assertEqual(a, b)
+        self.assertEqual(len(set(a)), len(a))
+
+    def test_qa_measurements_are_recorded(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        ir_path = str(Path(self.tmp) / "m.json")
+        save_ir(ir, ir_path)
+        out = svc.render(load_ir(ir_path), ir_path)
+        tools = [m["tool"] for m in out["qa"]["measurements"]]
+        self.assertIn("ffmpeg-skill/probe", tools)
+        self.assertNotIn("ffmpeg-skill/check", tools, "check.py result from the executor is reused, not re-run")
+
     def test_schema_rejects_bad_ir(self):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "youtube")

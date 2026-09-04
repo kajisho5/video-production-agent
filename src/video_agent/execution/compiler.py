@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from ..models import Operation, stable_hash
+
+
+def _op_id(tool: str, args: Dict[str, Any], inputs: List[str]) -> str:
+    return "op_" + stable_hash([tool, args, inputs])[:12]
 from ..project.ir import ProjectIR
 
 
@@ -32,7 +36,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
             args: Dict[str, Any] = {"input": current, "segments": segs, "output": out_id}
             if frame_accurate:
                 args["accurate"] = True
-            o = Operation(tool="ffmpeg-skill/cut", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []))
+            o = Operation(tool="ffmpeg-skill/cut", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []), id=_op_id("ffmpeg-skill/cut", args, [current]))
             o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
             ops.append(o)
             current = out_id
@@ -43,7 +47,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
             out_id = f"{asset_id}_loudnorm"
             paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_loudness" / f"{stem}_loudnorm.mp4")
             args = {"input": current, "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
-            o = Operation(tool="ffmpeg-skill/loudness", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []))
+            o = Operation(tool="ffmpeg-skill/loudness", args=args, inputs=[current], outputs=[out_id], decision_ids=list(op.get("decision_ids") or []), id=_op_id("ffmpeg-skill/loudness", args, [current]))
             o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
             ops.append(o)
             current = out_id
@@ -54,10 +58,11 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
                 ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
                 paths[art_id] = str(job / "artifacts" / f"{stem}_{t['id']}.{ext}")
                 args = {"input": current, "preset": t["preset"], "output": art_id}
-                o = Operation(tool="ffmpeg-skill/export", args=args, inputs=[current], outputs=[art_id], decision_ids=list(t.get("decision_ids") or []))
+                o = Operation(tool="ffmpeg-skill/export", args=args, inputs=[current], outputs=[art_id], decision_ids=list(t.get("decision_ids") or []), id=_op_id("ffmpeg-skill/export", args, [current]))
                 o.idempotency_key = stable_hash([src_hash, o.tool, args, tool_version])
                 ops.append(o)
-                q = Operation(tool="ffmpeg-skill/check", args={"input": art_id, "platform": t.get("platform", "custom")}, inputs=[art_id], outputs=[], decision_ids=list(t.get("decision_ids") or []), kind="qa")
+                qargs = {"input": art_id, "platform": t.get("platform", "custom")}
+                q = Operation(tool="ffmpeg-skill/check", args=qargs, inputs=[art_id], outputs=[], decision_ids=list(t.get("decision_ids") or []), kind="qa", id=_op_id("ffmpeg-skill/check", qargs, [art_id]))
                 ops.append(q)
             elif current != asset_id:
                 # generic profile: the last processed intermediate is the deliverable (no re-encode)

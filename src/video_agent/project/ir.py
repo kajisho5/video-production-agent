@@ -23,7 +23,7 @@ class ProjectIR:
             "project": {"id": new_id("proj"), "kind": "single", "name": name, "created_at": now_iso(), "profile": profile, "production": None},
             "request": {"raw": "", "received_at": now_iso(), "channel": "cli", "args": {}},
             "requirements": [], "source": {"agent_version": "0", "tool_versions": {}, "generator": "video-agent"},
-            "assets": {}, "analysis": {"observations": [], "inferences": [], "strategy": "TARGETED_ANALYSIS", "budget": {}, "warnings": [], "tool_calls": []},
+            "assets": {}, "analysis": {"observations": [], "inferences": [], "strategy": "FULL_ANALYSIS", "budget": {}, "warnings": [], "tool_calls": []},
             "intent": {"primary": "inspect", "secondary": [], "confidence": 0.0, "provenance": "SYSTEM", "reason": ""},
             "constraints": [], "policy": {"effective": {}, "conflicts": []}, "decisions": [],
             "plan": {"version": 1, "steps": [], "summary": []},

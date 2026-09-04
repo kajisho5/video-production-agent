@@ -39,7 +39,7 @@ video-agent check output.mp4 --platform youtube
 
 終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。
 
-監査結果と既知の制限: `docs/AUDIT_PHASE1.md`。
+監査結果と既知の制限: `docs/AUDIT_PHASE1.md`、最終レビューと Phase 2 開始条件: `docs/PHASE1_FINAL_REVIEW.md`。
 
 ## テスト
 

@@ -43,6 +43,11 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     d = ir.doc
     assets = d["assets"]
     ids = {x["id"] for x in d["decisions"]}
+    rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
+    for op in d["video"]["operations"] + d["audio"]["operations"] + d["delivery"]["targets"]:
+        for did in op.get("decision_ids") or []:
+            if did in rejected:
+                rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
     # semantic: operations reference known assets and decisions, ranges inside durations
     for op in d["video"]["operations"] + d["audio"]["operations"]:
         if op["asset"] not in assets:

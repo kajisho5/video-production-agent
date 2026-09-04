@@ -42,3 +42,7 @@
 
 ## ADR-012 analysis.strategy は「実際に行った解析」を記録する
 - Phase 1 は全ファイルの silence / loudness 解析しか無いので `FULL_ANALYSIS` を記録し、`budget.enforced=false` を明示する。プロファイルの要求値は `budget.requested_strategy` に残す。
+
+## ADR-013 REJECTED 決定は実行不可、operation id は決定論的
+- validator は REJECTED 決定を参照する operation / delivery target を error にし、render は実行しない（監査時点では REJECTED でもそのまま compile されていた）。
+- operation id は tool + args + inputs のハッシュで生成する。provenance と Job の `completed_ops` を compile をまたいで照合できるようにするため（resume の前提）。
