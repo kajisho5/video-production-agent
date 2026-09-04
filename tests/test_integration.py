@@ -651,11 +651,14 @@ class TranscriptionRealTests(unittest.TestCase):
         self.assertNotRegex(json.dumps(self.doctor), r"(?i)(api[_-]?key|token|secret|password)")
         svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
         cap = svc.caps.resolve()["transcription"]
-        self.assertIn(cap.status, ("AVAILABLE", "DEGRADED"), cap.detail)
-        self.assertEqual(cap.evidence["engines"][0]["id"], "faster_whisper")
+        engine_installed = bool(eng["faster_whisper"].get("available"))
+        # the Skill's doctor decides: engine installed → AVAILABLE (model local) / DEGRADED (model missing); no engine → MISSING (CI has none)
+        self.assertIn(cap.status, ("AVAILABLE", "DEGRADED") if engine_installed else ("MISSING",), cap.detail)
+        if engine_installed:
+            self.assertEqual(cap.evidence["engines"][0]["id"], "faster_whisper")
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"])
-        self.assertEqual(svc.tools_for().get("speech_transcription"), "transcription/transcribe" if cap.status in ("AVAILABLE", "DEGRADED") else None)
+        self.assertEqual(svc.tools_for().get("speech_transcription"), "transcription/transcribe" if engine_installed else None, "no engine → no candidate tool, never a fallback")
         # an engine-level constraint the Skill refuses is reported as the Skill says it (no reinterpretation)
         r = self.adapter.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_x", "engine": "faster_whisper", "model": "large-v3", "offline": True})
         if not r.ok:

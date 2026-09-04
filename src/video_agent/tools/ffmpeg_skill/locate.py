@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 SUPPORTED_MIN = (0, 8, 4)
-SUPPORTED_MAX_EXCLUSIVE = (0, 9, 0)
+# 0.9.0 (2026-09-04): machine-readable contract / doctor added, `--json` results gain "status"; "no script changed its media
+# behaviour" (CHANGELOG). The full integration suite passes on 0.9.0, so 0.9.x is accepted; 0.10 is not verified.
+SUPPORTED_MAX_EXCLUSIVE = (0, 10, 0)
 
 
 @dataclass
