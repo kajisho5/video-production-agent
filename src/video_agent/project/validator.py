@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from ..models import Event
+from ..temporal import Session, classify, validate_event, validate_session
 from typing import Any, Dict, List, Optional
 
 from .ir import ProjectIR
@@ -113,6 +115,27 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
             rep.errors.append(f"delivery target {t['id']} has no export step")
+    # temporal layer: events are validated domain objects on existing assets, within their duration, with real evidence
+    durations = {aid: (a.get("technical") or {}).get("duration") for aid, a in assets.items()}
+    known_evidence = {o.get("id") for o in d["analysis"].get("observations") or []} | {x.get("id") for x in d["decisions"]} | {i.get("id") for i in d["analysis"].get("inferences") or []}
+    events: Dict[str, Event] = {}
+    for raw in d["timeline"].get("events") or []:
+        try:
+            ev = classify(Event.from_dict(raw))
+        except (TypeError, ValueError) as ex:
+            rep.errors.append(f"event {raw.get('id')}: {ex}")
+            continue
+        for err in validate_event(ev, durations, known_evidence - {ev.id}):
+            rep.errors.append(f"event {ev.id}: {err}")
+        events[ev.id] = ev
+    for raw in d["timeline"].get("sessions") or []:
+        try:
+            ses = Session.from_dict(raw)
+        except (TypeError, ValueError) as ex:
+            rep.errors.append(f"session {raw.get('id')}: {ex}")
+            continue
+        for err in validate_session(ses, d["project"].get("id"), durations, events):
+            rep.errors.append(f"session {ses.id}: {err}")
     # observations are measurements: their source is a tool id + version, never an AI provider; AI output is AI_GENERATED
     for o in d["analysis"].get("observations") or []:
         src = str(o.get("source") or "")

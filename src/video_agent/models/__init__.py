@@ -125,23 +125,96 @@ class Decision(Model):
     id: str = field(default_factory=lambda: new_id("dec"))
 
 
+TIME_EPS = 1e-6   # seconds: float tolerance for temporal comparisons (canonical timebase is seconds as float)
+
+
+@dataclass
+class TimePoint(Model):
+    """A position on an asset / master timeline, in seconds."""
+    seconds: float
+
+    def __post_init__(self) -> None:
+        try:
+            self.seconds = float(self.seconds)
+        except (TypeError, ValueError):
+            raise ValueError(f"time point must be a number of seconds, got {self.seconds!r}")
+        if self.seconds != self.seconds or self.seconds < -TIME_EPS:
+            raise ValueError(f"time point must be >= 0 s, got {self.seconds}")
+        self.seconds = max(0.0, self.seconds)
+
+
 @dataclass
 class TimeRange(Model):
+    """Temporal range in seconds. end=None is a point event (start only). Validated on construction: start >= 0, end >= start.
+    Relations (overlaps / contains / precedes / adjacent) use TIME_EPS so float noise never flips a verdict."""
     start: float
     end: Optional[float] = None   # None = point event
+
+    def __post_init__(self) -> None:
+        self.start = TimePoint(self.start).seconds
+        if self.end is not None:
+            self.end = TimePoint(self.end).seconds
+            if self.end < self.start - TIME_EPS:
+                raise ValueError(f"temporal range end {self.end} < start {self.start}")
+            self.end = max(self.end, self.start)
+
+    @property
+    def is_point(self) -> bool:
+        return self.end is None
+
+    @property
+    def stop(self) -> float:
+        return self.start if self.end is None else self.end
+
+    @property
+    def duration(self) -> float:
+        return self.stop - self.start
+
+    def overlaps(self, other: "TimeRange") -> bool:
+        return self.start < other.stop - TIME_EPS and other.start < self.stop - TIME_EPS if not (self.is_point or other.is_point) \
+            else (other.start - TIME_EPS <= self.start <= other.stop + TIME_EPS) if self.is_point else (self.start - TIME_EPS <= other.start <= self.stop + TIME_EPS)
+
+    def contains(self, other: "TimeRange") -> bool:
+        return self.start - TIME_EPS <= other.start and other.stop <= self.stop + TIME_EPS
+
+    def precedes(self, other: "TimeRange") -> bool:
+        return self.stop <= other.start + TIME_EPS
+
+    def adjacent(self, other: "TimeRange", tolerance: float = TIME_EPS) -> bool:
+        return abs(self.stop - other.start) <= tolerance or abs(other.stop - self.start) <= tolerance
+
+    def within(self, duration: Optional[float]) -> bool:
+        return duration is None or self.stop <= float(duration) + TIME_EPS
+
+
+TemporalRange = TimeRange
+EVENT_PROVENANCE = ("OBSERVED", "DERIVED", "INFERRED", "AI_GENERATED", "USER")
 
 
 @dataclass
 class Event(Model):
+    """A temporal domain occurrence on an asset (or the master) timeline. `type` is the canonical event code
+    (e.g. AUDIO_SILENCE); `event_type` / `subtype` are its domain classification (AudioEvent / silence).
+    Not a measurement (Observation), not an interpretation (Inference), not a production choice (Decision)."""
     type: str
     timeline_id: str
     range: Dict[str, Any]         # TimeRange.to_dict()
     source: str
-    kind: str                     # OBSERVED | INFERRED | USER
+    kind: str                     # OBSERVED | INFERRED | USER (schema-level class)
     confidence: Optional[float] = None
     evidence: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: new_id("evt"))
+    event_type: str = ""          # AudioEvent | SpeechEvent | ... (filled from `type` by temporal.events when omitted)
+    subtype: str = ""
+    asset_id: Optional[str] = None
+    provenance: str = ""          # EVENT_PROVENANCE (filled from `kind` when omitted)
+    session_id: Optional[str] = None
+    generator: str = ""           # "<transformation>@<version>" for DERIVED events, tool for OBSERVED, actor for USER
+    created_at: str = field(default_factory=now_iso)
+
+    def temporal_range(self) -> TimeRange:
+        return TimeRange(self.range["start"], self.range.get("end"))
 
 
 @dataclass

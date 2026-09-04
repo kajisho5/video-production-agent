@@ -17,6 +17,7 @@ from .execution import CompileError, Executor, compile_ir
 from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
+from .temporal import session_for_asset
 from .media.analysis import ANALYSIS_KINDS, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
 from .models import Artifact, Inference, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
@@ -198,6 +199,10 @@ class Service:
         d["policy"] = rules.to_dict()
         d["decisions"] = [x.to_dict() for x in decisions]
         d["plan"] = {"version": plan_version, "steps": plan["steps"], "summary": plan["summary"]}
+        for a in analysis.assets:   # default temporal grouping: one session per asset (explicit domain object, not a production plan)
+            ses = session_for_asset(d["project"]["id"], a, analysis.timeline.events)
+            if ses:
+                analysis.timeline.add_session(ses)
         d["timeline"] = analysis.timeline.to_dict()
         d["video"] = {"operations": plan["video_ops"]}
         d["audio"] = {"operations": plan["audio_ops"]}
@@ -264,6 +269,7 @@ class Service:
                           args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso()})
         new_version = ir.version + 1
         fresh = ProjectIR.new(old["project"]["name"], old["project"]["profile"], self.workspace)
+        fresh.doc["project"] = dict(old["project"])   # same project identity: sessions / events keep their deterministic ids across versions
         prior_ai = [Inference.from_dict(i) for i in old["analysis"].get("inferences") or [] if i.get("provenance") == "AI_GENERATED"]
         self._ai_calls = list(old["provenance"].get("ai_calls") or [])
         dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed, prior_ai=prior_ai)

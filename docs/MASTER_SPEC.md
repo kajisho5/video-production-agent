@@ -289,6 +289,45 @@ The model should support queries such as:
 - find incidents between two timestamps
 - identify camera state during a speech event
 
+### Temporal / Event / Session architecture (implemented, ADR-020)
+
+```text
+Project → Asset → Analysis → Observation → Event → Session → (Production Plan → Project IR)
+```
+
+- Timebase: seconds as float (`TimePoint`, `TimeRange` a.k.a. `TemporalRange`; `TIME_EPS` = 1e-6 for comparisons).
+  Ranges validate `start >= 0`, `end >= start`; `end = None` is a point event. Relations: `overlaps`, `contains`,
+  `precedes`, `adjacent`, `within(duration)`. Timecode strings are never the internal representation.
+- `Event` (`models.Event`, `temporal/events.py`): canonical code `type` (e.g. `AUDIO_SILENCE`) plus domain
+  classification `event_type` / `subtype` (`EVENT_TYPES`: AudioEvent, SpeechEvent, SpeakerEvent, SceneEvent, SlideEvent,
+  CameraEvent, IncidentEvent, CaptionEvent, UserDecisionEvent with fixed subtypes), `asset_id`, range, `source`,
+  `kind` (OBSERVED / INFERRED / USER) and `provenance` (OBSERVED / DERIVED / INFERRED / AI_GENERATED / USER), `evidence`
+  (existing observation / decision / inference ids), `generator`, optional `session_id` / `confidence`.
+  Only `IMPLEMENTED_CODES` are ever generated: AUDIO_SILENCE / AUDIO_ACTIVE / LOUDNESS_MEASURE from observations,
+  USER_DECISION from reviews. Speech / speaker / slide / camera / scene / caption / incident types are schema only.
+- Observation → Event is a deterministic transformation (`events_from_observation`, `observation_to_event@1.0`): only a
+  validated tool measurement (provenance OBSERVED, source `<tool>@<version>`) becomes an OBSERVED event; media_probe
+  yields none. Event identity is `evt_` + hash(asset, code, subtype, range, source, evidence) — regenerating from the
+  same observation gives the same id and `Timeline.add` is idempotent. Event id ≠ observation id ≠ analysis id ≠ cache
+  key ≠ operation id ≠ job id.
+- `Session` (`temporal/session.py`): id (deterministic from project, name, range, assets), project_id, name, range
+  (end > start), asset_ids, event_ids, metadata, provenance (SYSTEM / USER), generator. Validation: assets exist, range
+  within asset durations, child events on the session's assets and inside its range (never clipped). Today one
+  default session per asset (`session_for_asset`, whole duration) is recorded; no automatic session detection.
+- Validation (`validate_event`, `validate_session`, applied by the IR validator): ids, types, asset references,
+  temporal bounds (unknown durations are not checked and never guessed), evidence existence, provenance ↔ kind
+  consistency (an AI_GENERATED or INFERRED event is never kind OBSERVED), confidence range, no credential / command /
+  argv material.
+- AI boundary: events reach a provider only through `safe_event_summary` (existing, validated, provenance and evidence
+  preserved, AI_GENERATED excluded, metadata scrubbed); an AI response can cite existing event ids but never creates an
+  event. Its output stays an Inference (ADR-018).
+- Project IR: `timeline.events` / `timeline.sessions` record the temporal layer; it is not plan content (`plan_hash`
+  unchanged) and never an execution instruction. Production planning from events is future work.
+- Incidents remain QA-domain objects (`qa.incidents`); an `IncidentEvent` would reference them by id (schema only today).
+
+Observation = measured fact · Event = temporal domain occurrence · Inference = interpretation · Decision = production
+choice · Session = temporal grouping · Production Plan = production intent · Project IR = execution contract.
+
 ## 9. Event / Session / Project / Production
 
 Do not force conference concepts onto ordinary videos.

@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..models import Asset, Event, Observation, TimeRange, now_iso
+from ..models import Asset, Observation, now_iso
 from ..temporal import Timeline
+from ..temporal.events import events_from_observation
 from ..tools.base import ToolAdapter, ToolError
 from .analysis import (ANALYSIS_KINDS, IR_STRATEGY, LEGACY_STRATEGY, AnalysisError, AnalysisRequest, Analyzer, BudgetMeter, ObservationCache,
                        cache_key, validate_observation)
@@ -223,16 +224,9 @@ class MediaAnalyzer(Analyzer):
 
     @staticmethod
     def _events(kind: str, o: Observation, asset: Asset, dur: float, tl: Timeline, params: Dict[str, Any]) -> None:
-        tid = f"asset:{asset.id}"
-        if kind == "silence":
-            for se in o.data.get("silences") or []:
-                end = se[1] if se[1] is not None else dur
-                tl.add(Event(type="AUDIO_SILENCE", timeline_id=tid, range=TimeRange(se[0], end).to_dict(), source=o.source, kind="OBSERVED",
-                             confidence=None, evidence=[o.id], metadata={"threshold_db": params["threshold_db"], "runs_to_end": se[1] is None}))
-            for ke in o.data.get("keep") or []:
-                tl.add(Event(type="AUDIO_ACTIVE", timeline_id=tid, range=TimeRange(ke[0], ke[1]).to_dict(), source=o.source, kind="OBSERVED", evidence=[o.id]))
-        elif kind == "loudness":
-            tl.add(Event(type="LOUDNESS_MEASURE", timeline_id=tid, range=TimeRange(0.0, dur).to_dict(), source=o.source, kind="OBSERVED", evidence=[o.id], metadata=dict(o.data)))
+        """Deterministic Observation → Event transformation (temporal.events); idempotent on the timeline."""
+        for e in events_from_observation(o, asset):
+            tl.add(e)
 
 
 def _classify(probe: Dict[str, Any]) -> Dict[str, Any]:

@@ -90,3 +90,11 @@
 - `AnalysisBudget` は強制できる項目（calls / seconds）だけを持ち、未対応の予算名は拒否する。AI call budget とは別物。超過は計測を止め、捏造せず、行ごとに記録する。
 - `ObservationCache` の key は asset fingerprint + kind + analyzer id@version + tool id@version + params。Observation id、analysis id、cache key、Job の resume 状態はそれぞれ別の identity。
 - 明文化: Observation ≠ Inference、Analysis ≠ AI reasoning、AI evidence ≠ executable instruction、Analysis budget ≠ AI call budget、Analysis cache ≠ Job resume state。
+
+## ADR-020 Temporal Events are domain objects distinct from Observations and Decisions
+- 事実: Event は analyzer と review が生成する dict 的な record で、type 体系・asset 参照・identity・Session・検証が無く、AI evidence 境界でも区別されていなかった。
+- 決定: 時間軸を第一級 domain model として固定する。`TimePoint` / `TimeRange`（秒、検証付き、relation 付き）、`Event`（canonical code + domain type / subtype、asset、range、source、kind + provenance、evidence、generator）、`Session`（project 内の時間的まとまり）。
+- Event は Observation（計測）でも Inference（解釈）でも Decision（制作判断）でもない。OBSERVED event は validated tool measurement からの決定論的変換（`events_from_observation`）でしか生まれず、identity は内容 hash。AI 由来は AI_GENERATED / kind INFERRED としてのみ表現でき、OBSERVED に昇格できない（validator と AI evidence 境界で強制）。
+- Event type を定義することと検出を実装することを分離する。生成されるのは `IMPLEMENTED_CODES` の 4 code のみ。speech / speaker / slide / camera / scene / caption / incident は schema のみで、fake event で埋めない。
+- Session は明示的に構築する domain object（既定は asset 単位）。自動認識・production plan・Project IR の実行内容とは分離し、`plan_hash` にも含めない。
+- Observation = measured fact / Event = temporal domain occurrence / Inference = interpretation / Decision = production choice / Session = temporal grouping / Production Plan = production intent / Project IR = execution contract。

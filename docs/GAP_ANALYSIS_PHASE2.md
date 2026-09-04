@@ -118,3 +118,24 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 やっていないこと: conference 固有の分析（speaker / slide / sync / multicam / caption）、scene_detection / frame_integrity 等の未実装 kind の宣言、doctor への analyzer 表示、bytes / duration 予算。
 
 テスト: unit 87/87（ObservationAnalysisTests 10 件で指示の 24 項目を網羅）、integration 13/13（実メディアで 1 回目計測 3 call → 2 回目 cache hit 0 call、CACHED_ONLY、AI 推薦 → render → QA）、evals 6/6。
+
+## 10. PR #9 — Temporal / Event / Session Architecture（2026-09-04 追記）
+
+調査: `models.Event`（type / timeline_id / range / source / kind / confidence / evidence / metadata、random id）、`TimeRange`（検証なし）、`temporal/timeline.py`（Timeline / TimelineMap / query）が存在し、analyzer が AUDIO_SILENCE / AUDIO_ACTIVE / LOUDNESS_MEASURE を、review が USER_DECISION を生成していた。Event type 体系、subtype、asset 参照、決定論的 identity、Session、validation、AI evidence 境界での event 扱いは無かった。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G32 時間型に検証が無い | `TimeRange` は dataclass のみ | `TimePoint` / `TimeRange`（=`TemporalRange`）に検証（start ≥ 0, end ≥ start, NaN 拒否、TIME_EPS）と relation（overlaps / contains / precedes / adjacent / within） |
+| G33 Event type 体系が無い | `type` は自由文字列 | `EVENT_TYPES`（9 domain type + subtype）、`EVENT_CODES`（canonical code ↔ domain/subtype）、`IMPLEMENTED_CODES`（生成される 4 code のみ）。未実装 type は schema のみ、fake 生成なし |
+| G34 Event に asset / provenance / evidence 検証が無い | timeline_id から暗黙 | `asset_id` / `event_type` / `subtype` / `provenance` / `generator` / `session_id` を追加（`classify` で旧 IR も補完）。`validate_event` を IR validator に組込み |
+| G35 Event identity が random | 再生成で増殖し得る | `event_id` = hash(asset, code, subtype, range, source, evidence)。`Timeline.add` は idempotent。USER_DECISION も決定論的 id |
+| G36 Observation → Event 変換が analyzer 内に散在 | `_events` に直書き | `events_from_observation`（`observation_to_event@1.0`）。tool 計測（OBSERVED）以外は拒否、media_probe は event 化しない |
+| G37 Session が無い | — | `Session`（決定論的 id、project / name / range / assets / events / provenance）、`session_for_asset`（asset 単位の既定 session）、`validate_session`（範囲・asset・child event、clip しない） |
+| G38 AI evidence に event が無加工 | id / type / range / metadata をそのまま | `safe_event_summary`（AI_GENERATED を除外、provenance / evidence 保持、metadata scrub）。`to_inferences` は AI_GENERATED event id を evidence と認めない |
+| G39 CLI で時間軸を確認できない | — | `video-agent events` / `sessions`（--json 対応） |
+
+変更なし: production planning、Project IR の実行系（plan_hash は timeline を含まない）、QA incident model、AI provider、ffmpeg-skill、SkillRegistry / Router。revision は project identity を保持するようになり（`fresh.doc["project"] = old["project"]`）、session / event の id が版をまたいで安定する。
+
+やっていないこと: transcription / speaker / slide / camera / scene / sync / multicam / caption の検出、conference の自動 session 認識、Inference → Decision → Event の flow、IncidentEvent の生成、Event からの production planning。
+
+テスト: unit 95/95（TemporalEventSessionTests 8 件で指示の 30 項目を網羅）、integration 14/14（実メディアで 3 s 無音 → AudioEvent(silence)、session、CLI events / sessions / explain、render）、evals 6/6。schema は event の任意フィールドと timeline.sessions の追加のみ。
