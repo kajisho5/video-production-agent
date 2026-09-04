@@ -38,3 +38,11 @@
 - resume は CANCELLED / FAILED / COMPLETED のどの job からでも可能で、状態による制限は無い（意図的。key と記録が自己検証するため）。
 - `resumed_from` は 1 段のみ記録（多段の連鎖は各 job の `resumed_from` を辿る）。
 - Windows での実機検証は未実施（CI は unit のみ）。
+
+## CI（run 33871136715, head d3c6337）
+
+| job | 結果 |
+|---|---|
+| unit ubuntu 3.9 / 3.11 | success（33 tests, evals 6/6） |
+| unit windows 3.9 / 3.11 | success（33 tests, evals 6/6） |
+| integration ubuntu | success（7 tests、resume の実メディアテストを含む） |
