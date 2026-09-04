@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from video_agent.models import Operation, ToolResult
+from video_agent.skills.contract import SkillPackage, ToolSpec
 from video_agent.tools.base import ToolAdapter
+from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 
 
 def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False) -> Dict[str, Any]:
@@ -47,6 +49,13 @@ class FakeAdapter(ToolAdapter):
 
     def describe(self):
         return {"name": self.name, "version": self.version}
+
+    TOOLS: Optional[List[str]] = None   # tool names this fake package declares; default: the ffmpeg-skill catalog plus aliases
+
+    def package(self) -> SkillPackage:
+        names = self.TOOLS if self.TOOLS is not None else list(CATALOG) + list(self.ALIASES)
+        return SkillPackage(skill_id=self.name, name=self.name, version=self.version, description="fake engine (tests only)",
+                            capabilities=[], tools=[ToolSpec(tool_id=f"{self.name}/{n}", skill_id=self.name, version=self.version, produces_output=n not in ("probe", "check", "silence")) for n in names])
 
     def supports(self, tool: str) -> bool:
         return tool.startswith("ffmpeg-skill/")

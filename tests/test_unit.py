@@ -981,3 +981,136 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertEqual((exp["tool"], exp["tool_version"]), ("ffmpeg-skill/export", "0.8.4-fake"))
         # the job's artifact record follows the export tool, not a fixed engine name
         self.assertEqual(out["job"]["artifacts"][0]["tool"], "ffmpeg-skill/export")
+
+
+class EcosystemContractTests(unittest.TestCase):
+    """AI Video Production Ecosystem: Skill package → Tool → Adapter → runtime, with ffmpeg-skill as the only implemented
+    Reference Skill. Future skills exist only in docs; a fake package is registered in test scope only."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    # Test A — ffmpeg-skill is registered as the Reference Skill package
+    def test_reference_skill_package_is_registered(self):
+        from video_agent.tools.ffmpeg_skill import PACKAGE
+        svc = make_service(self.tmp)
+        pkgs = {p.skill_id: p for p in svc.registry.packages()}
+        self.assertEqual(list(pkgs), ["ffmpeg-skill"], "exactly one implemented package: the Reference Skill")
+        self.assertEqual(PACKAGE.validate(), [])
+        self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
+        rows = svc.packages()
+        self.assertEqual([r["skill_id"] for r in rows], ["ffmpeg-skill"])
+        self.assertTrue(rows[0]["implemented"] and rows[0]["available"])
+        self.assertEqual(rows[0]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
+
+    # Test B — its tools are recognised, typed, and consistent with the adapter
+    def test_reference_skill_tools(self):
+        from video_agent.tools.ffmpeg_skill import PACKAGE
+        from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+        self.assertEqual(PACKAGE.tool_ids(), ["ffmpeg-skill/" + k for k in CATALOG])
+        cut, probe = PACKAGE.tool("ffmpeg-skill/cut"), PACKAGE.tool("ffmpeg-skill/probe")
+        self.assertEqual((cut.kind, cut.skill_id, cut.required_capabilities), ("transform", "ffmpeg-skill", ["encoder:libx264"]))
+        self.assertEqual((probe.kind, probe.inputs), ("measure", ["inputs"]))
+        svc = make_service(self.tmp)
+        self.assertEqual(svc.registry.tool("ffmpeg-skill/cut").tool_id, "ffmpeg-skill/cut")
+        self.assertIsNone(svc.registry.tool("ffmpeg-skill/nope"))
+        self.assertIsNone(svc.registry.tool("media-analysis-skill/probe"), "future packages are not registered")
+
+    # Test C — Skill (production) → Tool (package) → Adapter relation is closed: no dangling candidates
+    def test_skill_tool_adapter_relation(self):
+        svc = make_service(self.tmp)
+        self.assertEqual(svc.registry.unknown_tool_candidates(), [], "every tool candidate belongs to a registered package")
+        router = svc.adapter([])
+        for spec in svc.registry.all():
+            if not spec.implemented:
+                continue   # declared future skills may cite tools that are not catalogued yet; they are never selected
+            for t in spec.tools:
+                self.assertEqual(t.split("/", 1)[0], svc.registry.tool(t).skill_id)
+                self.assertIs(router.adapter_for(t).__class__, FakeAdapter)
+        rows = {r["skill"]: r for r in svc.skills()}
+        self.assertEqual(rows["silence_cleanup"]["packages"], ["ffmpeg-skill"])
+
+    # Test D — declared future skills are never AVAILABLE, and no future package exists
+    def test_future_skills_never_available(self):
+        svc = make_service(self.tmp)
+        rows = {r["skill"]: r for r in svc.skills()}
+        for name in ("multi_source_sync", "caption_generation", "semantic_deletion"):
+            self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
+        src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        future = ("media-analysis-skill", "transcription-skill", "subtitle-skill", "video-editing-skill", "audio-production-skill",
+                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")
+        hits = [f"{py.relative_to(src)}: {n}" for py in src.rglob("*.py") for n in future if n in py.read_text(encoding="utf-8")]
+        self.assertEqual(hits, [], "future skill packages must not appear in production code")
+
+    # Test E — tool selection has no default fallback (covered in depth by SkillToolBoundaryTests; contract-level check here)
+    def test_no_default_tool_fallback(self):
+        svc = make_service(self.tmp)
+        self.assertEqual(svc.registry.resolve_tools(svc.caps.resolve(), lambda t: False), {})
+        rows = {r["skill"]: r for r in svc.registry.availability(svc.caps.resolve(), lambda t: False)}
+        self.assertTrue(all(r["tool"] is None for r in rows.values()))
+        pk = svc.registry.package_availability(svc.caps.resolve(), lambda t: False)[0]
+        self.assertFalse(pk["available"])
+        self.assertIn("no registered adapter", pk["reason"])
+
+    # Test H + I + F + G — a fake package registered in test scope propagates unchanged and needs no core change
+    def test_fake_skill_package_in_test_scope_only(self):
+        from video_agent.skills import SkillPackage, ToolSpec
+        from video_agent.tools import ToolRouter
+
+        class FakeSkillAdapter(FakeAdapter):
+            name = "fake-skill"
+            version = "0.1-test"
+            ALIASES = {"tool": "cut"}
+            TOOLS = ["tool"]
+            def supports(self, tool):
+                return tool == "fake-skill/tool"
+
+        ff, fake = FakeAdapter(), FakeSkillAdapter()
+        svc = make_service(self.tmp, adapter=ToolRouter([ff, fake]))
+        pkg = fake.package()
+        self.assertEqual((pkg.skill_id, pkg.tool_ids(), pkg.validate()), ("fake-skill", ["fake-skill/tool"], []))
+        with self.assertRaises(ValueError):
+            svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
+        # the only "core" change a new package needs: a production skill cites its tool as a candidate
+        svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill"])
+        self.assertEqual(svc.registry.unknown_tool_candidates(), [])
+        ir = svc.plan([self.src], "youtube")
+        self.assertTrue(svc.validate(ir).ok)
+        self.assertEqual({st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}["silence_cleanup"], "fake-skill/tool")
+        ops, _ = compile_ir(ir, "/w/jobs/j")
+        self.assertEqual([o.tool for o in ops if o.skill == "silence_cleanup"], ["fake-skill/tool"])
+        p = str(Path(self.tmp) / "eco.json")
+        save_ir(ir, p)
+        out = svc.render(ir, p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual([o.tool for o in fake.calls], ["fake-skill/tool"])
+        prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("fake-skill", "fake-skill/tool", "0.1-test"))
+        self.assertEqual(prov["tool_versions"]["fake-skill"], "0.1-test")
+        self.assertEqual(prov["skill_versions"]["silence_cleanup"], "1.0")
+        # a plan citing a tool no registered package declares is rejected by the validator
+        ir.doc["plan"]["steps"][0]["tool"] = "fake-skill/other"
+        svc.registry.get("silence_cleanup").tools.append("fake-skill/other")
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
+        self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
+        # production registry of a fresh service knows nothing about the fake package
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill"])
+
+    # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
+    def test_no_engine_leakage_in_orchestration(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        allowed = ("tools/", "skills/", "capabilities/")
+        allowed_files = {"execution/recovery.py", "service.py", "cli.py", "__init__.py"}
+        offenders = []
+        for py in root.rglob("*.py"):
+            rel = py.relative_to(root).as_posix()
+            if rel.startswith(allowed) or rel in allowed_files:
+                continue
+            for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("#", 1)[0].lower()
+                if "ffmpeg" in code or "ffprobe" in code:   # capability names (encoder:libx264) are environment vocabulary, allowed
+                    offenders.append(f"{rel}:{i}: {line.strip()}")
+        self.assertEqual(offenders, [], "\n".join(offenders))

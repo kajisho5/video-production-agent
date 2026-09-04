@@ -65,3 +65,10 @@
 - `ToolRouter` は tool id を対応 adapter へ振り分けるだけで振る舞いを持たない。adapter の登録は `Service.adapter()` の 1 箇所。
 - `phase > IMPLEMENTED_PHASE` の Skill は宣言のみで選択不可（`video-agent skills` で NOT_IMPLEMENTED）。存在しない外部 Skill は registry にも adapter にも置かない。
 - 追記（PR #5 最終修正）: planner / analyzer / QA に残っていた `DEFAULT_TOOLS` フォールバックを撤去し、`tools` を必須引数にした。Registry を経ずに ffmpeg-skill が選ばれる経路はコード上に存在しない（静的検査 `test_no_tool_id_literals_outside_tool_layer` が `DEFAULT_TOOLS` と tool id リテラルの両方を tool 定義層以外で禁止する）。tool の version も固定名ではなく operation の tool の adapter から引く。
+
+## ADR-017 Ecosystem Contract: Skill package / Tool / Adapter を型で固定し、loader は作らない
+- 事実: 実装済みの外部 Skill は `kajisho5/ffmpeg-skill` のみ。将来 Skill（media-analysis / transcription / … / qc）は存在しない。
+- 決定: `SkillPackage`（skill_id / name / version / description / capabilities / tools）と `ToolSpec`（tool_id `<skill_id>/<name>` / 実行契約）を `skills/contract.py` に置き、adapter が `package()` で自分の package を宣言、`SkillRegistry` が登録・列挙・検証する。ffmpeg-skill は Reference Skill として `tools/ffmpeg_skill/package.py` で宣言する。
+- 既存の `SkillSpec` は production skill（Agent が実現できること）として維持し、改名しない。DECLARED / IMPLEMENTED / AVAILABLE は既存 status に対応付け、新 status は作らない。
+- plugin manager / installer / dynamic import / marketplace / remote registry は作らない。package は adapter module と `Service.adapter()` の 1 行で登録される。future skill は production code に登録も stub も置かず、テストは test scope の fake package で契約を証明する。
+- planner / compiler / decision / QA に engine 固有ロジックを置かない（静的テスト）。tool id は概念名で、engine は adapter の内側。

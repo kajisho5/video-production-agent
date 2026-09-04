@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed Phase 1 order per asset:
-trim → loudness → export → check. Paths for intermediates are decided here; no ffmpeg flags appear here.
+trim → loudness → export → check. Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
 produced its inputs). Changing the trim therefore changes the loudness key too, so a resumed job can never reuse
@@ -50,7 +50,7 @@ def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
 
 def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, str]] = None) -> Tuple[List[Operation], Dict[str, str]]:
     """Returns (operations, paths) where paths maps artifact ids to filesystem paths. `tool_versions` maps an adapter
-    name (the tool id prefix, e.g. "ffmpeg-skill") to its version; it defaults to the IR's recorded source.tool_versions."""
+    name (the tool id prefix) to its version; it defaults to the IR's recorded source.tool_versions."""
     d = ir.doc
     versions = tool_versions if tool_versions is not None else (d.get("source", {}).get("tool_versions") or {})
     step_tools = _step_tools(d)

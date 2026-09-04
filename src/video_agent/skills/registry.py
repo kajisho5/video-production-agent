@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .contract import SkillPackage, ToolSpec
+
 # Skills whose phase is above this are declared for the roadmap only: they are never selectable and never "available".
 IMPLEMENTED_PHASE = 1
 
@@ -34,11 +36,54 @@ class SkillSpec:
 
 
 class SkillRegistry:
+    """Discovers, records and lists production skills (SkillSpec) and Skill packages (SkillPackage) and selects a tool per
+    skill for the current environment. It never makes a production decision (that is agent/decision.py)."""
+
     def __init__(self) -> None:
         self._skills: Dict[str, SkillSpec] = {}
+        self._packages: Dict[str, SkillPackage] = {}
 
     def register(self, spec: SkillSpec) -> None:
         self._skills[spec.name] = spec
+
+    # ---- Skill packages (ecosystem contract)
+    def register_package(self, pkg: SkillPackage) -> None:
+        """Record a Skill package (identity + tool contract). Re-registering the same skill_id replaces it (e.g. once an
+        adapter has detected the installed version). A package that violates the contract is refused."""
+        errs = pkg.validate()
+        if errs:
+            raise ValueError("invalid skill package: " + "; ".join(errs))
+        self._packages[pkg.skill_id] = pkg
+
+    def packages(self) -> List[SkillPackage]:
+        return [self._packages[k] for k in sorted(self._packages)]
+
+    def package(self, skill_id: str) -> Optional[SkillPackage]:
+        return self._packages.get(skill_id)
+
+    def tool(self, tool_id: str) -> Optional[ToolSpec]:
+        """ToolSpec for a tool id, from the package owning its prefix; None if no registered package declares it."""
+        pkg = self._packages.get(tool_id.split("/", 1)[0])
+        return pkg.tool(tool_id) if pkg else None
+
+    def unknown_tool_candidates(self) -> List[str]:
+        """Tool candidates cited by *implemented* production skills that no registered package declares (skill/tool
+        confusion check). Declared future skills may cite tools that are not catalogued yet; they are never selectable."""
+        return sorted({f"{sp.name}: {t}" for sp in self.all() if sp.implemented for t in sp.tools if self.tool(t) is None})
+
+    def package_availability(self, caps: Dict[str, Any], supports: Callable[[str], bool], versions: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+        """Per package: implemented (an adapter for it exists in this codebase, i.e. it was registered), available (an adapter
+        is registered with the router for its tools and its capabilities are present), and which tools are usable now."""
+        rows = []
+        for pkg in self.packages():
+            missing = [c for c in pkg.capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
+            usable = [t.tool_id for t in pkg.tools if supports(t.tool_id)]
+            available = not missing and bool(usable)
+            reason = "ok" if available else ("required capability missing: " + ", ".join(missing) if missing else "no registered adapter supports its tools")
+            rows.append({"skill_id": pkg.skill_id, "name": pkg.name, "version": (versions or {}).get(pkg.skill_id) or pkg.version or "-", "repository": pkg.repository,
+                         "role": pkg.role, "implemented": True, "available": available, "reason": reason, "tools": pkg.tool_ids(), "usable_tools": usable,
+                         "used_by": sorted(sp.name for sp in self.all() if any(t.startswith(pkg.skill_id + "/") for t in sp.tools))})
+        return rows
 
     def get(self, name: str) -> SkillSpec:
         return self._skills[name]
@@ -77,12 +122,14 @@ class SkillRegistry:
         return out
 
     def availability(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> List[Dict[str, Any]]:
-        """Human/machine listing: AVAILABLE (tool selected) / UNAVAILABLE (capability or adapter missing) / NOT_IMPLEMENTED."""
+        """Human/machine listing: AVAILABLE (tool selected) / UNAVAILABLE (capability or adapter missing) / NOT_IMPLEMENTED
+        (declared for a later phase). DECLARED == NOT_IMPLEMENTED; IMPLEMENTED == `implemented`; AVAILABLE == status."""
         rows = []
         for spec in self.all():
             tool, reason = self.select_tool(spec.name, caps, supports)
             status = "AVAILABLE" if tool else ("NOT_IMPLEMENTED" if not spec.implemented else "UNAVAILABLE")
             rows.append({"skill": spec.name, "version": spec.version, "phase": spec.phase, "status": status, "tool": tool, "reason": reason,
+                         "implemented": spec.implemented, "packages": sorted({t.split("/", 1)[0] for t in spec.tools}),
                          "required_capabilities": spec.required_capabilities, "risk": spec.risk_level, "approval": spec.approval})
         return rows
 

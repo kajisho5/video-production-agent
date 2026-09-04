@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ..models import Operation, ToolResult
+from ..skills.contract import SkillPackage
 
 
 class ToolError(Exception):
@@ -11,10 +12,18 @@ class ToolError(Exception):
 
 
 class ToolAdapter:
+    """Adapter contract (docs/skills.md): connect one Skill package's tools to the runtime.
+    - `name` is the package's skill_id and the prefix of every tool id it supports.
+    - `package()` returns the SkillPackage it implements (identity + tool contract, version as detected).
+    - `supports` / `preview` / `run` / `measure` execute the tool the caller selected. An adapter never selects a
+      skill or a tool, never reads the Project IR, and never makes a production decision."""
     name = "abstract"
     version = "0"
 
     def describe(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def package(self) -> SkillPackage:
         raise NotImplementedError
 
     def supports(self, tool: str) -> bool:

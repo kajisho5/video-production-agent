@@ -26,7 +26,7 @@ video-agent doctor
 ## 使い方
 
 ```bash
-video-agent skills                                      # Skill の状態（AVAILABLE / UNAVAILABLE / NOT_IMPLEMENTED）と選択された tool
+video-agent skills                                      # Skill package（実装済みは ffmpeg-skill のみ）と production skill の状態、選択された tool
 video-agent analyze input.mp4
 video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.youtube.project.json
 video-agent plan input.mp4 --profile conference --set audio.loudness.target_lufs=-18

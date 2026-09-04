@@ -27,6 +27,7 @@ from .qa import run_qa
 from .skills import default_registry
 from .tools import ToolRouter
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
+from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
 from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 
@@ -38,18 +39,28 @@ class Service:
         self.caps = caps or CapabilityResolver(self.skill_dir)
         self._adapter = adapter
         self.registry = default_registry()
+        # Reference Skill package: implemented in this codebase (tools/ffmpeg_skill) whether or not a checkout is installed.
+        self.registry.register_package(FFMPEG_SKILL_PACKAGE)
+        if self._adapter is not None:
+            self.adapter([])   # injected adapters (tests) declare their packages up front
 
     # ---- adapters / tools
     def adapter(self, allowed_inputs: Optional[List[str]] = None) -> ToolRouter:
         """The tool router with every adapter available in this environment. Today that is ffmpeg-skill only; a second
         skill package would be registered here (and nowhere else)."""
         if self._adapter is not None:
-            return self._adapter if isinstance(self._adapter, ToolRouter) else ToolRouter([self._adapter])
+            return self._sync_packages(self._adapter if isinstance(self._adapter, ToolRouter) else ToolRouter([self._adapter]))
         skill = locate_ffmpeg_skill(self.skill_dir)
         policy = PathPolicy(allowed_inputs or [], self.workspace) if allowed_inputs is not None else None
         router = ToolRouter()
         if skill:
             router.register(FfmpegSkillAdapter(skill, policy))
+        return self._sync_packages(router)
+
+    def _sync_packages(self, router: ToolRouter) -> ToolRouter:
+        """Every registered adapter declares its Skill package; the registry records it (with the detected version)."""
+        for pkg in router.packages():
+            self.registry.register_package(pkg)
         return router
 
     def tools_for(self, router: Optional[ToolRouter] = None) -> Dict[str, str]:
@@ -59,6 +70,11 @@ class Service:
 
     def skills(self) -> List[Dict[str, Any]]:
         return self.registry.availability(self.caps.resolve(), self.adapter([]).supports)
+
+    def packages(self) -> List[Dict[str, Any]]:
+        """Skill packages known to this codebase and whether they are usable here (ecosystem view for `video-agent skills`)."""
+        router = self.adapter([])
+        return self.registry.package_availability(self.caps.resolve(), router.supports, {a.name: str(getattr(a, "version", "")) for a in router.adapters})
 
     def require_tools(self, tools: Dict[str, str], needed: List[str], router: ToolRouter) -> None:
         """Fail early with the registry's reason when a skill this command depends on has no executable tool here."""

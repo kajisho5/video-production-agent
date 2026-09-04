@@ -104,12 +104,12 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         v = (asset.technical.get("video") or {})
         probe_ids = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "probe"]
         if v.get("variable_frame_rate_suspected"):
-            decs.append(Decision(subject="video.vfr", decision="frame-accurate cuts, conform to CFR", reason="probe reports variable frame rate; lossless cuts are unreliable (ffmpeg-skill cut.py switches to --accurate)",
+            decs.append(Decision(subject="video.vfr", decision="frame-accurate cuts, conform to CFR", reason="probe reports variable frame rate; lossless (stream-copy) cuts are unreliable, so trims are compiled as frame-accurate",
                                  confidence=0.9, evidence=probe_ids, risk="LOW", approval="AUTO", provenance="OBSERVED"))
         if v.get("hdr"):
-            decs.append(Decision(subject="video.hdr", decision=f"keep HDR ({v.get('hdr_format')}) through intermediates; SDR presets warn", reason="probe reports HDR; ffmpeg-skill preserves HDR on re-encode, platform presets output SDR without tone mapping",
+            decs.append(Decision(subject="video.hdr", decision=f"keep HDR ({v.get('hdr_format')}) through intermediates; SDR presets warn", reason="probe reports HDR; intermediates keep HDR on re-encode, platform presets output SDR without tone mapping",
                                  confidence=0.9, evidence=probe_ids, risk="MEDIUM", approval="CONFIRM", provenance="OBSERVED",
-                                 alternatives=[Alternative("tone-map to SDR first (color.py --to-sdr)", "correct colours on SDR-only platforms", "one extra re-encode").to_dict()]))
+                                 alternatives=[Alternative("tone-map to SDR first", "correct colours on SDR-only platforms", "one extra re-encode").to_dict()]))
     # ---- delivery
     targets = m.get("delivery.targets")
     for t in (targets.value if targets else []):

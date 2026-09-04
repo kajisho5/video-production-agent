@@ -60,3 +60,21 @@ Capability Resolver、Skill Registry の構造、FfmpegSkillAdapter と catalog�
 ## テスト
 
 unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既定 engine が無いこと、別 engine `other-skill/trim` の Registry → Service → planner → compiler → ToolRouter → adapter → provenance 伝播、`DEFAULT_TOOLS` を検出する静的検査。当初 8 件: select_tool の 3 分岐、将来 Skill の非選択、plan→compiler の tool 伝播と validator の拒否、tool 無し step、CompileError、adapter 欠落での BLOCK、router の dispatch、tool id リテラルの静的検査）、integration 9/9、evals 6/6。
+
+## 7. PR #6 — Ecosystem Contract（2026-09-04 追記）
+
+調査対象: SkillSpec / SkillRegistry / Capability / CapabilityResolver / ToolRouter / ToolAdapter / Service / Planner / Compiler / Operation / Project IR / Provenance / doctor / CLI / docs。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G9 Skill package の identity が無い | 「Skill」は production skill（`silence_cleanup`）のみを指し、`ffmpeg-skill` という package は adapter の `name` 文字列としてしか存在しなかった。将来 Skill repository が何を提供すべきかの型が無い | `skills/contract.py` に `SkillPackage` / `ToolSpec`。ffmpeg-skill を `tools/ffmpeg_skill/package.py` で Reference Skill として宣言（CATALOG から導出） |
+| G10 Adapter が自分の package を宣言しない | `ToolAdapter` は `describe()` の自由形式 dict のみ | `ToolAdapter.package()` を契約に追加。`ToolRouter.packages()`、`Service` が adapter 登録時に registry へ自動登録 |
+| G11 Registry が package を知らない | tool 候補は文字列で、どの package のものか検証されない | `register_package` / `packages` / `package` / `tool` / `package_availability` / `unknown_tool_candidates`。validator は step の tool が登録済み package の宣言 tool であることを検査 |
+| G12 validator の capability 集合が engine 固定 | `{"ffmpeg","ffprobe","ffmpeg-skill"}` を直書き | registry（production skill + package + ToolSpec）から集める |
+| G13 Decision の理由文に engine 名 | `ffmpeg-skill cut.py switches to --accurate` 等 | engine 非依存の表現に変更（判断ロジックは元から IR 語彙） |
+| G14 provenance に package identity が無い | skill / tool / tool_version のみ | `skill_package`（tool id の prefix）を追加。IR schema は変更なし |
+| G15 CLI が package を表示しない | `video-agent skills` は production skill のみ | "Skill packages" セクション（implemented / available / usable tools / version）を追加。JSON は `{packages, skills}` |
+
+実装しなかったもの（意図的）: 外部 package loader、plugin manager、dynamic import、future skill の dummy、`SkillSpec` の改名。DECLARED / IMPLEMENTED / AVAILABLE は既存の `NOT_IMPLEMENTED` / `implemented` / `AVAILABLE` に対応付け、新 status は作っていない。
+
+テスト: unit 66/66（EcosystemContractTests 7 件: Reference Skill 登録、tool 契約、Skill→Tool→Adapter の閉包、future skill 非 AVAILABLE + production code に future package 名が無いこと、default fallback 無し、fake-skill package の test scope 登録と Registry→…→provenance 伝播 + validator 拒否、engine 漏洩の静的検査）、integration 11/11（実 runtime での契約テスト追加）、evals 6/6。

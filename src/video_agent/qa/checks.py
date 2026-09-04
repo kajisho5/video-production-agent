@@ -1,4 +1,4 @@
-"""QA after execution: video/audio facts vs expectations, delivery compliance via ffmpeg-skill check.py,
+"""QA after execution: video/audio facts vs expectations, delivery compliance via the selected delivery_check tool,
 incidents for FAILs. Rendering success is not production success."""
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
             pr = measure(tools["media_probe"], {"inputs": [path]})
             if not pr.ok:
                 rep.items.append(QAItem("video", "probe", "FAIL", pr.stderr_tail, "readable file", artifact=art))
-                rep.incidents.append(Incident(type="CORRUPTED_FRAME", severity="HIGH", evidence=[art], possible_cause="output unreadable by ffprobe", recommended_action="re-run the export; inspect the tool log"))
+                rep.incidents.append(Incident(type="CORRUPTED_FRAME", severity="HIGH", evidence=[art], possible_cause="output unreadable by the probe tool", recommended_action="re-run the export; inspect the tool log"))
                 continue
             p = pr.data
             v, a = p.get("video") or {}, p.get("audio") or {}

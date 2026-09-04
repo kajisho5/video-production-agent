@@ -1216,6 +1216,46 @@ Consider representative media such as:
 
 Keep fixtures practical in size.
 
+## 51A. AI Video Production Ecosystem
+
+video-production-agent is not a single video-processing agent. It is the **Brain / Orchestrator** of an ecosystem of
+independent, specialised Skill packages:
+
+```text
+video-production-agent   = Brain / Orchestrator (requirements, observation, decisions, Project IR, execution, QA, provenance)
+ffmpeg-skill             = First Reference Skill: deterministic media processing (implemented: kajisho5/ffmpeg-skill)
+future skills            = independent specialised skills, added without rebuilding the agent
+```
+
+Vocabulary and responsibilities (the contract lives in `src/video_agent/skills/contract.py`, details in `docs/skills.md`):
+
+| Concept | Responsibility | Implementation |
+|---|---|---|
+| Skill package | what a repository can do (a capability domain) | `SkillPackage`: skill_id, name, version, description, capabilities, tools, repository, role |
+| Tool | one concrete operation the package provides | `ToolSpec`: tool_id `<skill_id>/<name>`, skill_id, version, required capabilities, execution contract (inputs, produces_output, deterministic, result_keys) |
+| Capability | what the runtime environment supports | `CapabilityResolver` (AVAILABLE / MISSING / DEGRADED / UNKNOWN) |
+| Adapter | connects a package's tools to the runtime; executes the selected tool, decides nothing | `ToolAdapter` (`package()`, `supports`, `preview`, `run`, `measure`) |
+| Registry | discovers, records and lists production skills and packages; selects a tool per skill | `SkillRegistry` (`register`, `register_package`, `get`, `all`, `packages`, `tool`, `select_tool`, `resolve_tools`, `availability`, `package_availability`) |
+| Router | dispatches a selected tool id to the adapter that supports it | `ToolRouter` |
+| Agent | decides what the production as a whole should do | `agent/`, `service.py` |
+
+A production skill (`SkillSpec`, e.g. `silence_cleanup`) names the tools that can realise it as an ordered candidate
+list drawn from registered packages. Tool ids are conceptual (`<skill_id>/<name>`); which engine implements them is the
+adapter's business, so the same production skill can later be realised by another package's tool without changing the
+planner, compiler, QA or decision code.
+
+Status vocabulary (no new statuses): **DECLARED** = a production skill registered for a later phase (`NOT_IMPLEMENTED`);
+**IMPLEMENTED** = the skill (or a package's adapter) exists in this codebase; **AVAILABLE** = usable in this environment
+(capabilities present, an adapter registered, a tool selected).
+
+Current state: **ffmpeg-skill is the only implemented Skill package.** The following are future skills, present in
+documentation only and never registered, stubbed or reported as available:
+media-analysis-skill, audio-production-skill, transcription-skill, subtitle-skill, video-editing-skill,
+motion-graphics-skill, color-grading-skill, thumbnail-skill, qc-skill.
+
+Not part of the ecosystem contract (deliberately absent): plugin manager, package installer, dynamic import, marketplace,
+remote registry, arbitrary code loading. A package becomes known through its adapter module and one registration line.
+
 ## 52. Architecture / Repository
 
 A possible structure:

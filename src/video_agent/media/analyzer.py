@@ -1,4 +1,4 @@
-"""MediaAnalyzer: turns ffmpeg-skill measurements into Assets, Observations and timeline Events.
+"""MediaAnalyzer: turns measurement-tool results (selected by the registry) into Assets, Observations and timeline Events.
 It never interprets; interpretation lives in agent/inference.py."""
 from __future__ import annotations
 

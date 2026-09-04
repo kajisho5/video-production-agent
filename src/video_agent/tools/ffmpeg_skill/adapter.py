@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 from ...models import Operation, ToolResult
 from ..base import ToolAdapter, ToolError
 from .catalog import CATALOG, FLAG_ALIASES
+from .package import package
+from ...skills.contract import SkillPackage
 from .locate import FfmpegSkill, locate_ffmpeg_skill
 
 PREFIX = "ffmpeg-skill/"
@@ -67,6 +69,9 @@ class FfmpegSkillAdapter(ToolAdapter):
 
     def supports(self, tool: str) -> bool:
         return tool.startswith(PREFIX) and tool[len(PREFIX):] in CATALOG and tool[len(PREFIX):] in self.skill.scripts
+
+    def package(self) -> SkillPackage:
+        return package(self.version)
 
     # ---- argv construction (typed args -> argv; never free-form)
     def build_argv(self, tool: str, args: Dict[str, Any], paths: Dict[str, str]) -> List[str]:
