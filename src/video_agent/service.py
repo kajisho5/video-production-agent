@@ -13,6 +13,7 @@ from .agent.requirements import requirement_map
 from .audit import build_provenance, write_audit
 from .capabilities import CapabilityResolver
 from .execution import CompileError, Executor, compile_ir
+from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
 from .models import Artifact, Request, new_id, now_iso
@@ -67,9 +68,14 @@ class Service:
             raise RuntimeError(f"required skill(s) unavailable — {reasons}. Run `video-agent doctor` / `video-agent skills`.")
 
     def tool_versions(self) -> Dict[str, str]:
+        """Adapter name (tool id prefix) → version, for every registered adapter, plus ffmpeg and the agent itself."""
         caps = self.caps.resolve()
-        return {"ffmpeg": caps["ffmpeg"].detail if caps["ffmpeg"].status == "AVAILABLE" else "missing",
-                "ffmpeg-skill": str(caps["ffmpeg-skill"].evidence.get("version", "missing")), "video-agent": __version__}
+        out = {"ffmpeg": caps["ffmpeg"].detail if caps["ffmpeg"].status == "AVAILABLE" else "missing", "video-agent": __version__}
+        for a in self.adapter([]).adapters:
+            out[a.name] = str(getattr(a, "version", "?"))
+        if caps["ffmpeg-skill"].status == "AVAILABLE":
+            out["ffmpeg-skill"] = str(caps["ffmpeg-skill"].evidence.get("version", out.get("ffmpeg-skill", "?")))
+        return out
 
     # ---- lifecycle
     def analyze(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None, hash_sources: bool = True):
@@ -243,7 +249,7 @@ class Service:
 
     def dry_run(self, ir: ProjectIR) -> Dict[str, Any]:
         job_dir = str(Path(self.workspace) / "jobs" / "<job_id>")
-        ops, paths = compile_ir(ir, job_dir, ir.doc["source"]["tool_versions"].get("ffmpeg-skill", ""))
+        ops, paths = compile_ir(ir, job_dir)
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or None)
         previews = []
         for op in ops:
@@ -319,7 +325,7 @@ class Service:
                     "hint": "re-run with --approve <id,...> or --approve all"}
         job.transition("EXECUTING")
         store.save(job)
-        ops, paths = compile_ir(ir, str(job.dir), ir.doc["source"]["tool_versions"].get("ffmpeg-skill", ""))
+        ops, paths = compile_ir(ir, str(job.dir))
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or [])
         ex = Executor(adapter, max_attempts=int(ir.doc["execution"]["recovery_policy"]["max_attempts"]), timeout=timeout, completed_keys=job.completed_ops)
         try:
@@ -345,8 +351,9 @@ class Service:
                         from .media.analyzer import sha256_file
                         st = {i.status for i in qa.items if i.artifact == art_id}
                         art_qa = "FAIL" if "FAIL" in st else ("WARN" if "WARN" in st else "PASS")
+                        exp = next((o for o in ops if o.skill == "delivery_export" and art_id in o.outputs), None)
                         a = Artifact(path=paths[art_id], type=t.get("artifact_type", "MASTER"), hash=sha256_file(paths[art_id]), source=[asset_id], generation=1,
-                                     tool="ffmpeg-skill", tool_version=ir.doc["source"]["tool_versions"].get("ffmpeg-skill", ""), qa_status=art_qa,
+                                     tool=exp.tool if exp else "", tool_version=tool_version_of(ir.doc["source"]["tool_versions"], exp.tool) if exp else "", qa_status=art_qa,
                                      stage="candidate" if art_qa != "FAIL" else "working", id=art_id)
                         artifacts.append(a.to_dict())
             job.artifacts = artifacts

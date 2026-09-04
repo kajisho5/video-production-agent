@@ -36,6 +36,7 @@ Event / Session / Production、conference パイプライン本体、naming、ar
 | G5 将来 Skill が「宣言」と「利用可能」で区別されない | registry の phase 2/3/4 エントリが `phase` を持つだけ | `select_tool` が誤って選び得る | `implemented`（phase ≤ 1）を導入。未実装は選択不可、`video-agent skills` で NOT_IMPLEMENTED と表示 |
 | G6 tool 非対応時の決定 | capability 欠落しか BLOCK しない | adapter が無い環境で plan が通る | `decide()` が `select_tool` で BLOCK 決定を生成 |
 | G7 Operation に skill が無い | provenance が tool しか持たない | 「どの Skill を実現した操作か」が追えない | `Operation.skill` |
+| G8 `DEFAULT_TOOLS` フォールバック | G1 の対応後も planner / analyzer / QA が `tools` 省略時に ffmpeg-skill の表へ暗黙にフォールバックしていた | 直接呼び出すと Registry を経ずに engine が決まり、「唯一の選択点」が成立しない | `DEFAULT_TOOLS` を全削除。`tools` は必須引数、`None` は `TypeError`、欠落 Skill は明示エラー / BLOCKED。provenance / artifact / 冪等キーの tool version も固定名 `ffmpeg-skill` ではなく operation の tool から引く |
 
 追加したのは選択関数・ルータ・検査であり、新しい抽象層や plugin 機構は作っていない。
 
@@ -58,4 +59,4 @@ Capability Resolver、Skill Registry の構造、FfmpegSkillAdapter と catalog�
 
 ## テスト
 
-unit 54/54（境界テスト 8 件追加: select_tool の 3 分岐、将来 Skill の非選択、plan→compiler の tool 伝播と validator の拒否、tool 無し step、CompileError、adapter 欠落での BLOCK、router の dispatch、tool id リテラルの静的検査）、integration 9/9、evals 6/6。
+unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既定 engine が無いこと、別 engine `other-skill/trim` の Registry → Service → planner → compiler → ToolRouter → adapter → provenance 伝播、`DEFAULT_TOOLS` を検出する静的検査。当初 8 件: select_tool の 3 分岐、将来 Skill の非選択、plan→compiler の tool 伝播と validator の拒否、tool 無し step、CompileError、adapter 欠落での BLOCK、router の dispatch、tool id リテラルの静的検査）、integration 9/9、evals 6/6。

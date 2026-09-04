@@ -8,10 +8,15 @@ job records can be matched across compiles."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
+
+
+def tool_version_of(versions: Dict[str, str], tool: str) -> str:
+    """Version of the adapter that owns a tool id ("<adapter>/<tool>")."""
+    return str(versions.get(tool.split("/", 1)[0], ""))
 
 
 def _op_id(tool: str, args: Dict[str, Any], inputs: List[str]) -> str:
@@ -43,9 +48,11 @@ def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
     return out
 
 
-def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[List[Operation], Dict[str, str]]:
-    """Returns (operations, paths) where paths maps artifact ids to filesystem paths."""
+def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, str]] = None) -> Tuple[List[Operation], Dict[str, str]]:
+    """Returns (operations, paths) where paths maps artifact ids to filesystem paths. `tool_versions` maps an adapter
+    name (the tool id prefix, e.g. "ffmpeg-skill") to its version; it defaults to the IR's recorded source.tool_versions."""
     d = ir.doc
+    versions = tool_versions if tool_versions is not None else (d.get("source", {}).get("tool_versions") or {})
     step_tools = _step_tools(d)
 
     def tool_for(skill: str, key: str) -> str:
@@ -61,7 +68,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_version: str = "") -> Tuple[Lis
     def add(tool: str, args: Dict[str, Any], inputs: List[str], outputs: List[str], decision_ids: List[str], fp: str, kind: str = "transform", skill: str = "") -> Operation:
         o = Operation(tool=tool, args=args, inputs=inputs, outputs=outputs, decision_ids=decision_ids, kind=kind, skill=skill, id=_op_id(tool, args, inputs))
         if outputs:
-            o.idempotency_key = stable_hash([fp, tool, args, tool_version, [keys.get(i, "") for i in inputs]])
+            o.idempotency_key = stable_hash([fp, tool, args, tool_version_of(versions, tool), [keys.get(i, "") for i in inputs]])
             for out in outputs:
                 keys[out] = o.idempotency_key
         ops.append(o)

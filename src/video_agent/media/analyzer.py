@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from ..models import Asset, Event, Observation, TimeRange
 from ..temporal import Timeline
-from ..tools.base import ToolAdapter
+from ..tools.base import ToolAdapter, ToolError
 
 STRATEGIES = ("FULL_ANALYSIS", "COARSE_ANALYSIS", "TARGETED_ANALYSIS")
 
@@ -50,16 +50,23 @@ class AnalysisResult:
 
 
 class MediaAnalyzer:
-    DEFAULT_TOOLS = {"media_probe": "ffmpeg-skill/probe", "silence_analysis": "ffmpeg-skill/silence", "loudness_analysis": "ffmpeg-skill/loudness"}
+    SKILLS = ("media_probe", "silence_analysis", "loudness_analysis")
 
-    def __init__(self, adapter: ToolAdapter, silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",
-                 hash_sources: bool = True, tools: Optional[Dict[str, str]] = None):
+    def __init__(self, adapter: ToolAdapter, tools: Dict[str, str], silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",
+                 hash_sources: bool = True):
+        """`tools` is the skill → tool id map selected by SkillRegistry for this environment. The analyzer has no
+        default engine: every measurement skill it uses must be present in the map."""
+        if tools is None:
+            raise TypeError("MediaAnalyzer needs the skill → tool map resolved by SkillRegistry (tools=None is not allowed)")
+        missing = [x for x in self.SKILLS if not tools.get(x)]
+        if missing:
+            raise ToolError("no tool selected for skill(s): " + ", ".join(missing) + " (SkillRegistry.resolve_tools must provide them)")
         self.adapter = adapter
         self.threshold = silence_threshold_db
         self.min_silence = min_silence
         self.strategy = strategy if strategy in STRATEGIES else "FULL_ANALYSIS"
         self.hash_sources = hash_sources
-        self.tools = {**self.DEFAULT_TOOLS, **(tools or {})}   # skill → tool id selected by the registry for this environment
+        self.tools = dict(tools)
 
     def _tool(self, skill: str) -> str:
         return self.tools[skill]

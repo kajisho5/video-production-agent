@@ -36,6 +36,7 @@ def _write_fake(path: str, meta: Dict[str, Any]) -> None:
 class FakeAdapter(ToolAdapter):
     name = "ffmpeg-skill"
     version = "0.8.4-fake"
+    ALIASES: Dict[str, str] = {}   # subclasses standing in for another engine map their tool names onto the fake scripts
 
     def __init__(self, duration: float = 16.0, silences: Optional[List[List[Optional[float]]]] = None, lufs: float = -11.0, fail_tools: Optional[Dict[str, int]] = None, audio: bool = True, vfr: bool = False, hdr: bool = False):
         self.duration, self.audio, self.vfr, self.hdr = duration, audio, vfr, hdr
@@ -58,7 +59,7 @@ class FakeAdapter(ToolAdapter):
 
     def run(self, op: Operation, paths: Dict[str, str], timeout=None, dry_run: bool = False, attempt: int = 1) -> ToolResult:
         self.calls.append(op)
-        script = op.tool.split("/")[1]
+        script = self.ALIASES.get(op.tool.split("/")[1], op.tool.split("/")[1])
         if self.fail_tools.get(op.tool, 0) > 0:
             self.fail_tools[op.tool] -= 1
             return ToolResult(op.id, op.tool, False, 1, None, {}, [], "error: command failed (1): ffmpeg\nConversion failed!", 0.1, attempt, dry_run)

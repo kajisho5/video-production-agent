@@ -20,11 +20,15 @@ def build_provenance(ir_doc: Dict[str, Any], ops: List[Operation], results: List
         entries.append({
             "who": who, "when": now_iso(), "what": op.tool, "skill": op.skill, "why": [ir_doc_decision_reason(ir_doc, d) for d in op.decision_ids],
             "decision": op.decision_ids, "input": [paths.get(i, i) for i in op.inputs], "output": [paths.get(o, o) for o in op.outputs],
-            "tool": op.tool, "tool_version": ir_doc["source"]["tool_versions"].get("ffmpeg-skill"), "args": op.args, "idempotency_key": op.idempotency_key,
+            "tool": op.tool, "tool_version": _version_of(ir_doc["source"]["tool_versions"], op.tool), "args": op.args, "idempotency_key": op.idempotency_key,
             "result": None if last is None else {"ok": last.ok, "exit_code": last.exit_code, "attempts": len(rs), "seconds": sum(r.seconds for r in rs), "commands": last.commands, "dry_run": last.dry_run},
         })
     return {"ir_hash": ir_doc["provenance"].get("ir_hash"), "source_hashes": ir_doc["provenance"]["source_hashes"], "profile_version": ir_doc["provenance"]["profile_version"],
             "skill_versions": ir_doc["provenance"]["skill_versions"], "tool_versions": ir_doc["source"]["tool_versions"], "operations": entries, "recovery": recovery, "qa": qa}
+
+
+def _version_of(versions: Dict[str, str], tool: str) -> str:
+    return str(versions.get(tool.split("/", 1)[0], ""))
 
 
 def ir_doc_decision_reason(ir_doc: Dict[str, Any], decision_id: str) -> str:

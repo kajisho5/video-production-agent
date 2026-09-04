@@ -16,6 +16,8 @@ SkillSpec.tools（候補の順序）    ──ToolRouter.supports──▶ 最�
 ```
 
 - `SkillRegistry.select_tool(skill, caps, supports)` が唯一の選択関数。`resolve_tools()` はその一括版。
+- planner / analyzer / QA は `tools`（skill→tool 表）を**必須引数**として受け取る。既定の engine 表（旧 `DEFAULT_TOOLS`）は存在せず、`tools=None` は `TypeError`、必要な Skill が表に無ければ `ToolError`（analyzer / QA）または tool 無し step + BLOCKED summary（planner）になる。「表が無いから ffmpeg-skill を使う」経路は無い。
+- `source.tool_versions` は adapter 名（tool id の prefix）→ version。compiler の冪等キー、provenance の `tool_version`、artifact の `tool` / `tool_version` はすべて operation の tool から引く。
 - `phase > IMPLEMENTED_PHASE` の Skill は roadmap 宣言であり、`select_tool` は選ばず、`video-agent skills` は `NOT_IMPLEMENTED` と表示する。存在しない外部 Skill（media-analysis-skill 等）は registry にも adapter にも**存在しない**。
 - planner は解決済みの skill→tool 表を受け取って `plan.steps[].tool` に書く。compiler は `plan.steps` からしか tool を取らない（`CompileError`）。validator は step の skill が実装済みで、tool がその Skill の候補に含まれ、adapter が対応することを検査する。
 - analyzer / QA も同じ表から計測 tool を取る（`media_probe`, `silence_analysis`, `loudness_analysis`, `delivery_check`, `visual_inspection`）。

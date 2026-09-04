@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..models import Incident, ToolResult
-from ..tools.base import ToolAdapter
+from ..tools.base import ToolAdapter, ToolError
 
 
 @dataclass
@@ -40,16 +40,21 @@ class QAReport:
         return {"status": self.status, "items": [i.to_dict() for i in self.items], "incidents": [i.to_dict() for i in self.incidents], "sheets": self.sheets, "measurements": self.measurements}
 
 
-DEFAULT_TOOLS = {"media_probe": "ffmpeg-skill/probe", "loudness_analysis": "ffmpeg-skill/loudness", "delivery_check": "ffmpeg-skill/check", "visual_inspection": "ffmpeg-skill/look"}
+REQUIRED_SKILLS = ("media_probe", "loudness_analysis", "delivery_check")   # visual_inspection is optional (contact sheet only)
 
 
-def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], sheet_dir: Optional[str] = None,
-           check_by_artifact: Optional[Dict[str, ToolResult]] = None, tools: Optional[Dict[str, str]] = None) -> QAReport:
+def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], tools: Dict[str, str], sheet_dir: Optional[str] = None,
+           check_by_artifact: Optional[Dict[str, ToolResult]] = None) -> QAReport:
     """check_by_artifact maps artifact id -> the check ToolResult the executor already produced, so QA does not measure twice.
-    tools: skill → tool id map from the registry (defaults to the ffmpeg-skill tools)."""
+    tools: skill → tool id map selected by SkillRegistry for this environment. QA has no default engine; a missing
+    measurement skill is an explicit error, never a silent fallback."""
+    if tools is None:
+        raise TypeError("run_qa needs the skill → tool map resolved by SkillRegistry (tools=None is not allowed)")
+    missing = [x for x in REQUIRED_SKILLS if not tools.get(x)]
+    if missing:
+        raise ToolError("no tool selected for skill(s): " + ", ".join(missing) + " (SkillRegistry.resolve_tools must provide them)")
     rep = QAReport()
     check_by_artifact = check_by_artifact or {}
-    tools = {**DEFAULT_TOOLS, **(tools or {})}
 
     def measure(tool: str, args: Dict[str, Any]) -> ToolResult:
         r = adapter.measure(tool, args)
@@ -136,7 +141,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                     rep.items.append(QAItem("delivery", "check", "WARN", "no result", "check.py output", artifact=art))
             if sheet_dir and v:
                 sheet = f"{sheet_dir}/{art}_sheet.png"
-                if "visual_inspection" not in tools:
+                if not tools.get("visual_inspection"):
                     continue
                 lk = measure(tools["visual_inspection"], {"input": path, "tiles": "4x2", "width": 1280, "output": sheet})
                 if lk.ok:

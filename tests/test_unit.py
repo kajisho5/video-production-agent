@@ -12,9 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_adapter import FakeAdapter  # noqa: E402
 
 from video_agent.capabilities.resolver import Capability  # noqa: E402
-from video_agent.execution import Executor, compile_ir  # noqa: E402
+from video_agent.execution import CompileError, Executor, compile_ir  # noqa: E402
 from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
-from video_agent.models import Event, Operation, TimeRange, ToolResult  # noqa: E402
+from video_agent.media.analyzer import AnalysisResult  # noqa: E402
+from video_agent.models import Decision, Event, Operation, TimeRange, ToolResult  # noqa: E402
 from video_agent.policy.rules import Rule, resolve_rules  # noqa: E402
 from video_agent.profiles import load_profile  # noqa: E402
 from video_agent.project import load_ir, save_ir, validate_ir  # noqa: E402
@@ -882,15 +883,101 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertEqual(router.measure("ffmpeg-skill/probe", {"inputs": ["/x"]}).tool, "ffmpeg-skill/probe")
 
     def test_no_tool_id_literals_outside_tool_layer(self):
-        """Orchestration code must not hard-code engine tool ids; they come from the registry (defaults live in one place per module)."""
-        import re
+        """Orchestration code must not hard-code engine tool ids or carry a default engine map: tool ids come only from
+        SkillRegistry.select_tool / resolve_tools. Allowed: skills/ (candidates), tools/ (adapters), recovery.py (alt args are tool knowledge)."""
         root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
         offenders = []
         for py in root.rglob("*.py"):
             rel = py.relative_to(root).as_posix()
+            text = py.read_text(encoding="utf-8")
+            if "DEFAULT_TOOLS" in text:
+                offenders.append(f"{rel}: DEFAULT_TOOLS")
             if rel.startswith(("tools/", "skills/")) or rel == "execution/recovery.py":
                 continue
-            for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
-                if '"ffmpeg-skill/' in line and "DEFAULT_TOOLS" not in line and not line.strip().startswith("#") and "#" not in line.split('"ffmpeg-skill/')[0][-40:]:
+            for i, line in enumerate(text.splitlines(), 1):
+                code = line.split("#", 1)[0]
+                if '"ffmpeg-skill/' in code or "'ffmpeg-skill/" in code:
                     offenders.append(f"{rel}:{i}: {line.strip()}")
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+    # ---- the registry is the only tool selection point: components called directly must not fall back to an engine
+    def test_planner_has_no_default_engine(self):
+        from video_agent.agent.planner import build_plan
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        analysis = AnalysisResult.from_ir(ir.doc)
+        decisions = [Decision.from_dict(d) for d in ir.doc["decisions"]]
+        with self.assertRaises(TypeError):
+            build_plan(decisions, analysis, None)
+        plan = build_plan(decisions, analysis, {})
+        self.assertTrue(plan["steps"], "steps are still emitted so the validator can name the missing tool")
+        self.assertEqual([st["tool"] for st in plan["steps"]], [None] * len(plan["steps"]))
+        self.assertTrue(any("no executable tool" in line for line in plan["summary"]))
+        self.assertNotIn("ffmpeg-skill", json.dumps(plan))
+        ir.doc["plan"] = plan
+        rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
+        self.assertFalse(rep.ok)
+        with self.assertRaises(CompileError):
+            compile_ir(ir, "/w/jobs/j")
+
+    def test_analyzer_has_no_default_engine(self):
+        from video_agent.media import MediaAnalyzer
+        ad = FakeAdapter()
+        with self.assertRaises(TypeError):
+            MediaAnalyzer(ad, None)
+        with self.assertRaises(ToolError) as cm:
+            MediaAnalyzer(ad, {})
+        self.assertIn("media_probe", str(cm.exception))
+        with self.assertRaises(ToolError) as cm:
+            MediaAnalyzer(ad, {"media_probe": "x/probe", "silence_analysis": "x/silence"})
+        self.assertIn("loudness_analysis", str(cm.exception))
+        self.assertEqual(ad.calls, [], "constructing the analyzer never touches a tool")
+
+    def test_qa_has_no_default_engine(self):
+        from video_agent.qa import run_qa
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        ad = FakeAdapter()
+        with self.assertRaises(TypeError):
+            run_qa(ad, ir.doc, {}, [], None)
+        with self.assertRaises(ToolError) as cm:
+            run_qa(ad, ir.doc, {}, [], {})
+        self.assertIn("delivery_check", str(cm.exception))
+        self.assertEqual(ad.calls, [], "QA without a tool map never measures anything")
+        rep = run_qa(ad, ir.doc, {}, [], svc.tools_for(svc.adapter([])))
+        self.assertEqual(rep.items, [], "no artifacts yet: nothing to check, no fallback engine consulted")
+
+    def test_registry_selected_tool_propagates_to_the_adapter(self):
+        """Registry → Service → planner (plan.steps[].tool) → compiler (Operation.tool) → ToolRouter → adapter, for a
+        tool that is not ffmpeg-skill. Nothing downstream rewrites or defaults the tool id."""
+        from video_agent.tools import ToolRouter
+        class OtherEngine(FakeAdapter):
+            name = "other-skill"
+            version = "9.9-fake"
+            ALIASES = {"trim": "cut"}
+            def supports(self, tool):
+                return tool.startswith("other-skill/")
+        ff, other = FakeAdapter(), OtherEngine()
+        svc = make_service(self.tmp, adapter=ToolRouter([ff, other]))
+        svc.registry.get("silence_cleanup").tools = ["other-skill/trim", "ffmpeg-skill/cut"]
+        self.assertEqual(svc.tools_for()["silence_cleanup"], "other-skill/trim")
+        ir = svc.plan([self.src], "youtube")
+        steps = {st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}
+        self.assertEqual(steps["silence_cleanup"], "other-skill/trim")
+        self.assertEqual(steps["delivery_export"], "ffmpeg-skill/export")
+        self.assertEqual(ir.doc["source"]["tool_versions"]["other-skill"], "9.9-fake")
+        ops, _ = compile_ir(ir, "/w/jobs/j")
+        self.assertEqual([(o.skill, o.tool) for o in ops if o.skill == "silence_cleanup"], [("silence_cleanup", "other-skill/trim")])
+        p = str(Path(self.tmp) / "c.json")
+        save_ir(ir, p)
+        out = svc.render(ir, p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual([o.tool for o in other.calls], ["other-skill/trim"], "the other engine ran exactly the trim")
+        self.assertNotIn("other-skill/trim", [o.tool for o in ff.calls])
+        prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
+        self.assertEqual((trim["tool"], trim["tool_version"]), ("other-skill/trim", "9.9-fake"))
+        exp = next(e for e in prov["operations"] if e["skill"] == "delivery_export")
+        self.assertEqual((exp["tool"], exp["tool_version"]), ("ffmpeg-skill/export", "0.8.4-fake"))
+        # the job's artifact record follows the export tool, not a fixed engine name
+        self.assertEqual(out["job"]["artifacts"][0]["tool"], "ffmpeg-skill/export")
