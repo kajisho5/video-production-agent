@@ -107,10 +107,32 @@ class SkillRegistry:
         missing = self.missing_capabilities(name, caps)
         if missing:
             return None, "required capability missing: " + ", ".join(missing)
+        blocked: List[str] = []
         for tool in spec.tools:
-            if supports(tool):
-                return tool, "ok"
+            if not supports(tool):
+                continue
+            tool_missing = self.tool_missing_capabilities(tool, caps)
+            if tool_missing:   # the package / tool contract names capabilities this environment lacks: never executed on a guess
+                blocked.append(f"{tool} (missing {', '.join(tool_missing)})")
+                continue
+            return tool, "ok"
+        if blocked:
+            return None, "required capability missing for " + "; ".join(blocked)
         return None, "no registered adapter supports any of: " + ", ".join(spec.tools)
+
+    def tool_missing_capabilities(self, tool_id: str, caps: Dict[str, Any]) -> List[str]:
+        """Capabilities the tool's package declares (its runtime requirements, e.g. ffmpeg-skill / video-editing) that are not
+        AVAILABLE / DEGRADED here, plus ToolSpec.required_capabilities the resolver knows about (present in `caps`) but reports
+        missing. Names the resolver does not resolve at all are left to the package's own doctor (which the package-level
+        capability reflects); they are never guessed as present or absent here. A tool no registered package declares has
+        no contract to check (the validator reports that case separately)."""
+        pkg = self._packages.get(tool_id.split("/", 1)[0])
+        spec = pkg.tool(tool_id) if pkg else None
+        if pkg is None or spec is None:
+            return []
+        missing = [c for c in pkg.capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
+        missing += [c for c in spec.required_capabilities if c not in pkg.capabilities and c in caps and getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
+        return missing
 
     def resolve_tools(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Dict[str, str]:
         """skill name → selected tool id, for every skill that is selectable in this environment."""
@@ -143,7 +165,7 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("loudness_analysis", "1.0", "Measure integrated loudness / true peak", {"asset": "media"}, {"observation": "loudness"},
                          ["ffmpeg", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness", "media-analysis/loudness"]))
     r.register(SkillSpec("silence_cleanup", "1.0", "Trim technical leading/trailing silence", {"asset": "video|audio", "keep": "ranges"}, {"artifact": "INTERMEDIATE"},
-                         ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/cut"]))
+                         ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/cut", "video-editing/cut"]))   # candidates in declared order; video-editing/cut (ADR-028) is selectable when its package is available
     r.register(SkillSpec("loudness_normalization", "1.0", "Two-pass EBU R128 normalisation", {"asset": "video|audio", "target_lufs": "float"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness"]))
     r.register(SkillSpec("delivery_export", "1.0", "Encode a delivery target with a platform preset", {"asset": "video", "preset": "str"}, {"artifact": "delivery"},

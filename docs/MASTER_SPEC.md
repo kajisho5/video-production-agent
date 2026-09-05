@@ -1691,6 +1691,46 @@ the engine, which enforces *how* a decision may exist:
   specific decisions, MCP, plugin loader, ranking, direct ffmpeg, Skill changes, Artifact redesign, the silencedetect
   end > duration issue.
 
+### video-editing-skill integration (implemented, ADR-028)
+
+```
+video-production-agent ─(typed Operation: input / output ids, keep ranges, precision)─→ VideoEditingAdapter
+    ─(EditRequest JSON on stdin; argv list `run - --json --workspace <op dir> --allowed-input <root>…`)─→ video-editing CLI
+    ─(typed ffmpeg-skill tool calls)─→ ffmpeg-skill ─→ FFmpeg
+```
+
+- **Boundary:** the Skill's CLI and its machine-readable contract (`video-editing contract --json`, video-editing/contract@1)
+  are the only interface. The agent imports nothing from the Skill, builds no command, argv, filter or filter_complex,
+  names no executable, passes no environment and no credential; `FORBIDDEN_ARG_KEYS` and the contract's declared
+  parameter names bound what an Operation may carry. The Skill's `commands` come back as provenance only — there is no
+  path by which the agent edits or re-runs them.
+- **Contract:** fetched at start-up, checked (`check_contract`) and compared with the pinned 0.1.0 snapshot
+  (`contract_drift`): tool ids `video-editing/<operation>`, versions, operations, capabilities, required capabilities,
+  inputs, produces_output, deterministic, result keys, execution flags, error codes, response shape. Missing / malformed
+  / drifted contracts fail loudly (ContractError; capability MISSING) and are never patched or guessed.
+- **Registry / capability:** `SkillPackage` video-editing with its ToolSpecs from the contract; `silence_cleanup` lists
+  `video-editing/cut` as its second candidate (declared order, no ranking, no fallback). The `video-editing` capability is
+  AVAILABLE only when the Skill's doctor is ok and there is no drift; `select_tool` also checks the package's capabilities
+  and the tool's required capabilities the resolver knows (encoder:aac, filter:xfade, filter:acrossfade added). An
+  operation the Skill lists as unsupported (CROP, FREEZE, REVERSE, IMAGE_INSERT, POSITION) is not a tool at all.
+- **Lowering:** `video.trim` → `video-editing/cut` with the contract's CUT parameters (`keep` [{start, end}], `precision`
+  frame | keyframe from the plan's `accurate`); the reference lowering to `ffmpeg-skill/cut` is unchanged.
+- **Execution:** one subprocess per operation in its own process group; the agent's timeout becomes the Skill's
+  `options.timeout_seconds` and is enforced at the process boundary too (exit 124 → CANCELLED / timeout, retryable);
+  cancellation (SIGINT) is the executor's existing path. `--workspace` is the operation's output directory inside the
+  agent workspace; `--allowed-input` are the agent PathPolicy roots plus the workspace. Both sides refuse traversal,
+  absolute paths outside the roots, symlink escapes and workspace escapes.
+- **Response → agent model:** exactly one JSON document; `ok`, status completed | reused, `execution.outputs[out1]`
+  delivered with path == requested, sha256 verified against the file, size, timeline and an OBSERVED ffmpeg-skill probe →
+  ToolResult.output / data.artifact / data.timeline / data.observation; `execution.operations[op1]` (operation_id, tool,
+  tool versions, inputs' hashes, output hash, timing) → data.operation; provenance.json `skill_result`. Exit 0 with a
+  missing output, exit ≠ 0 with an ok document, malformed / empty / multiple documents, hash mismatch: never a success.
+- **Errors:** the Skill's 13 codes and its `retryable` verdict are kept on the result and mapped to the existing recovery
+  classes (INVALID_ARGS / INPUT_MISSING block, TOOL_ERROR retries once, CANCELLED retries with a longer timeout, the new
+  SKILL_ERROR blocks); a non-retryable code is never retried.
+- **Not here:** new editing features, changes to either Skill, tool details in the Decision Engine, a parallel executor,
+  MCP / plugin loader / ranking, direct FFmpeg.
+
 ## 52. Architecture / Repository
 
 A possible structure:

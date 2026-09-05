@@ -1,0 +1,23 @@
+{
+ "name": "ve_incompatible_contract_refused",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing": {
+  "contract_mode": "bad_contract"
+ },
+ "expect": {
+  "contract_refused": "execution.shell"
+ }
+}

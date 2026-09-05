@@ -72,7 +72,7 @@ planner / compiler / decision / QA の engine 固有ロジックを変更する�
 
 ## 今あるもの / 無いもの
 
-- 実装済み・利用可能: `kajisho5/ffmpeg-skill`（0.8.4 ≤ v < 0.10、契約テスト + unit テストで固定。0.9.0 は contract / doctor 追加と `--json` の "status" のみで media 挙動は不変、integration 全件通過を確認済み。0.10 は未検証のため拒否）。`video-agent skills` の "Skill packages" に唯一表示される。
+- 実装済み・利用可能: `kajisho5/ffmpeg-skill`（0.8.4 ≤ v < 0.10、契約テスト + unit テストで固定。0.9.0 は contract / doctor 追加と `--json` の "status" のみで media 挙動は不変、integration 全件通過を確認済み。0.10 は未検証のため拒否）。`video-agent skills` の "Skill packages" に表示される。外部 Skill として media-analysis-skill（ADR-023）、transcription-skill（ADR-024）、video-editing-skill（ADR-028、0.1.x、CLI contract 境界。`VIDEO_AGENT_VIDEO_EDITING_DIR`）も adapter 実装済み（インストールされていれば利用可能）。
 - 宣言のみ（NOT_IMPLEMENTED）: production skill `multi_source_sync`（phase 2）、`caption_generation`（phase 3）、`semantic_deletion`（phase 4）。ffmpeg-skill の既存スクリプトを tool 候補として宣言しているだけで、planner は使わない。
-- 将来 Skill（構想のみ、コード上に痕跡無し）: media-analysis-skill / audio-production-skill / transcription-skill / subtitle-skill / video-editing-skill / motion-graphics-skill / color-grading-skill / thumbnail-skill / qc-skill。
+- 将来 Skill（構想のみ、コード上に痕跡無し）: audio-production-skill / subtitle-skill / motion-graphics-skill / color-grading-skill / thumbnail-skill / qc-skill。
 - 作らないもの: plugin manager / package installer / dynamic import / marketplace / remote registry / 任意コードローダ。

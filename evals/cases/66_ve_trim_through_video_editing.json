@@ -1,0 +1,29 @@
+{
+ "name": "ve_trim_through_video_editing",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing": {
+  "prefer": true
+ },
+ "expect": {
+  "selected_tool": "video-editing/cut",
+  "blocked": false,
+  "render": {
+   "execution_status": "COMPLETED",
+   "cut_ok": true,
+   "recovery_classes": []
+  }
+ }
+}

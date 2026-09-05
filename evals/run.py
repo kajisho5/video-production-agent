@@ -151,6 +151,71 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    ve = case.get("video_editing")
+    if ve:
+        # PR #18 (ADR-028): video-editing-skill behind its CLI (fake process): selection by registry / capability, lowering, execution, provenance, failures
+        import os
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.video_editing import ContractError, VideoEditingAdapter, VideoEditingSkill
+        from video_agent.project import load_ir, save_ir
+        os.environ.pop("FAKE_VE_MODE", None)
+        if ve.get("contract_mode"):
+            os.environ["FAKE_VE_MODE"] = ve["contract_mode"]
+        skill = VideoEditingSkill([sys.executable, str(ROOT / "tests" / "fake_video_editing.py")], None, {})
+        try:
+            ad = VideoEditingAdapter(skill, workspace=tmp, allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
+        except ContractError as e:
+            os.environ.pop("FAKE_VE_MODE", None)
+            if exp.get("contract_refused") and exp["contract_refused"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e}"]}
+        if exp.get("contract_refused"):
+            return {"case": case["name"], "ok": False, "failures": ["an incompatible contract was accepted"]}
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if ve.get("no_capability") else ["video-editing"])
+        fake_engine = FakeAdapter(**fake)
+        svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine, ad]), caps=caps, provider=provider)
+        if ve.get("prefer", True):
+            svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]
+        ir = svc.plan([str(src)], case.get("profile", "generic"), user_requirements=case.get("requirements"))
+        d = ir.doc
+        step = next((s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"), None)
+        if "selected_tool" in exp and (step or {}).get("tool") != exp["selected_tool"]:
+            failures.append(f"silence_cleanup tool {(step or {}).get('tool')} != {exp['selected_tool']}")
+        if "blocked" in exp and bool(ir.blocked()) != exp["blocked"]:
+            failures.append(f"blocked {bool(ir.blocked())} != {exp['blocked']}")
+        if not svc.validate(ir).ok:
+            failures.append(f"IR invalid: {svc.validate(ir).errors}")
+        if ve.get("run_mode"):
+            os.environ["FAKE_VE_MODE"] = ve["run_mode"]
+        if exp.get("render"):
+            ir_path = str(Path(tmp) / "ve.json"); save_ir(ir, ir_path)
+            rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
+            want = exp["render"]
+            if want.get("execution_status") and (rr.get("execution") or {}).get("status") != want["execution_status"]:
+                failures.append(f"execution status {(rr.get('execution') or {}).get('status')} != {want['execution_status']}")
+            results = (rr.get("execution") or {}).get("results") or []
+            cut = next((r for r in results if r["tool"] == "video-editing/cut"), None)
+            if want.get("cut_ok") is not None and bool(cut and cut["ok"]) != want["cut_ok"]:
+                failures.append(f"video-editing/cut ok {bool(cut and cut['ok'])} != {want['cut_ok']}")
+            if cut and cut["ok"]:
+                if not cut["data"].get("artifact", {}).get("sha256") or cut["data"].get("observation", {}).get("provenance") != "OBSERVED" or not cut["data"].get("timeline"):
+                    failures.append("artifact / observation / timeline not mapped from the Skill response")
+                if sorted(cut["data"]["operation"]["parameters"]) != ["keep", "precision"]:
+                    failures.append("lowering did not produce the contract's CUT parameters")
+            if want.get("recovery_classes") is not None and [r["class"] for r in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
+                failures.append(f"recovery {[r['class'] for r in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
+            if any(o.tool == "ffmpeg-skill/cut" for o in fake_engine.calls):
+                failures.append("the reference cut ran although video-editing was the selected tool (fallback)")
+            if cut is not None and (rr.get("execution") or {}).get("status") == "COMPLETED":
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
+                if trim["skill_package"] != "video-editing" or not (trim.get("skill_result") or {}).get("artifact"):
+                    failures.append("provenance lacks the Skill's package / result facts")
+                blob = json.dumps(trim["args"])
+                if any(k in blob for k in ("argv", "command", "filter", "ffmpeg -")):
+                    failures.append("provenance args carry command material")
+        os.environ.pop("FAKE_VE_MODE", None)
+        return {"case": case["name"], "ok": not failures, "failures": failures}
     ts = case.get("transcription")
     if ts:
         # external recognition Skill (ADR-024) through the fake transcription process: contract, lifting, provenance, SpeechEvents, refusals

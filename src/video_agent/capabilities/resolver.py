@@ -14,11 +14,12 @@ from typing import Any, Dict, List, Optional
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
 from ..tools.transcription import TranscriptionAdapter, locate_transcription
+from ..tools.video_editing import VideoEditingAdapter, locate_video_editing
 
-ENCODERS = ["libx264", "libx265", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv"]
+ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv"]
 DECODERS = ["h264", "hevc", "av1", "prores", "vp9"]
 FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tonemap"], "loudnorm": ["loudnorm"], "scdet": ["scdet"],
-           "blackdetect": ["blackdetect"], "freezedetect": ["freezedetect"], "astats": ["astats"]}
+           "blackdetect": ["blackdetect"], "freezedetect": ["freezedetect"], "astats": ["astats"], "xfade": ["xfade"], "acrossfade": ["acrossfade"]}
 AI_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
@@ -43,9 +44,10 @@ def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
 
 class CapabilityResolver:
     def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None, media_analysis_dir: Optional[str] = None,
-                 transcription_dir: Optional[str] = None, offline: bool = False):
+                 transcription_dir: Optional[str] = None, offline: bool = False, video_editing_dir: Optional[str] = None):
         self.media_analysis_dir = media_analysis_dir
         self.transcription_dir = transcription_dir
+        self.video_editing_dir = video_editing_dir
         self.offline = bool(offline)
         self.env = dict(os.environ if env is None else env)
         self.skill_dir = ffmpeg_skill_dir
@@ -129,6 +131,27 @@ class CapabilityResolver:
                 caps["transcription"] = Capability("transcription", "MISSING", f"found at {ts.describe()} but unusable: {str(e)[:160]}")
         else:
             caps["transcription"] = Capability("transcription", "MISSING", "set VIDEO_AGENT_TRANSCRIPTION_DIR to a transcription-skill checkout or install `transcription`")
+        # video-editing-skill (external editing Skill, ADR-028): located checkout / console script, its contract and its own doctor
+        # (which asks ffmpeg-skill for ffmpeg / ffprobe). AVAILABLE only when the Skill says it is ready; anything else is MISSING —
+        # a half-usable editing engine is never guessed at.
+        ve = locate_video_editing(self.video_editing_dir, self.env)
+        if ve:
+            try:
+                ad = VideoEditingAdapter(ve, timeout=120.0, ffmpeg_skill_dir=str(skill.root) if skill else None)
+                doc = ad.doctor()
+                drift = ad.drift()
+                ok = bool(doc.get("ok")) and not drift
+                detail = f"{ad.version} at {ve.describe()} (doctor {'ok' if doc.get('ok') else doc.get('summary', 'not ready')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
+                caps["video-editing"] = Capability("video-editing", "AVAILABLE" if ok else "MISSING", detail,
+                                                   {"version": ad.version, "root": ve.describe(), "contract": ad.contract.get("schema"), "tools": sorted(ad.tools),
+                                                    "operations": ad.lowering.supported_types(), "contract_only": ad.lowering.contract_only(),
+                                                    "unsupported": [u.get("type") for u in ad.contract.get("unsupported") or []],
+                                                    "engine": dict(ad.contract.get("engine") or {}), "doctor_ok": bool(doc.get("ok")), "problems": list(doc.get("problems") or []),
+                                                    "doctor": {c.get("check"): c.get("status") for c in doc.get("checks") or [] if isinstance(c, dict)}, "drift": drift})
+            except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used
+                caps["video-editing"] = Capability("video-editing", "MISSING", f"found at {ve.describe()} but unusable: {str(e)[:160]}")
+        else:
+            caps["video-editing"] = Capability("video-editing", "MISSING", "set VIDEO_AGENT_VIDEO_EDITING_DIR to a video-editing-skill checkout or install `video-editing`")
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

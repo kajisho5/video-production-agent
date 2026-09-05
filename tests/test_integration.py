@@ -1016,3 +1016,104 @@ class ProductionDecisionEngineRealTests(unittest.TestCase):
         self.assertTrue(cut["ok"])
         out2 = svc.render(load_ir(pg), pg, resume=out["job"]["id"])
         self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])
+
+
+class VideoEditingRealTests(unittest.TestCase):
+    """PR #18 (ADR-028) on the real video-editing-skill and ffmpeg-skill 0.9.x: contract discovery and drift against the pinned
+    contract, the Skill's doctor as the capability source, video.trim lowered to video-editing/cut, execution through the CLI
+    boundary with the agent's PathPolicy, the response's sha256 / timeline / OBSERVED probe carried into the agent's results
+    and provenance, and the agent's own idempotent resume. Runs only when a video-editing-skill checkout is installed."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.video_editing import locate_video_editing
+        cls.ve = locate_video_editing()
+        cls.tmp = tempfile.mkdtemp(prefix="va_ve_")
+        src_dir = Path(cls.tmp) / "src"
+        src_dir.mkdir()
+        cls.src = str(src_dir / "talk.mp4")
+        if cls.ve and shutil.which("ffmpeg"):
+            make_media(cls.src)
+
+    def _service(self, workspace: str) -> Service:
+        return Service(workspace=workspace)
+
+    def test_contract_doctor_capability_and_drift(self):
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.tools.video_editing import VideoEditingAdapter, contract_drift, pinned_contract
+        ad = VideoEditingAdapter(self.ve, workspace=self.tmp, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.version, pinned_contract()["version"])
+        self.assertEqual(contract_drift(ad.contract), [], "the installed video-editing-skill contract drifted from the pinned one: re-verify the adapter")
+        doc = ad.doctor()
+        self.assertTrue(doc["ok"], doc.get("problems"))
+        rows = {c["check"]: c for c in doc["checks"]}
+        self.assertEqual(rows["ffmpeg-skill"]["status"], "AVAILABLE"); self.assertTrue(rows["ffmpeg-skill"]["version_supported"])
+        self.assertEqual(rows["path_policy"]["status"], "AVAILABLE"); self.assertIn(str(Path(self.src).parent.resolve()), rows["path_policy"]["allowed_input_roots"])
+        self.assertNotRegex(json.dumps(doc).replace("secrets_shown", ""), r"(?i)(api[_-]?key|token|secret|password)")
+        caps = CapabilityResolver(str(locate_ffmpeg_skill().root), video_editing_dir=str(self.ve.root) if self.ve.root else None).resolve()
+        self.assertEqual(caps["video-editing"].status, "AVAILABLE", caps["video-editing"].detail)
+        self.assertEqual(caps["video-editing"].evidence["engine"]["id"], "ffmpeg-skill")
+        self.assertEqual(caps["video-editing"].evidence["drift"], [])
+        self.assertEqual(caps["encoder:aac"].status, "AVAILABLE"); self.assertIn(caps["filter:xfade"].status, ("AVAILABLE", "MISSING"))
+        svc = self._service(str(Path(self.tmp) / "ws_cap"))
+        pk = {r["skill_id"]: r for r in svc.packages()}["video-editing"]
+        self.assertTrue(pk["implemented"] and pk["available"], pk["reason"]); self.assertEqual(pk["version"], ad.version)
+        self.assertIn("video-editing/cut", pk["usable_tools"])
+        self.assertEqual(svc.tools_for().get("silence_cleanup"), "ffmpeg-skill/cut", "the reference cut stays first while both packages are available")
+
+    def test_trim_through_video_editing_end_to_end(self):
+        if not self.ve or not shutil.which("ffmpeg"):
+            self.skipTest("needs a video-editing-skill checkout and ffmpeg")
+        ws = str(Path(self.tmp) / "ws")
+        svc = self._service(ws)
+        svc.registry.get("silence_cleanup").tools = ["video-editing/cut"]
+        ir = svc.plan([self.src], "generic")
+        d = ir.doc
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup")
+        self.assertEqual(step["tool"], "video-editing/cut")
+        self.assertEqual(svc.validate(ir).errors, [])
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution"))
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        cut = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/cut")
+        self.assertTrue(cut["ok"]); self.assertTrue(os.path.isfile(cut["output"]))
+        import hashlib
+        self.assertEqual(cut["data"]["artifact"]["sha256"], hashlib.sha256(Path(cut["output"]).read_bytes()).hexdigest())
+        self.assertEqual(cut["data"]["operation"]["tool"], "ffmpeg-skill/cut"); self.assertEqual(cut["data"]["operation"]["skill"], "video-editing")
+        self.assertTrue(cut["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+        self.assertEqual(cut["data"]["observation"]["provenance"], "OBSERVED")
+        self.assertTrue(cut["data"]["timeline"]["tracks"][0]["segments"], "source → timeline mapping reported by the Skill")
+        self.assertTrue(cut["commands"] and all(c.startswith("/") or c.startswith("ffmpeg") for c in cut["commands"]), "ffmpeg command lines are provenance only")
+        keep = step["params"]["keep"]
+        probe = cut["data"]["observation"]["data"]
+        self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.1.0"))
+        self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
+        self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
+        # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
+        # (loudness runs after the cut, so the artifact differs; the cut's own file is the one the Skill hashed)
+        self.assertEqual(hashlib.sha256(Path(cut["output"]).read_bytes()).hexdigest(), trim["skill_result"]["artifact"]["sha256"])
+        # resume: the completed cut is reused by the agent's idempotency key (skipped, never re-run through the Skill)
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])
+        self.assertIn(cut["op_id"], out2["execution"]["skipped"]); self.assertEqual(out2["execution"]["reused"][cut["op_id"]], cut["output"])
+        # an input outside the allowed roots is refused before the Skill runs; the Skill refuses it too (same roots)
+        from video_agent.models import Operation
+        from video_agent.tools.video_editing import VideoEditingAdapter
+        outside_dir = Path(tempfile.mkdtemp(prefix="va_out_")); outside = str(outside_dir / "o.mp4"); shutil.copy(self.src, outside)
+        strict = VideoEditingAdapter(self.ve, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        op = Operation(tool="video-editing/cut", args={"input": "x", "keep": [[0.0, 1.0]], "precision": "keyframe", "output": "y"}, inputs=["x"], outputs=["y"])
+        target = str(Path(ws) / "manual" / "y.mp4"); os.makedirs(os.path.dirname(target), exist_ok=True)
+        r = strict.run(op, {"x": outside, "y": target})
+        self.assertFalse(r.ok); self.assertIn("outside the allowed input roots", r.data["error"]["message"])
+        loose = VideoEditingAdapter(self.ve, workspace=None, allowed_inputs=[], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))   # no agent roots: the Skill's own policy (roots = --workspace) still refuses
+        r = loose.run(op, {"x": outside, "y": target})
+        self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "PATH_NOT_ALLOWED"); self.assertFalse(os.path.exists(target))
+        # an unsupported operation (CROP) is the Skill's UNSUPPORTED_OPERATION / not a tool: no engine fallback anywhere
+        self.assertFalse(strict.supports("video-editing/crop"))
+        self.assertTrue(any(u["type"] == "CROP" for u in strict.contract["unsupported"]))
