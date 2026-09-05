@@ -28,6 +28,7 @@ class Job:
     completed_ops: Dict[str, Any] = field(default_factory=dict)   # idempotency_key -> {output, size, mtime}
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     plan_hash: str = ""                                            # plan_hash of the IR this job executed
+    plan_version: int = 1
     resumed_from: Optional[str] = None                             # job id whose completed_ops seeded this job
 
     def transition(self, new_state: str, reason: str = "") -> None:
@@ -43,7 +44,7 @@ class Job:
         return Path(self.workspace) / "jobs" / self.id
 
     def to_dict(self) -> Dict[str, Any]:
-        return {k: getattr(self, k) for k in ("id", "state", "created_at", "updated_at", "ir_path", "workspace", "history", "completed_ops", "artifacts", "plan_hash", "resumed_from")}
+        return {k: getattr(self, k) for k in ("id", "state", "created_at", "updated_at", "ir_path", "workspace", "history", "completed_ops", "artifacts", "plan_hash", "resumed_from", "plan_version")}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Job":

@@ -34,11 +34,17 @@ video-agent render <workspace>/plans/input.youtube.project.json --dry-run
 video-agent render <workspace>/plans/input.youtube.project.json            # CONFIRM が残れば WAITING_FOR_APPROVAL (exit 4)
 video-agent render <workspace>/plans/input.youtube.project.json --approve all
 video-agent render <workspace>/plans/input.youtube.project.json --resume last   # 途中失敗後: 完了済み操作を再利用
+video-agent reject  <project> --decision <id> --reason "..."       # 却下（理由必須）→ render は BLOCKED
+video-agent revise  <project> [--set audio.loudness.target_lufs=-16]  # Plan v2 を生成（v1 は .v1.json に保存）、PlanDiff を表示
+video-agent approve <project> --decision all                       # v2 を承認して render 可能に
+video-agent diff    <project>                                      # 前版との PlanDiff
 video-agent explain <workspace>/plans/input.youtube.project.json [--decision <id>]
 video-agent check output.mp4 --platform youtube
 ```
 
-終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。
+終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。revise: 5 = 新版なし。
+
+Revision workflow: `docs/revision.md`。
 
 監査結果と既知の制限: `docs/AUDIT_PHASE1.md`、最終レビューと Phase 2 開始条件: `docs/PHASE1_FINAL_REVIEW.md`。
 

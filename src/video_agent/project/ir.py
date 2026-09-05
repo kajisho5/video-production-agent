@@ -1,4 +1,7 @@
-"""Project IR: the versioned contract between planning and deterministic execution."""
+"""Project IR: the versioned contract between planning and deterministic execution.
+
+Approval / rejection state lives in decisions[].status plus execution.reviews (who / when / why). Revision state
+(feedback, version history, which plan version was approved) lives in the `revision` section."""
 from __future__ import annotations
 
 import json
@@ -10,7 +13,7 @@ from .hashing import ir_hash as _ir_hash, plan_hash as _plan_hash
 from .migrations import CURRENT, migrate
 
 SECTIONS = ["schema_version", "project", "request", "requirements", "source", "assets", "analysis", "intent", "constraints", "policy", "decisions", "plan", "timeline",
-            "video", "audio", "captions", "graphics", "color", "delivery", "qa", "execution", "provenance"]
+            "video", "audio", "captions", "graphics", "color", "delivery", "qa", "execution", "provenance", "revision"]
 
 
 class ProjectIR:
@@ -31,12 +34,17 @@ class ProjectIR:
             "timeline": {"timelines": {"master": {"id": "master", "asset_id": None, "offset_seconds": 0.0, "drift_ratio": 1.0}}, "events": []},
             "video": {"operations": []}, "audio": {"operations": []}, "captions": {}, "graphics": {}, "color": {},
             "delivery": {"targets": [], "naming": ""}, "qa": {"required": ["video", "audio", "delivery"], "thresholds": {"duration_tolerance_s": 0.5, "loudness_tolerance_lu": 2.0}},
-            "execution": {"workspace": workspace, "dry_run": False, "allowed_inputs": [], "budgets": {}, "recovery_policy": {"max_attempts": 2}, "approvals": {}, "resume_from": None},
+            "execution": {"workspace": workspace, "dry_run": False, "allowed_inputs": [], "budgets": {}, "recovery_policy": {"max_attempts": 2}, "approvals": {}, "reviews": {}, "resume_from": None},
             "provenance": {"source_hashes": {}, "profile_version": profile.get("version", "0"), "skill_versions": {}, "tool_versions": {}, "created_by": "video-agent", "recovery": [], "runs": [], "plan_hash": "", "ir_hash": ""},
+            "revision": {"feedback": [], "history": [], "approved_plan_version": None},
         }
         return cls(d)
 
     # ---- accessors
+    @property
+    def version(self) -> int:
+        return int(self.doc["plan"]["version"])
+
     @property
     def decisions(self) -> List[Decision]:
         return [Decision.from_dict(d) for d in self.doc["decisions"]]
@@ -50,23 +58,64 @@ class ProjectIR:
     def blocked(self) -> List[Dict[str, Any]]:
         return [d for d in self.doc["decisions"] if d["approval"] == "BLOCK" or d["status"] == "BLOCKED"]
 
-    def approve(self, ids: List[str], who: str = "user") -> List[str]:
+    def rejected(self) -> List[Dict[str, Any]]:
+        return [d for d in self.doc["decisions"] if d["status"] == "REJECTED"]
+
+    def rejected_cited(self) -> List[Dict[str, Any]]:
+        """Operations / delivery targets that still cite a REJECTED decision (must be revised away before rendering)."""
+        rej = {d["id"] for d in self.rejected()}
+        out = []
+        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.doc["delivery"]["targets"]:
+            if any(x in rej for x in op.get("decision_ids") or []):
+                out.append(op)
+        return out
+
+    def needs_reapproval(self) -> bool:
+        """A revised plan (version > 1) is renderable only after an explicit approval of that version."""
+        return self.version > 1 and self.doc["revision"].get("approved_plan_version") != self.version
+
+    # ---- review actions
+    def _record(self, d: Dict[str, Any], action: str, who: str, reason: str) -> None:
+        rec = {"action": action, "by": who, "at": now_iso(), "reason": reason, "plan_version": self.version}
+        self.doc["execution"].setdefault("reviews", {})[d["id"]] = rec
+        if action == "APPROVED":
+            self.doc["execution"].setdefault("approvals", {})[d["id"]] = {"by": who, "at": rec["at"]}
+        self.doc["timeline"]["events"].append({"id": new_id("evt"), "type": "USER_DECISION", "timeline_id": "master", "range": {"start": 0.0, "end": None},
+                                                "source": who, "kind": "USER", "confidence": None, "evidence": [d["id"]],
+                                                "metadata": {"decision": d["id"], "subject": d["subject"], "action": action, "reason": reason, "plan_version": self.version}})
+
+    def approve(self, ids: List[str], who: str = "user", reason: str = "") -> List[str]:
+        """Approve CONFIRM decisions. When nothing remains pending or rejected-and-cited, the current plan version becomes approved."""
         done = []
         for d in self.doc["decisions"]:
-            if d["id"] in ids or "all" in ids:
-                if d["approval"] == "CONFIRM" and d["status"] == "PROPOSED":
-                    d["status"] = "APPROVED"
-                    self.doc["execution"].setdefault("approvals", {})[d["id"]] = {"by": who, "at": now_iso()}
-                    self.doc["timeline"]["events"].append({"id": new_id("evt"), "type": "USER_DECISION", "timeline_id": "master", "range": {"start": 0.0, "end": None},
-                                                            "source": who, "kind": "USER", "confidence": None, "evidence": [d["id"]], "metadata": {"decision": d["id"], "action": "APPROVED"}})
-                    done.append(d["id"])
+            if (d["id"] in ids or "all" in ids) and d["approval"] == "CONFIRM" and d["status"] == "PROPOSED":
+                d["status"] = "APPROVED"
+                self._record(d, "APPROVED", who, reason)
+                done.append(d["id"])
+        if not self.pending_confirmations() and not self.rejected_cited() and not self.blocked():
+            self.doc["revision"]["approved_plan_version"] = self.version
         return done
 
+    def reject(self, ids: List[str], who: str, reason: str) -> List[str]:
+        """Reject decisions (AUTO or CONFIRM). Rejection invalidates any plan-version approval: the plan must be revised."""
+        if not reason or not reason.strip():
+            raise ValueError("a rejection reason is required")
+        done = []
+        for d in self.doc["decisions"]:
+            if (d["id"] in ids or "all" in ids) and d["status"] in ("PROPOSED", "APPROVED") and d["approval"] != "BLOCK":
+                d["status"] = "REJECTED"
+                self._record(d, "REJECTED", who, reason.strip())
+                done.append(d["id"])
+        if done:
+            self.doc["revision"]["approved_plan_version"] = None
+        return done
+
+    # ---- hashes
     def ir_hash(self) -> str:
         return _ir_hash(self.doc)
 
     def plan_hash(self) -> str:
-        """Hash of what will execute; unchanged by approvals (used to judge whether a previous job can be resumed)."""
+        """Hash of what will execute; unchanged by approvals/rejections (used to judge whether a previous job can be resumed)."""
         return _plan_hash(self.doc)
 
     def finalize_hash(self) -> str:
@@ -85,3 +134,9 @@ def save_ir(ir: ProjectIR, path: str) -> str:
 def load_ir(path: str) -> ProjectIR:
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
     return ProjectIR(migrate(doc))
+
+
+def snapshot_path(ir_path: str, version: int) -> str:
+    """Where a plan version is preserved before a revision replaces it: <dir>/<stem>.v<N>.json (never overwritten)."""
+    p = Path(ir_path)
+    return str(p.with_name(f"{p.stem}.v{version}{p.suffix}"))

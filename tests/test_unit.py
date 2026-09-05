@@ -120,8 +120,9 @@ class PipelineTests(unittest.TestCase):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "youtube")
         d = ir.doc
-        self.assertEqual(d["schema_version"], "1.1")
+        self.assertEqual(d["schema_version"], "1.2")
         self.assertTrue(d["provenance"]["plan_hash"] and d["provenance"]["ir_hash"])
+        self.assertEqual(d["revision"], {"feedback": [], "history": [], "approved_plan_version": None})
         kinds = {o["kind"] for o in d["analysis"]["observations"]}
         self.assertEqual(kinds, {"probe", "silence", "loudness"})
         inf = {i["kind"] for i in d["analysis"]["inferences"]}
@@ -247,7 +248,8 @@ class PipelineTests(unittest.TestCase):
         ir_path = str(Path(self.tmp) / "rej.json")
         save_ir(ir, ir_path)
         out = svc.render(load_ir(ir_path), ir_path)
-        self.assertEqual(out["status"], "FAILED")
+        self.assertEqual(out["status"], "BLOCKED")
+        self.assertIn(lead["id"], out["rejected"])
         self.assertFalse(out["job"]["completed_ops"])
 
     def test_operation_ids_are_deterministic(self):
@@ -257,6 +259,18 @@ class PipelineTests(unittest.TestCase):
         b = [o.id for o in compile_ir(ir, "/w/jobs/k")[0]]
         self.assertEqual(a, b)
         self.assertEqual(len(set(a)), len(a))
+
+    def test_frame_accuracy_is_plan_content(self):
+        svc = make_service(self.tmp)
+        a = svc.plan([self.src], "youtube")
+        b = svc.plan([self.src], "youtube", user_requirements={"edit.precision": "frame"})
+        self.assertFalse(a.doc["video"]["operations"][0]["accurate"])
+        self.assertTrue(b.doc["video"]["operations"][0]["accurate"])
+        self.assertNotEqual(a.plan_hash(), b.plan_hash(), "precision changes what executes, so it changes the plan hash")
+        ops, _ = compile_ir(b, "/w/jobs/j")
+        self.assertTrue(ops[0].args.get("accurate"))
+        from video_agent.project.diff import plan_diff
+        self.assertTrue(any("frame-accurate" in l for l in plan_diff(a.doc, b.doc)["summary"]))
 
     def test_qa_measurements_are_recorded(self):
         svc = make_service(self.tmp)
@@ -290,12 +304,17 @@ class PipelineTests(unittest.TestCase):
         doc["schema_version"] = "1.0"
         doc["provenance"].pop("plan_hash")
         doc["execution"].pop("resume_from")
+        doc["execution"].pop("reviews")
+        doc.pop("revision")
+        doc["execution"]["approvals"] = {doc["decisions"][0]["id"]: {"by": "someone", "at": "2026-01-01T00:00:00Z"}}
         p = str(Path(self.tmp) / "v10.json")
         Path(p).write_text(json.dumps(doc))
         loaded = load_ir(p)
-        self.assertEqual(loaded.doc["schema_version"], "1.1")
+        self.assertEqual(loaded.doc["schema_version"], "1.2")
         self.assertEqual(loaded.doc["provenance"]["plan_hash"], ir.plan_hash())
         self.assertIsNone(loaded.doc["execution"]["resume_from"])
+        self.assertEqual(loaded.doc["execution"]["reviews"][doc["decisions"][0]["id"]]["action"], "APPROVED", "legacy approvals become review records")
+        self.assertEqual(loaded.doc["revision"]["approved_plan_version"], None)
         self.assertTrue(validate_ir(loaded, svc.caps.resolve()).ok)
 
     def test_plan_hash_ignores_approval_ir_hash_does_not(self):
@@ -494,3 +513,259 @@ class ResumeTests(unittest.TestCase):
         from video_agent.execution.executor import record_matches
         self.assertFalse(record_matches("/some/path"))
         self.assertFalse(record_matches({"output": "/nope", "size": 1, "mtime": 1.0}))
+
+
+class RevisionTests(unittest.TestCase):
+    """REJECT → revise → Plan v2 → PlanDiff → approve → render, checked on the real state transitions."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _plan(self, svc, profile="conference", name="p.json", **kw):
+        ir = svc.plan([self.src], profile, **kw)
+        p = str(Path(self.tmp) / name)
+        save_ir(ir, p)
+        return p
+
+    def _dec(self, p, subject):
+        return next(d for d in load_ir(p).doc["decisions"] if d["subject"] == subject and d["status"] != "REJECTED")
+
+    def test_reject_requires_reason_and_records_actor_and_time(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc)
+        lead = self._dec(p, "silence.leading")
+        with self.assertRaises(ValueError):
+            svc.reject(load_ir(p), p, [lead["id"]], reason="   ")
+        out = svc.reject(load_ir(p), p, [lead["id"]], reason="the lead-in is the chair's introduction", who="reviewer:kaji")
+        self.assertEqual(out["rejected"], [lead["id"]])
+        ir = load_ir(p)
+        rv = ir.doc["execution"]["reviews"][lead["id"]]
+        self.assertEqual((rv["action"], rv["by"], rv["reason"], rv["plan_version"]), ("REJECTED", "reviewer:kaji", "the lead-in is the chair's introduction", 1))
+        self.assertTrue(rv["at"])
+        self.assertEqual(ir.decision(lead["id"])["status"], "REJECTED")
+        ev = [e for e in ir.doc["timeline"]["events"] if e["type"] == "USER_DECISION"][-1]
+        self.assertEqual(ev["metadata"]["action"], "REJECTED")
+        self.assertEqual(ev["metadata"]["reason"], "the lead-in is the chair's introduction")
+        self.assertIsNone(ir.doc["revision"]["approved_plan_version"])
+
+    def test_plan_with_rejected_decision_can_never_render(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        lead = self._dec(p, "silence.leading")
+        svc.reject(load_ir(p), p, [lead["id"]], reason="keep the intro")
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "BLOCKED")
+        self.assertEqual(out["rejected"][lead["id"]], "keep the intro")
+        self.assertEqual([o for o in ad.calls if o.kind == "transform"], [], "no tool ran")
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "BLOCKED", "approve cannot override a rejection")
+        with self.assertRaises(ValueError):
+            svc.approve(load_ir(p), p, ["all"])
+        rep = validate_ir(load_ir(p), svc.caps.resolve())
+        self.assertFalse(rep.ok)
+
+    def test_reject_all_blocks_and_revise_yields_empty_plan(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc, profile="youtube")
+        svc.reject(load_ir(p), p, ["all"], reason="do nothing to this file")
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "BLOCKED")
+        out = svc.revise(load_ir(p), p)
+        self.assertTrue(out["created"])
+        ir = load_ir(p)
+        self.assertEqual(ir.version, 2)
+        self.assertEqual(ir.doc["video"]["operations"], [])
+        self.assertEqual(ir.doc["audio"]["operations"], [])
+        self.assertEqual(ir.doc["delivery"]["targets"], [])
+        self.assertEqual({d["status"] for d in ir.doc["decisions"]}, {"REJECTED"})
+
+    def test_partial_reject_revise_diff_approve_render(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        v1 = load_ir(p).doc
+        lead = self._dec(p, "silence.leading")
+        svc.reject(load_ir(p), p, [lead["id"]], reason="chair introduction must stay", who="reviewer")
+        out = svc.revise(load_ir(p), p, who="editor")
+        self.assertTrue(out["created"])
+        ir = load_ir(p)
+        self.assertEqual(ir.version, 2)
+        # the rejected operation is gone, the rest survived (conference: no trailing trim because the tail is shorter than 3 s)
+        self.assertEqual(ir.doc["video"]["operations"], [])
+        self.assertEqual(len(ir.doc["audio"]["operations"]), 1)
+        self.assertEqual(len(ir.doc["delivery"]["targets"]), 2)
+        # the rejected decision is carried as history with its review; the planner did not re-propose it
+        rej = [d for d in ir.doc["decisions"] if d["status"] == "REJECTED"]
+        self.assertEqual([d["id"] for d in rej], [lead["id"]])
+        self.assertEqual(ir.doc["execution"]["reviews"][lead["id"]]["reason"], "chair introduction must stay")
+        self.assertEqual(out["dropped_proposals"][0]["subject"], "silence.leading")
+        # PlanDiff names the change
+        diff = ir.doc["revision"]["history"][-1]["diff"]
+        self.assertEqual(diff["from_version"], 1)
+        self.assertIn("video.trim@" + list(ir.doc["assets"])[0], diff["video"]["removed"])
+        self.assertTrue(any(line.startswith("VIDEO") and "removed" in line for line in diff["summary"]))
+        self.assertEqual(ir.doc["revision"]["history"][-1]["rejection_reasons"][lead["id"]], "chair introduction must stay")
+        # v1 is preserved untouched
+        snap = load_ir(out["snapshot"]).doc
+        self.assertEqual(snap["plan"]["version"], 1)
+        self.assertEqual(len(snap["video"]["operations"]), 1)
+        self.assertEqual(snap["provenance"]["plan_hash"], v1["provenance"]["plan_hash"], "rejection never changed v1's plan content")
+        self.assertEqual(snap["decisions"][0]["id"], v1["decisions"][0]["id"])
+        self.assertTrue(any(l.startswith("REJECTED silence.leading") and "chair introduction" in l for l in diff["summary"]), diff["summary"])
+        # v2 needs approval even though nothing is CONFIRM-pending
+        self.assertEqual(load_ir(p).pending_confirmations(), [])
+        r = svc.render(load_ir(p), p)
+        self.assertEqual(r["status"], "WAITING_FOR_APPROVAL")
+        self.assertEqual(r["plan_version"], 2)
+        a = svc.approve(load_ir(p), p, ["all"], who="reviewer")
+        self.assertTrue(a["renderable"])
+        self.assertEqual(a["approved_plan_version"], 2)
+        r = svc.render(load_ir(p), p)
+        self.assertEqual(r["status"], "COMPLETED", r.get("execution"))
+        self.assertEqual([o.tool for o in ad.calls if o.kind == "transform"], ["ffmpeg-skill/loudness", "ffmpeg-skill/export", "ffmpeg-skill/export"])
+        self.assertEqual(r["job"]["plan_version"], 2)
+
+    def test_hashes_approval_vs_revision(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc)
+        ir = load_ir(p)
+        ph1, ih1 = ir.plan_hash(), ir.ir_hash()
+        lead = self._dec(p, "silence.leading")
+        svc.reject(ir, p, [lead["id"]], reason="x")
+        self.assertEqual(ir.plan_hash(), ph1, "rejection does not change plan_hash")
+        self.assertNotEqual(ir.ir_hash(), ih1, "rejection changes ir_hash")
+        svc.revise(load_ir(p), p)
+        ir2 = load_ir(p)
+        self.assertNotEqual(ir2.plan_hash(), ph1, "revision changes plan_hash")
+        ph2 = ir2.plan_hash()
+        svc.approve(ir2, p, ["all"])
+        self.assertEqual(load_ir(p).plan_hash(), ph2, "approval does not change plan_hash")
+
+    def test_v1_job_and_provenance_are_independent_from_v2(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc, profile="youtube")
+        j1 = svc.render(load_ir(p), p)
+        self.assertEqual(j1["status"], "COMPLETED")
+        loud = self._dec(p, "audio.loudness")
+        svc.reject(load_ir(p), p, [loud["id"]], reason="levels were fine on the venue PA")
+        svc.revise(load_ir(p), p)
+        svc.approve(load_ir(p), p, ["all"])
+        # plain render of v2: nothing from v1 is reused
+        j2 = svc.render(load_ir(p), p)
+        self.assertEqual(j2["status"], "COMPLETED")
+        self.assertEqual(j2["execution"]["skipped"], [])
+        self.assertIsNone(j2["job"]["resumed_from"])
+        self.assertNotEqual(j1["job"]["id"], j2["job"]["id"])
+        p1 = json.loads((Path(j1["job"]["workspace"]) / "jobs" / j1["job"]["id"] / "provenance.json").read_text())
+        p2 = json.loads((Path(j2["job"]["workspace"]) / "jobs" / j2["job"]["id"] / "provenance.json").read_text())
+        self.assertEqual((p1["plan_version"], p2["plan_version"]), (1, 2))
+        self.assertEqual([e["tool"] for e in p1["operations"]], ["ffmpeg-skill/cut", "ffmpeg-skill/loudness", "ffmpeg-skill/export", "ffmpeg-skill/check"])
+        self.assertEqual([e["tool"] for e in p2["operations"]], ["ffmpeg-skill/cut", "ffmpeg-skill/export", "ffmpeg-skill/check"])
+        self.assertIn(loud["id"], p2["reviews"])
+        self.assertNotIn(loud["id"], p1["reviews"])
+        # resume across versions: only the unchanged cut is reused; the export (whose input changed) is not
+        ad3 = FakeAdapter()
+        j3 = make_service(self.tmp, adapter=ad3).render(load_ir(p), p, resume=j1["job"]["id"])
+        self.assertEqual(j3["status"], "COMPLETED")
+        self.assertEqual(len(j3["execution"]["skipped"]), 1)
+        self.assertEqual([o.tool for o in ad3.calls if o.kind == "transform"], ["ffmpeg-skill/export"])
+        self.assertTrue(j3["resume"]["plan_changed"])
+
+    def test_revision_after_approval_needs_reapproval_and_keeps_history(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc)
+        lead = self._dec(p, "silence.leading")
+        svc.reject(load_ir(p), p, [lead["id"]], reason="r1")
+        svc.revise(load_ir(p), p)
+        svc.approve(load_ir(p), p, ["all"])
+        self.assertFalse(load_ir(p).needs_reapproval())
+        # a second round: structured feedback changes the loudness target
+        out = svc.revise(load_ir(p), p, feedback="-16 に揃えて", user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        self.assertTrue(out["created"])
+        ir = load_ir(p)
+        self.assertEqual(ir.version, 3)
+        self.assertTrue(ir.needs_reapproval())
+        self.assertEqual(svc.render(ir, p)["status"], "WAITING_FOR_APPROVAL")
+        self.assertEqual(ir.doc["audio"]["operations"][0]["target_lufs"], -18)
+        self.assertTrue(any("AUDIO" in l and "-18" in l for l in ir.doc["revision"]["history"][-1]["diff"]["summary"]))
+        # rejection reason from v1 survives two revisions
+        self.assertEqual(ir.doc["execution"]["reviews"][lead["id"]]["reason"], "r1")
+        self.assertEqual([h["version"] for h in ir.doc["revision"]["history"]], [2, 3])
+        self.assertEqual(len(ir.doc["revision"]["feedback"]), 1)
+        self.assertTrue(Path(out["snapshot"]).exists() and out["snapshot"].endswith(".v2.json"))
+        self.assertTrue(Path(str(Path(p).with_name("p.v1.json"))).exists())
+
+    def test_revise_twice_without_changes_is_idempotent(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc)
+        lead = self._dec(p, "silence.leading")
+        svc.reject(load_ir(p), p, [lead["id"]], reason="r1")
+        first = svc.revise(load_ir(p), p)
+        self.assertTrue(first["created"])
+        before = json.loads(Path(p).read_text())
+        again = svc.revise(load_ir(p), p)
+        self.assertFalse(again["created"])
+        self.assertEqual(json.loads(Path(p).read_text()), before, "IR untouched by a no-op revision")
+        self.assertEqual(load_ir(p).version, 2)
+        self.assertEqual(len(load_ir(p).doc["revision"]["history"]), 1)
+
+    def test_feedback_without_plan_change_never_creates_an_empty_version(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc, profile="youtube")
+        loud = self._dec(p, "audio.loudness")
+        svc.reject(load_ir(p), p, [loud["id"]], reason="levels fine")
+        self.assertTrue(svc.revise(load_ir(p), p)["created"])
+        svc.approve(load_ir(p), p, ["all"])
+        # asking for a different target re-proposes loudness, which was rejected → suppressed → no plan change → no version
+        out = svc.revise(load_ir(p), p, feedback="少し下げて", user_requirements={"audio.loudness.target_lufs": -18})
+        self.assertFalse(out["created"])
+        self.assertIn("rejected earlier", out["reason"])
+        ir = load_ir(p)
+        self.assertEqual(ir.version, 2)
+        self.assertEqual(len(ir.doc["revision"]["feedback"]), 1, "feedback is recorded once")
+        self.assertFalse(ir.needs_reapproval(), "approval of v2 is untouched")
+        again = svc.revise(load_ir(p), p, feedback="少し下げて", user_requirements={"audio.loudness.target_lufs": -18})
+        self.assertFalse(again["created"])
+        self.assertEqual(len(load_ir(p).doc["revision"]["feedback"]), 1, "identical feedback is not duplicated")
+        self.assertEqual([h["version"] for h in load_ir(p).doc["revision"]["history"]], [2])
+
+    def test_revise_without_rejections_or_feedback_creates_nothing(self):
+        svc = make_service(self.tmp)
+        p = self._plan(svc)
+        out = svc.revise(load_ir(p), p)
+        self.assertFalse(out["created"])
+        self.assertEqual(load_ir(p).version, 1)
+        self.assertFalse(Path(str(Path(p).with_name("p.v1.json"))).exists())
+
+    def test_failure_and_resume_inside_a_revised_plan(self):
+        failing = FakeAdapter(fail_tools={"ffmpeg-skill/export": 9})
+        svc = make_service(self.tmp, adapter=failing)
+        p = self._plan(svc, profile="youtube")
+        lead = self._dec(p, "silence.leading")
+        svc.reject(load_ir(p), p, [lead["id"]], reason="keep intro")
+        svc.revise(load_ir(p), p)
+        svc.approve(load_ir(p), p, ["all"])
+        j1 = svc.render(load_ir(p), p)
+        self.assertEqual(j1["status"], "FAILED")
+        self.assertEqual(j1["job"]["plan_version"], 2)
+        # v2 still trims the trailing silence (only the leading one was rejected)
+        self.assertEqual(load_ir(p).doc["video"]["operations"][0]["keep"][0][0], 0.0)
+        j2 = make_service(self.tmp, adapter=FakeAdapter()).render(load_ir(p), p, resume="last")
+        self.assertEqual(j2["status"], "COMPLETED")
+        self.assertEqual(len(j2["execution"]["skipped"]), 2, "cut (trailing) and loudness from the failed v2 job are reused")
+        ir = load_ir(p)
+        self.assertEqual([r["plan_version"] for r in ir.doc["provenance"]["runs"]], [2, 2])
+        self.assertEqual(ir.doc["execution"]["reviews"][lead["id"]]["reason"], "keep intro")
+
+    def test_revise_does_not_touch_media(self):
+        ad = FakeAdapter()
+        svc = make_service(self.tmp, adapter=ad)
+        p = self._plan(svc)
+        n = len(ad.calls)
+        lead = self._dec(p, "silence.leading")
+        svc.reject(load_ir(p), p, [lead["id"]], reason="x")
+        svc.revise(load_ir(p), p)
+        self.assertEqual(len(ad.calls), n, "revision is a pure re-plan from recorded observations")

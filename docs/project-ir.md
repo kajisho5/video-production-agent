@@ -1,4 +1,4 @@
-# Project IR (schema 1.1)
+# Project IR (schema 1.2)
 
 Project IR は「推論・計画」と「決定論的実行」の間の契約。JSON、`schemas/project.schema.json` で検証する。
 `render.py` の project.json とは別物（理由: docs/ARCHITECTURE_REVIEW.md §1.3）。
@@ -60,3 +60,16 @@ Operation.args は adapter のカタログ型（`tools/ffmpeg_skill/catalog.py`�
 - Job の `completed_ops[key] = {output, size, mtime}`。resume 時は key が一致し、かつ記録どおりのファイルが残っている場合のみスキップ。
 - `render --resume <job_id|last>` は**新しい Job** を作り、`resumed_from` で履歴を残す。再利用した出力は元 Job のディレクトリを参照する。
 - 出力を持たない operation（`check`）はキーを持たず常に再実行される。
+
+## schema 1.2（Phase 2 PR 2）
+
+追加のみ。1.1 → 1.2 の migration は `revision` セクションを補い、`execution.approvals` を `execution.reviews`（APPROVED 記録）へ写す。
+
+| 追加 | 意味 |
+|---|---|
+| `execution.reviews{decision_id: {action, by, at, reason, plan_version}}` | 承認 / 却下の記録 |
+| `revision.feedback[]` | `{id, plan_version, target, text, structured, by, at}` |
+| `revision.history[]` | `{version, from_version, created_at, by, feedback_ids, rejected_decision_ids, rejection_reasons, dropped_proposals, diff, plan_hash, ir_hash_before, snapshot}` |
+| `revision.approved_plan_version` | 承認済みの plan 版。`plan.version` と一致しない v≥2 は render 不可 |
+
+`plan_hash` から `schema_version` を除外した（同じ内容は migration 前後で同じハッシュ）。詳細は `docs/revision.md`。
