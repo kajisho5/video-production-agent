@@ -172,6 +172,19 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/export"]))
     r.register(SkillSpec("delivery_check", "1.0", "Platform compliance check", {"artifact": "delivery", "platform": "str"}, {"qa": "delivery"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/check"]))
+    # editing operations only video-editing-skill provides (ADR-029): explicit requirement → Decision (CONFIRM by default) → plan step
+    r.register(SkillSpec("video_concat", "1.0", "Join two or more (trimmed) inputs into one programme, in the given order", {"assets": "video[]"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/concat"]))
+    r.register(SkillSpec("video_speed", "1.0", "Change playback speed by a factor", {"asset": "video", "factor": "float"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/speed"]))
+    r.register(SkillSpec("video_resize", "1.0", "Scale to a width (aspect kept)", {"asset": "video", "width": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "LOW", True, "CONFIRM", ["video-editing/resize"]))
+    r.register(SkillSpec("video_fit", "1.0", "Letterbox / pillarbox into an aspect ratio (no picture lost)", {"asset": "video", "aspect": "W:H"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "LOW", True, "CONFIRM", ["video-editing/fit"]))
+    r.register(SkillSpec("video_fill", "1.0", "Crop into an aspect ratio (picture lost at the edges)", {"asset": "video", "aspect": "W:H"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/fill"]))
+    r.register(SkillSpec("video_overlay", "1.0", "Composite a PNG / JPEG image over the picture", {"asset": "video", "image": "png|jpg"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/overlay"]))
     r.register(SkillSpec("visual_inspection", "1.0", "Contact sheet for human/AI review", {"artifact": "video"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/look"]))
     # measurement skills only media-analysis-skill provides (external observation Skill; tool ids from its contract)

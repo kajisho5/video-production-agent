@@ -1,0 +1,32 @@
+{
+ "name": "vo_fit_and_fill_conflict_blocks",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing_ops": {
+  "inputs": 1
+ },
+ "requirements": {
+  "edit.fit": "1:1",
+  "edit.fill": "9:16"
+ },
+ "expect": {
+  "ir_ops": [],
+  "blocked": true,
+  "blocked_subjects": [
+   "video.fit"
+  ],
+  "plan_status": "BLOCKED"
+ }
+}

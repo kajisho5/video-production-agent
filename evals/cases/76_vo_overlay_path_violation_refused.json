@@ -1,0 +1,25 @@
+{
+ "name": "vo_overlay_path_violation_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing_ops": {
+  "inputs": 1,
+  "image": "traversal"
+ },
+ "requirements": {},
+ "expect": {
+  "plan_error": "traversal"
+ }
+}

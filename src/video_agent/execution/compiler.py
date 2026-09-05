@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..agent.editing import EDIT_ORDER, OPERATIONS, PROGRAMME
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
 
@@ -53,6 +54,28 @@ def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -
     return args
 
 
+def lower_video_edit(tool: str, op: Dict[str, Any], current: str, out_id: str, extra_refs: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """IR editing operation (ADR-029: video.speed / resize / fit / fill / overlay / concat) → the typed arguments of the selected
+    video-editing tool. Only the operation's allowlisted parameters are copied, by name; references become artifact ids the
+    adapter resolves through the paths map. The compiler never invents a parameter, a filter or a command, and refuses a
+    tool that does not belong to the operation (the plan names the tool; the compiler only checks the pairing)."""
+    spec = OPERATIONS[op["type"]]
+    if tool != spec["tool"]:
+        raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {spec['tool']}")
+    args: Dict[str, Any] = {}
+    if op["type"] == "video.concat":
+        args["inputs"] = list(current if isinstance(current, list) else [current])
+    else:
+        args["input"] = current
+    for k in spec["params"]:
+        if op.get(k) is not None:
+            args[k] = op[k]
+    for k, v in (extra_refs or {}).items():
+        args[k] = v
+    args["output"] = out_id
+    return args
+
+
 def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
     """(skill, asset-or-target key) → tool id, from plan.steps. The compiler never chooses tools itself."""
     out: Dict[Tuple[str, str], str] = {}
@@ -90,41 +113,91 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         ops.append(o)
         return o
 
+    concat = next((op for op in d["video"]["operations"] if op["type"] == "video.concat"), None)
+    state: Dict[str, Dict[str, Any]] = {}   # subject → {"current", "gen", "stem", "fp"}
+
+    def edits(subject: str) -> None:
+        """The single-source editing operations on a subject, chained in IR order (the IR is already in the fixed order)."""
+        st = state[subject]
+        for op in d["video"]["operations"]:
+            if op["asset"] != subject or op["type"] not in EDIT_ORDER[1:]:
+                continue
+            name = op["type"].split(".", 1)[1]
+            st["gen"] += 1
+            out_id = f"{subject}_{name}"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_{name}" / f"{st['stem']}_{name}.mp4")
+            skill = OPERATIONS[op["type"]]["skill"]
+            tool = tool_for(skill, subject)
+            refs: Dict[str, str] = {}
+            inputs = [st["current"]]
+            if op["type"] == "video.overlay":
+                img_id = f"{subject}_{name}_image"
+                paths[img_id] = op["image"]
+                keys[img_id] = ""
+                refs["image"] = img_id
+                inputs.append(img_id)
+            args = lower_video_edit(tool, op, st["current"], out_id, refs)
+            add(tool, args, inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            st["current"] = out_id
+
+    def loudness(subject: str) -> None:
+        st = state[subject]
+        for op in d["audio"]["operations"]:
+            if op["asset"] != subject or op["type"] != "audio.loudness":
+                continue
+            st["gen"] += 1
+            out_id = f"{subject}_loudnorm"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_loudness" / f"{st['stem']}_loudnorm.mp4")
+            args = {"input": st["current"], "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
+            add(tool_for("loudness_normalization", subject), args, [st["current"]], [out_id], list(op.get("decision_ids") or []), st["fp"], skill="loudness_normalization")
+            st["current"] = out_id
+
+    def delivery(subject: str) -> None:
+        st = state[subject]
+        for t in d["delivery"]["targets"]:
+            art_id = f"{subject}_delivery_{t['id']}"
+            if t.get("preset"):
+                ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
+                paths[art_id] = str(job / "artifacts" / f"{st['stem']}_{t['id']}.{ext}")
+                args = {"input": st["current"], "preset": t["preset"], "output": art_id}
+                add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
+                add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), st["fp"], kind="qa", skill="delivery_check")
+            elif st["current"] != subject:
+                # generic profile: the last processed intermediate is the deliverable (no re-encode)
+                paths[art_id] = paths[st["current"]]
+
     for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
         paths[asset_id] = asset["path"]
         keys[asset_id] = ""
         fp = source_fingerprint(asset)
         stem = f"{idx:02d}_{Path(asset['path']).stem}"  # index keeps two inputs with the same file name apart
-        current = asset_id
-        gen = 0
+        state[asset_id] = {"current": asset_id, "gen": 0, "stem": stem, "fp": fp}
+        st = state[asset_id]
         for op in d["video"]["operations"]:
             if op["asset"] != asset_id or op["type"] != "video.trim":
                 continue
-            gen += 1
+            st["gen"] += 1
             out_id = f"{asset_id}_trim"
-            paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_trim" / f"{stem}_trim.mp4")
+            paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_trim" / f"{stem}_trim.mp4")
             tool = tool_for("silence_cleanup", asset_id)
-            args = lower_video_trim(tool, op, current, out_id)
-            add(tool, args, [current], [out_id], list(op.get("decision_ids") or []), fp, skill="silence_cleanup")
-            current = out_id
-        for op in d["audio"]["operations"]:
-            if op["asset"] != asset_id or op["type"] != "audio.loudness":
-                continue
-            gen += 1
-            out_id = f"{asset_id}_loudnorm"
-            paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_loudness" / f"{stem}_loudnorm.mp4")
-            args = {"input": current, "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
-            add(tool_for("loudness_normalization", asset_id), args, [current], [out_id], list(op.get("decision_ids") or []), fp, skill="loudness_normalization")
-            current = out_id
-        for t in d["delivery"]["targets"]:
-            art_id = f"{asset_id}_delivery_{t['id']}"
-            if t.get("preset"):
-                ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
-                paths[art_id] = str(job / "artifacts" / f"{stem}_{t['id']}.{ext}")
-                args = {"input": current, "preset": t["preset"], "output": art_id}
-                add(tool_for("delivery_export", t["id"]), args, [current], [art_id], list(t.get("decision_ids") or []), fp, skill="delivery_export")
-                add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), fp, kind="qa", skill="delivery_check")
-            elif current != asset_id:
-                # generic profile: the last processed intermediate is the deliverable (no re-encode)
-                paths[art_id] = paths[current]
+            args = lower_video_trim(tool, op, st["current"], out_id)
+            add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill="silence_cleanup")
+            st["current"] = out_id
+        if concat is None:
+            edits(asset_id)
+            loudness(asset_id)
+            delivery(asset_id)
+    if concat is not None:
+        # the multi-source timeline: every (trimmed) input in the decided order → one programme; the chain continues on it
+        subject = concat.get("output") or PROGRAMME
+        inputs = [state[a]["current"] for a in concat["inputs"]]
+        fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) for a in concat["inputs"]])[:16]
+        state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
+        paths[subject] = str(job / "ops" / f"{subject}_01_concat" / f"{subject}.mp4")
+        tool = tool_for("video_concat", subject)
+        args = lower_video_edit(tool, concat, inputs, subject)
+        add(tool, args, inputs, [subject], list(concat.get("decision_ids") or []), fp, skill="video_concat")
+        edits(subject)
+        loudness(subject)
+        delivery(subject)
     return ops, paths

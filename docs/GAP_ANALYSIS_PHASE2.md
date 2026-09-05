@@ -291,3 +291,17 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 
 別 PR 候補: video.concat / speed / fit / overlay を Plan / Decision に接続（今回は adapter が contract の全 tool を request 化できるが、planner が出す IR operation は video.trim のみ）、audio-only 入力の扱い（video-editing は INVALID_INPUT）、drift 検出の CI 単独ジョブ化。
 
+
+## 20. PR #20 — video-editing-skill operations（concat / speed / resize / fit / fill / overlay、ADR-029、2026-09-05 追記）
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G85 planner が出す IR operation は video.trim のみ | adapter は contract の全 tool を request 化できるが Plan / Decision に接続されていない | `agent/editing.py`（語彙・requirement 検証・concat segments・delivery subjects）、decision.py（TRANSFORM / BLOCK）、planner（step + IR op）、registry（video_concat … video_overlay）、schema、validator（check_video_operations）、compiler（lower_video_edit）、QA / artifact（subject 単位） |
+| G86 複数入力の timeline を IR で表せない | asset ごとの独立チェーンのみ | `video.concat {inputs, output: programme, segments[{input, track, source_range, timeline_range}], timeline_duration}`、以降の操作・loudness・delivery は programme に適用 |
+| G87 BLOCK decision が step を持たないと plan が APPROVED になる | plan_status は step 由来のみ | BLOCK decision（status BLOCKED）があれば BLOCKED（render は従来から ir.blocked() で拒否していたが、plan 表示も一致させた） |
+| G88 step.tool が None の plan が schema で落ちて意味的な理由が出ない | schema `tool: string` | `tool: string | null`（validator の「has no selected tool」が理由として出る。None が実行に進む経路は無い） |
+| G89 fake video-editing の出力が下流の fake から probe できない | payload を sort_keys で書き `{"fake"` 先頭でない | key 順固定（"fake" 先頭）、CONCAT / SPEED の duration を入力 payload から算出（test double のみ） |
+
+四段階の区別: Skill supports = 8 operation（contract）/ adapter supports = 同 8（Lowering.ARGS）/ Planner can generate = video.trim + 6 operation（video.concat / speed / resize / fit / fill / overlay）/ E2E verified（実メディア）= trim → concat（plain・fade transition）→ speed → resize → fit・fill → overlay。
+
+未対応・別 PR 候補: `video.<op>.approval` を request から設定（REQUIREMENT_PREFIXES に "video." 無し）、asset の一部だけを concat する指定（現状は全 video asset）、concat の並び替え（入力順のみ）、overlay の時間範囲と programme 長の整合検査（Skill 側の検証に委ねている）、audio-only 入力との混在時の concat（BLOCK）、CROP / FREEZE / REVERSE（Skill が未対応）。silencedetect end > duration は別 PR。

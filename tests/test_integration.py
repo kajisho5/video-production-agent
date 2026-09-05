@@ -1117,3 +1117,97 @@ class VideoEditingRealTests(unittest.TestCase):
         # an unsupported operation (CROP) is the Skill's UNSUPPORTED_OPERATION / not a tool: no engine fallback anywhere
         self.assertFalse(strict.supports("video-editing/crop"))
         self.assertTrue(any(u["type"] == "CROP" for u in strict.contract["unsupported"]))
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class VideoEditingOperationsRealTests(unittest.TestCase):
+    """ADR-029 on the real video-editing-skill (PR #1 branch) and ffmpeg-skill 0.9.x: two real inputs A + B → trim (ffmpeg-skill/cut)
+    → video.concat (with a transition) → video.speed → video.resize → video.fit / video.fill → video.overlay (a real PNG) → the
+    generic delivery; output validation by QA against durations derived from the IR, ffprobe on every intermediate, artifact /
+    provenance chain, the Skill's OBSERVED probes in provenance, and idempotent resume. Runs only with a video-editing-skill checkout."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.video_editing import locate_video_editing
+        cls.ve = locate_video_editing()
+        cls.tmp = tempfile.mkdtemp(prefix="va_vo_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.a, cls.b, cls.png = str(src / "a.mp4"), str(src / "b.mp4"), str(src / "logo.png")
+        if cls.ve:
+            make_media(cls.a); make_media(cls.b)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=160x90:d=1", "-frames:v", "1", cls.png], check=True)
+
+    def _probe(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", path], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        v = next((s for s in doc["streams"] if s.get("codec_type") == "video"), {})
+        return float(doc["format"]["duration"]), (v.get("width"), v.get("height")), any(s.get("codec_type") == "audio" for s in doc["streams"])
+
+    def _run(self, name, reqs, expect_ops, expect_size):
+        ws = str(Path(self.tmp) / name)
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.a, self.b], "generic", user_requirements=reqs)
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        ops = [op for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual([op["type"] for op in ops], expect_ops)
+        self.assertTrue(all(s["tool"] == f"video-editing/{s['skill'].split('_', 1)[1]}" for s in d["plan"]["steps"] if s["skill"].startswith("video_")))
+        p = str(Path(self.tmp) / f"{name}.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"))
+        res = [r for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")]
+        self.assertEqual([r["tool"] for r in res], [f"video-editing/{t.split('.', 1)[1]}" for t in expect_ops])
+        import hashlib
+        concat = ops[0]
+        expected_programme = concat["timeline_duration"]
+        for r, op in zip(res, ops):
+            self.assertTrue(r["ok"] and os.path.isfile(r["output"]), r)
+            self.assertEqual(r["data"]["artifact"]["sha256"], hashlib.sha256(Path(r["output"]).read_bytes()).hexdigest())
+            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertTrue(r["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+            self.assertEqual(r["data"]["operation"]["type"], op["type"].split(".", 1)[1].upper())
+            self.assertFalse(any(k in json.dumps(r["data"]["operation"].get("parameters") or {}).lower() for k in ("argv", "command", "filter", "shell")))
+        # ffprobe facts on every intermediate: duration follows the IR (concat timeline → speed), geometry follows resize / fit / fill
+        dur_c, size_c, audio_c = self._probe(res[0]["output"])
+        self.assertAlmostEqual(dur_c, expected_programme, delta=1.0, msg="concat duration = the IR's programme timeline (keyframe-precision trims add up to ~0.1 s per clip)")
+        self.assertEqual(size_c, (1280, 720)); self.assertTrue(audio_c)
+        factor = next(op["factor"] for op in ops if op["type"] == "video.speed")
+        dur_s, _, _ = self._probe(res[1]["output"])
+        self.assertAlmostEqual(dur_s, dur_c / factor, delta=0.5)
+        _, size_r, _ = self._probe(res[2]["output"]); self.assertEqual(size_r, (640, 360))
+        _, size_f, _ = self._probe(res[3]["output"]); self.assertEqual(size_f, expect_size)
+        dur_o, size_o, audio_o = self._probe(res[4]["output"]); self.assertEqual(size_o, expect_size); self.assertTrue(audio_o)
+        self.assertAlmostEqual(dur_o, dur_s, delta=0.3)
+        # QA: the delivered programme against the expectation derived from the IR (trim → concat → speed)
+        subject = next(i for i in out["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual(subject["status"], "PASS", subject); self.assertTrue(subject["artifact"].startswith("programme_delivery_"))
+        self.assertEqual(out["paths"]["programme_delivery_main"], res[4]["output"], "generic profile: the last intermediate is the deliverable")
+        # provenance: every editing operation with its decision, tool, Skill result and input / output paths; the image is an input of the overlay
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        rows = [e for e in prov["operations"] if e["tool"].startswith("video-editing/")]
+        self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
+        self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
+        for e in rows:
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.1.0")
+        self.assertEqual(len(prov["skill_observations"]), len(rows))
+        dec = {x["id"]: x for x in d["decisions"]}
+        self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
+        return svc, p, out, res
+
+    def test_concat_speed_resize_fit_overlay_end_to_end(self):
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        svc, p, out, res = self._run("fit", {"edit.concat": True, "edit.speed": 2, "edit.resize": 640, "edit.fit": "1:1", "edit.overlay": self.png, "edit.overlay.position": "top-right", "edit.overlay.scale": 80},
+                                     ["video.concat", "video.speed", "video.resize", "video.fit", "video.overlay"], (640, 640))
+        # resume: every completed editing operation is reused by the agent's idempotency key (no Skill call)
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED")
+        self.assertTrue(all(r["op_id"] in out2["execution"]["skipped"] for r in res))
+
+    def test_concat_transition_fill_end_to_end(self):
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        self._run("fill", {"edit.concat": True, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.5, "edit.speed": 2, "edit.resize": 640, "edit.fill": "1:1",
+                           "edit.overlay": self.png, "edit.overlay.position": {"x": 10, "y": 10}, "edit.overlay.opacity": 0.6},
+                  ["video.concat", "video.speed", "video.resize", "video.fill", "video.overlay"], (640, 640))

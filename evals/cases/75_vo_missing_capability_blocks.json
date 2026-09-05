@@ -1,0 +1,34 @@
+{
+ "name": "vo_missing_capability_blocks",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing_ops": {
+  "inputs": 2,
+  "no_capability": true
+ },
+ "requirements": {
+  "edit.concat": true,
+  "edit.speed": 2
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "capability.video_concat",
+   "capability.video_speed"
+  ],
+  "plan_status": "BLOCKED",
+  "validate_error": "has no selected tool"
+ }
+}

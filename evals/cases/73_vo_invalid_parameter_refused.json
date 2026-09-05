@@ -1,0 +1,26 @@
+{
+ "name": "vo_invalid_parameter_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing_ops": {
+  "inputs": 1
+ },
+ "requirements": {
+  "edit.speed": 9
+ },
+ "expect": {
+  "plan_error": "edit.speed must be within"
+ }
+}

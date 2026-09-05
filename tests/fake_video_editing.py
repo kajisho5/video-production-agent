@@ -219,9 +219,30 @@ def main() -> int:
     if MODE == "nonzero_ok":
         pass
     # ---- write the output (bytes derived from the request so identical requests give identical hashes)
-    dur = round(sum(float(r["end"]) - float(r["start"]) for r in params["keep"]), 3) if op["type"] == "CUT" else (round(float(params["end"]) - float(params["start"]), 3) if op["type"] == "TRIM" else 2.0)
+    def in_dur(ref: str) -> float:
+        """Duration of a fake input (its self-describing payload) or a fixed 16 s for a real / opaque file."""
+        raw = Path(sources[ref]).read_bytes()
+        if raw.startswith(b'{"fake"'):
+            try:
+                return float(json.loads(raw.decode()).get("duration") or 16.0)
+            except (ValueError, TypeError):
+                return 16.0
+        return 16.0
+    if op["type"] == "CUT":
+        dur = round(sum(float(r["end"]) - float(r["start"]) for r in params["keep"]), 3)
+    elif op["type"] == "TRIM":
+        dur = round(float(params["end"]) - float(params["start"]), 3)
+    elif op["type"] == "CONCAT":
+        tr = float((params.get("transition") or {}).get("duration") or 0.0)
+        dur = round(sum(in_dur(i) for i in inputs) - tr * (len(inputs) - 1), 3)
+    elif op["type"] == "SPEED":
+        f = params["factor"]
+        f = (float(f.split("/")[0]) / float(f.split("/")[1])) if isinstance(f, str) else float(f)
+        dur = round(in_dur(inputs[0]) / f, 3)
+    else:
+        dur = round(in_dur(inputs[0]), 3)   # FIT / FILL / RESIZE / OVERLAY keep the duration
     # "fake" first: the same self-describing format tests/fake_adapter.py writes, so the fake ffmpeg-skill adapter can probe the output
-    payload = json.dumps({"fake": True, "duration": dur, "lufs": -16.0, "op": op_id, "src": sorted(hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sources.values())}, sort_keys=True).encode()
+    payload = json.dumps({"fake": True, "duration": dur, "lufs": -16.0, "op": op_id, "src": sorted(hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sources.values())}).encode()   # "fake" first (key order is fixed, not sorted)
     reused = MODE == "reused" and os.path.isfile(out_path)
     if MODE != "output_missing":
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
