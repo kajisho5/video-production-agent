@@ -1016,12 +1016,12 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["ffmpeg-skill", "media-analysis", "transcription", "video-editing"],
-                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13) and the editing Skill (PR #18)")
+        self.assertEqual(list(pkgs), ["audio-production", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"],
+                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18) and the audio production Skill (ADR-030)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
-        self.assertEqual(sorted(rows), ["ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertEqual(sorted(rows), ["audio-production", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
         self.assertTrue(rows["video-editing"]["implemented"] and not rows["video-editing"]["available"], "adapter exists; no installation in unit tests")
         self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
         self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
@@ -1063,8 +1063,7 @@ class EcosystemContractTests(unittest.TestCase):
         for name in ("multi_source_sync", "caption_generation", "semantic_deletion"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
         src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
-        future = ("subtitle-skill", "audio-production-skill",
-                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill (PR #12), transcription-skill (PR #13) and video-editing-skill (PR #18) are integrated
+        future = ("subtitle-skill", "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill (PR #12), transcription-skill (PR #13), video-editing-skill (PR #18) and audio-production-skill (ADR-030) are integrated
         hits = [f"{py.relative_to(src)}: {n}" for py in src.rglob("*.py") for n in future if n in py.read_text(encoding="utf-8")]
         self.assertEqual(hits, [], "future skill packages must not appear in production code")
 
@@ -1074,7 +1073,7 @@ class EcosystemContractTests(unittest.TestCase):
         self.assertEqual(svc.registry.resolve_tools(svc.caps.resolve(), lambda t: False), {})
         rows = {r["skill"]: r for r in svc.registry.availability(svc.caps.resolve(), lambda t: False)}
         self.assertTrue(all(r["tool"] is None for r in rows.values()))
-        pk = svc.registry.package_availability(svc.caps.resolve(), lambda t: False)[0]
+        pk = next(p for p in svc.registry.package_availability(svc.caps.resolve(), lambda t: False) if p["skill_id"] == "ffmpeg-skill")
         self.assertFalse(pk["available"])
         self.assertIn("no registered adapter", pk["reason"])
 
@@ -1099,7 +1098,7 @@ class EcosystemContractTests(unittest.TestCase):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
         # the only "core" change a new package needs: a production skill cites its tool as a candidate
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "fake-skill", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube")
         self.assertTrue(svc.validate(ir).ok)
@@ -1122,7 +1121,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):
@@ -4367,3 +4366,441 @@ class VideoEditingOperationsTests(unittest.TestCase):
         o7 = svc.render(load_ir(p7), p7, approve=["all"])
         self.assertEqual(o7["execution"]["status"], "COMPLETED")
         self.assertEqual(next(i for i in o7["qa"]["items"] if i["name"] == "duration")["observed"], 22.0, "11 s kept at 0.5× → 22 s, expected from the IR")
+
+
+def fake_audio(tmp, name="voice.wav", duration=16.0, channels=1, video=False):
+    """A self-describing fake media file: the fake ffmpeg-skill probes it as audio-only (or video+audio) with these channels."""
+    p = Path(tmp) / "src" / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(json.dumps({"fake": True, "duration": duration, "lufs": -11.0, "video": video, "channels": channels}).encode())
+    return str(p)
+
+
+class AudioProductionAdapterTests(unittest.TestCase):
+    """ADR-030: audio-production-skill as an external audio production Skill behind its CLI. Contract discovery and refusals, drift,
+    execution through `run - --json --workspace … --allowed-input … --ffmpeg-skill … --timeout …` with the request on stdin, response →
+    ToolResult / Artifact / Observation / measurement / provenance mapping, error mapping with the Skill's retryable verdict, the path
+    policy, the security boundary (no command / argv / filter / executable / env / credential ever crosses; argv is a list; the
+    contract's forbidden fields and parameter schemas are enforced), and the capability verdicts. Verified against a fake
+    audio-production process (tests/fake_audio_production.py) speaking the real transport; no ffmpeg, no import of the Skill."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_audio_production.py")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_audio(self.tmp, channels=2)
+        self.ws = str(Path(self.tmp) / "ws")
+        os.makedirs(self.ws)
+        for k in ("FAKE_AP_MODE", "FAKE_AP_CALLS"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("FAKE_AP_MODE", "FAKE_AP_CALLS"):
+            os.environ.pop(k, None)
+
+    def _skill(self):
+        from video_agent.tools.audio_production import AudioProductionSkill
+        return AudioProductionSkill([sys.executable, self.FAKE], None, {})
+
+    def _adapter(self, **kw):
+        from video_agent.tools.audio_production import AudioProductionAdapter
+        kw.setdefault("workspace", self.ws)
+        kw.setdefault("allowed_inputs", [str(Path(self.src).parent)])
+        kw.setdefault("ffmpeg_skill_dir", self.tmp)
+        return AudioProductionAdapter(self._skill(), **kw)
+
+    def _op(self, **args):
+        a = {"operation": "NORMALIZE", "input": "a", "target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0, "output": "a_norm"}
+        a.update(args)
+        return Operation(tool="audio-production/run", args=a, inputs=[a.get("input", "a")], outputs=[a["output"]], id="op_test")
+
+    def _paths(self, out_name="01_norm.wav"):
+        out = str(Path(self.ws) / "jobs" / "j1" / "ops" / "01_norm" / out_name)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        return {"a": self.src, "a_norm": out}
+
+    def test_contract_discovery_package_and_refusals(self):
+        from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
+        ad = self._adapter()
+        self.assertEqual(ad.version, "0.1.0"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(len(ad.lowering.supported_types()), 14); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])
+        pk = ad.package()
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.1.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
+        self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
+        self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
+        # incompatible contracts are refused, never patched
+        for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
+            os.environ["FAKE_AP_MODE"] = mode
+            with self.assertRaises(ContractError, msg=mode) as cm:
+                self._adapter()
+            self.assertIn(msg, str(cm.exception))
+        # a compatible but different contract is drift: reported, and the resolver makes the capability MISSING (never silently kept)
+        os.environ["FAKE_AP_MODE"] = "contract_drift"
+        ad2 = self._adapter()
+        self.assertTrue(any("RESAMPLE" in d for d in ad2.drift()), ad2.drift())
+        # static checks of the contract the adapter enforces: every tampering is a violation
+        c = pinned_contract()
+        for fn, msg in ((lambda d: d["execution"].update(arbitrary_filters=True), "arbitrary_filters"), (lambda d: d["execution"].update(canonical_invocation=["sh", "-c"]), "canonical_invocation"),
+                        (lambda d: d["request"].update(forbidden_fields=["x"]), "forbidden_fields"), (lambda d: d["errors"]["codes"].append("WEIRD"), "errors.codes"),
+                        (lambda d: d["tools"].append(dict(d["tools"][0], tool_id="audio-production/exec")), "exactly one tool"), (lambda d: d.update(kind="advice"), "kind"),
+                        (lambda d: d["operations"][0].update(tool="bash/run"), "not an ffmpeg-skill tool"), (lambda d: d.update(schema_versions={"contract": "2"}), "schema_versions")):
+            doc = json.loads(json.dumps(c)); fn(doc)
+            self.assertTrue(any(msg in e for e in check_contract(doc)), (msg, check_contract(doc)))
+
+    def test_valid_execution_and_mapping(self):
+        ad = self._adapter(); paths = self._paths()
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_AP_CALLS"] = log
+        r = ad.run(self._op(), paths, timeout=120)
+        self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertEqual(r.output, paths["a_norm"]); self.assertTrue(os.path.isfile(r.output))
+        d = r.data
+        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.1.0"}); self.assertEqual(d["operation_type"], "NORMALIZE")
+        self.assertEqual(d["operation"]["type"], "NORMALIZE"); self.assertEqual(d["operation"]["tool"], "ffmpeg-skill/loudness")
+        self.assertEqual(d["operation"]["parameters"], {"target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0})
+        self.assertEqual(d["artifact"]["sha256"], hashlib_sha(paths["a_norm"])); self.assertEqual(d["artifact"]["format"], "wav"); self.assertFalse(d["artifact"]["reused"])
+        self.assertEqual(d["observation"]["provenance"], "OBSERVED"); self.assertTrue(d["observation"]["source"].startswith("ffmpeg-skill/probe@"))
+        self.assertEqual(d["observation"]["data"]["audio"]["channels"], 2); self.assertIsNone(d["observation"]["data"]["video"])
+        self.assertEqual(d["measurement"]["kind"], "loudness"); self.assertAlmostEqual(d["measurement"]["data"]["integrated_lufs"], -16.1)
+        self.assertEqual(d["provenance"]["skill"], "audio-production"); self.assertEqual(d["provenance"]["output_hash"], d["artifact"]["sha256"]); self.assertTrue(d["provenance"]["sources"])
+        self.assertEqual(d["timeline"]["duration"], 16.0); self.assertTrue(r.commands and "provenance only" in r.commands[0])
+        # the request the Skill saw: argv list of the canonical form; workspace = the op directory; the engine dir is a CLI argument; no env side channel
+        calls = [json.loads(l) for l in Path(log).read_text().splitlines()]
+        run = next(c for c in calls if c["cmd"] == "run")
+        self.assertEqual(run["argv"][:3], ["run", "-", "--json"]); self.assertEqual(run["argv"][run["argv"].index("--workspace") + 1], os.path.dirname(paths["a_norm"]))
+        self.assertIn(str(Path(self.src).parent), run["argv"][run["argv"].index("--allowed-input") + 1:]); self.assertIn("--ffmpeg-skill", run["argv"]); self.assertIn("--timeout", run["argv"])
+        self.assertNotIn("AUDIO_PRODUCTION_FFMPEG_SKILL_DIR", run["env_video"])
+        # lifting: the probe and the re-measurement become agent Observations (provenance only)
+        from video_agent.tools.audio_production import lift_measurement, lift_observation
+        obs, meas = lift_observation(r, "a_norm"), lift_measurement(r, "a_norm")
+        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.tool, obs.fingerprint), ("media.probe", "OBSERVED", "audio-production", "audio-production/run", d["artifact"]["sha256"]))
+        self.assertEqual((meas.kind, meas.data["target_lufs"]), ("loudness", -16.0))
+        # dry run: a plan, no file
+        os.remove(paths["a_norm"])
+        r2 = ad.run(self._op(), paths, dry_run=True)
+        self.assertTrue(r2.ok and r2.dry_run and r2.output is None and not os.path.exists(paths["a_norm"])); self.assertEqual(r2.data["plan"]["steps"][0]["type"], "NORMALIZE")
+        self.assertEqual(len(ad.preview(self._op(), paths)), 1); self.assertIn("plan - --json", ad.preview(self._op(), paths)[0])
+        # every declared operation type lowers: CUT with agent ranges, CONCAT with two inputs, MONO without parameters
+        paths["b"] = fake_audio(self.tmp, "b.wav", channels=2); paths["out2"] = str(Path(self.ws) / "jobs" / "j1" / "ops" / "02" / "o.wav"); os.makedirs(os.path.dirname(paths["out2"]), exist_ok=True)
+        for args in ({"operation": "CUT", "input": "a", "remove": [[1.0, 2.0], [3.0, 4.0]], "output": "out2"}, {"operation": "CONCAT", "inputs": ["a", "b"], "crossfade": 0.5, "output": "out2"},
+                     {"operation": "MONO", "input": "a", "output": "out2"}, {"operation": "FADE_OUT", "input": "a", "duration": 1.0, "output": "out2"}, {"operation": "GAIN", "input": "a", "gain_db": -3, "output": "out2"}):
+            rr = ad.run(Operation(tool="audio-production/run", args=args, inputs=args.get("inputs") or [args["input"]], outputs=["out2"], id="op_x"), paths)
+            self.assertTrue(rr.ok, (args, rr.data.get("error"))); self.assertEqual(rr.data["operation_type"], args["operation"])
+        self.assertEqual(ad.run(Operation(tool="audio-production/run", args={"operation": "CUT", "input": "a", "remove": [[1.0, 2.0]], "output": "out2"}, inputs=["a"], outputs=["out2"], id="op_c"), paths).data["timeline"]["duration"], 15.0)
+
+    def test_error_mapping_and_never_success_on_bad_output(self):
+        from video_agent.execution.recovery import classify_error, next_attempt
+        ad = self._adapter(); paths = self._paths()
+        cases = {"tool_error": ("TOOL_ERROR", True, "UNKNOWN", "RETRY"), "tool_error_final": ("TOOL_ERROR", False, "SKILL_ERROR", "BLOCK"), "output_missing": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"),
+                 "validation_error": ("VALIDATION_ERROR", False, "SKILL_ERROR", "BLOCK"), "timeout": ("CANCELLED", True, "TIMEOUT", "RETRY"), "cancelled": ("CANCELLED", True, "INTERRUPTED", "BLOCK"),
+                 "malformed": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"), "empty": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"), "text": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"),
+                 "two_docs": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"), "nonzero_ok": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"), "hash_mismatch": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"),
+                 "no_provenance": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"), "unknown_code": ("INVALID_RESULT", False, "SKILL_ERROR", "BLOCK"), "internal_error": ("INTERNAL_ERROR", False, "SKILL_ERROR", "BLOCK")}
+        for mode, (code, retry, cls, action) in cases.items():
+            os.environ["FAKE_AP_MODE"] = mode
+            r = ad.run(self._op(), paths, timeout=60)
+            self.assertFalse(r.ok, mode); self.assertIsNone(r.output, mode)
+            self.assertEqual((r.data["error"]["code"], r.data["error"]["retryable"]), (code, retry), mode)
+            self.assertEqual(classify_error(r), cls, mode); self.assertEqual(next_attempt(r, 1, 2, 60)["action"], action, mode)
+            self.assertFalse(os.path.exists(paths["a_norm"]), f"{mode}: a failed run leaves no output at the agent's path")
+        # a process that never answers is killed at the boundary (exit 124 → CANCELLED / timeout, retryable with a longer budget)
+        os.environ["FAKE_AP_MODE"] = "hang"
+        r = ad.run(self._op(), paths, timeout=1)
+        self.assertFalse(r.ok); self.assertEqual((r.exit_code, r.data["error"]["code"], r.data["error"]["details"]["reason"]), (124, "CANCELLED", "timeout"))
+        self.assertEqual(next_attempt(r, 1, 2, 1)["timeout"], 2)
+        # the Skill's own refusals arrive as its codes (not retried): unknown parameter, unsupported operation, missing input, path violation
+        os.environ.pop("FAKE_AP_MODE", None)
+        for args, code in (({"operation": "RESAMPLE", "input": "a", "output": "a_norm"}, "INVALID_REQUEST"), ({"operation": "NORMALIZE", "input": "a", "output": "a_norm", "target_lufs": -16.0}, "INVALID_REQUEST"),
+                           ({"operation": "GAIN", "input": "a", "output": "a_norm", "gain_db": 99}, "INVALID_REQUEST"), ({"operation": "CUT", "input": "a", "output": "a_norm", "remove": [[20.0, 30.0]]}, "INVALID_TIME_RANGE"),
+                           ({"operation": "MONO", "input": "a", "output": "a_norm", "extra": 1}, "INVALID_REQUEST")):
+            r = ad.run(Operation(tool="audio-production/run", args=args, inputs=["a"], outputs=["a_norm"], id="op_bad"), paths)
+            self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], code, (args, r.data["error"])); self.assertEqual(next_attempt(r, 1, 2, 60)["action"], "BLOCK")
+        paths["missing"] = str(Path(self.src).parent / "missing.wav")
+        r = ad.run(Operation(tool="audio-production/run", args={"operation": "GAIN", "input": "missing", "gain_db": -3, "output": "a_norm"}, inputs=["missing"], outputs=["a_norm"], id="op_m"), paths)
+        self.assertEqual((r.data["error"]["code"], classify_error(r)), ("INVALID_REQUEST", "INVALID_ARGS"))
+
+    def test_security_boundary_and_path_policy(self):
+        ad = self._adapter(); paths = self._paths()
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_AP_CALLS"] = log
+        # forbidden keys (the agent's list and the contract's forbidden_fields) never cross, at any nesting level
+        for key in ("command", "argv", "filter", "filter_complex", "af", "shell", "exec", "executable", "env", "cwd", "script", "workspace", "allowed_input", "ffmpeg_skill", "path", "api_key"):
+            r = ad.run(self._op(**{key: "x"}), paths)
+            self.assertFalse(r.ok, key); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST", key); self.assertIn("refusing", r.data["error"]["message"], key)
+        # a value cannot smuggle a flag or a command: typed numbers only, strings only where the contract declares them (and only plain tokens)
+        for args in ({"gain_db": "-3 --shell"}, {"gain_db": "$(rm -rf /)"}, {"gain_db": float("nan")}, {"gain_db": True}):
+            r = ad.run(Operation(tool="audio-production/run", args={"operation": "GAIN", "input": "a", "output": "a_norm", **args}, inputs=["a"], outputs=["a_norm"], id="op_i"), paths)
+            self.assertFalse(r.ok, args); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST", args)
+        r = ad.run(Operation(tool="audio-production/run", args={"operation": "NOISE_REDUCTION", "input": "a", "output": "a_norm", "mode": "fft; rm -rf /", "strength_db": 20}, inputs=["a"], outputs=["a_norm"], id="op_i"), paths)
+        self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST")
+        self.assertFalse(os.path.exists(log), "nothing reached the Skill process")
+        # paths: traversal, outside roots, output outside the workspace, output over an input, wrong extension — refused before the Skill runs
+        outside = str(Path(tempfile.mkdtemp()) / "o.wav"); Path(outside).write_bytes(b"x")
+        for p, what in ((str(Path(self.src).parent / ".." / "src" / "voice.wav"), "traversal"), (outside, "outside the allowed input roots")):
+            paths["x"] = p
+            r = ad.run(Operation(tool="audio-production/run", args={"operation": "GAIN", "input": "x", "gain_db": -3, "output": "a_norm"}, inputs=["x"], outputs=["a_norm"], id="op_p"), paths)
+            self.assertFalse(r.ok); self.assertIn(what, r.data["error"]["message"])
+        inws = str(Path(self.ws) / "in.wav"); Path(inws).write_bytes(Path(self.src).read_bytes()); paths["inws"] = inws
+        for inp, out, what in (("a", str(Path(tempfile.mkdtemp()) / "esc.wav"), "outside the workspace"), ("inws", inws, "overwrite an input"), ("a", str(Path(self.ws) / "o.mp4"), "extension")):
+            paths["a_norm"] = out
+            r = ad.run(self._op(input=inp), paths)
+            self.assertFalse(r.ok, what); self.assertIn(what, r.data["error"]["message"])
+        self.assertFalse(os.path.exists(log))
+        # the agent's own PathPolicy is applied first when the Service passes it
+        from video_agent.tools.ffmpeg_skill.adapter import PathPolicy
+        strict = self._adapter(path_policy=PathPolicy([str(Path(self.tmp) / "elsewhere")], self.ws))
+        r = strict.run(self._op(), self._paths())
+        self.assertFalse(r.ok); self.assertIn("outside allowed roots", r.data["error"]["message"])
+        # static: the adapter never imports the Skill, never opens a shell, never names ffmpeg as an executable
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "audio_production"
+        blob = "\n".join(p.read_text(encoding="utf-8") for p in root.glob("*.py"))
+        self.assertNotIn("import audio_production", blob); self.assertNotIn("from audio_production", blob); self.assertNotIn("shell=True", blob); self.assertNotIn("os.system", blob)
+        self.assertNotRegex(blob, r"subprocess\.(run|Popen|call)\(")   # every process goes through run_process_group (argv list, process group, timeout)
+
+    def test_capability_verdicts_unknown_is_not_available(self):
+        from video_agent.capabilities.resolver import CapabilityResolver
+        ad = self._adapter()
+        doc = ad.doctor()
+        self.assertEqual(doc["status"], "ok"); ops = ad.operation_status(doc)
+        self.assertEqual(ops["NORMALIZE"], "supported"); self.assertEqual(ops["GAIN"], "unknown")
+        os.environ["FAKE_AP_MODE"] = "doctor_fail"
+        self.assertEqual(self._adapter().doctor()["status"], "fail")
+        os.environ["FAKE_AP_MODE"] = "doctor_degraded"
+        d2 = self._adapter().doctor(); self.assertEqual(d2["status"], "degraded"); self.assertEqual(ad.operation_status(d2)["NOISE_REDUCTION"], "unsupported")
+        os.environ.pop("FAKE_AP_MODE", None)
+        # the resolver: doctor supported → AVAILABLE; unknown → AVAILABLE only when this resolver measured the filters itself, else UNKNOWN; unsupported → MISSING
+        from video_agent.tools.audio_production import AudioProductionSkill
+        import video_agent.capabilities.resolver as res
+        skill = AudioProductionSkill([sys.executable, self.FAKE], None, {})
+        orig = res.locate_audio_production
+        res.locate_audio_production = lambda explicit=None, env=None: skill
+        try:
+            caps = CapabilityResolver(self.tmp, env={}).resolve()
+            self.assertEqual(caps["audio-production"].status, "AVAILABLE", caps["audio-production"].detail)
+            self.assertEqual(caps["audio-production:NORMALIZE"].status, "AVAILABLE")
+            have_filters = all(caps[f"filter:{f}"].status == "AVAILABLE" for f in ("volume",))
+            self.assertEqual(caps["audio-production:GAIN"].status, "AVAILABLE" if have_filters else "UNKNOWN")
+            self.assertNotEqual(caps["audio-production:GAIN"].status, "MISSING")
+            os.environ["FAKE_AP_MODE"] = "doctor_degraded"
+            caps = CapabilityResolver(self.tmp, env={}).resolve()
+            self.assertEqual((caps["audio-production"].status, caps["audio-production:NOISE_REDUCTION"].status), ("AVAILABLE", "MISSING"))
+            os.environ["FAKE_AP_MODE"] = "doctor_fail"
+            caps = CapabilityResolver(self.tmp, env={}).resolve()
+            self.assertEqual(caps["audio-production"].status, "MISSING"); self.assertTrue(all(caps[f"audio-production:{t}"].status == "MISSING" for t in ops))
+            os.environ["FAKE_AP_MODE"] = "contract_drift"
+            caps = CapabilityResolver(self.tmp, env={}).resolve()
+            self.assertEqual(caps["audio-production"].status, "MISSING"); self.assertIn("drift", caps["audio-production"].detail)
+        finally:
+            res.locate_audio_production = orig
+            os.environ.pop("FAKE_AP_MODE", None)
+
+
+def hashlib_sha(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+class AudioProductionPathTests(unittest.TestCase):
+    """ADR-030: the audio production path through the whole architecture — `audio.production` + `audio.*` requirements → decisions
+    (cut / normalise from the existing silence and loudness decisions; gain / channels / fades / concat from explicit requirements;
+    BLOCK on conflicts, missing audio, impossible layouts, a standalone resample, a video preset) → ProductionPlan steps → IR audio
+    operations → compiler lowering to audio-production/run → the fake Skill → QA → artifact → provenance; determinism, resume,
+    validator refusals, capability gating. video+audio assets are delivered as audio (CONFIRM decision); video operations conflict."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_audio_production.py")
+    CAPS = ["audio-production", "encoder:aac"] + [f"audio-production:{t}" for t in ("CUT", "NORMALIZE", "GAIN", "MONO", "STEREO", "DOWNMIX", "FADE_IN", "FADE_OUT", "CONCAT")]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.wav = fake_audio(self.tmp, "voice.wav", channels=2)
+        self.mono = fake_audio(self.tmp, "narration.wav", channels=1)
+        self.mp4 = fake_media(self.tmp, "talk.mp4")
+        for k in ("FAKE_AP_MODE", "FAKE_AP_CALLS"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("FAKE_AP_MODE", "FAKE_AP_CALLS"):
+            os.environ.pop(k, None)
+
+    def _svc(self, caps=None, lufs=-11.0):
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.audio_production import AudioProductionAdapter, AudioProductionSkill
+        ad = AudioProductionAdapter(AudioProductionSkill([sys.executable, self.FAKE], None, {}), workspace=self.tmp, allowed_inputs=[str(Path(self.wav).parent)], ffmpeg_skill_dir=self.tmp)
+        return make_service(self.tmp, caps=caps or FakeCaps(extra=self.CAPS), adapter=ToolRouter([FakeAdapter(lufs=lufs), ad]))
+
+    def test_requirements_and_refusals(self):
+        from video_agent.agent.audio import EditRequirementError, parse_audio_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+
+        def parse(**kv):
+            return parse_audio_requirements(requirement_map([Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in kv.items()]))
+        a = parse(**{"audio.production": True, "audio.gain": -3, "audio.fade_in": 0.5, "audio.channels": "mono", "audio.concat": True, "audio.concat.crossfade": 0.5, "audio.sample_rate": 44100})
+        self.assertEqual((a["production"], a["gain"], a["fade_in"], a["channels"], a["concat"], a["crossfade"], a["sample_rate"]), (True, -3.0, 0.5, "mono", True, 0.5, 44100))
+        self.assertEqual(parse()["production"], False); self.assertEqual(parse(**{"audio.production": "false"})["production"], False)
+        self.assertFalse(parse_audio_requirements(requirement_map([Requirement(key="audio.production", value=True, provenance="DEFAULT", source="d")]))["production"], "a DEFAULT never switches the path on")
+        for bad, msg in (({"audio.gain": -3}, "ambiguous"), ({"audio.production": True, "audio.gain": 0}, "changes nothing"), ({"audio.production": True, "audio.gain": 90}, "within"),
+                         ({"audio.production": True, "audio.fade_out": 0}, "within"), ({"audio.production": True, "audio.channels": "5.1"}, "mono or stereo"),
+                         ({"audio.production": True, "audio.sample_rate": 12345}, "one of"), ({"audio.production": True, "audio.concat.crossfade": 1}, "needs audio.concat"),
+                         ({"audio.production": "maybe"}, "true or false")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse(**bad)
+            self.assertIn(msg, str(cm.exception), str(bad))
+        svc = self._svc()
+        with self.assertRaises(ValueError):
+            svc.plan([self.wav], "generic", user_requirements={"audio.production": True, "audio.gain": 90})
+        # without the switch nothing changes: the plan of an audio-only asset is the PR #18 plan (reference cut, no audio.* operation)
+        ir = svc.plan([self.wav], "youtube")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["silence_cleanup", "loudness_normalization", "delivery_export", "delivery_check"])
+        self.assertEqual([op["type"] for op in ir.doc["audio"]["operations"]], ["audio.loudness"]); self.assertNotIn("input", ir.doc["audio"]["operations"][0])
+
+    def test_decisions_plan_ir_and_blocks(self):
+        svc = self._svc()
+        # A: audio-only stereo asset: silence decisions → audio.cut; loudness decision → NORMALIZE; explicit gain / mono / fade out
+        ir = svc.plan([self.wav], "generic", user_requirements={"audio.production": True, "audio.gain": -3, "audio.channels": "mono", "audio.fade_out": 1.0, "audio.normalize": True, "audio.loudness.target_lufs": -16})
+        d = ir.doc; a_id = list(d["assets"])[0]
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"]); self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual([s["skill"] for s in d["plan"]["steps"]], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
+        self.assertTrue(all(s["tool"] == "audio-production/run" for s in d["plan"]["steps"]))
+        ops = d["audio"]["operations"]
+        self.assertEqual([op["type"] for op in ops], ["audio.cut", "audio.gain", "audio.mono", "audio.fade_out", "audio.loudness"])
+        self.assertEqual(ops[0]["remove"], [[0.0, 2.85], [13.85, 16.0]]); self.assertEqual(ops[0]["temporal_scope"], {"start": 0.0, "end": 11.0})
+        self.assertEqual((ops[1]["input"], ops[1]["output"], ops[1]["gain_db"]), (f"{a_id}_cut", f"{a_id}_gain", -3.0))
+        self.assertEqual((ops[4]["input"], ops[4]["target_lufs"], ops[4]["tolerance_lu"]), (f"{a_id}_fade_out", -16.0, 2.0))
+        self.assertEqual(d["video"]["operations"], [], "no video operation on the audio path")
+        dec = {x["subject"]: x for x in d["decisions"]}
+        self.assertEqual((dec["audio.channels"]["type"], dec["audio.channels"]["params"]["operation"], dec["audio.channels"]["params"]["channels"]), ("TRANSFORM", "audio.mono", 2))
+        self.assertIn("requirement", dec["audio.gain"]["basis"]["evidence_classes"]); self.assertIn("observation", dec["audio.gain"]["basis"]["evidence_classes"])
+        self.assertEqual(dec["audio.loudness"]["basis"]["approval"]["key"], "audio.loudness.approval"); self.assertEqual(dec["audio.gain"]["basis"]["approval"]["key"], "audio.gain.approval")
+        self.assertNotIn("audio.extract", dec, "an audio-only asset needs no extraction decision")
+        # determinism modulo per-project ids
+        ir2 = svc.plan([self.wav], "generic", user_requirements={"audio.production": True, "audio.gain": -3, "audio.channels": "mono", "audio.fade_out": 1.0, "audio.normalize": True, "audio.loudness.target_lufs": -16})
+        norm = lambda doc: json.dumps(doc["audio"]["operations"], sort_keys=True).replace(list(doc["assets"])[0], "A")   # noqa: E731
+        import re
+        self.assertEqual(re.sub(r"dec_[0-9a-f]{10}", "dec", norm(d)), re.sub(r"dec_[0-9a-f]{10}", "dec", norm(ir2.doc)))
+        # B: a video container on the audio path: the audio is delivered (CONFIRM-class decision audio.extract, waived by the explicit request)
+        irb = svc.plan([self.mp4], "generic", user_requirements={"audio.production": True, "audio.fade_in": 0.5})
+        decb = {x["subject"]: x for x in irb.doc["decisions"]}
+        self.assertEqual((decb["audio.extract"]["type"], decb["audio.extract"]["basis"]["approval"]["key"]), ("TRANSFORM", "audio.extract.approval"))
+        self.assertEqual([s["skill"] for s in irb.doc["plan"]["steps"]], ["audio_cut", "audio_fade_in"]); self.assertEqual(svc.validate(irb).errors, [])
+        # KEEP: the target layout already holds → no operation
+        irk = svc.plan([self.mono], "generic", user_requirements={"audio.production": True, "audio.channels": "mono"})
+        deck = {x["subject"]: x for x in irk.doc["decisions"]}
+        self.assertEqual((deck["audio.channels"]["type"], deck["audio.channels"]["approval"]), ("KEEP", "AUTO")); self.assertEqual([s["skill"] for s in irk.doc["plan"]["steps"]], ["audio_cut"], "the silence cut only: no channel step")
+        # STEREO from mono
+        irs = svc.plan([self.mono], "generic", user_requirements={"audio.production": True, "audio.channels": "stereo"})
+        self.assertEqual([op["type"] for op in irs.doc["audio"]["operations"]], ["audio.cut", "audio.stereo"])
+        # C: two audio assets → audio concat with crossfade, mono on the programme (widest input = 2 ch), normalise once on the programme
+        irc = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.concat": True, "audio.concat.crossfade": 0.5, "audio.channels": "mono", "audio.normalize": True, "audio.loudness.target_lufs": -16})
+        dc = irc.doc; ids = list(dc["assets"])
+        self.assertEqual(dc["plan"]["status"], "APPROVED", dc["plan"]["summary"]); self.assertEqual(svc.validate(irc).errors, [])
+        self.assertEqual([s["skill"] for s in dc["plan"]["steps"]], ["audio_cut", "audio_cut", "audio_concat", "audio_mono", "audio_normalize"])
+        cat = next(op for op in dc["audio"]["operations"] if op["type"] == "audio.concat")
+        self.assertEqual((cat["asset"], cat["inputs"], cat["output"], cat["crossfade"]), ("programme_audio", ids, "programme_audio", 0.5))
+        self.assertEqual(cat["timeline_duration"], 11.0 + 11.0 - 0.5, "both inputs are cut to 11 s, the crossfade overlaps 0.5 s"); self.assertEqual([s["input"] for s in cat["segments"]], ids)
+        self.assertEqual([op["asset"] for op in dc["audio"]["operations"] if op["type"] == "audio.loudness"], ["programme_audio"])
+        # BLOCKs: no audio stream, audio path + video edit, video preset profile, sample rate without normalisation, 1-channel → mono impossible? (mono from 1ch is KEEP), concat with one input
+        silent = fake_media(self.tmp, "mute.mp4"); Path(silent).write_bytes(b"\x01" * 64)   # distinct bytes: the observation cache is keyed by content
+        svc_noaudio = self._svc(); svc_noaudio._adapter.adapters[0].audio = False
+        irn = svc_noaudio.plan([silent], "generic", user_requirements={"audio.production": True, "audio.gain": -3})
+        self.assertEqual([x["subject"] for x in irn.doc["decisions"] if x["approval"] == "BLOCK"], ["audio.production"]); self.assertEqual(irn.doc["plan"]["status"], "BLOCKED")
+        for reqs, subjects in (({"audio.production": True, "edit.speed": 2}, {"audio.production", "video.speed"}), ({"audio.production": True, "audio.sample_rate": 44100}, {"audio.sample_rate"}),
+                               ({"audio.production": True, "audio.concat": True}, {"audio.concat"})):
+            irx = svc.plan([self.mono], "generic", user_requirements=reqs)
+            self.assertTrue(subjects <= {x["subject"] for x in irx.doc["decisions"] if x["approval"] == "BLOCK"}, reqs); self.assertEqual(irx.doc["plan"]["status"], "BLOCKED", reqs)
+        irp = svc.plan([self.wav], "youtube", user_requirements={"audio.production": True, "audio.gain": -3})
+        self.assertIn("audio.production", {x["subject"] for x in irp.doc["decisions"] if x["approval"] == "BLOCK"}); self.assertEqual(irp.doc["plan"]["status"], "BLOCKED")
+        # a video container with nothing to do on the audio path: BLOCK (an audio deliverable needs at least one operation)
+        quiet = fake_media(self.tmp, "quiet.mp4"); Path(quiet).write_bytes(b"\x02" * 64)   # distinct bytes (observation cache)
+        svc_quiet = self._svc(); svc_quiet._adapter.adapters[0].silences = []
+        irq = svc_quiet.plan([quiet], "generic", user_requirements={"audio.production": True})
+        self.assertIn("audio.production", {x["subject"] for x in irq.doc["decisions"] if x["approval"] == "BLOCK"})
+        # capability gating: no audio-production capability → capability BLOCK decisions, steps without a tool, plan BLOCKED, no fallback to the reference engine
+        svc_nocap = self._svc(caps=FakeCaps())
+        irg = svc_nocap.plan([self.wav], "generic", user_requirements={"audio.production": True, "audio.gain": -3})
+        self.assertEqual(sorted({x["subject"] for x in irg.doc["decisions"] if x["approval"] == "BLOCK"}), ["capability.audio_cut", "capability.audio_gain"])
+        self.assertTrue(all(s["tool"] is None for s in irg.doc["plan"]["steps"])); self.assertEqual(irg.doc["plan"]["status"], "BLOCKED")
+        self.assertFalse(any(s["tool"] and s["tool"].startswith("ffmpeg-skill/") for s in irg.doc["plan"]["steps"]), "no fallback")
+        from video_agent.capabilities.resolver import Capability
+        caps = FakeCaps(extra=self.CAPS).resolve(); caps["audio-production:GAIN"] = Capability("audio-production:GAIN", "UNKNOWN", "doctor unknown", {})
+        self.assertEqual(svc.registry.missing_capabilities("audio_gain", caps), ["audio-production:GAIN"]); self.assertIsNone(svc.registry.select_tool("audio_gain", caps, lambda t: True)[0])
+
+    def test_validator_compiler_and_end_to_end(self):
+        from video_agent.execution.compiler import lower_audio_loudness, lower_audio_op
+        from video_agent.project.ir import ProjectIR
+        self.assertEqual(lower_audio_loudness("audio-production/run", {"type": "audio.loudness", "asset": "a", "target_lufs": -16.0, "true_peak": -1.5, "tolerance_lu": 1.0, "sample_rate": 44100}, "a_cut", "a_loudnorm"),
+                         {"operation": "NORMALIZE", "input": "a_cut", "target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0, "sample_rate": 44100, "output": "a_loudnorm"})
+        self.assertEqual(lower_audio_loudness("ffmpeg-skill/loudness", {"type": "audio.loudness", "asset": "a", "target_lufs": -16.0, "true_peak": -1.5}, "a", "o"), {"input": "a", "lufs": -16.0, "tp": -1.5, "output": "o"})
+        self.assertEqual(lower_audio_op("audio-production/run", {"type": "audio.cut", "asset": "a", "remove": [[0.0, 2.0]], "filter": "x"}, "a", "o"), {"operation": "CUT", "input": "a", "remove": [[0.0, 2.0]], "output": "o"})
+        self.assertEqual(lower_audio_op("audio-production/run", {"type": "audio.concat", "asset": "p", "inputs": ["a", "b"], "crossfade": 0.5}, ["a_cut", "b"], "p"), {"operation": "CONCAT", "inputs": ["a_cut", "b"], "crossfade": 0.5, "output": "p"})
+        with self.assertRaises(CompileError):
+            lower_audio_op("ffmpeg-skill/cut", {"type": "audio.cut", "asset": "a", "remove": [[0.0, 2.0]]}, "a", "o")
+        svc = self._svc()
+        reqs = {"audio.production": True, "audio.gain": -3, "audio.channels": "mono", "audio.fade_out": 1.0, "audio.normalize": True, "audio.loudness.target_lufs": -16}
+        ir = svc.plan([self.wav], "generic", user_requirements=reqs)
+        base = json.loads(json.dumps(ir.doc))
+
+        def errors(fn):
+            doc = json.loads(json.dumps(base)); fn(doc)
+            return validate_ir(ProjectIR(doc), check_paths=False, registry=svc.registry).errors
+
+        def op(doc, t):
+            return next(o for o in doc["audio"]["operations"] if o["type"] == t)
+        self.assertEqual(errors(lambda doc: None), [])
+        self.assertTrue(any("additional properties" in e.lower() for e in errors(lambda doc: op(doc, "audio.gain").update(filter="volume=2"))))
+        self.assertTrue(any("gain_db" in e for e in errors(lambda doc: op(doc, "audio.gain").update(gain_db=99))))
+        self.assertTrue(any("duration" in e for e in errors(lambda doc: op(doc, "audio.fade_out").update(duration=0))))
+        self.assertTrue(any("remove everything" in e for e in errors(lambda doc: op(doc, "audio.cut").update(remove=[[0.0, 16.0]]))))
+        self.assertTrue(any("exceeds asset duration" in e for e in errors(lambda doc: op(doc, "audio.cut").update(remove=[[0.0, 30.0]]))))
+        self.assertTrue(any("out of the fixed audio order" in e for e in errors(lambda doc: doc["audio"]["operations"].append(dict(op(doc, "audio.gain"))))))
+        self.assertTrue(any("has no plan step" in e for e in errors(lambda doc: doc["plan"]["steps"].remove(next(s for s in doc["plan"]["steps"] if s["skill"] == "audio_mono")))))
+        self.assertTrue(any("video operations conflict" in e for e in errors(lambda doc: doc["video"]["operations"].append({"type": "video.trim", "asset": list(doc["assets"])[0], "keep": [[0.0, 5.0]], "accurate": False, "decision_ids": []}))))
+        self.assertTrue(any("not a declared tool" in e for e in errors(lambda doc: next(s for s in doc["plan"]["steps"] if s["skill"] == "audio_gain").update(tool="ffmpeg-skill/audio"))))
+        self.assertTrue(any("not a domain parameter" in e for e in errors(lambda doc: next(s for s in doc["plan"]["steps"] if s["skill"] == "audio_gain")["params"].update(argv=["x"]))))
+        self.assertTrue(any("tolerance_lu / sample_rate exist only" in e for e in errors(lambda doc: (op(doc, "audio.loudness").pop("input"), op(doc, "audio.loudness").pop("output")))))
+        self.assertTrue(any("enum" in e or "audio.mix" in e for e in errors(lambda doc: op(doc, "audio.gain").update(type="audio.mix"))))
+        # compile: every step on audio-production/run, WAV intermediates under the job, chained idempotency keys
+        ops, paths = compile_ir(ir, str(Path(self.tmp) / "job"))
+        self.assertEqual([(o.tool, o.args["operation"]) for o in ops], [("audio-production/run", t) for t in ("CUT", "GAIN", "MONO", "FADE_OUT", "NORMALIZE")])
+        self.assertTrue(all(paths[o.outputs[0]].endswith(".wav") for o in ops)); self.assertEqual(ops[4].args["tolerance_lufs"], 2.0)
+        self.assertEqual(len({o.idempotency_key for o in ops}), 5)
+        for o in ops:
+            self.assertFalse(any(k in json.dumps(o.args).lower() for k in ("argv", "command", "filter", "shell")))
+        # end to end through the fake Skill: QA on the audio deliverable (duration from the IR, mono expected, loudness target), artifact, provenance, resume, failures
+        p = str(Path(self.tmp) / "audio.json"); save_ir(ir, p)
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_AP_CALLS"] = log
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"]); self.assertEqual(out["status"], "COMPLETED", out.get("qa"))
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertEqual((items["duration"]["observed"], items["duration"]["status"]), (11.0, "PASS")); self.assertEqual(items["audio_only"]["status"], "PASS")
+        self.assertEqual(items["loudness"]["status"], "PASS"); self.assertNotIn("channels", items, "mono was planned: no channel warning")
+        self.assertNotIn("video_stream", items)
+        a_id = list(ir.doc["assets"])[0]
+        self.assertTrue(out["paths"][f"{a_id}_delivery_main"].endswith("_loudnorm.wav"))
+        prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        rows = prov["operations"]
+        self.assertEqual([r["skill"] for r in rows], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
+        for r in rows:
+            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.1.0"))
+            self.assertTrue(r["skill_result"]["artifact"]["sha256"]); self.assertEqual(r["skill_result"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["skill_result"]["operation"]["skill"], "audio-production")
+        self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 5 + ["loudness"])
+        self.assertEqual(prov["skill_observations"][-1]["data"]["target_lufs"], -16.0)
+        calls = [json.loads(l) for l in Path(log).read_text().splitlines() if json.loads(l)["cmd"] == "run"]
+        self.assertEqual(len(calls), 5); self.assertTrue(all(c["argv"][:3] == ["run", "-", "--json"] for c in calls))
+        Path(log).unlink()
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertEqual(len(out2["execution"]["skipped"]), 5); self.assertFalse(os.path.exists(log))
+        os.environ["FAKE_AP_MODE"] = "validation_error"
+        o3 = svc.render(load_ir(p), p)
+        self.assertEqual((o3["execution"]["status"], [(r["class"], r["action"]) for r in o3["execution"]["recovery"]]), ("FAILED", [("SKILL_ERROR", "BLOCK")]))
+        os.environ["FAKE_AP_MODE"] = "output_missing"
+        o4 = svc.render(load_ir(p), p)
+        self.assertEqual(o4["execution"]["status"], "FAILED"); self.assertEqual(o4["execution"]["failed_op"], ops[0].id)
+        os.environ["FAKE_AP_MODE"] = "tool_error"
+        o5 = svc.render(load_ir(p), p)
+        self.assertEqual([r["class"] for r in o5["execution"]["recovery"]], ["UNKNOWN", "UNKNOWN"])
+        os.environ.pop("FAKE_AP_MODE", None)
+        # the concat programme end to end: duration = 11 + 11 - 0.5 from the IR
+        irc = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.concat": True, "audio.concat.crossfade": 0.5, "audio.normalize": True, "audio.loudness.target_lufs": -16})
+        pc = str(Path(self.tmp) / "cat.json"); save_ir(irc, pc)
+        oc = svc.render(load_ir(pc), pc, approve=["all"])
+        self.assertEqual(oc["execution"]["status"], "COMPLETED", oc["execution"])
+        self.assertEqual(next(i for i in oc["qa"]["items"] if i["name"] == "duration")["observed"], 21.5)
+        self.assertTrue(oc["paths"]["programme_audio_delivery_main"].endswith("programme_audio_loudnorm.wav"))

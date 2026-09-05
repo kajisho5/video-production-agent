@@ -18,6 +18,7 @@ from ..policy.rules import RuleSet
 from ..skills.registry import SkillRegistry
 from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
+from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, parse_edit_requirements
 from .requirements import requirement_map
 
@@ -36,7 +37,10 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.hdr": ("video.hdr.approval", "CONFIRM"), "ai.recommendation": ("ai.recommendation.approval", "CONFIRM"),
                  # editing operations (ADR-029): CONFIRM unless the profile / request says otherwise; an explicit USER requirement waives it
                  "video.concat": ("video.concat.approval", "CONFIRM"), "video.speed": ("video.speed.approval", "CONFIRM"), "video.resize": ("video.resize.approval", "CONFIRM"),
-                 "video.fit": ("video.fit.approval", "CONFIRM"), "video.fill": ("video.fill.approval", "CONFIRM"), "video.overlay": ("video.overlay.approval", "CONFIRM")}
+                 "video.fit": ("video.fit.approval", "CONFIRM"), "video.fill": ("video.fill.approval", "CONFIRM"), "video.overlay": ("video.overlay.approval", "CONFIRM"),
+                 # audio production path (ADR-030): CONFIRM by default (the picture of a video container is not delivered); explicit USER requirement waives it
+                 "audio.extract": ("audio.extract.approval", "CONFIRM"), "audio.gain": ("audio.gain.approval", "CONFIRM"), "audio.channels": ("audio.channels.approval", "CONFIRM"),
+                 "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -88,6 +92,38 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     def probe_ids_of(asset_ids: List[str]) -> List[str]:
         return [o.id for o in analysis.observations if o.asset_id in asset_ids and o.kind in ("media_probe", "probe")]
 
+    # ---- audio production path (ADR-030): explicit `audio.production` + `audio.*` requirements; the audio of the asset becomes the subject
+    audio = parse_audio_requirements(m)
+    audio_assets = [a for a in analysis.assets if is_audio_capable(a.technical)] if audio["production"] else []
+    audio_concat_ok = False
+    if audio["production"]:
+        sw = m[AUDIO_SWITCH]
+        a_ev = [r.id for r in audio["requirements"]]
+        if edits:
+            eng.decide(subject="audio.production", type="BLOCK", decision="BLOCK: audio production and video editing requested together",
+                       reason="the audio path delivers audio only; edit.* operations edit the picture — a conflicting request is never resolved by guessing",
+                       confidence=1.0, evidence=a_ev + [r.id for e in edits.values() for r in e["requirements"]], risk="HIGH", approval="BLOCK", provenance="USER", requirements=audio["requirements"])
+        targets_req = m.get("delivery.targets")
+        if targets_req and any(t.get("preset") for t in (targets_req.value or [])):
+            eng.decide(subject="audio.production", type="BLOCK", decision="BLOCK: audio deliverable with a video platform preset",
+                       reason="the delivery targets of this profile export with a video preset; an audio-only deliverable cannot take it (use a profile without presets)",
+                       confidence=1.0, evidence=a_ev + [targets_req.id], risk="HIGH", approval="BLOCK", provenance="USER", requirements=audio["requirements"] + [targets_req])
+        for a in analysis.assets:
+            if not is_audio_capable(a.technical):
+                eng.decide(subject="audio.production", type="BLOCK", decision=f"BLOCK: {a.id} has no audio stream", reason="audio production needs an audio stream (unsupported input, not guessed)",
+                           confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": a.id}, requirements=audio["requirements"])
+        if audio.get("concat"):
+            if len(audio_assets) < 2:
+                eng.decide(subject="audio.concat", type="BLOCK", decision="BLOCK: audio concat needs two or more inputs with audio", reason=f"{len(audio_assets)} input(s) carry audio",
+                           confidence=1.0, evidence=a_ev + probe_ids_of([a.id for a in analysis.assets]), risk="HIGH", approval="BLOCK", provenance="USER", requirements=audio["requirements"])
+            else:
+                audio_concat_ok = True
+                cf = float(audio.get("crossfade") or 0.0)
+                eng.decide(subject="audio.concat", type="TRANSFORM", decision="audio concat " + " + ".join(a.id for a in audio_assets) + f" → {PROGRAMME_AUDIO}" + (f" (crossfade {cf:g}s)" if cf else ""),
+                           reason=f"user asked to join the audio of the inputs in the given order ({sw.source}); the cut inputs become one programme",
+                           confidence=1.0, evidence=a_ev + probe_ids_of([a.id for a in audio_assets]), risk=AUDIO_OPERATIONS["audio.concat"]["risk"], approval=approval_for("audio.concat", explicit=sw),
+                           provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": [a.id for a in audio_assets], "crossfade": cf}, requirements=audio["requirements"], serves_intent=None)
+                cap_block("audio_concat", "capability.audio_concat")
     concat_ok = False
     if "video.concat" in edits:
         req = edits["video.concat"]["requirements"]
@@ -181,7 +217,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                        confidence=inf.confidence, evidence=[inf.id] + inf.evidence, risk="MEDIUM", approval="AUTO", provenance="INFERRED",
                        params={"asset_id": asset.id, **inf.data["silence"]})
         if keep_start > 0 or keep_end < dur or removable:
-            cap_block("silence_cleanup", "capability.silence_cleanup")
+            cap_block("audio_cut" if asset in audio_assets else "silence_cleanup", "capability.audio_cut" if asset in audio_assets else "capability.silence_cleanup")
         # ---- loudness
         want_norm = m.get("audio.normalize")
         target = m.get("audio.loudness.target_lufs")
@@ -198,18 +234,20 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=amb.statement, confidence=amb.confidence, evidence=[amb.id] + amb.evidence, risk="MEDIUM", approval="AUTO",
                            alternatives=[Alternative(f"normalize to {target.value:g} LUFS", "force normalisation", "raises noise floor").to_dict()], provenance="INFERRED",
                            requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
-            elif concat_ok:
+            elif concat_ok or (audio_concat_ok and asset in audio_assets):
                 pass   # the joined programme is normalised once (decision below); a per-input normalisation would be undone by the join
             elif off or want_norm.provenance == "USER":
                 tp = m.get("audio.loudness.true_peak")
                 ev = ([off.id] + off.evidence) if off else [target.id] + loud_obs
+                on_audio_path = asset in audio_assets
+                extra = ({"tolerance_lu": float(tol["value"])} | ({"sample_rate": audio["sample_rate"]} if audio.get("sample_rate") else {})) if on_audio_path else {}
                 eng.decide(subject="audio.loudness", type="TRANSFORM", decision=f"normalize to {float(target.value):g} LUFS / {float(tp.value) if tp else -1:g} dBTP",
-                           reason=(off.statement if off else "user asked for normalisation") + f"; target from {target.provenance.lower()} ({target.source})",
-                           confidence=off.confidence if off else 1.0, evidence=ev, risk="LOW", approval=approval_for("audio.loudness"),
+                           reason=(off.statement if off else "user asked for normalisation") + f"; target from {target.provenance.lower()} ({target.source})" + ("; audio production path: the Skill re-measures its output against the tolerance" if on_audio_path else ""),
+                           confidence=off.confidence if off else 1.0, evidence=ev + ([r.id for r in audio["requirements"]] if on_audio_path else []), risk="LOW", approval=approval_for("audio.loudness"),
                            provenance="USER" if want_norm.provenance == "USER" else target.provenance,
-                           params={"asset_id": asset.id, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0},
-                           settings=[tol], requirements=[want_norm, target] + ([tp] if tp else []), serves_intent=_serves(intent, "audio.loudness"))
-                cap_block("loudness_normalization", "capability.loudness_normalization")
+                           params={"asset_id": asset.id, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0, **extra},
+                           settings=[tol], requirements=[want_norm, target] + ([tp] if tp else []) + (audio["requirements"] if on_audio_path else []), serves_intent=_serves(intent, "audio.loudness"))
+                cap_block("audio_normalize" if on_audio_path else "loudness_normalization", "capability.audio_normalize" if on_audio_path else "capability.loudness_normalization")
             elif loud_obs:   # no measurement (analysis failed) → no claim about loudness; the analysis warning records the failure
                 eng.decide(subject="audio.loudness", type="KEEP", decision="keep", reason=f"measured loudness within tolerance of {float(target.value):g} LUFS", confidence=0.95,
                            evidence=loud_obs, risk="LOW", approval="AUTO", provenance="OBSERVED", settings=[tol], requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
@@ -238,6 +276,73 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                        params={"asset_id": PROGRAMME, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0},
                        settings=[resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)], requirements=[want_norm, target] + ([tp] if tp else []), serves_intent=_serves(intent, "audio.loudness"))
             cap_block("loudness_normalization", "capability.loudness_normalization")
+    # ---- audio production operations on the audio programme (concat) or on each audio subject (ADR-030)
+    if audio["production"] and audio_assets:
+        sw = m[AUDIO_SWITCH]
+        a_ev = [r.id for r in audio["requirements"]]
+        if audio_concat_ok:
+            want_norm, target = m.get("audio.normalize"), m.get("audio.loudness.target_lufs")
+            offs = [i for i in inferences if i.kind == "loudness_off_target" and i.asset_id in {a.id for a in audio_assets}]
+            loud_obs = [o.id for o in analysis.observations if o.kind == "loudness" and o.asset_id in {a.id for a in audio_assets}]
+            if want_norm and want_norm.value in (True, "auto") and target is not None and (offs or want_norm.provenance == "USER") and (loud_obs or offs):
+                tp = m.get("audio.loudness.true_peak")
+                tol = resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)
+                eng.decide(subject="audio.loudness", type="TRANSFORM", decision=f"normalize {PROGRAMME_AUDIO} to {float(target.value):g} LUFS / {float(tp.value) if tp else -1:g} dBTP",
+                           reason=("; ".join(i.statement for i in offs) if offs else "user asked for normalisation") + f"; applied once to the joined audio programme; target from {target.provenance.lower()} ({target.source})",
+                           confidence=min(i.confidence for i in offs) if offs else 1.0, evidence=[i.id for i in offs] + [e for i in offs for e in i.evidence] + loud_obs + a_ev, risk="LOW",
+                           approval=approval_for("audio.loudness"), provenance="USER" if want_norm.provenance == "USER" else target.provenance,
+                           params={"asset_id": PROGRAMME_AUDIO, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0, "tolerance_lu": float(tol["value"]),
+                                   **({"sample_rate": audio["sample_rate"]} if audio.get("sample_rate") else {})},
+                           settings=[tol], requirements=[want_norm, target] + ([tp] if tp else []) + audio["requirements"], serves_intent=_serves(intent, "audio.loudness"))
+                cap_block("audio_normalize", "capability.audio_normalize")
+        a_subjects = [(PROGRAMME_AUDIO, [a.id for a in audio_assets])] if audio_concat_ok else [(a.id, [a.id]) for a in audio_assets]
+        normalised = {d.params.get("asset_id") for d in decs if d.subject == "audio.loudness" and d.type == "TRANSFORM"}
+        for subject, sources in a_subjects:
+            src = [a for a in analysis.assets if a.id in sources]
+            ev = a_ev + probe_ids_of(sources)
+            planned_ops: List[str] = []
+            if audio.get("gain") is not None:
+                eng.decide(subject="audio.gain", type="TRANSFORM", decision=f"gain {audio['gain']:+g} dB on {subject}", reason=f"user asked for a fixed gain ({sw.source})", confidence=1.0, evidence=ev,
+                           risk=AUDIO_OPERATIONS["audio.gain"]["risk"], approval=approval_for("audio.gain", explicit=m["audio.gain"]), provenance="USER",
+                           params={"asset_id": subject, "gain_db": audio["gain"]}, requirements=audio["requirements"], serves_intent=None)
+                planned_ops.append("audio_gain")
+            if audio.get("channels"):
+                chans = [audio_channels(a.technical) for a in src]
+                ch = max(chans) if chans and all(c is not None for c in chans) else None   # a concat programme carries the widest input's layout (Skill contract)
+                op_type, why = channel_operation(audio["channels"], ch)
+                if op_type == "BLOCK":
+                    eng.decide(subject="audio.channels", type="BLOCK", decision=f"BLOCK: {audio['channels']} on {subject}", reason=why + "; a channel layout the Skill cannot produce is never guessed",
+                               confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "layout": audio["channels"]}, requirements=audio["requirements"])
+                elif op_type is None:
+                    eng.decide(subject="audio.channels", type="KEEP", decision=f"keep {audio['channels']} on {subject}", reason=why + " (probe); no operation needed", confidence=1.0, evidence=ev,
+                               risk="LOW", approval="AUTO", provenance="OBSERVED", params={"asset_id": subject, "layout": audio["channels"], "channels": ch}, requirements=audio["requirements"])
+                else:
+                    eng.decide(subject="audio.channels", type="TRANSFORM", decision=f"{op_type} on {subject}: {why}", reason=f"user asked for {audio['channels']} ({sw.source}); the probe reports {ch} channel(s)",
+                               confidence=1.0, evidence=ev, risk=AUDIO_OPERATIONS[op_type]["risk"], approval=approval_for("audio.channels", explicit=m["audio.channels"]), provenance="USER",
+                               params={"asset_id": subject, "layout": audio["channels"], "operation": op_type, "channels": ch}, requirements=audio["requirements"], serves_intent=None)
+                    planned_ops.append(AUDIO_OPERATIONS[op_type]["skill"])
+            for key in ("fade_in", "fade_out"):
+                if audio.get(key) is not None:
+                    eng.decide(subject=f"audio.{key}", type="TRANSFORM", decision=f"{key.replace('_', ' ')} {audio[key]:g}s on {subject}", reason=f"user asked for a {key.replace('_', ' ')} ({sw.source})",
+                               confidence=1.0, evidence=ev, risk="LOW", approval=approval_for(f"audio.{key}", explicit=m[f"audio.{key}"]), provenance="USER",
+                               params={"asset_id": subject, "duration": audio[key]}, requirements=audio["requirements"], serves_intent=None)
+                    planned_ops.append(f"audio_{key}")
+            if audio.get("sample_rate") and subject not in normalised:
+                eng.decide(subject="audio.sample_rate", type="BLOCK", decision=f"BLOCK: resample to {audio['sample_rate']} Hz on {subject}",
+                           reason="the Skill has no standalone resample; a sample rate is only applied by a loudness normalisation, and none was decided for this subject",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "sample_rate": audio["sample_rate"]}, requirements=audio["requirements"])
+            for a in src:
+                if has_video(a.technical):
+                    eng.decide(subject="audio.extract", type="TRANSFORM", decision=f"deliver the audio track of {a.id} only", reason=f"audio production was asked for ({sw.source}); the picture is not delivered on this path",
+                               confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="MEDIUM", approval=approval_for("audio.extract", explicit=sw), provenance="USER",
+                               params={"asset_id": a.id}, requirements=audio["requirements"], serves_intent=None)
+            cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove")) for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
+            if not planned_ops and subject not in normalised and not cut_planned and not audio_concat_ok and any(has_video(a.technical) for a in src):
+                eng.decide(subject="audio.production", type="BLOCK", decision=f"BLOCK: nothing to do on the audio path for {subject}",
+                           reason="a video container on the audio path needs at least one audio operation (cut / normalise / gain / channels / fade); none was decided", confidence=1.0,
+                           evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=audio["requirements"])
+            for sk in planned_ops:
+                cap_block(sk, f"capability.{sk}")
     # ---- single-source editing operations on the programme (concat) or on each video asset, in the fixed order
     if "video.fit" in edits and "video.fill" in edits:
         req = edits["video.fit"]["requirements"] + edits["video.fill"]["requirements"]

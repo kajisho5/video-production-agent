@@ -30,6 +30,8 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
       # video-editing-skill (ADR-028): its PR #1 branch until it is merged to main (main holds only a README today); no install needed, the checkout is run as `python -m video_editing_skill.cli`
       - run: git clone --depth 1 --branch claude/video-editing-skill-sd9vgt https://github.com/kajisho5/video-editing-skill ../video-editing-skill
+      # audio-production-skill (ADR-030): main (PR #1 merged); run as `python -m audio_production.cli` from the checkout, no install
+      - run: git clone --depth 1 https://github.com/kajisho5/audio-production-skill ../audio-production-skill
       - run: pip install -e .
       - run: python -m unittest -v tests/test_integration.py
         env:
@@ -37,3 +39,4 @@ jobs:
           VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
           VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
           VIDEO_AGENT_VIDEO_EDITING_DIR: "${{ github.workspace }}/../video-editing-skill"
+          VIDEO_AGENT_AUDIO_PRODUCTION_DIR: "${{ github.workspace }}/../audio-production-skill"

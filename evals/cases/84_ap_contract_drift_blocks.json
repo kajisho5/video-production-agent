@@ -1,0 +1,34 @@
+{
+ "name": "ap_contract_drift_blocks",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   }
+  ],
+  "contract_mode": "contract_drift"
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.gain": -3
+ },
+ "expect": {
+  "blocked": true,
+  "plan_status": "BLOCKED",
+  "validate_error": "has no selected tool"
+ }
+}

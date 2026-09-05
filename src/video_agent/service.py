@@ -42,21 +42,25 @@ from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from .tools.media_analysis import PACKAGE as MEDIA_ANALYSIS_PACKAGE, MediaAnalysisAdapter, locate_media_analysis
 from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, TranscriptionAdapter, locate_transcription
 from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, lift_observation, locate_video_editing
+from .tools.audio_production import PACKAGE as AUDIO_PRODUCTION_PACKAGE, AudioProductionAdapter, locate_audio_production
+from .tools.audio_production import lift_measurement as lift_audio_measurement, lift_observation as lift_audio_observation
+from .agent.audio import SWITCH as AUDIO_SWITCH, parse_audio_requirements
 from .tools.base import ToolError
 
 
 class Service:
     def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
                  provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None, transcription_dir: Optional[str] = None, offline: bool = False,
-                 video_editing_dir: Optional[str] = None):
+                 video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
         self.media_analysis_dir = media_analysis_dir or os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR")
         self.transcription_dir = transcription_dir or os.environ.get("VIDEO_AGENT_TRANSCRIPTION_DIR")
         self.video_editing_dir = video_editing_dir or os.environ.get("VIDEO_AGENT_VIDEO_EDITING_DIR")
+        self.audio_production_dir = audio_production_dir or os.environ.get("VIDEO_AGENT_AUDIO_PRODUCTION_DIR")
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
-                                               video_editing_dir=self.video_editing_dir)
+                                               video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir)
         self._adapter = adapter
         self.registry = default_registry()
         self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
@@ -66,6 +70,7 @@ class Service:
         self.registry.register_package(MEDIA_ANALYSIS_PACKAGE)   # external observation Skill: adapter exists here; availability needs an installation
         self.registry.register_package(TRANSCRIPTION_PACKAGE)    # external recognition Skill (transcription-skill): same rule
         self.registry.register_package(VIDEO_EDITING_PACKAGE)    # external editing Skill (video-editing-skill, ADR-028): same rule
+        self.registry.register_package(AUDIO_PRODUCTION_PACKAGE)  # external audio production Skill (audio-production-skill, ADR-030): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -103,6 +108,13 @@ class Service:
                 router.register(VideoEditingAdapter(ve, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None, path_policy=policy))
             except ToolError:
                 pass   # same rule: an incompatible video-editing-skill is reported by doctor and never used
+        ap = locate_audio_production(self.audio_production_dir)
+        if ap:
+            try:
+                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
+                router.register(AudioProductionAdapter(ap, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None, path_policy=policy))
+            except ToolError:
+                pass   # same rule: an incompatible audio-production-skill is reported by doctor and never used
         return self._sync_packages(router)
 
     def _sync_packages(self, router: ToolRouter) -> ToolRouter:
@@ -217,7 +229,8 @@ class Service:
             decisions = keep
         precision = rm.get("edit.precision")
         plan = build_plan(decisions, analysis, tools=tools, version=plan_version, frame_accurate=bool(precision and precision.value == "frame"), project_id=project_id,
-                          constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences)
+                          constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences,
+                          audio_production=bool(parse_audio_requirements(rm)["production"]))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
 
     def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
@@ -511,13 +524,18 @@ class Service:
         out: List[Dict[str, Any]] = []
         outputs = {o.id: (o.outputs[0] if o.outputs else o.id) for o in ops}
         for r in results:
-            if not r.ok or not str(r.tool).startswith("video-editing/"):
+            if not r.ok:
                 continue
-            obs = lift_observation(r, outputs.get(r.op_id))
-            if obs is not None:
-                d = obs.to_dict()
-                d["operation"] = r.op_id
-                out.append(d)
+            lifted = []
+            if str(r.tool).startswith("video-editing/"):
+                lifted = [lift_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("audio-production/"):
+                lifted = [lift_audio_observation(r, outputs.get(r.op_id)), lift_audio_measurement(r, outputs.get(r.op_id))]   # probe + the NORMALIZE re-measurement
+            for obs in lifted:
+                if obs is not None:
+                    d = obs.to_dict()
+                    d["operation"] = r.op_id
+                    out.append(d)
         return out
 
     # ---- artifacts (ADR-022): registration after QA, delivery promotion, archive
@@ -788,8 +806,9 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     """Explicit `edit.*` requirements are range-checked before any analysis runs (an invalid value is a planning error, not a
     guess and not something a later stage corrects)."""
     from .models import Requirement
-    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith("edit.")]
+    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith(("edit.", "audio."))]
     parse_edit_requirements(requirement_map(reqs))
+    parse_audio_requirements(requirement_map(reqs))
 
 
 def _default_who() -> str:

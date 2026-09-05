@@ -15,11 +15,16 @@ from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
 from ..tools.transcription import TranscriptionAdapter, locate_transcription
 from ..tools.video_editing import VideoEditingAdapter, locate_video_editing
+from ..tools.audio_production import AudioProductionAdapter, locate_audio_production
 
-ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv"]
+ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
+            "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
 DECODERS = ["h264", "hevc", "av1", "prores", "vp9"]
 FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tonemap"], "loudnorm": ["loudnorm"], "scdet": ["scdet"],
-           "blackdetect": ["blackdetect"], "freezedetect": ["freezedetect"], "astats": ["astats"], "xfade": ["xfade"], "acrossfade": ["acrossfade"]}
+           "blackdetect": ["blackdetect"], "freezedetect": ["freezedetect"], "astats": ["astats"], "xfade": ["xfade"], "acrossfade": ["acrossfade"],
+           # core audio filters audio-production-skill's operations need; ffmpeg-skill's doctor does not probe them, this resolver measures `ffmpeg -filters` itself
+           "volume": ["volume"], "afade": ["afade"], "amix": ["amix"], "pan": ["pan"], "aformat": ["aformat"], "afftdn": ["afftdn"],
+           "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"]}
 AI_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
@@ -44,10 +49,11 @@ def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
 
 class CapabilityResolver:
     def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None, media_analysis_dir: Optional[str] = None,
-                 transcription_dir: Optional[str] = None, offline: bool = False, video_editing_dir: Optional[str] = None):
+                 transcription_dir: Optional[str] = None, offline: bool = False, video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None):
         self.media_analysis_dir = media_analysis_dir
         self.transcription_dir = transcription_dir
         self.video_editing_dir = video_editing_dir
+        self.audio_production_dir = audio_production_dir
         self.offline = bool(offline)
         self.env = dict(os.environ if env is None else env)
         self.skill_dir = ffmpeg_skill_dir
@@ -152,6 +158,45 @@ class CapabilityResolver:
                 caps["video-editing"] = Capability("video-editing", "MISSING", f"found at {ve.describe()} but unusable: {str(e)[:160]}")
         else:
             caps["video-editing"] = Capability("video-editing", "MISSING", "set VIDEO_AGENT_VIDEO_EDITING_DIR to a video-editing-skill checkout or install `video-editing`")
+        # audio-production-skill (external audio production Skill, ADR-030): located checkout / console script, its contract (checked, drift
+        # against the pinned one) and its own doctor. `audio-production` is AVAILABLE only when the doctor is ok / degraded and there is no
+        # drift. Every operation type gets its own capability `audio-production:<TYPE>` from the doctor's verdict: supported → AVAILABLE,
+        # unsupported → MISSING, unknown → AVAILABLE only when this resolver measured every filter / encoder the operation needs itself
+        # (ffmpeg-skill's doctor does not probe core filters), otherwise UNKNOWN — and UNKNOWN is never selectable.
+        ap = locate_audio_production(self.audio_production_dir, self.env)
+        if ap:
+            try:
+                ad = AudioProductionAdapter(ap, timeout=180.0, ffmpeg_skill_dir=str(skill.root) if skill else None)
+                doc = ad.doctor()
+                drift = ad.drift()
+                ok = doc.get("status") in ("ok", "degraded") and not drift
+                detail = f"{ad.version} at {ap.describe()} (doctor {doc.get('status')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
+                ops = ad.operation_status(doc)
+                specs = {o["type"]: o for o in ad.contract.get("operations") or []}
+                per_op: Dict[str, str] = {}
+                for typ, st in ops.items():
+                    need = [c for c in (specs.get(typ) or {}).get("required_capabilities") or [] if c.startswith(("filter:", "encoder:"))]
+                    if not ok or st == "unsupported":
+                        status = "MISSING"
+                    elif st == "supported":
+                        status = "AVAILABLE"
+                    elif need and all(caps.get(c) is not None and caps[c].status == "AVAILABLE" for c in need):
+                        status = "AVAILABLE"   # the Skill could not tell; this resolver measured the filters / encoders itself
+                    else:
+                        status = "UNKNOWN"
+                    per_op[typ] = status
+                    caps[f"audio-production:{typ}"] = Capability(f"audio-production:{typ}", status, f"doctor {st}" + ("" if st != "unknown" else f"; resolver checked {need}"),
+                                                                {"doctor": st, "required_capabilities": list((specs.get(typ) or {}).get("required_capabilities") or []), "tool": (specs.get(typ) or {}).get("tool")})
+                caps["audio-production"] = Capability("audio-production", "AVAILABLE" if ok else "MISSING", detail,
+                                                      {"version": ad.version, "root": ap.describe(), "contract": ad.contract.get("schema"), "tools": sorted(ad.tools),
+                                                       "operations": per_op, "unsupported": list(ad.lowering.unsupported), "formats": sorted(ad.lowering.formats),
+                                                       "engine": {"id": "ffmpeg-skill", "window": (ad.contract.get("ffmpeg_skill") or {}).get("version_window"),
+                                                                  "detected": ((doc.get("checks") or {}).get("ffmpeg_skill") or {}).get("version")},
+                                                       "doctor": doc.get("status"), "problems": list(doc.get("problems") or []), "warnings": list(doc.get("warnings") or []), "drift": drift})
+            except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used
+                caps["audio-production"] = Capability("audio-production", "MISSING", f"found at {ap.describe()} but unusable: {str(e)[:160]}")
+        else:
+            caps["audio-production"] = Capability("audio-production", "MISSING", "set VIDEO_AGENT_AUDIO_PRODUCTION_DIR to an audio-production-skill checkout or install `audio-production`")
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

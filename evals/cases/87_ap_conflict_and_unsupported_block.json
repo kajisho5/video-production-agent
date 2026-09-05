@@ -1,0 +1,39 @@
+{
+ "name": "ap_conflict_and_unsupported_block",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 1
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.sample_rate": 44100,
+  "edit.speed": 2
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "audio.production",
+   "audio.sample_rate",
+   "capability.video_speed",
+   "video.speed"
+  ],
+  "plan_status": "BLOCKED"
+ }
+}

@@ -1,0 +1,44 @@
+{
+ "name": "ap_video_container_delivers_audio",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "video": true
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.fade_in": 0.5
+ },
+ "expect": {
+  "ir_ops": [
+   "audio.cut",
+   "audio.fade_in"
+  ],
+  "blocked": false,
+  "render": {
+   "status": "COMPLETED",
+   "operations": [
+    "CUT",
+    "FADE_IN"
+   ],
+   "qa_status": "PASS"
+  }
+ }
+}

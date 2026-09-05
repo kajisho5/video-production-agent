@@ -215,19 +215,31 @@ def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     """What the plan delivers: the concat programme (one subject made of every input) or each asset. Each row carries the
     subject id (the key of `<subject>_delivery_<target>`), its source asset ids, the expected output duration derived from
     the IR (trim → concat → speed), the loudness target of its audio.loudness op, and the technical facts of its first source."""
+    from .audio import audio_subjects
     assets = doc.get("assets") or {}
     vops = (doc.get("video") or {}).get("operations") or []
     aops = (doc.get("audio") or {}).get("operations") or []
     concat = next((op for op in vops if op.get("type") == "video.concat"), None)
     rows: List[Dict[str, Any]] = []
+    audio_rows = audio_subjects(doc)   # subjects delivered as audio only (ADR-030): their picture is not part of the deliverable
+    consumed = {s for r in audio_rows.values() for s in r["sources"]}
+    for sid, r in sorted(audio_rows.items()):
+        tech = dict((assets.get(r["sources"][0]) or {}).get("technical") or {})
+        tech["video"] = None
+        if r.get("channels") is not None:
+            tech["audio"] = dict(tech.get("audio") or {}, channels=r["channels"])   # the planned layout (mono / stereo / down-mix), not the source's
+        rows.append({"id": sid, "sources": list(r["sources"]), "duration": r["duration"], "technical": tech, "audio_only": True})
     if concat is not None:
         rows.append({"id": concat.get("output", PROGRAMME), "sources": list(concat.get("inputs") or []), "duration": float(concat.get("timeline_duration") or 0.0),
                      "technical": dict((assets.get((concat.get("inputs") or [""])[0]) or {}).get("technical") or {})})
         # assets that are not part of the programme (none today: concat takes every video asset) would be delivered on their own
     else:
         for aid, a in assets.items():
+            if aid in consumed:
+                continue
             rows.append({"id": aid, "sources": [aid], "duration": kept_duration(vops, aid, (a.get("technical") or {}).get("duration") or 0.0), "technical": dict(a.get("technical") or {})})
     for row in rows:
+        row.setdefault("audio_only", False)
         dur = row["duration"]
         for op in vops:
             if op.get("asset") == row["id"] and op.get("type") == "video.speed" and op.get("factor"):

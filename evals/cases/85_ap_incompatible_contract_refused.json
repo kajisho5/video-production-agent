@@ -1,0 +1,31 @@
+{
+ "name": "ap_incompatible_contract_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   }
+  ],
+  "contract_mode": "bad_contract"
+ },
+ "requirements": {
+  "audio.production": true
+ },
+ "expect": {
+  "contract_refused": "execution.shell"
+ }
+}
