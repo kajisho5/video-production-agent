@@ -205,6 +205,70 @@ class RealMediaTests(unittest.TestCase):
         out = svc.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
 
+    def test_vertical_slice_observation_to_qa_through_production_plan(self):
+        """The first complete production: talk.mp4 (3 s lead-in silence) → analysis → silence observation → AudioEvent(silence)
+        → decision → ProductionPlan step (trim, evidence chain) → Project IR → compiler → ffmpeg-skill → FFmpeg → QA PASS →
+        explain. Original untouched, output shorter by the removed silence, provenance complete."""
+        from video_agent.agent.production_plan import explain_step
+        import hashlib
+        before = hashlib.sha256(Path(self.src).read_bytes()).hexdigest()
+        svc = Service(workspace=self.ws)
+        ir = svc.plan([self.src], "youtube")
+        d = ir.doc
+        pl = d["plan"]
+        self.assertEqual((pl["status"], [st["skill"] for st in pl["steps"]]), ("APPROVED", ["silence_cleanup", "loudness_normalization", "delivery_export", "delivery_check"]))
+        trim = pl["steps"][0]
+        self.assertAlmostEqual(trim["temporal_scope"]["start"], 2.85, delta=0.25)
+        sil_event = next(e for e in d["timeline"]["events"] if e["subtype"] == "silence" and e["range"]["start"] == 0.0)
+        self.assertIn(sil_event["id"], trim["evidence"])
+        sil_obs = next(o for o in d["analysis"]["observations"] if o["kind"] == "silence")
+        self.assertIn(sil_obs["id"], trim["evidence"])
+        chain = explain_step(d, trim["id"])["chain"]
+        self.assertEqual([r["kind"] for r in chain][:1], ["decision"])
+        self.assertTrue(any(r["kind"] == "event" and r["id"] == sil_event["id"] for r in chain))
+        self.assertTrue(any(r["kind"] == "observation" and r["source"].startswith("ffmpeg-skill/silence@") for r in chain))
+        self.assertEqual(pl["outputs"][0]["logical"], f"{list(d['assets'])[0]}_delivery_youtube")
+        ir_path = str(Path(self.ws) / "slice.json")
+        save_ir(ir, ir_path)
+        self.assertTrue(svc.validate(ir).ok, svc.validate(ir).errors)
+        out = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(hashlib.sha256(Path(self.src).read_bytes()).hexdigest(), before, "original unchanged")
+        art = out["artifacts"][0]
+        got = svc.check(art["path"])["probe"]["duration"]
+        self.assertAlmostEqual(got, 16.0 - trim["temporal_scope"]["start"] - (16.0 - trim["temporal_scope"]["end"]), delta=0.6)
+        prov = json.loads((Path(self.ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        cut = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
+        self.assertEqual(sorted(cut["decision"]), sorted(trim["decision_ids"]))
+        env = dict(os.environ); env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--workspace", self.ws, "explain", ir_path, "--step", trim["id"]], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("observation", r.stdout)
+        self.assertIn("ffmpeg-skill/silence@", r.stdout)
+        # no-audio media: no silence event, no silence step, render still works, QA WARN only for audio
+        silent = str(Path(self.tmp) / "src" / "noaudio.mp4")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=4", "-c:v", "libx264", "-preset", "veryfast", silent], check=True)
+        ir2 = svc.plan([silent], "youtube")
+        self.assertFalse([e for e in ir2.doc["timeline"]["events"] if e["subtype"] == "silence"])
+        self.assertEqual([st["skill"] for st in ir2.doc["plan"]["steps"]], ["delivery_export", "delivery_check"])
+        p2 = str(Path(self.ws) / "noaudio.json"); save_ir(ir2, p2)
+        out2 = svc.render(load_ir(p2), p2, timeout=600)
+        self.assertEqual(out2["status"], "COMPLETED")
+        self.assertEqual(out2["qa"]["status"], "WARN")
+        self.assertTrue(all("audio" in i["name"] for i in out2["qa"]["items"] if i["status"] != "PASS"))
+        # hostile AI through the whole slice: recommendation becomes evidence, tool / argv / command never reach the plan or execution
+        prov_ai = FakeAIProvider(intent="silence_cleanup", params={"tool": "ffmpeg-skill/export", "argv": ["ffmpeg", "-y", "-i", "x"], "command": "rm -rf /"})
+        svc3 = Service(workspace=self.ws, provider=prov_ai)
+        ir3 = svc3.plan([self.src], "youtube")
+        self.assertNotIn("rm -rf", json.dumps(ir3.doc["plan"]))
+        self.assertEqual([st["tool"] for st in ir3.doc["plan"]["steps"]], ["ffmpeg-skill/cut", "ffmpeg-skill/loudness", "ffmpeg-skill/export", "ffmpeg-skill/check"])
+        p3 = str(Path(self.ws) / "ai.json"); save_ir(ir3, p3)
+        out3 = svc3.render(load_ir(p3), p3, timeout=600)
+        self.assertEqual(out3["status"], "COMPLETED")
+        prov3 = json.loads((Path(self.ws) / "jobs" / out3["job"]["id"] / "provenance.json").read_text())
+        self.assertNotIn("-i x", " ".join(" ".join(e["result"]["commands"]) for e in prov3["operations"] if e.get("result")))
+
     def test_resume_reuses_real_intermediates(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube", hash_sources=False)

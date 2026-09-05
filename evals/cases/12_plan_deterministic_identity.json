@@ -1,0 +1,23 @@
+{
+ "name": "plan_deterministic_identity",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "production_plan": {
+   "deterministic": true,
+   "validate": true
+  }
+ }
+}

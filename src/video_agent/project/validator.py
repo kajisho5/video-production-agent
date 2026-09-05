@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from ..agent.production_plan import validate_plan
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
 from typing import Any, Dict, List, Optional
@@ -86,6 +87,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"delivery target {t['id']}: unknown preset {t['preset']}")
         if t.get("platform") not in known_platforms:
             rep.errors.append(f"delivery target {t['id']}: unknown platform {t.get('platform')}")
+    # ProductionPlan structure / boundaries (ids, order, dependencies, evidence, decisions, parameters, scopes, status)
+    rep.errors += validate_plan(d, registry=registry)
     # plan steps: Skill → Tool consistency (the compiler takes tools from the steps, so this is the execution contract)
     if registry is not None:
         known = set(registry.names())

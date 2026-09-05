@@ -98,3 +98,10 @@
 - Event type を定義することと検出を実装することを分離する。生成されるのは `IMPLEMENTED_CODES` の 4 code のみ。speech / speaker / slide / camera / scene / caption / incident は schema のみで、fake event で埋めない。
 - Session は明示的に構築する domain object（既定は asset 単位）。自動認識・production plan・Project IR の実行内容とは分離し、`plan_hash` にも含めない。
 - Observation = measured fact / Event = temporal domain occurrence / Inference = interpretation / Decision = production choice / Session = temporal grouping / Production Plan = production intent / Project IR = execution contract。
+
+## ADR-021 Production Plan is the deterministic bridge between Decisions / Events and Project IR
+- 事実: planner は decision から IR 断片を直接組み立て、「何を制作するか」を表す構造（identity / 順序 / 依存 / evidence / 状態）は存在しなかった。
+- 決定: `ProductionPlan` / `ProductionStep` を第一級モデルにし、IR の `plan` セクションとして記録する。planner は決定論的（同じ project / decisions / events / constraints → 同じ plan identity）で、tool は SkillRegistry の解決表からしか取らず、実行もしない。
+- Event は事実、Decision は判断、ProductionStep は制作工程、IR の video / audio / delivery は実行契約。AI は Inference までで、plan / tool / argv / command / IR / execution に到達できない（validator の domain parameter 限定と leak 検査で強制）。
+- plan の status は reviews / approvals から導出する（別の approval 系を作らない）。APPROVED のみ compiler に進み、BLOCK / REJECTED は誰にも覆せない。partial approval は decision 単位のまま。
+- Observation ≠ Event ≠ Inference ≠ Decision ≠ ProductionPlan ≠ Project IR ≠ Execution。

@@ -693,6 +693,39 @@ operation:
 
 The Project IR is the contract between reasoning/planning and deterministic execution.
 
+### Production Plan (implemented, ADR-021)
+
+```text
+Observation → Event → Inference / Decision → ProductionPlan → Project IR → Compiler → Tool → Execution → QA
+```
+
+- `ProductionPlan` (`agent/production_plan.py`, recorded as the IR `plan` section): id (deterministic from project,
+  version, steps, constraints), project_id, version, status, objective, inputs (asset ids), steps, outputs (planned
+  artifacts: role / logical name / format / expected), decisions, events, constraints (hard rules in force),
+  provenance (generator `production_planner@1.0`, decision / event / evidence ids), summary.
+- `ProductionStep`: id (deterministic, e.g. `step_trim_<asset>`), order, skill (intent, registry vocabulary), tool
+  (registry-selected; never taken from a decision, an event or an AI response), inputs, domain `params`
+  (`STEP_PARAMETERS` per skill; anything else is refused), outputs (logical artifact names; the compiler decides paths),
+  depends_on (deterministic topological order, cycles refused), evidence (inference / event / observation ids behind
+  its decisions), decision_ids / decision_id, temporal_scope, status.
+- Status is derived from the review state, never set by hand: DRAFT (no steps), REVIEW (a CONFIRM decision pending or
+  the version awaiting re-approval), APPROVED (every step's decisions approved — explicitly or AUTO by policy),
+  REJECTED (a step cites a rejected decision), BLOCKED (BLOCK decision or no tool). Only APPROVED reaches the compiler
+  (`render` gate); BLOCK cannot be overridden by anyone, including an AI recommendation. Approval is decision-level
+  (PR #4): `executable_steps` names the steps whose decisions are approved; execution waits until the plan is APPROVED.
+- Planner (`agent/planner.py`) is deterministic: silence decisions → one trim step per asset (scope = kept range,
+  `removed` = the silent ranges, evidence = the silence events / observations), loudness decision → normalisation
+  step, delivery target → export + check steps, chained by `depends_on`. It never emits tool arguments or executes.
+- `validate_plan` (run by the IR validator): ids, project, status ↔ review state, unique steps, deterministic order,
+  dependencies / cycles, inputs (assets or earlier outputs), decisions, evidence existence, domain parameters only,
+  credential / command / argv leaks, temporal scope within the asset, tool ∈ skill candidates, planned outputs.
+- `explain_step` / `video-agent explain --step`: decision → inference (AI provenance from `ai_calls` when
+  AI_GENERATED) → event → observation → tool source.
+- `plan_hash` keeps its PR #3 meaning (assets / video / audio / delivery / qa); the plan section is not part of it.
+  Revisions produce a new plan id and version; job resume is a separate identity.
+
+Observation ≠ Event ≠ Inference ≠ Decision ≠ ProductionPlan ≠ Project IR ≠ Execution.
+
 ## 22. Project IR
 
 Suggested top-level concepts:

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..models import Decision, new_id, now_iso
+from ..agent.production_plan import plan_status
 from ..temporal.events import event_id
 from .hashing import ir_hash as _ir_hash, plan_hash as _plan_hash
 from .migrations import CURRENT, migrate
@@ -99,6 +100,7 @@ class ProjectIR:
                 done.append(d["id"])
         if not self.pending_confirmations() and not self.rejected_cited() and not self.blocked():
             self.doc["revision"]["approved_plan_version"] = self.version
+        self.refresh_plan_status()
         return done
 
     def reject(self, ids: List[str], who: str, reason: str) -> List[str]:
@@ -113,7 +115,18 @@ class ProjectIR:
                 done.append(d["id"])
         if done:
             self.doc["revision"]["approved_plan_version"] = None
+        self.refresh_plan_status()
         return done
+
+    def refresh_plan_status(self) -> str:
+        """The ProductionPlan's status is derived from the reviews / approvals (the source of truth), never set by hand."""
+        st = plan_status(self.doc)
+        self.doc["plan"]["status"] = st
+        decisions = {d["id"]: d for d in self.doc["decisions"]}
+        from ..agent.production_plan import step_status
+        for step in self.doc["plan"].get("steps") or []:
+            step["status"] = step_status(step, decisions)
+        return st
 
     # ---- hashes
     def ir_hash(self) -> str:

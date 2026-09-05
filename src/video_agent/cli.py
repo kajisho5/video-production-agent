@@ -107,9 +107,7 @@ def cmd_plan(args, svc: Service) -> int:
         _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict()}, True)
     else:
         print(f"Project IR: {out}")
-        print("Plan:")
-        for s in ir.doc["plan"]["summary"]:
-            print("  -", s)
+        _print_plan(ir.doc)
         print("Decisions:")
         for d in ir.doc["decisions"]:
             print(f"  [{d['approval']:7s} {d['risk']:6s}] {d['id']}  {d['subject']}: {d['decision']}")
@@ -289,6 +287,24 @@ def cmd_check(args, svc: Service) -> int:
     return 0 if out["check"].get("ok") else 1
 
 
+def _print_plan(doc) -> None:
+    pl = doc["plan"]
+    print(f"Production plan {pl.get('id', '-')} v{pl['version']}  status {pl.get('status', '-')}  objective: {pl.get('objective', '')}")
+    for line in pl["summary"]:
+        print("  -", line)
+    if pl.get("steps"):
+        print("Steps (deterministic order):")
+        for st in pl["steps"]:
+            scope = st.get("temporal_scope")
+            sc = f"  scope {scope['start']:.3f}-{scope['end']:.3f}" if scope and scope.get("end") is not None else ""
+            deps = f"  after {','.join(st['depends_on'])}" if st.get("depends_on") else ""
+            print(f"  {st['order']:2d}. {st['id']:28s} {st['skill']:22s} -> {st.get('tool') or '-':22s} [{st.get('status', '?')}]{sc}{deps}  evidence {len(st.get('evidence') or [])}")
+    if pl.get("outputs"):
+        print("Planned outputs:")
+        for o in pl["outputs"]:
+            print(f"  {o['role']:10s} {o['logical']}  format={o['format']}  expected={json.dumps(o.get('expected') or {}, default=str)}")
+
+
 def cmd_events(args, svc: Service) -> int:
     ir = load_ir(args.project)
     events = ir.doc["timeline"].get("events") or []
@@ -315,6 +331,26 @@ def cmd_sessions(args, svc: Service) -> int:
 
 def cmd_explain(args, svc: Service) -> int:
     ir = load_ir(args.project)
+    if getattr(args, "step", None):
+        from video_agent.agent.production_plan import explain_step
+        try:
+            info = explain_step(ir.doc, args.step)
+        except KeyError:
+            print("no such step", file=sys.stderr)
+            return 1
+        if args.json:
+            _print(info, True)
+            return 0
+        st = info["step"]
+        print(f"Step {st['id']}  {st['skill']} -> {st.get('tool') or '-'}  status {st.get('status')}  scope {st.get('temporal_scope')}")
+        for row in info["chain"]:
+            extra = ""
+            if row.get("ai"):
+                extra = f"  AI {row['ai'].get('provider')}/{row['ai'].get('model')} hash={(row['ai'].get('response_hash') or '')[:12]}"
+            if row.get("source"):
+                extra += f"  source {row['source']}"
+            print(f"{'  ' * row['level']}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}{extra}")
+        return 0
     decs = ir.doc["decisions"]
     if args.decision:
         decs = [d for d in decs if d["id"] == args.decision or d["subject"] == args.decision]
@@ -407,7 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sessions", help="temporal sessions recorded in a Project IR")
     p.add_argument("project"); p.set_defaults(fn=cmd_sessions)
     p = sub.add_parser("explain", help="why was this decided? show reason, evidence, alternatives")
-    p.add_argument("project"); p.add_argument("--decision", help="decision id or subject")
+    p.add_argument("project"); p.add_argument("--decision", help="decision id or subject"); p.add_argument("--step", help="production step id: show its evidence chain")
     p.set_defaults(fn=cmd_explain)
     return ap
 

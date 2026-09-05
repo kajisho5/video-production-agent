@@ -139,7 +139,8 @@ class Service:
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
         return ir
 
-    def _reason(self, request: Request, profile, rules, analysis: AnalysisResult, suppressed: Optional[List[Dict[str, Any]]] = None, prior_ai=None):
+    def _reason(self, request: Request, profile, rules, analysis: AnalysisResult, suppressed: Optional[List[Dict[str, Any]]] = None, prior_ai=None,
+                project_id: str = "", plan_version: int = 1):
         """Requirements → Intent → Inference → Decision → Plan. `suppressed` lists (subject, asset_id) pairs the user rejected:
         the planner must not propose them again. Returns (reqs, intent, inferences, decisions, plan, dropped)."""
         caps = self.caps.resolve()
@@ -163,7 +164,8 @@ class Service:
                     keep.append(dcs)
             decisions = keep
         precision = rm.get("edit.precision")
-        plan = build_plan(decisions, analysis, frame_accurate=bool(precision and precision.value == "frame"), tools=tools)
+        plan = build_plan(decisions, analysis, tools=tools, version=plan_version, frame_accurate=bool(precision and precision.value == "frame"), project_id=project_id,
+                          constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences)
         return reqs, intent, inferences, decisions, plan, dropped
 
     def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
@@ -185,7 +187,7 @@ class Service:
         return infs
 
     def _fill(self, ir: ProjectIR, request: Request, profile, rules, analysis: AnalysisResult, plan_version: int, suppressed=None, prior_ai=None):
-        reqs, intent, inferences, decisions, plan, dropped = self._reason(request, profile, rules, analysis, suppressed, prior_ai)
+        reqs, intent, inferences, decisions, plan, dropped = self._reason(request, profile, rules, analysis, suppressed, prior_ai, project_id=ir.doc["project"]["id"], plan_version=plan_version)
         d = ir.doc
         d["request"] = request.to_dict()
         d["requirements"] = [r.to_dict() for r in reqs]
@@ -198,7 +200,7 @@ class Service:
         d["constraints"] = [r.to_dict() for r in rules.all_rules if r.hard]
         d["policy"] = rules.to_dict()
         d["decisions"] = [x.to_dict() for x in decisions]
-        d["plan"] = {"version": plan_version, "steps": plan["steps"], "summary": plan["summary"]}
+        d["plan"] = plan["plan"]   # ProductionPlan (steps / outputs / evidence / constraints / provenance); status derived below
         for a in analysis.assets:   # default temporal grouping: one session per asset (explicit domain object, not a production plan)
             ses = session_for_asset(d["project"]["id"], a, analysis.timeline.events)
             if ses:
@@ -213,6 +215,7 @@ class Service:
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
                                 "skill_versions": {s.name: s.version for s in self.registry.all() if s.phase == 1}, "tool_versions": d["source"]["tool_versions"],
                                 "ai_calls": list(self._ai_calls), "ai_provider": self.provider.describe() if self.provider.available() else None})
+        ir.refresh_plan_status()
         ir.finalize_hash()
         return dropped
 
@@ -284,7 +287,7 @@ class Service:
         nd["revision"] = {"feedback": list(ir.doc["revision"]["feedback"]), "history": list(old["revision"]["history"]), "approved_plan_version": None}
         nd["provenance"]["runs"] = list(old["provenance"].get("runs") or [])
         nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
-        nd["analysis"] = old["analysis"]
+        nd["analysis"] = {**old["analysis"], "inferences": nd["analysis"]["inferences"]}   # same observations / analyses; the re-plan's inferences (AI ones reused)
         fresh.finalize_hash()
         diff = plan_diff(old, nd)
         applied_before = set(old["revision"]["history"][-1]["rejected_decision_ids"]) if old["revision"]["history"] else set()
@@ -388,6 +391,11 @@ class Service:
             save_ir(ir, ir_path)
             return {"job": job.to_dict(), "status": "WAITING_FOR_APPROVAL", "pending": pending, "approved": approved,
                     "hint": "re-run with --approve <id,...> or --approve all"}
+        st = ir.refresh_plan_status()   # the ProductionPlan status is the review state; only APPROVED reaches the compiler
+        if st != "APPROVED":
+            job.transition("BLOCKED" if st in ("REJECTED", "BLOCKED") else "WAITING_FOR_APPROVAL", f"production plan is {st}")
+            store.save(job)
+            return {"job": job.to_dict(), "status": "BLOCKED" if st in ("REJECTED", "BLOCKED") else "WAITING_FOR_APPROVAL", "plan_status": st, "approved": approved}
         job.transition("EXECUTING")
         store.save(job)
         ops, paths = compile_ir(ir, str(job.dir))

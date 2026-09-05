@@ -1,0 +1,19 @@
+{
+ "name": "plan_rejected_no_execution",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "production_plan": {
+   "reject_first": true,
+   "render_status": "BLOCKED"
+  }
+ }
+}

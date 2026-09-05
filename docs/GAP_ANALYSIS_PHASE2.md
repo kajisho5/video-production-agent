@@ -139,3 +139,23 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 やっていないこと: transcription / speaker / slide / camera / scene / sync / multicam / caption の検出、conference の自動 session 認識、Inference → Decision → Event の flow、IncidentEvent の生成、Event からの production planning。
 
 テスト: unit 95/95（TemporalEventSessionTests 8 件で指示の 30 項目を網羅）、integration 14/14（実メディアで 3 s 無音 → AudioEvent(silence)、session、CLI events / sessions / explain、render）、evals 6/6。schema は event の任意フィールドと timeline.sessions の追加のみ。
+
+## 11. PR #10 — Production Planning Architecture（2026-09-04 追記）
+
+調査: `agent/planner.py` の `build_plan` が decision から IR の `plan.steps`（id / skill / tool / decision_ids / params）と video / audio / delivery セクションを同時に生成していた。plan は version / steps / summary だけで、identity・status・inputs / outputs・依存・evidence・temporal scope・constraints・provenance を持たず、Event は planner から参照されていなかった。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G40 ProductionPlan が第一級でない | `plan` は dict 断片 | `ProductionPlan` / `ProductionStep`（`agent/production_plan.py`）。IR の `plan` セクションをこの型で記録（既存キー version / steps / summary は維持、schema は additive） |
+| G41 step に依存・順序・evidence が無い | steps は生成順のみ | order / depends_on（trim → loudness → export → check）、決定論的 topological order、evidence（decision → inference → event / observation）、temporal_scope、outputs（論理名） |
+| G42 plan の status が無い | render gate が個別条件で判定 | `plan_status`（DRAFT / REVIEW / APPROVED / REJECTED / BLOCKED）を reviews / approvals から導出し、approve / reject / _fill で同期。render は APPROVED のみ実行（既存 gate と同じ結果を明示） |
+| G43 Event が planning の入力でない | decision の evidence に event id はあったが plan に無かった | step.evidence と plan.events に event id を伝播。Event は事実、step が制作命令（`removed` / `keep`） |
+| G44 plan の検証が無い | validator は step の skill / tool のみ | `validate_plan`（id / project / status 整合 / 一意性 / 順序 / 依存 / cycle / inputs / decisions / evidence / domain parameter 限定 / leak / scope / tool ∈ skill / outputs） |
+| G45 step の説明経路が無い | explain は decision 単位 | `explain_step` と `video-agent explain --step`（decision → inference（AI provenance）→ event → observation → source） |
+| G46 revision で inference id が失われる | revise が旧 analysis で新 inference を上書き | observations / analyses は旧版、inferences は再計画分（AI 分は再利用）を保持 |
+
+変更なし: compiler / executor / ToolRouter / adapter、plan_hash の意味、approval の source of truth（execution.reviews / approvals）、AI boundary、SkillRegistry の選択。`DEFAULT_TOOLS` 等の fallback は再導入していない。
+
+やっていないこと: AI による plan 生成、部分実行（approval は decision 単位、render は plan が APPROVED になるまで待つ — PR #4 の仕様を維持）、Artifact / Delivery 本実装、追加 intent（silence_cleanup / loudness_normalization / delivery_export / delivery_check 以外）。
+
+テスト: unit 102/102（ProductionPlanTests 7 件で指示の 30 項目を網羅）、integration 15/15（vertical slice: 実 talk.mp4 の 3 s 無音 → event → decision → plan → IR → ffmpeg-skill → QA PASS → explain、音声無し素材、敵対的 AI）、evals 12/12（6 件追加）。
