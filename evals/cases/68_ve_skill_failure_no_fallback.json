@@ -1,0 +1,31 @@
+{
+ "name": "ve_skill_failure_no_fallback",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing": {
+  "prefer": true,
+  "run_mode": "validation_error"
+ },
+ "expect": {
+  "selected_tool": "video-editing/cut",
+  "render": {
+   "execution_status": "FAILED",
+   "cut_ok": false,
+   "recovery_classes": [
+    "SKILL_ERROR"
+   ]
+  }
+ }
+}

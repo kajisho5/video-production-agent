@@ -1016,11 +1016,13 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["ffmpeg-skill", "media-analysis", "transcription"], "implemented packages: the Reference Skill, the observation Skill (PR #12) and the recognition Skill (PR #13)")
+        self.assertEqual(list(pkgs), ["ffmpeg-skill", "media-analysis", "transcription", "video-editing"],
+                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13) and the editing Skill (PR #18)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
-        self.assertEqual(sorted(rows), ["ffmpeg-skill", "media-analysis", "transcription"])
+        self.assertEqual(sorted(rows), ["ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertTrue(rows["video-editing"]["implemented"] and not rows["video-editing"]["available"], "adapter exists; no installation in unit tests")
         self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
         self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
         self.assertTrue(rows["media-analysis"]["implemented"] and not rows["media-analysis"]["available"], "adapter exists; no installation in unit tests")
@@ -1052,7 +1054,7 @@ class EcosystemContractTests(unittest.TestCase):
             if selected:
                 self.assertIs(router.adapter_for(selected).__class__, FakeAdapter)
         rows = {r["skill"]: r for r in svc.skills()}
-        self.assertEqual(rows["silence_cleanup"]["packages"], ["ffmpeg-skill"])
+        self.assertEqual(rows["silence_cleanup"]["packages"], ["ffmpeg-skill", "video-editing"], "candidates in declared order (PR #18 adds video-editing/cut)")
 
     # Test D — declared future skills are never AVAILABLE, and no future package exists
     def test_future_skills_never_available(self):
@@ -1061,8 +1063,8 @@ class EcosystemContractTests(unittest.TestCase):
         for name in ("multi_source_sync", "caption_generation", "semantic_deletion"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
         src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
-        future = ("subtitle-skill", "video-editing-skill", "audio-production-skill",
-                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill (PR #12) and transcription-skill (PR #13) are integrated
+        future = ("subtitle-skill", "audio-production-skill",
+                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill (PR #12), transcription-skill (PR #13) and video-editing-skill (PR #18) are integrated
         hits = [f"{py.relative_to(src)}: {n}" for py in src.rglob("*.py") for n in future if n in py.read_text(encoding="utf-8")]
         self.assertEqual(hits, [], "future skill packages must not appear in production code")
 
@@ -1097,7 +1099,7 @@ class EcosystemContractTests(unittest.TestCase):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
         # the only "core" change a new package needs: a production skill cites its tool as a candidate
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill", "media-analysis", "transcription"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube")
         self.assertTrue(svc.validate(ir).ok)
@@ -1120,7 +1122,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill", "media-analysis", "transcription"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):
@@ -3708,3 +3710,344 @@ class ProductionDecisionEngineTests(unittest.TestCase):
         self.assertNotIn("basis", json.dumps(d["plan"]["steps"]) + json.dumps(d["video"]), "the basis stays on the decision; steps / operations carry ids only")
         # a Decision without the engine (older / hand-made) is still a valid dataclass but the IR validator demands a type
         self.assertEqual(Decision(subject="x", decision="y", reason="r", confidence=1.0, evidence=["e"], risk="LOW", approval="AUTO").type, "")
+
+
+class VideoEditingAdapterTests(unittest.TestCase):
+    """PR #18 (ADR-028): video-editing-skill as an external editing Skill behind its CLI. Contract discovery and refusals,
+    execution through `run - --json --workspace … --allowed-input …` with the EditRequest on stdin, response → ToolResult /
+    Artifact / Observation / provenance mapping, error mapping with the Skill's retryable verdict, PathPolicy propagation,
+    the security boundary (no command / argv / filter / executable / env / credential ever crosses; argv is a list), capability
+    gating, determinism / reuse, and the Project IR lowering video.trim → video-editing/cut. Verified against a fake
+    video-editing process (tests/fake_video_editing.py) that speaks the real transport; no ffmpeg, no import of the Skill."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_video_editing.py")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+        self.ws = str(Path(self.tmp) / "ws")
+        os.makedirs(self.ws)
+        for k in ("FAKE_VE_MODE", "FAKE_VE_CALLS"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("FAKE_VE_MODE", "FAKE_VE_CALLS"):
+            os.environ.pop(k, None)
+
+    def _skill(self):
+        from video_agent.tools.video_editing import VideoEditingSkill
+        return VideoEditingSkill([sys.executable, self.FAKE], None, {})
+
+    def _adapter(self, **kw):
+        from video_agent.tools.video_editing import VideoEditingAdapter
+        kw.setdefault("workspace", self.ws)
+        kw.setdefault("allowed_inputs", [str(Path(self.src).parent)])
+        kw.setdefault("ffmpeg_skill_dir", self.tmp)
+        return VideoEditingAdapter(self._skill(), **kw)
+
+    def _op(self, **args):
+        a = {"input": "a", "keep": [[0.5, 3.0], [4.0, 8.0]], "precision": "keyframe", "output": "a_trim"}
+        a.update(args)
+        return Operation(tool="video-editing/cut", args=a, inputs=["a"], outputs=["a_trim"], id="op_test")
+
+    def _paths(self, out_name="01_trim.mp4"):
+        out = str(Path(self.ws) / "jobs" / "j1" / "ops" / "01_trim" / out_name)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        return {"a": self.src, "a_trim": out}, out
+
+    # 1. contract discovery: the live document is the source of truth; malformed / incompatible contracts are refused, never patched
+    def test_contract_discovery_package_and_refusals(self):
+        from video_agent.tools.video_editing import PACKAGE, ContractError, check_contract, contract_drift, pinned_contract
+        ad = self._adapter()
+        self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.1.0", "video-editing", "video-editing/contract@1"))
+        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "overlay", "resize", "speed", "trim")])
+        self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.1.0 contract")
+        pkg = ad.package()
+        self.assertEqual(pkg.validate(), [])
+        self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.1.0", "kajisho5/video-editing-skill"))
+        cut = pkg.tool("video-editing/cut")
+        self.assertEqual((cut.produces_output, cut.deterministic, cut.kind, cut.inputs, cut.result_keys), (True, True, "transform", ["input", "output"], ["operation_id", "output", "probe", "commands", "provenance"]))
+        self.assertEqual(cut.required_capabilities, ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "video-editing"])
+        self.assertEqual(PACKAGE.tool_ids(), pkg.tool_ids(), "the pinned package equals the live one")
+        self.assertEqual(check_contract(pinned_contract()), [])
+        for mode, frag in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "supported range"), ("bad_contract", "execution.shell")):
+            os.environ["FAKE_VE_MODE"] = mode
+            with self.assertRaisesRegex(ContractError, frag):
+                self._adapter()
+        os.environ["FAKE_VE_MODE"] = "contract_fail"
+        with self.assertRaisesRegex(ContractError, "contract --json failed"):
+            self._adapter()
+        os.environ["FAKE_VE_MODE"] = "contract_drift"
+        ad2 = self._adapter()   # compatible but drifted: usable only if the agent re-verifies; the drift is reported, never hidden
+        drift = ad2.drift()
+        self.assertTrue(any("video-editing/crop: installed but not pinned" in d for d in drift) and any(d.startswith("operations:") for d in drift), drift)
+        # the pinned contract cannot be edited into something the checks would not notice
+        bad = json.loads(json.dumps(pinned_contract()))
+        bad["tools"][0]["produces_output"] = False
+        self.assertTrue(any("produces_output" in e for e in check_contract(bad)))
+        bad = json.loads(json.dumps(pinned_contract())); bad["errors"]["codes"].append("SOMETHING")
+        self.assertTrue(any("errors.codes" in e for e in check_contract(bad)))
+        bad = json.loads(json.dumps(pinned_contract())); bad["tools"][1]["operation_type"] = "CROP"
+        self.assertTrue(any("not a declared operation" in e for e in check_contract(bad)))
+        self.assertEqual(contract_drift(pinned_contract(), pinned_contract()), [])
+
+    # 2. valid execution: argv list, request on stdin, response → ToolResult with artifact / observation / timeline / provenance
+    def test_valid_execution_and_mapping(self):
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_VE_CALLS"] = log
+        ad = self._adapter()
+        paths, out = self._paths()
+        r = ad.run(self._op(), paths)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual((r.exit_code, r.output, r.tool, r.dry_run), (0, out, "video-editing/cut", False))
+        self.assertTrue(os.path.isfile(out))
+        self.assertEqual(r.data["skill"], {"id": "video-editing", "version": "0.1.0"})
+        self.assertEqual(r.data["status"], "completed")
+        art = r.data["artifact"]
+        self.assertEqual((art["path"], art["size"], art["reused"]), (out, os.path.getsize(out), False))
+        self.assertEqual(art["sha256"], __import__("hashlib").sha256(Path(out).read_bytes()).hexdigest(), "execution.outputs[].sha256 is verified against the file and carried to the Artifact")
+        self.assertTrue(art["operation_id"].startswith("op_"))
+        obs = r.data["observation"]
+        self.assertEqual((obs["kind"], obs["provenance"]), ("media.probe", "OBSERVED")); self.assertTrue(obs["source"].startswith("ffmpeg-skill/probe@"))
+        self.assertEqual(r.data["timeline"]["tracks"][0]["kind"], "video")
+        rec = r.data["operation"]
+        self.assertEqual((rec["type"], rec["status"], rec["skill"], rec["skill_version"], rec["tool"]), ("CUT", "completed", "video-editing", "0.1.0", "ffmpeg-skill/cut"))
+        self.assertEqual(rec["output"]["sha256"], art["sha256"]); self.assertEqual(rec["inputs"][0]["kind"], "source")
+        self.assertEqual(r.commands, rec and r.data["commands"]); self.assertTrue(r.commands and "provenance only" in r.commands[0])
+        # the process boundary: one `run` call, argv as a list with the canonical shape, request JSON on stdin (not argv), workspace = the op dir
+        calls = [json.loads(line) for line in Path(log).read_text().splitlines()]
+        run = next(c for c in calls if c["cmd"] == "run")
+        self.assertEqual(run["argv"][:4], ["run", "-", "--json", "--workspace"])
+        self.assertEqual(run["argv"][4], os.path.dirname(out))
+        self.assertIn("--allowed-input", run["argv"]); self.assertIn(str(Path(self.src).parent), run["argv"]); self.assertIn(self.ws, run["argv"])
+        self.assertEqual(run["argv"][run["argv"].index("--ffmpeg-skill-dir") + 1], str(Path(self.tmp).resolve()))
+        self.assertFalse(any("keep" in a or "0.5" in a for a in run["argv"]), "operation parameters travel on stdin, never in argv")
+        self.assertNotIn("VIDEO_EDITING_FFMPEG_SKILL_DIR", run["env_video"], "the engine location is a CLI argument from agent config, not an environment side channel")
+        # preview shows the same boundary without executing
+        pv = ad.preview(self._op(), paths)[0]
+        self.assertIn("run - --json --workspace", pv); self.assertIn('"schema": "video-editing/request@1"', pv); self.assertNotIn("ffmpeg -", pv)
+        self.assertEqual(sum(1 for c in calls if c["cmd"] == "run"), 1)
+        # dry run goes through `plan` and writes nothing
+        paths2, out2 = self._paths("02_trim.mp4")
+        d = ad.run(self._op(output="b"), {**paths2, "b": out2}, dry_run=True)
+        self.assertTrue(d.ok and d.dry_run and d.output is None and not os.path.exists(out2))
+        self.assertEqual(d.data["plan"]["steps"][0]["type"], "CUT")
+
+    # 3. unsupported operation / unknown tool / undeclared parameter: refused before or by the Skill, never executed elsewhere
+    def test_unsupported_operation(self):
+        ad = self._adapter()
+        paths, out = self._paths()
+        self.assertFalse(ad.supports("video-editing/crop")); self.assertFalse(ad.supports("ffmpeg-skill/cut"))
+        r = ad.run(Operation(tool="video-editing/crop", args={"input": "a", "output": "a_trim"}, inputs=["a"], outputs=["a_trim"]), paths)
+        self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST"); self.assertIn("unsupported tool", r.data["error"]["message"])
+        r = ad.run(self._op(zoom=2), paths)
+        self.assertFalse(r.ok); self.assertIn("does not declare parameter", r.data["error"]["message"])
+        self.assertFalse(os.path.exists(out))
+        with self.assertRaises(ToolError):
+            ad.measure("video-editing/cut", {})
+
+    # 4-8. error mapping: the Skill's code and retryable verdict → ToolResult.data.error → recovery class; nothing is ever a success by exit code alone
+    def test_error_mapping(self):
+        from video_agent.execution.recovery import classify_error, next_attempt
+        ad = self._adapter()
+        paths, out = self._paths()
+        want = {"tool_error": ("TOOL_ERROR", 10, True, "UNKNOWN", "RETRY"), "tool_error_final": ("TOOL_ERROR", 10, False, "SKILL_ERROR", "BLOCK"),
+                "validation_error": ("VALIDATION_ERROR", 12, False, "SKILL_ERROR", "BLOCK"), "cancelled": ("CANCELLED", 130, True, "TIMEOUT", "RETRY"),
+                "timeout": ("CANCELLED", 130, True, "TIMEOUT", "RETRY"), "internal_error": ("INTERNAL_ERROR", 1, False, "SKILL_ERROR", "BLOCK"),
+                "output_missing": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"), "hash_mismatch": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"),
+                "no_observation": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"), "malformed": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"),
+                "empty": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"), "two_docs": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"),
+                "text": ("INVALID_RESULT", 1, False, "SKILL_ERROR", "BLOCK"), "nonzero_ok": ("INVALID_RESULT", 3, False, "SKILL_ERROR", "BLOCK"),
+                "unknown_code": ("INVALID_RESULT", 1, False, "SKILL_ERROR", "BLOCK")}
+        for mode, (code, exit_code, retry, cls, action) in want.items():
+            os.environ["FAKE_VE_MODE"] = mode
+            r = ad.run(self._op(), paths)
+            self.assertFalse(r.ok, mode)
+            self.assertEqual((r.data["error"]["code"], r.exit_code, r.data["error"]["retryable"]), (code, exit_code, retry), mode)
+            self.assertEqual(classify_error(r), cls, mode)
+            self.assertEqual(next_attempt(r, 1, 2, None)["action"], action, mode)
+            self.assertIsNone(r.output, mode)
+            self.assertFalse(os.path.exists(out), f"{mode}: a failed run never leaves a result at the output path")
+        os.environ["FAKE_VE_MODE"] = "tool_error"
+        r = ad.run(self._op(), paths)
+        self.assertEqual(r.data["error"]["recovery_class"], "UNKNOWN"); self.assertTrue(r.commands and "provenance only" in r.commands[0], "commands of a failed run are provenance too")
+        self.assertIn("[TOOL_ERROR]", r.stderr_tail)
+        # request-level refusals the Skill reports with its own codes (traversal / unsupported type / bad range) are non-retryable blocks
+        os.environ.pop("FAKE_VE_MODE")
+        r = ad.run(self._op(keep=[[5.0, 3.0]]), paths)
+        self.assertEqual((r.data["error"]["code"], classify_error(r)), ("INVALID_TIME_RANGE", "INVALID_ARGS"))
+        r = ad.run(self._op(keep=[[0.0, 40.0]]), paths)
+        self.assertEqual((r.data["error"]["code"], r.data["error"]["retryable"]), ("INVALID_TIME_RANGE", False))
+        # timeout / hang: the agent's process boundary kills the tree and reports a retryable CANCELLED(timeout)
+        os.environ["FAKE_VE_MODE"] = "hang"
+        r = ad.run(self._op(), paths, timeout=1)
+        self.assertEqual((r.ok, r.exit_code, r.data["error"]["code"], r.data["error"]["details"].get("reason"), classify_error(r)), (False, 124, "CANCELLED", "timeout", "TIMEOUT"))
+        # process exit 0 + missing output is never a success (covered by output_missing above); process exit != 0 + ok document is never a success (nonzero_ok)
+
+    # 12. PathPolicy propagation: the adapter's roots reach the Skill; traversal / absolute outside / symlink escape / workspace escape refused on both sides
+    def test_path_policy_propagation(self):
+        ad = self._adapter()
+        paths, out = self._paths()
+        outside = fake_media(tempfile.mkdtemp(), "o.mp4")
+        r = ad.run(self._op(), {**paths, "a": outside})
+        self.assertFalse(r.ok); self.assertIn("outside the allowed input roots", r.data["error"]["message"])
+        r = ad.run(self._op(), {**paths, "a": str(Path(self.src).parent / ".." / "src" / "talk.mp4")})
+        self.assertFalse(r.ok); self.assertIn("traversal", r.data["error"]["message"])
+        r = ad.run(self._op(), {**paths, "a_trim": str(Path(tempfile.mkdtemp()) / "x.mp4")})
+        self.assertFalse(r.ok); self.assertIn("outside the workspace", r.data["error"]["message"])
+        r = self._adapter(workspace=self.tmp).run(self._op(), {**paths, "a_trim": self.src})
+        self.assertFalse(r.ok); self.assertIn("overwrite an input", r.data["error"]["message"])
+        r = ad.run(self._op(), {**paths, "a_trim": out[:-4] + ".txt"})
+        self.assertFalse(r.ok); self.assertIn("extension", r.data["error"]["message"])
+        if hasattr(os, "symlink"):
+            link = Path(self.src).parent / "link.mp4"
+            try:
+                os.symlink(outside, link)
+            except (OSError, NotImplementedError):
+                link = None
+            if link:
+                r = ad.run(self._op(), {**paths, "a": str(link)})
+                self.assertFalse(r.ok); self.assertIn("outside the allowed input roots", r.data["error"]["message"])
+        # the Skill enforces the same roots again: an adapter without roots (unit fixture) still gets the Skill's PATH_NOT_ALLOWED
+        loose = self._adapter(allowed_inputs=[], workspace=None)
+        r = loose.run(self._op(), {**paths, "a": outside})
+        self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "PATH_NOT_ALLOWED"); self.assertEqual(r.data["error"]["details"].get("reason"), "outside_allowed_roots")
+        # a missing input is MISSING_INPUT from the Skill when the adapter has no roots, refused earlier otherwise
+        r = ad.run(self._op(), {**paths, "a": str(Path(self.src).parent / "nope.mp4")})
+        self.assertFalse(r.ok); self.assertIn("not found", r.data["error"]["message"])
+
+    # 9-10. security boundary: nothing executable crosses; argv is a fixed list; values with shell metacharacters only ever travel as JSON on stdin
+    def test_security_boundary(self):
+        import ast
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_VE_CALLS"] = log
+        ad = self._adapter()
+        paths, out = self._paths()
+        for bad in ({"command": "ffmpeg -i x y"}, {"argv": ["-y"]}, {"shell": "rm -rf /"}, {"filter": "scale=2"}, {"filter_complex": "[0:v]xfade"}, {"executable": "/bin/sh"},
+                    {"env": {"PATH": "/tmp"}}, {"api_key": "sk"}, {"workspace": "/"}, {"allowed_input": "/"}, {"ffmpeg_skill_dir": "/tmp/x"}, {"script": "x.py"}, {"path": "/etc"}):
+            r = ad.run(self._op(**bad), paths)
+            self.assertFalse(r.ok, bad); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST", bad); self.assertIn("refusing argument", r.data["error"]["message"])
+        for bad in ({"precision": "keyframe; rm -rf /"}, {"precision": "a\nb"}, {"precision": "x" * 300}):
+            r = ad.run(self._op(**bad), paths)
+            self.assertFalse(r.ok, bad)
+        r = ad.run(self._op(precision="$(id)"), paths)   # a metacharacter string is data: it reaches the Skill as JSON and is refused there as an invalid parameter value
+        self.assertFalse(r.ok)
+        calls = [json.loads(line) for line in Path(log).read_text().splitlines()]
+        for c in calls:
+            self.assertIsInstance(c["argv"], list)
+            self.assertFalse(any("$(" in a or ";" in a or "|" in a for a in c["argv"]), c["argv"])
+            self.assertTrue(all("ffmpeg" not in a for a in c["argv"] if not a.startswith("--")) or "--ffmpeg-skill-dir" in c["argv"])
+        self.assertFalse(os.path.exists(out))
+        # static: the adapter package builds argv lists only, never a shell, never a command string, never an import of the Skill
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "video_editing"
+        for py in root.glob("*.py"):
+            text = py.read_text(encoding="utf-8")
+            tree = ast.parse(text)
+            names = [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)] + [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
+            self.assertFalse(any("video_editing_skill" in m or m == "subprocess" for m in names), (py.name, names))
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Call):
+                    for kw in n.keywords:
+                        self.assertNotEqual(kw.arg, "shell", f"{py.name}: shell= keyword")
+            parts = text.split('"""', 2)
+            code = parts[2] if len(parts) == 3 else text
+            for bad in ("shell=True", "os.system", "os.popen", "filter_complex=", "-filter_complex", "ffmpeg -i", "argv.append(args"):
+                self.assertNotIn(bad, code, (py.name, bad))
+        # run_process_group is the only process boundary and takes a list
+        adapter_src = (root / "adapter.py").read_text(encoding="utf-8")
+        self.assertIn("run_process_group(cmd, ", adapter_src)
+        self.assertIn("cmd = list(self.skill.command) + argv", adapter_src)
+
+    # 13. capability failure: without the video-editing capability the tool is never selected; with it and the adapter, it is (in declared order)
+    def test_capability_gating_and_registry(self):
+        from video_agent.tools import ToolRouter
+        ad = self._adapter()
+        svc = make_service(self.tmp, caps=FakeCaps(), adapter=ToolRouter([FakeAdapter(), ad]))
+        self.assertEqual(svc.tools_for().get("silence_cleanup"), "ffmpeg-skill/cut", "first declared candidate wins while it is executable")
+        svc.registry.get("silence_cleanup").tools = ["video-editing/cut"]
+        self.assertIsNone(svc.tools_for().get("silence_cleanup"), "video-editing capability MISSING → no tool, no fallback")
+        row = next(r for r in svc.skills() if r["skill"] == "silence_cleanup")
+        self.assertEqual(row["status"], "UNAVAILABLE"); self.assertIn("required capability missing", row["reason"])
+        pk = next(p for p in svc.packages() if p["skill_id"] == "video-editing")
+        self.assertFalse(pk["available"]); self.assertIn("video-editing", pk["reason"])
+        svc2 = make_service(self.tmp, caps=FakeCaps(extra=["video-editing", "encoder:aac"]), adapter=ToolRouter([FakeAdapter(), ad]))
+        svc2.registry.get("silence_cleanup").tools = ["video-editing/cut"]
+        self.assertEqual(svc2.tools_for().get("silence_cleanup"), "video-editing/cut")
+        pk = next(p for p in svc2.packages() if p["skill_id"] == "video-editing")
+        self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.1.0"); self.assertEqual(sorted(pk["usable_tools"]), sorted(ad.tools))
+        # a tool-level capability the resolver knows and reports missing blocks the tool; names it does not resolve are the Skill's doctor's business
+        svc3 = make_service(self.tmp, caps=FakeCaps(missing=["encoder:libx264"], extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
+        svc3.registry.get("silence_cleanup").tools = ["video-editing/cut"]
+        self.assertIsNone(svc3.tools_for().get("silence_cleanup"), "encoder:libx264 MISSING → not executable")
+        self.assertEqual(svc3.registry.tool_missing_capabilities("video-editing/cut", svc3.caps.resolve()), ["encoder:libx264"])
+        svc4 = make_service(self.tmp, caps=FakeCaps(extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
+        svc4.registry.get("silence_cleanup").tools = ["video-editing/cut"]
+        self.assertEqual(svc4.tools_for().get("silence_cleanup"), "video-editing/cut", "encoder:aac is not resolved by this fake environment: left to the Skill's doctor, not guessed missing")
+        # a plan step naming video-editing/cut when its package is registered passes the validator; the registry knows the tool
+        self.assertEqual(svc2.registry.tool("video-editing/cut").skill_id, "video-editing")
+        # a decision-level BLOCK when the capability is missing (Decision Engine untouched: it only sees the registry's verdict)
+        ir = svc.plan([self.src], "youtube")
+        blocked = [d for d in ir.doc["decisions"] if d["subject"] == "capability.silence_cleanup"]
+        self.assertEqual(len(blocked), 1); self.assertEqual((blocked[0]["type"], blocked[0]["approval"]), ("BLOCK", "BLOCK"))
+
+    # 14. deterministic / reuse: identical request → identical operation id and output hash; a reused result is reported as such; the executor's idempotent skip still applies
+    def test_deterministic_and_reuse(self):
+        ad = self._adapter()
+        paths, out = self._paths()
+        r1 = ad.run(self._op(), paths)
+        paths2, out2 = self._paths("02.mp4")
+        r2 = ad.run(self._op(output="b"), {**paths2, "b": out2})
+        self.assertTrue(r1.ok and r2.ok)
+        self.assertEqual(r1.data["operation_id"], r2.data["operation_id"]); self.assertEqual(r1.data["artifact"]["sha256"], r2.data["artifact"]["sha256"])
+        os.environ["FAKE_VE_MODE"] = "reused"
+        r3 = ad.run(self._op(), paths)
+        self.assertTrue(r3.ok); self.assertEqual((r3.data["status"], r3.data["artifact"]["reused"], r3.commands), ("reused", True, []))
+        os.environ.pop("FAKE_VE_MODE")
+        r4 = ad.run(self._op(keep=[[0.5, 3.0]]), paths)
+        self.assertNotEqual(r4.data["operation_id"], r1.data["operation_id"], "different parameters → different identity")
+
+    # 6. Project IR lowering: video.trim → video-editing/cut carries the same meaning (keep ranges, precision) and never an argv
+    def test_ir_lowering_and_end_to_end(self):
+        from video_agent.execution.compiler import lower_video_trim
+        from video_agent.tools import ToolRouter
+        op = {"type": "video.trim", "asset": "a", "keep": [[2.85, 9.15], [11.85, 13.85]], "accurate": False, "decision_ids": []}
+        self.assertEqual(lower_video_trim("video-editing/cut", op, "a", "a_trim"), {"input": "a", "keep": [[2.85, 9.15], [11.85, 13.85]], "precision": "keyframe", "output": "a_trim"})
+        self.assertEqual(lower_video_trim("video-editing/cut", dict(op, accurate=True), "a", "a_trim")["precision"], "frame")
+        self.assertEqual(lower_video_trim("ffmpeg-skill/cut", op, "a", "a_trim"), {"input": "a", "segments": "2.850-9.150,11.850-13.850", "output": "a_trim"})
+        # plan → step tool video-editing/cut → compile → execute through the fake Skill → QA → provenance (workspace = the service workspace)
+        ad = self._adapter(workspace=self.tmp)
+        fake = FakeAdapter()
+        svc = make_service(self.tmp, caps=FakeCaps(extra=["video-editing", "encoder:aac"]), adapter=ToolRouter([fake, ad]))
+        svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]
+        ir = svc.plan([self.src], "youtube")
+        step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "silence_cleanup")
+        self.assertEqual(step["tool"], "video-editing/cut")
+        self.assertEqual(svc.validate(ir).errors, [])
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution"))   # REVIEW = the QA verdict on the fake outputs, not an execution failure
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out.get("execution"))
+        cut = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/cut")
+        self.assertTrue(cut["ok"]); self.assertTrue(cut["output"].startswith(str(Path(self.tmp).resolve()))); self.assertEqual(cut["data"]["operation"]["type"], "CUT")
+        self.assertEqual(cut["data"]["operation"]["parameters"], {"keep": [{"start": 2.85, "end": 13.85}], "precision": "keyframe"})
+        self.assertFalse(any(o.tool == "ffmpeg-skill/cut" for o in fake.calls), "the trim went through video-editing, not the reference cut")
+        self.assertTrue(any(o.tool == "ffmpeg-skill/loudness" for o in fake.calls), "the rest of the chain is unchanged")
+        prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.1.0"))
+        self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
+        self.assertEqual(trim["skill_result"]["observation"]["provenance"], "OBSERVED")
+        self.assertTrue(trim["result"]["commands"] and "provenance only" in trim["result"]["commands"][0])
+        self.assertNotIn("argv", json.dumps(trim["args"])); self.assertNotIn("segments", trim["args"])
+        # resume reuses the completed cut (agent-level idempotency) without calling the Skill again
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_VE_CALLS"] = log
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])
+        self.assertFalse(os.path.exists(log) and any(json.loads(l)["cmd"] == "run" for l in Path(log).read_text().splitlines()), "no video-editing run on resume")
+        # a Skill failure inside the chain is a finite, classified recovery: TOOL_ERROR (retryable) → one retry → BLOCK, no fallback to another engine
+        os.environ["FAKE_VE_MODE"] = "tool_error"
+        out3 = svc.render(load_ir(p), p)
+        self.assertIn(out3["status"], ("FAILED", "BLOCKED"))
+        self.assertEqual([r["class"] for r in out3["execution"]["recovery"]], ["UNKNOWN", "UNKNOWN"])
+        self.assertFalse(any(o.tool == "ffmpeg-skill/cut" for o in fake.calls))
+        os.environ["FAKE_VE_MODE"] = "validation_error"
+        out4 = svc.render(load_ir(p), p)
+        self.assertEqual(out4["execution"]["recovery"][0]["class"], "SKILL_ERROR"); self.assertEqual(out4["execution"]["recovery"][0]["action"], "BLOCK")

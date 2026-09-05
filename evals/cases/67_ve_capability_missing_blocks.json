@@ -1,0 +1,25 @@
+{
+ "name": "ve_capability_missing_blocks",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing": {
+  "prefer": true,
+  "no_capability": true
+ },
+ "expect": {
+  "selected_tool": "ffmpeg-skill/cut",
+  "blocked": false
+ }
+}

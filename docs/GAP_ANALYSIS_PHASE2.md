@@ -276,3 +276,17 @@ transcription-skill: 未接続。理由は main に実装・contract が無い�
 
 main（287b685）も `(0, 9, 0)` のままで同じ理由で赤になるが、main への直接変更はルール上行わない（PR #4 のマージで解消）。ffmpeg-skill / media-analysis-skill / transcription-skill は変更していない。
 
+## 19. PR #18 — video-editing-skill adapter integration（ADR-028、2026-09-05 追記）
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G79 編集 Skill の adapter が無い | 編集は ffmpeg-skill/cut のみ、video-editing-skill は将来 Skill 扱い | `tools/video_editing/`（locate / contract 取得・互換検査・drift 検出 / EditRequest 生成 / response 検証 / ToolResult 変換）、CLI が境界、import 無し |
+| G80 IR → 外部編集 Skill の lowering | compiler は ffmpeg-skill の catalog 形しか出さない | `lower_video_trim`: video.trim → video-editing/cut（keep / precision）。他 tool の lowering は不変 |
+| G81 tool 契約の capability が選択で検査されない | SkillSpec の capability のみ | `SkillRegistry.tool_missing_capabilities`（package capabilities + resolver が解決する ToolSpec.required_capabilities） |
+| G82 Skill の retryable 判定が recovery に届かない | stderr 文字列分類のみ | `recovery._skill_class`: data.error.recovery_class / retryable を優先、SKILL_ERROR（BLOCK）を追加 |
+| G83 Skill の実行事実が provenance に無い | commands のみ | provenance operations[].skill_result（skill / operation_id / artifact sha256 / timeline / observation） |
+
+CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）を clone している。main へマージされたら tests.yml の `--branch` を外すこと（main は README のみ）。
+
+別 PR 候補: video.concat / speed / fit / overlay を Plan / Decision に接続（今回は adapter が contract の全 tool を request 化できるが、planner が出す IR operation は video.trim のみ）、audio-only 入力の扱い（video-editing は INVALID_INPUT）、drift 検出の CI 単独ジョブ化。
+

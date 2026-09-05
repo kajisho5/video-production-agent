@@ -37,6 +37,22 @@ class CompileError(ValueError):
     pass
 
 
+def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
+    """IR `video.trim` (keep ranges on one asset) → the typed arguments of the tool the plan selected. The meaning is the
+    same for every tool: keep exactly these ranges, in this order, everything else is removed; `accurate` is the plan's
+    precision requirement. The reference cut tool takes them as `segments` (+ `accurate`); video-editing/cut (ADR-028) as
+    the contract's CUT parameters `keep` [{start, end}] and `precision` frame | keyframe. The tool itself comes from the
+    plan (registry-selected); the compiler never chooses an engine and never falls back to another one."""
+    keep = [[round(float(s), 3), round(float(e), 3)] for s, e in op["keep"]]
+    if tool == "video-editing/cut":
+        return {"input": current, "keep": keep, "precision": "frame" if op.get("accurate") else "keyframe", "output": out_id}
+    # the reference catalog shape (any adapter implementing the typed `cut` catalog): unchanged since Phase 1
+    args: Dict[str, Any] = {"input": current, "segments": ",".join(f"{s:.3f}-{e:.3f}" for s, e in keep), "output": out_id}
+    if op.get("accurate"):
+        args["accurate"] = True   # frame-accurate cut is part of the plan content (hashed, diffed), not a side channel
+    return args
+
+
 def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
     """(skill, asset-or-target key) → tool id, from plan.steps. The compiler never chooses tools itself."""
     out: Dict[Tuple[str, str], str] = {}
@@ -87,11 +103,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             gen += 1
             out_id = f"{asset_id}_trim"
             paths[out_id] = str(job / "ops" / f"{stem}_{gen:02d}_trim" / f"{stem}_trim.mp4")
-            segs = ",".join(f"{s:.3f}-{e:.3f}" for s, e in op["keep"])
-            args: Dict[str, Any] = {"input": current, "segments": segs, "output": out_id}
-            if op.get("accurate"):
-                args["accurate"] = True   # frame-accurate cut is part of the plan content (hashed, diffed), not a side channel
-            add(tool_for("silence_cleanup", asset_id), args, [current], [out_id], list(op.get("decision_ids") or []), fp, skill="silence_cleanup")
+            tool = tool_for("silence_cleanup", asset_id)
+            args = lower_video_trim(tool, op, current, out_id)
+            add(tool, args, [current], [out_id], list(op.get("decision_ids") or []), fp, skill="silence_cleanup")
             current = out_id
         for op in d["audio"]["operations"]:
             if op["asset"] != asset_id or op["type"] != "audio.loudness":

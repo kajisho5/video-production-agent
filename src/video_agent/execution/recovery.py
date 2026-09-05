@@ -14,10 +14,28 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "TIMEOUT":        {"action": "RETRY_LONGER", "hint": "retry once with a doubled timeout"},
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},
     "UNKNOWN":        {"action": "RETRY_SAME", "hint": "retry once with identical arguments"},
+    "SKILL_ERROR":    {"action": "BLOCK", "hint": "the Skill refused or could not validate its output (not retryable as reported by the Skill); see the error code"},
 }
 
 
+def _skill_class(r: ToolResult) -> Optional[str]:
+    """A structured error from an external Skill (data.error with the Skill's code, its retryable flag and the recovery class the
+    adapter mapped it to). The Skill's own verdict on retryability wins: a non-retryable code never becomes a blind retry."""
+    err = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+    if not isinstance(err, dict) or not err.get("recovery_class"):
+        return None
+    cls = str(err["recovery_class"])
+    if cls not in RECOVERY_TABLE:
+        return "SKILL_ERROR"
+    if RECOVERY_TABLE[cls]["action"] != "BLOCK" and err.get("retryable") is False:
+        return "SKILL_ERROR"
+    return cls
+
+
 def classify_error(r: ToolResult) -> str:
+    skill_cls = _skill_class(r)
+    if skill_cls:
+        return skill_cls
     txt = (r.stderr_tail or "").lower()
     if r.exit_code == 127 or "was not found on path" in txt:
         return "TOOL_MISSING"

@@ -40,18 +40,22 @@ from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from .tools.media_analysis import PACKAGE as MEDIA_ANALYSIS_PACKAGE, MediaAnalysisAdapter, locate_media_analysis
 from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, TranscriptionAdapter, locate_transcription
+from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, locate_video_editing
 from .tools.base import ToolError
 
 
 class Service:
     def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
-                 provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None, transcription_dir: Optional[str] = None, offline: bool = False):
+                 provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None, transcription_dir: Optional[str] = None, offline: bool = False,
+                 video_editing_dir: Optional[str] = None):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
         self.media_analysis_dir = media_analysis_dir or os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR")
         self.transcription_dir = transcription_dir or os.environ.get("VIDEO_AGENT_TRANSCRIPTION_DIR")
+        self.video_editing_dir = video_editing_dir or os.environ.get("VIDEO_AGENT_VIDEO_EDITING_DIR")
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
-        self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline)
+        self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
+                                               video_editing_dir=self.video_editing_dir)
         self._adapter = adapter
         self.registry = default_registry()
         self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
@@ -60,6 +64,7 @@ class Service:
         self.registry.register_package(FFMPEG_SKILL_PACKAGE)
         self.registry.register_package(MEDIA_ANALYSIS_PACKAGE)   # external observation Skill: adapter exists here; availability needs an installation
         self.registry.register_package(TRANSCRIPTION_PACKAGE)    # external recognition Skill (transcription-skill): same rule
+        self.registry.register_package(VIDEO_EDITING_PACKAGE)    # external editing Skill (video-editing-skill, ADR-028): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -89,6 +94,14 @@ class Service:
                 router.register(TranscriptionAdapter(ts, workspace=str(Path(self.workspace) / "cache" / "transcription"), allowed_inputs=roots, offline=self.offline))
             except ToolError:
                 pass   # same rule: an incompatible transcription-skill is reported by doctor and never used
+        ve = locate_video_editing(self.video_editing_dir)
+        if ve:
+            try:
+                # outputs land inside the agent workspace (each operation in its own directory), inputs come from the allowed roots or the workspace
+                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
+                router.register(VideoEditingAdapter(ve, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None))
+            except ToolError:
+                pass   # same rule: an incompatible video-editing-skill is reported by doctor and never used
         return self._sync_packages(router)
 
     def _sync_packages(self, router: ToolRouter) -> ToolRouter:
