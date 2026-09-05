@@ -1,0 +1,640 @@
+{
+ "animations": [
+  {
+   "applies_to": [
+    "text_overlay",
+    "image_overlay"
+   ],
+   "description": "Linear alpha fade in at start and out at end, over the same duration (ffmpeg-skill/overlay --fade). Only for text_overlay and image_overlay.",
+   "kind": "fade",
+   "parameters": {
+    "duration": {
+     "max": 30.0,
+     "min": 0.01,
+     "required": true,
+     "type": "number"
+    }
+   }
+  }
+ ],
+ "description": "Deterministic motion-graphics rendering execution: title cards, lower thirds, free-form text overlays and image/logo overlays, with built-in template animation (title/lower-third fade and slide) or a configurable linear fade (text/image overlays); typed Graphics Document in, a validated video artifact with provenance out. Not an AI agent: it never chooses what to show, when to show it, or how it should look.",
+ "element_types": [
+  {
+   "animation": "builtin_fade",
+   "description": "Centered title card with an optional subtitle. Built-in 0.3s alpha fade in/out (ffmpeg-skill/graphics --template title); not configurable per element.",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "primary_color": {
+     "required": false,
+     "type": "color"
+    },
+    "subtitle": {
+     "max_length": 200,
+     "required": false,
+     "type": "string"
+    },
+    "text_color": {
+     "required": false,
+     "type": "color"
+    },
+    "title": {
+     "max_length": 200,
+     "required": true,
+     "type": "string"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:drawtext",
+    "filter:drawbox",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/graphics",
+   "type": "title"
+  },
+  {
+   "animation": "builtin_slide_fade",
+   "description": "Name + title bar sliding in from the left. Built-in slide-in/out and fade (ffmpeg-skill/graphics --template lower-third); not configurable per element.",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "name": {
+     "max_length": 200,
+     "required": true,
+     "type": "string"
+    },
+    "primary_color": {
+     "required": false,
+     "type": "color"
+    },
+    "text_color": {
+     "required": false,
+     "type": "color"
+    },
+    "title": {
+     "max_length": 200,
+     "required": false,
+     "type": "string"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:drawtext",
+    "filter:overlay",
+    "filter:color",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/graphics",
+   "type": "lower_third"
+  },
+  {
+   "animation": "configurable",
+   "description": "Free-form text drawn at a position, with an optional configurable fade in/out (ffmpeg-skill/overlay --text).",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "border_color": {
+     "default": "black",
+     "required": false,
+     "type": "color"
+    },
+    "border_width": {
+     "default": 2,
+     "max": 20,
+     "min": 0,
+     "required": false,
+     "type": "integer"
+    },
+    "box": {
+     "default": false,
+     "required": false,
+     "type": "boolean"
+    },
+    "box_color": {
+     "default": "black@0.5",
+     "required": false,
+     "type": "color"
+    },
+    "font": {
+     "required": false,
+     "type": "font"
+    },
+    "font_color": {
+     "default": "white",
+     "required": false,
+     "type": "color"
+    },
+    "font_size": {
+     "default": 42,
+     "max": 300,
+     "min": 8,
+     "required": false,
+     "type": "integer"
+    },
+    "margin": {
+     "default": 24,
+     "max": 2000,
+     "min": 0,
+     "required": false,
+     "type": "integer"
+    },
+    "opacity": {
+     "default": 1.0,
+     "max": 1.0,
+     "min": 0.0,
+     "required": false,
+     "type": "number"
+    },
+    "position": {
+     "default": "bottom",
+     "required": false,
+     "type": "position"
+    },
+    "text": {
+     "max_length": 500,
+     "required": true,
+     "type": "string"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:drawtext",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/overlay",
+   "type": "text_overlay"
+  },
+  {
+   "animation": "configurable",
+   "description": "Composite a PNG/JPG image or logo at a position, with optional static scale and a configurable fade in/out (ffmpeg-skill/overlay --image).",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "image_path": {
+     "required": true,
+     "type": "path"
+    },
+    "margin": {
+     "default": 24,
+     "max": 2000,
+     "min": 0,
+     "required": false,
+     "type": "integer"
+    },
+    "opacity": {
+     "default": 1.0,
+     "max": 1.0,
+     "min": 0.0,
+     "required": false,
+     "type": "number"
+    },
+    "position": {
+     "default": "top-right",
+     "required": false,
+     "type": "position"
+    },
+    "scale_percent": {
+     "max": 100.0,
+     "min": 0.1,
+     "required": false,
+     "type": "number"
+    },
+    "scale_width": {
+     "max": 8192,
+     "min": 1,
+     "required": false,
+     "type": "integer"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:overlay",
+    "filter:scale",
+    "filter:colorchannelmixer",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/overlay",
+   "type": "image_overlay"
+  }
+ ],
+ "errors": {
+  "codes": [
+   "INVALID_REQUEST",
+   "INVALID_INPUT",
+   "PATH_NOT_ALLOWED",
+   "UNSUPPORTED_OPERATION",
+   "UNSUPPORTED_FORMAT",
+   "INVALID_TIME_RANGE",
+   "DEPENDENCY_ERROR",
+   "MISSING_INPUT",
+   "TOOL_ERROR",
+   "OUTPUT_ERROR",
+   "VALIDATION_ERROR",
+   "CANCELLED",
+   "INTERNAL_ERROR"
+  ],
+  "exit_codes": {
+   "CANCELLED": 15,
+   "DEPENDENCY_ERROR": 11,
+   "INTERNAL_ERROR": 16,
+   "INVALID_INPUT": 3,
+   "INVALID_REQUEST": 2,
+   "INVALID_TIME_RANGE": 8,
+   "MISSING_INPUT": 7,
+   "OUTPUT_ERROR": 13,
+   "PATH_NOT_ALLOWED": 4,
+   "TOOL_ERROR": 12,
+   "UNSUPPORTED_FORMAT": 6,
+   "UNSUPPORTED_OPERATION": 5,
+   "VALIDATION_ERROR": 14
+  },
+  "retryable": {
+   "CANCELLED": true,
+   "DEPENDENCY_ERROR": false,
+   "INTERNAL_ERROR": false,
+   "INVALID_INPUT": false,
+   "INVALID_REQUEST": false,
+   "INVALID_TIME_RANGE": false,
+   "MISSING_INPUT": false,
+   "OUTPUT_ERROR": false,
+   "PATH_NOT_ALLOWED": false,
+   "TOOL_ERROR": true,
+   "UNSUPPORTED_FORMAT": false,
+   "UNSUPPORTED_OPERATION": false,
+   "VALIDATION_ERROR": false
+  },
+  "success_exit_code": 0
+ },
+ "execution": {
+  "ai": false,
+  "arbitrary_executables": false,
+  "arbitrary_filters": false,
+  "canonical_invocation": [
+   "motion-graphics",
+   "run",
+   "-",
+   "--json"
+  ],
+  "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, MOTION_GRAPHICS_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, ~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
+  "executables": [
+   "python3 <ffmpeg-skill>/scripts/{probe,graphics,overlay}.py (argv lists)"
+  ],
+  "input_mutation": false,
+  "mode": "local",
+  "network": false,
+  "shell": false,
+  "stderr": "diagnostics only",
+  "stdin": "motion-graphics/request@1",
+  "stdout": "exactly one motion-graphics/response@1 document"
+ },
+ "ffmpeg_skill": {
+  "contract_version": "1.0",
+  "flags_used": {
+   "graphics": [
+    "input",
+    "output",
+    "template",
+    "name",
+    "title",
+    "subtitle",
+    "start",
+    "end",
+    "primary",
+    "text_color",
+    "font",
+    "font_file",
+    "json"
+   ],
+   "overlay": [
+    "input",
+    "output",
+    "image",
+    "text",
+    "position",
+    "margin",
+    "start",
+    "end",
+    "fade",
+    "opacity",
+    "scale",
+    "scale_percent",
+    "font",
+    "font_file",
+    "font_size",
+    "font_color",
+    "border",
+    "border_color",
+    "box",
+    "box_color",
+    "json"
+   ],
+   "probe": [
+    "inputs"
+   ]
+  },
+  "tools_used": [
+   "probe",
+   "graphics",
+   "overlay"
+  ],
+  "version_window": {
+   "max_exclusive": "1.0.0",
+   "min": "0.9.1"
+  }
+ },
+ "fonts": {
+  "custom_font_file": {
+   "allowed_extensions": [
+    ".ttf",
+    ".otf",
+    ".ttc"
+   ],
+   "path_policy": true,
+   "provenance": "font_file_hash (sha256)"
+  },
+  "default_font_id": "system:dejavu-sans",
+  "fallback_policy": "an unknown font_id or a missing font_file is MISSING_INPUT / INVALID_INPUT; this skill never substitutes a different font and reports success",
+  "registry": {
+   "system:dejavu-sans": "DejaVu Sans",
+   "system:dejavu-sans-mono": "DejaVu Sans Mono",
+   "system:dejavu-serif": "DejaVu Serif"
+  }
+ },
+ "id": "motion-graphics",
+ "image_formats": {
+  "allowed_extensions": [
+   ".png",
+   ".jpg",
+   ".jpeg"
+  ]
+ },
+ "kind": "execution",
+ "limits": {
+  "max_element_duration_seconds": 86400.0,
+  "max_elements": 64
+ },
+ "name": "motion-graphics-skill",
+ "not_provided": [
+  "AI reasoning",
+  "design decisions",
+  "production plans",
+  "template or content selection",
+  "arbitrary ffmpeg filters",
+  "arbitrary shapes without a typed delegate tool",
+  "position/scale animation (see unsupported_animations)",
+  "video editing (video-editing-skill)",
+  "color grading (color-grading-skill)",
+  "subtitle generation (subtitle-skill)",
+  "shell execution",
+  "network access"
+ ],
+ "output_formats": {
+  "audio_codec": "aac (passthrough of the source track's presence, not its codec)",
+  "container": "same extension as document.output.path (ffmpeg-skill picks the codec for it)",
+  "video_codec": "libx264"
+ },
+ "package": "motion-graphics-skill",
+ "positions": {
+  "explicit": "{x: integer, y: integer} pixels; negative counts from the far edge (ffmpeg-skill/overlay semantics)",
+  "named": [
+   "top-left",
+   "top",
+   "top-right",
+   "left",
+   "center",
+   "right",
+   "bottom-left",
+   "bottom",
+   "bottom-right"
+  ]
+ },
+ "provenance": {
+  "identity": "sha256 over canonical JSON of {type, parameters (asset/font paths replaced by their sha256), start, end, animation, previous stage identity, tool_versions}; no timestamps, no UUIDs, no absolute paths",
+  "per_operation": [
+   "operation_id",
+   "type",
+   "tool",
+   "status",
+   "parameters",
+   "input_hashes",
+   "output_hash",
+   "seconds",
+   "tool_commands_observed"
+  ],
+  "per_output": [
+   "document_id",
+   "video (path, sha256, duration, width, height)",
+   "assets (sha256 per element)",
+   "fonts (font_id or font_file_hash per element)",
+   "operations (chain)",
+   "output_hash"
+  ]
+ },
+ "repository": "https://github.com/kajisho5/motion-graphics-skill",
+ "request": {
+  "forbidden_fields": [
+   "af",
+   "args",
+   "argv",
+   "cmd",
+   "command",
+   "commands",
+   "cwd",
+   "env",
+   "eval",
+   "exec",
+   "executable",
+   "expression",
+   "filter",
+   "filter_complex",
+   "filters",
+   "script",
+   "shell",
+   "vf"
+  ],
+  "id_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+  "schema": "motion-graphics/request@1",
+  "shape": {
+   "elements": [
+    {
+     "animation?": {
+      "kind": "fade",
+      "parameters": {
+       "duration": 0.5
+      }
+     },
+     "end": 1,
+     "id": "id",
+     "parameters": {
+      "...": "see element_types[].parameters"
+     },
+     "start": 0,
+     "type": "title|lower_third|text_overlay|image_overlay"
+    }
+   ],
+   "options?": {
+    "crf?": 18,
+    "preset?": "medium",
+    "reuse_intermediates?": true
+   },
+   "output": {
+    "overwrite?": false,
+    "path": "file"
+   },
+   "schema": "motion-graphics/request@1",
+   "video": {
+    "path": "file"
+   }
+  }
+ },
+ "response": {
+  "failure": {
+   "error": {
+    "code": "one of errors.codes",
+    "details": {},
+    "message": "str",
+    "retryable": "bool"
+   },
+   "note": "the same failure shape for every command (validate/plan/run alike)",
+   "ok": false,
+   "status": "error|cancelled"
+  },
+  "schema": "motion-graphics/response@1",
+  "success": {
+   "plan": {
+    "dry_run": true,
+    "note": "produced by `plan`, or `run --dry-run`; writes no media; has no output/operations/provenance keys",
+    "ok": true,
+    "plan": "{document_id, video, output: {path}, timeline: [element + planned tool/asset/font]}",
+    "status": "ok"
+   },
+   "run": {
+    "dry_run": false,
+    "engine": {},
+    "ok": true,
+    "operations": "[StageResult]",
+    "output": "{path, sha256, size, duration, width, height}",
+    "provenance": {},
+    "reused": "bool",
+    "status": "ok",
+    "timeline": "[{id, type, start, end}]"
+   },
+   "validate": {
+    "dry_run": true,
+    "note": "produced by `validate` only; structural check alone, no file-system access, no output/operations/plan keys",
+    "ok": true,
+    "status": "ok",
+    "validation": "{ok: true, elements: [GraphicsElement, in render order]}"
+   }
+  }
+ },
+ "role": "motion graphics rendering (execution); not design, not decision",
+ "schema": "motion-graphics/contract@1",
+ "schema_versions": {
+  "contract": "1",
+  "doctor": "1",
+  "request": "1",
+  "response": "1"
+ },
+ "skill_id": "motion-graphics",
+ "timeline": {
+  "duration_tolerance_seconds": 0.25,
+  "element_ids": "unique within a document (id_pattern below), duplicates are DEPENDENCY_ERROR",
+  "ranges": "half-open-by-convention [start, end), start >= 0, end > start, both finite (no NaN/Infinity)",
+  "rendering_order": "elements are rendered in (start, id) order regardless of the order they were listed in the request (docs/decisions.md); each element's own start/end are rendered exactly as given",
+  "unit": "seconds (float)"
+ },
+ "tools": [
+  {
+   "delegates_to": [
+    "ffmpeg-skill/probe",
+    "ffmpeg-skill/graphics",
+    "ffmpeg-skill/overlay"
+   ],
+   "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, with fade animation) onto a video and write a validated artifact with provenance",
+   "deterministic": true,
+   "element_types": [
+    "image_overlay",
+    "lower_third",
+    "text_overlay",
+    "title"
+   ],
+   "idempotency_hint": "content_equivalent; non-final intermediates reused by deterministic operation id",
+   "input_type": "motion-graphics/request@1",
+   "inputs": [
+    "request document (stdin)"
+   ],
+   "mutates_input": false,
+   "produces_output": true,
+   "provenance": "OBSERVED",
+   "role": "execution",
+   "skill_id": "motion-graphics",
+   "supports": {
+    "cancel": true,
+    "dry_run": true,
+    "timeout": true,
+    "validate": true
+   },
+   "tool_id": "motion-graphics/run",
+   "verification": "every artifact is probed (video stream, resolution, duration, sha256); the final output is always re-validated even when intermediates were reused",
+   "version": "0.1.0",
+   "writes_media": true
+  }
+ ],
+ "unsupported_animations": [
+  {
+   "kind": "slide",
+   "reason": "position animation is not exposed as a typed, per-element parameter by ffmpeg-skill/overlay; lower_third has a fixed, non-configurable built-in slide instead",
+   "status": "not_implemented"
+  },
+  {
+   "kind": "move",
+   "reason": "arbitrary position keyframes would require a per-frame expression, which this skill does not construct (no raw filters, STEP 10)",
+   "status": "not_implemented"
+  },
+  {
+   "kind": "scale",
+   "reason": "scale animation over time is not exposed as a typed parameter by ffmpeg-skill/overlay (static --scale / --scale-percent only)",
+   "status": "not_implemented"
+  },
+  {
+   "kind": "opacity_keyframes",
+   "reason": "arbitrary opacity keyframe curves are not supported; use a fade (2-point in/out/in_out) instead",
+   "status": "not_implemented"
+  }
+ ],
+ "unsupported_element_types": [
+  {
+   "reason": "no typed delegate tool draws an arbitrary shape (position/size/color) without a raw ffmpeg filter string; needs a typed shape tool in ffmpeg-skill first",
+   "status": "not_implemented",
+   "type": "shape"
+  },
+  {
+   "reason": "ffmpeg-skill/graphics supports this template, but it is outside this contract's first minimum (title, lower_third, text_overlay, image_overlay only)",
+   "status": "not_implemented",
+   "type": "chapter"
+  },
+  {
+   "reason": "same as chapter: template exists upstream, not exposed by this contract yet",
+   "status": "not_implemented",
+   "type": "bug"
+  },
+  {
+   "reason": "same as chapter: template exists upstream, not exposed by this contract yet",
+   "status": "not_implemented",
+   "type": "progress"
+  },
+  {
+   "reason": "same as chapter: template exists upstream, not exposed by this contract yet",
+   "status": "not_implemented",
+   "type": "countdown"
+  }
+ ],
+ "version": "0.1.0",
+ "work_dir": "<workspace>/.motion-graphics/<document_id>/ (non-final intermediates only; the requested output is always written directly and re-validated)"
+}

@@ -1,0 +1,411 @@
+{
+ "description": "Renders a typed ThumbnailDocument (canvas + still-image/video-frame assets + positioned image/text elements) into a validated PNG/JPEG with provenance. Never decides what a thumbnail should show: no best-frame search, no face detection, no OCR, no automatic layout or title generation, no click-through prediction, no A/B or publish decisions. Not an AI agent.",
+ "deterministic": true,
+ "document": {
+  "assets": {
+   "kinds": [
+    "image",
+    "video_frame"
+   ],
+   "max_assets": 32,
+   "video_frame": "explicit timestamp only; this skill never searches for a 'best frame'"
+  },
+  "canvas": {
+   "background": "#RRGGBB(AA), default #000000",
+   "height": "16..7680",
+   "width": "16..7680"
+  },
+  "elements": {
+   "image": {
+    "description": "A still image or an extracted video frame, placed and sized on the canvas.",
+    "fields": {
+     "asset_id": "ref to a declared asset",
+     "crop": {
+      "height": "int (optional; source-pixel space)",
+      "width": "int",
+      "x": "int",
+      "y": "int"
+     },
+     "fit": [
+      "cover",
+      "contain",
+      "fill",
+      "none"
+     ],
+     "opacity": "0..1",
+     "position": {
+      "x": "number",
+      "y": "number"
+     },
+     "rotation": [
+      0,
+      90,
+      180,
+      270
+     ],
+     "size": {
+      "height": "int",
+      "width": "int"
+     }
+    }
+   },
+   "max_elements": 64,
+   "stacking": "z_index, ties broken by document order",
+   "text": {
+    "description": "Literal text (explicit '\\n' for line breaks; no automatic word-wrap or layout decisions).",
+    "fields": {
+     "align": {
+      "horizontal": [
+       "left",
+       "center",
+       "right"
+      ],
+      "vertical": [
+       "top",
+       "middle",
+       "bottom"
+      ]
+     },
+     "background": {
+      "color": "#RRGGBB(AA)",
+      "padding": "0..200 (optional)"
+     },
+     "color": "#RRGGBB(AA)",
+     "font_id": "one of ['cjk', 'mono', 'sans', 'sans-bold', 'serif']",
+     "font_size": "6..400",
+     "line_spacing": "0.5..5.0",
+     "opacity": "0..1",
+     "position": {
+      "x": "number",
+      "y": "number"
+     },
+     "shadow": {
+      "color": "#RRGGBB(AA)",
+      "offset_x": "-200..200",
+      "offset_y": "-200..200 (optional)"
+     },
+     "stroke": {
+      "color": "#RRGGBB(AA)",
+      "width": "0..40 (optional)"
+     },
+     "text": "string, max 2000 chars, max 50 lines"
+    }
+   },
+   "types": [
+    "image",
+    "text"
+   ]
+  },
+  "forbidden_fields": [
+   "af",
+   "args",
+   "argv",
+   "cmd",
+   "command",
+   "commands",
+   "css",
+   "cwd",
+   "env",
+   "eval",
+   "exec",
+   "executable",
+   "ffmpeg",
+   "filter",
+   "filter_complex",
+   "filters",
+   "html",
+   "javascript",
+   "script",
+   "shell",
+   "vf"
+  ],
+  "id_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+  "schema": "thumbnail-skill/request@1"
+ },
+ "errors": {
+  "codes": [
+   "INVALID_REQUEST",
+   "INVALID_INPUT",
+   "PATH_NOT_ALLOWED",
+   "UNSUPPORTED_OPERATION",
+   "UNSUPPORTED_FORMAT",
+   "MISSING_INPUT",
+   "INVALID_TIME_RANGE",
+   "DEPENDENCY_ERROR",
+   "TOOL_ERROR",
+   "OUTPUT_ERROR",
+   "VALIDATION_ERROR",
+   "CANCELLED",
+   "INTERNAL_ERROR"
+  ],
+  "exit_codes": {
+   "CANCELLED": 15,
+   "DEPENDENCY_ERROR": 11,
+   "INTERNAL_ERROR": 16,
+   "INVALID_INPUT": 3,
+   "INVALID_REQUEST": 2,
+   "INVALID_TIME_RANGE": 8,
+   "MISSING_INPUT": 7,
+   "OUTPUT_ERROR": 13,
+   "PATH_NOT_ALLOWED": 4,
+   "TOOL_ERROR": 12,
+   "UNSUPPORTED_FORMAT": 6,
+   "UNSUPPORTED_OPERATION": 5,
+   "VALIDATION_ERROR": 14
+  },
+  "retryable": {
+   "CANCELLED": true,
+   "DEPENDENCY_ERROR": false,
+   "INTERNAL_ERROR": false,
+   "INVALID_INPUT": false,
+   "INVALID_REQUEST": false,
+   "INVALID_TIME_RANGE": false,
+   "MISSING_INPUT": false,
+   "OUTPUT_ERROR": false,
+   "PATH_NOT_ALLOWED": false,
+   "TOOL_ERROR": true,
+   "UNSUPPORTED_FORMAT": false,
+   "UNSUPPORTED_OPERATION": false,
+   "VALIDATION_ERROR": false
+  },
+  "success_exit_code": 0
+ },
+ "execution": {
+  "ai": false,
+  "arbitrary_executables": false,
+  "arbitrary_filters": false,
+  "canonical_invocation": [
+   "thumbnail",
+   "run",
+   "-",
+   "--json"
+  ],
+  "forbidden_request_fields": [
+   "af",
+   "args",
+   "argv",
+   "cmd",
+   "command",
+   "commands",
+   "css",
+   "cwd",
+   "env",
+   "eval",
+   "exec",
+   "executable",
+   "ffmpeg",
+   "filter",
+   "filter_complex",
+   "filters",
+   "html",
+   "javascript",
+   "script",
+   "shell",
+   "vf"
+  ],
+  "input_mutation": false,
+  "mode": "local",
+  "network": false,
+  "shell": false,
+  "stdin": "{\"tool\": <tool_id>, \"params\": {...}}",
+  "stdout": "exactly one thumbnail-skill/response@1 document (through run -) or {'ok', 'tool', 'result'}"
+ },
+ "ffmpeg_skill": {
+  "contract_version": "1.0",
+  "tools_used": [
+   "probe",
+   "look"
+  ]
+ },
+ "fonts": {
+  "font_ids": [
+   "cjk",
+   "mono",
+   "sans",
+   "sans-bold",
+   "serif"
+  ],
+  "registry": {
+   "cjk": {
+    "display_name": "CJK Sans",
+    "role": "Japanese / Chinese / Korean text"
+   },
+   "mono": {
+    "display_name": "Monospace",
+    "role": "monospaced text"
+   },
+   "sans": {
+    "display_name": "Sans",
+    "role": "default UI sans-serif"
+   },
+   "sans-bold": {
+    "display_name": "Sans Bold",
+    "role": "emphasis / headline sans-serif"
+   },
+   "serif": {
+    "display_name": "Serif",
+    "role": "serif text"
+   }
+  },
+  "resolution": "font_id -> the first existing file among this skill's registered per-platform candidate paths (fonts.py); never an arbitrary caller-supplied path; a font_id with no resolvable file fails MISSING_INPUT, never a silent substitution"
+ },
+ "id": "thumbnail-skill",
+ "kind": "execution",
+ "name": "thumbnail-skill",
+ "not_provided": [
+  "AI reasoning",
+  "decisions",
+  "production plans",
+  "automatic frame selection",
+  "face/object detection",
+  "OCR",
+  "automatic title or layout generation",
+  "click-through-rate prediction",
+  "A/B testing",
+  "publish decisions",
+  "video editing",
+  "color grading",
+  "subtitle rendering",
+  "arbitrary ffmpeg filters",
+  "shell execution",
+  "network access"
+ ],
+ "output_formats": {
+  "jpeg": {
+   "extensions": [
+    ".jpg",
+    ".jpeg"
+   ],
+   "lossless": false
+  },
+  "png": {
+   "extensions": [
+    ".png"
+   ],
+   "lossless": true
+  }
+ },
+ "package": "thumbnail-skill",
+ "provenance": {
+  "identity": "sha256 over canonical JSON of {document, resolved asset content identity, resolved font content identity, skill/engine version}; a video_frame's identity is its source video's sha256 + timestamp, not the decoded frame's bytes",
+  "per_output": [
+   "skill",
+   "skill_version",
+   "operation",
+   "engine",
+   "engine_version",
+   "identity",
+   "reused",
+   "assets (sha256, timestamp for video_frame)",
+   "fonts (font_id, path, sha256)",
+   "output_hash"
+  ]
+ },
+ "rendering": {
+  "compositing": "Pillow raster operations only (paste/crop/resize/draw); no filter string, no shell, no arbitrary code path",
+  "engine": "Pillow",
+  "video_frame_decoding": "delegated to ffmpeg-skill (probe, look --at --no-timecode); this skill never runs ffmpeg itself"
+ },
+ "repository": "https://github.com/kajisho5/thumbnail-skill",
+ "role": "thumbnail rendering (deterministic execution); not decision, not selection, not design",
+ "schema": "thumbnail-skill/contract@1",
+ "schema_versions": {
+  "contract": "1",
+  "doctor": "1",
+  "request": "1",
+  "response": "1"
+ },
+ "skill_id": "thumbnail-skill",
+ "tools": [
+  {
+   "description": "Validate a ThumbnailDocument (canvas + assets + elements) structurally. Touches no file system, no font, no ffmpeg-skill; renders nothing.",
+   "deterministic": true,
+   "input": {
+    "document": "ThumbnailDocument"
+   },
+   "mutates_input": false,
+   "output": {
+    "assets": "int",
+    "canvas": "ThumbnailCanvas",
+    "document_id": "str",
+    "elements": "int",
+    "ok": "bool"
+   },
+   "produces_output": false,
+   "role": "validation",
+   "side_effects": [],
+   "tool_id": "thumbnail/validate",
+   "writes_media": false
+  },
+  {
+   "delegates_to": [
+    "ffmpeg-skill/probe",
+    "ffmpeg-skill/look"
+   ],
+   "description": "Render a typed ThumbnailDocument (still image and/or an explicit video frame, positioned image and text elements) into a validated PNG/JPEG artifact with provenance. Never decides what to show: frame timestamps, layout, text and fonts are exactly what the caller specified.",
+   "deterministic": true,
+   "idempotency_hint": "same document + same asset/font content + same skill/engine version reuses the cached artifact",
+   "input": {
+    "document": "ThumbnailDocument",
+    "options": "RenderOptions",
+    "output": "OutputSpec"
+   },
+   "mutates_input": false,
+   "output": {
+    "format": "png|jpeg",
+    "height": "int",
+    "output": "path",
+    "provenance": "object",
+    "reused": "bool",
+    "sha256": "str",
+    "size": "int",
+    "width": "int"
+   },
+   "produces_output": true,
+   "role": "execution",
+   "side_effects": [
+    "writes the output file",
+    "writes a reuse cache entry under the workspace"
+   ],
+   "tool_id": "thumbnail/render",
+   "writes_media": true
+  },
+  {
+   "delegates_to": [
+    "ffmpeg-skill/probe",
+    "ffmpeg-skill/look"
+   ],
+   "description": "Extract exactly the video frame at a caller-given timestamp as a PNG/JPEG. No scene detection, no scoring, no 'best frame' search: one timestamp in, one frame out.",
+   "deterministic": true,
+   "idempotency_hint": "same source content + same timestamp + same skill/engine version reuses the cached artifact",
+   "input": {
+    "options": "RenderOptions",
+    "output": "OutputSpec",
+    "source": {
+     "path": "file",
+     "timestamp": "seconds >= 0"
+    }
+   },
+   "mutates_input": false,
+   "output": {
+    "format": "png|jpeg",
+    "height": "int",
+    "output": "path",
+    "provenance": "object",
+    "reused": "bool",
+    "sha256": "str",
+    "size": "int",
+    "width": "int"
+   },
+   "produces_output": true,
+   "role": "execution",
+   "side_effects": [
+    "writes the output file",
+    "writes a reuse cache entry under the workspace"
+   ],
+   "tool_id": "thumbnail/extract_frame",
+   "writes_media": true
+  }
+ ],
+ "version": "0.1.0"
+}
