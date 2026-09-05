@@ -30,7 +30,7 @@ MODE_VARS = ("FAKE_SUBTITLE_MODE", "FAKE_THUMBNAIL_MODE", "FAKE_CG_MODE", "FAKE_
              "FAKE_SUBTITLE_CALLS", "FAKE_THUMBNAIL_CALLS", "FAKE_CG_CALLS", "FAKE_MG_CALLS", "FAKE_QC_CALLS", "FAKE_TS_CALLS", "FAKE_VE_CALLS")
 BASE_CAPS = ["python", "ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:libx264", "encoder:libx265", "encoder:prores_ks", "encoder:aac", "filter:loudnorm", "filter:subtitles", "font:cjk-ja"]
 FINISHING_CAPS = ["subtitle", "thumbnail", "color-grading", "motion-graphics", "qc", "transcription", "video-editing", "filter:xfade", "filter:acrossfade"] \
-    + [f"color-grading:{t}" for t in ("HDR_TO_SDR", "LUT_APPLY", "RETAG", "STRIP_DOVI")] + [f"motion-graphics:{t}" for t in ("title", "lower_third", "text_overlay", "image_overlay")]
+    + [f"color-grading:{t}" for t in ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI")] + [f"motion-graphics:{t}" for t in ("title", "lower_third", "text_overlay", "image_overlay")]
 
 
 class PipelineCaps:

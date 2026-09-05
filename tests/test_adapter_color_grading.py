@@ -64,10 +64,11 @@ class ColorGradingAdapterTests(unittest.TestCase):
 
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
-        self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)), ("0.1.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LUT_APPLY", "RETAG", "STRIP_DOVI"]))
-        self.assertIn("EXPOSURE", ad.unsupported); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
+        self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
+                         ("0.2.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
+        self.assertIn("GAMMA", ad.unsupported); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.1.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.2.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
@@ -95,8 +96,11 @@ class ColorGradingAdapterTests(unittest.TestCase):
         b = ad.build_request("color-grading/run", {"operation": "LUT_APPLY", "input": "a", "output": "a_retag", "lut": "lut1", "lut_strength": 0.5}, dict(paths, lut1=str(lut)))
         self.assertEqual(b["request"]["project"]["operations"][0]["parameters"], {"lut_path": str(lut.resolve()), "lut_strength": 0.5}); self.assertEqual(b["lut_root"], str(lut.parent))
         self.assertIn("--allowed-lut", ad._argv(b, False, None))
-        for bad, msg in (({"filter": "x"}, "forbidden"), ({"argv": ["x"]}, "forbidden"), ({"operation": "EXPOSURE"}, "unsupported"), ({"operation": "NOPE"}, "unknown operation"),
+        b = ad.build_request("color-grading/run", {"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_retag", "exposure": 0.5, "saturation": 0.0}, paths)
+        self.assertEqual(b["request"]["project"]["operations"][0]["parameters"], {"exposure": 0.5, "saturation": 0.0})
+        for bad, msg in (({"filter": "x"}, "forbidden"), ({"argv": ["x"]}, "forbidden"), ({"operation": "GAMMA"}, "unsupported"), ({"operation": "NOPE"}, "unknown operation"),
                          ({"target": "bt2100"}, "not one of"), ({"tonemap": "hable"}, "not declared"), ({"operation": "HDR_TO_SDR", "peak_nits": 99999}, "above"), ({"operation": "HDR_TO_SDR", "crf": 1.5}, "integer"),
+                         ({"operation": "PRIMARY_CORRECTION", "exposure": 999}, "above"), ({"operation": "PRIMARY_CORRECTION", "contrast": -1}, "below"),
                          ({"operation": "LUT_APPLY"}, "requires parameter"), ({"format": "avi"}, "not one of"), ({"input": "missing"}, "not found")):
             args = dict(self._op().args); args.update(bad)
             if "operation" in bad and bad["operation"] != "RETAG":
@@ -118,7 +122,7 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertTrue(r.ok, r.data); self.assertEqual(r.output, paths["a_retag"]); self.assertTrue(os.path.isfile(r.output))
         self.assertEqual(r.data["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
         self.assertEqual((r.data["operation_type"], r.data["operation"]["type"], r.data["operation"]["tool"], r.data["status"]), ("RETAG", "RETAG", "ffmpeg-skill/color", "completed"))
-        self.assertEqual((r.data["observation"]["provenance"], r.data["observation"]["source"], r.data["observation"]["data"]["duration"]), ("OBSERVED", "ffmpeg-skill/probe@0.9.1-fake", 16.0))
+        self.assertEqual((r.data["observation"]["provenance"], r.data["observation"]["source"], r.data["observation"]["data"]["duration"]), ("OBSERVED", "ffmpeg-skill/probe@0.9.2-fake", 16.0))
         self.assertEqual((r.data["provenance"]["skill"], r.data["provenance"]["output_hash"]), ("color-grading", r.data["artifact"]["sha256"]))
         self.assertTrue(r.commands and all(isinstance(c, str) for c in r.commands), "commands are recorded as provenance only")
         obs = lift_observation(r, "a_retag")
@@ -129,6 +133,15 @@ class ColorGradingAdapterTests(unittest.TestCase):
         os.environ["FAKE_CG_MODE"] = "reused"
         r2 = ad.run(self._op(), paths)
         self.assertTrue(r2.ok and r2.data["artifact"]["reused"])
+
+    def test_primary_correction_success_mapping(self):
+        ad = self._adapter(); paths = self._paths()
+        op = Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_retag", "exposure": 0.5, "temperature": 5600.0},
+                       inputs=["a"], outputs=["a_retag"], id="op_correct")
+        r = ad.run(op, paths, timeout=30)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual((r.data["operation_type"], r.data["operation"]["type"], r.data["operation"]["tool"], r.data["operation"]["parameters"]),
+                         ("PRIMARY_CORRECTION", "PRIMARY_CORRECTION", "ffmpeg-skill/color", {"exposure": 0.5, "temperature": 5600.0}))
 
     def test_error_mapping_and_verification(self):
         ad = self._adapter(); paths = self._paths()
@@ -196,6 +209,23 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         self.assertEqual((r.data["artifact"]["color_primaries"], r.data["artifact"]["color_transfer"], r.data["artifact"]["hdr"]), ("bt709", "bt709", False))
         bad = ad.run(Operation(tool="color-grading/run", args={"operation": "HDR_TO_SDR", "input": "a", "output": "a_retag"}, inputs=["a"], outputs=["a_retag"], id="op_real2"), paths, timeout=120)
         self.assertFalse(bad.ok); self.assertIn(bad.data["error"]["code"], ("INVALID_INPUT", "TOOL_ERROR"), "an SDR source is not tone-mapped by the Skill either (the engine refuses)")
+
+    def test_real_primary_correction(self):
+        if not (self.skill and self.engine and shutil.which("ffmpeg")):
+            self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
+        ws = str(Path(self.tmp) / "ws2"); os.makedirs(ws, exist_ok=True)
+        ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
+        self.assertEqual(ad.operation_status(ad.doctor())["PRIMARY_CORRECTION"], "supported")
+        paths = {"a": self.src, "a_correct": str(Path(ws) / "ops" / "01_correct" / "bars_correct.mp4")}
+        op = Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_correct", "exposure": 0.5, "saturation": 0.0},
+                       inputs=["a"], outputs=["a_correct"], id="op_real3")
+        r = ad.run(op, paths, timeout=120)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual(r.data["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
+        # the Skill's own response reports effective parameters (its own declared defaults filled in), not just what this request sent
+        params = r.data["operation"]["parameters"]
+        self.assertEqual((params["exposure"], params["saturation"]), (0.5, 0.0))
+        self.assertIn("input", r.data["operation"]["measurements"]); self.assertIn("output", r.data["operation"]["measurements"])
 
 
 if __name__ == "__main__":
