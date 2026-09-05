@@ -26,6 +26,7 @@ video-agent doctor
 ## 使い方
 
 ```bash
+video-agent skills                                      # Skill の状態（AVAILABLE / UNAVAILABLE / NOT_IMPLEMENTED）と選択された tool
 video-agent analyze input.mp4
 video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.youtube.project.json
 video-agent plan input.mp4 --profile conference --set audio.loudness.target_lufs=-18
@@ -44,7 +45,7 @@ video-agent check output.mp4 --platform youtube
 
 終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。revise: 5 = 新版なし。
 
-Revision workflow: `docs/revision.md`。
+Revision workflow: `docs/revision.md`。Skill / Capability / Tool と将来 Skill の追加手順: `docs/skills.md`、Gap 分析: `docs/GAP_ANALYSIS_PHASE2.md`。
 
 監査結果と既知の制限: `docs/AUDIT_PHASE1.md`、最終レビューと Phase 2 開始条件: `docs/PHASE1_FINAL_REVIEW.md`。
 

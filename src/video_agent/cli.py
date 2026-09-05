@@ -47,6 +47,17 @@ def cmd_doctor(args, svc: Service) -> int:
     return 1 if hard else 0
 
 
+def cmd_skills(args, svc: Service) -> int:
+    rows = svc.skills()
+    if args.json:
+        _print(rows, True)
+        return 0
+    w = max(len(r["skill"]) for r in rows)
+    for r in rows:
+        print(f"{r['status']:15s} {r['skill']:{w}s}  v{r['version']}  phase {r['phase']}  tool={r['tool'] or '-'}" + ("" if r["status"] == "AVAILABLE" else f"  ({r['reason']})"))
+    return 0
+
+
 def cmd_analyze(args, svc: Service) -> int:
     profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash)
     doc = analysis.to_dict()
@@ -56,8 +67,11 @@ def cmd_analyze(args, svc: Service) -> int:
     for a in analysis.assets:
         t = a.technical
         v, au = t.get("video") or {}, t.get("audio") or {}
-        print(f"{a.path}\n  type {a.type} ({a.classification.get('confidence')}), {t.get('duration')}s, video {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps"
-              + (" VFR?" if v.get("variable_frame_rate_suspected") else "") + (f" [{v.get('hdr_format')}]" if v.get("hdr") else "") + f", audio {au.get('codec')} {au.get('channels')}ch" if au else "")
+        line = f"{a.path}\n  type {a.type} ({a.classification.get('confidence')}), {t.get('duration')}s, "
+        line += f"video {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps" if v else "no video"
+        line += (" VFR?" if v.get("variable_frame_rate_suspected") else "") + (f" [{v.get('hdr_format')}]" if v.get("hdr") else "")
+        line += f", audio {au.get('codec')} {au.get('channels')}ch" if au else ", no audio"
+        print(line)
     for e in analysis.timeline.query():
         r = e.range
         print(f"  {e.kind:8s} {e.type:16s} {r['start']:8.3f}-{(r['end'] if r['end'] is not None else r['start']):8.3f}  {json.dumps(e.metadata, default=str)[:80]}")
@@ -253,7 +267,7 @@ def cmd_check(args, svc: Service) -> int:
     else:
         p = out["probe"]
         v, a = p.get("video") or {}, p.get("audio") or {}
-        print(f"{args.output}: {p.get('duration')}s, {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps, audio {a.get('codec')} {a.get('channels')}ch")
+        print(f"{args.output}: {p.get('duration')}s, {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps, " + (f"audio {a.get('codec')} {a.get('channels')}ch" if a else "no audio"))
         for r in out["check"].get("checks", []):
             print(f"  {r['status']:4s} {r['check']:14s} {r['value']}  (expected {r['expected']})" + (f"  -> {r['fix']}" if r["status"] != "PASS" and r.get("fix") else ""))
     return 0 if out["check"].get("ok") else 1
@@ -302,6 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("doctor", help="inspect the environment (AVAILABLE / MISSING / DEGRADED / UNKNOWN)")
     p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("skills", help="list skills with their status here (AVAILABLE / UNAVAILABLE / NOT_IMPLEMENTED) and the selected tool")
+    p.set_defaults(fn=cmd_skills)
     p = sub.add_parser("analyze", help="probe media and list observed events")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources (faster on huge files)")
     p.set_defaults(fn=cmd_analyze)

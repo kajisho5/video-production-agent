@@ -3,7 +3,10 @@ of what executes it (Tool). Phase 1 ships five skills; the registry is a plain c
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# Skills whose phase is above this are declared for the roadmap only: they are never selectable and never "available".
+IMPLEMENTED_PHASE = 1
 
 
 @dataclass
@@ -20,8 +23,14 @@ class SkillSpec:
     tools: List[str]                # ordered candidates, e.g. ["ffmpeg-skill/cut"]
     phase: int = 1
 
+    @property
+    def implemented(self) -> bool:
+        return self.phase <= IMPLEMENTED_PHASE
+
     def to_dict(self) -> Dict[str, Any]:
-        return self.__dict__.copy()
+        d = self.__dict__.copy()
+        d["implemented"] = self.implemented
+        return d
 
 
 class SkillRegistry:
@@ -43,6 +52,39 @@ class SkillRegistry:
     def missing_capabilities(self, name: str, caps: Dict[str, Any]) -> List[str]:
         spec = self.get(name)
         return [c for c in spec.required_capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
+
+    def select_tool(self, name: str, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Tuple[Optional[str], str]:
+        """Skill → Capability check → first tool candidate that a registered adapter supports.
+        Returns (tool id, reason). Declared-but-unimplemented skills are never selected."""
+        spec = self.get(name)
+        if not spec.implemented:
+            return None, f"skill {name} is declared for phase {spec.phase} and not implemented"
+        missing = self.missing_capabilities(name, caps)
+        if missing:
+            return None, "required capability missing: " + ", ".join(missing)
+        for tool in spec.tools:
+            if supports(tool):
+                return tool, "ok"
+        return None, "no registered adapter supports any of: " + ", ".join(spec.tools)
+
+    def resolve_tools(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Dict[str, str]:
+        """skill name → selected tool id, for every skill that is selectable in this environment."""
+        out: Dict[str, str] = {}
+        for spec in self.all():
+            tool, _ = self.select_tool(spec.name, caps, supports)
+            if tool:
+                out[spec.name] = tool
+        return out
+
+    def availability(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> List[Dict[str, Any]]:
+        """Human/machine listing: AVAILABLE (tool selected) / UNAVAILABLE (capability or adapter missing) / NOT_IMPLEMENTED."""
+        rows = []
+        for spec in self.all():
+            tool, reason = self.select_tool(spec.name, caps, supports)
+            status = "AVAILABLE" if tool else ("NOT_IMPLEMENTED" if not spec.implemented else "UNAVAILABLE")
+            rows.append({"skill": spec.name, "version": spec.version, "phase": spec.phase, "status": status, "tool": tool, "reason": reason,
+                         "required_capabilities": spec.required_capabilities, "risk": spec.risk_level, "approval": spec.approval})
+        return rows
 
 
 def default_registry() -> SkillRegistry:

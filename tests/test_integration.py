@@ -205,3 +205,32 @@ class FfmpegSkillContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class NoAudioSourceTests(unittest.TestCase):
+    """A video-only source (real-world: DJI drones, some screen captures) must analyze, plan and render without audio steps."""
+
+    def test_video_only_source(self):
+        tmp = tempfile.mkdtemp()
+        src = str(Path(tmp) / "src" / "silent.mp4")
+        Path(src).parent.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "6", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", src], check=True)
+        ws = str(Path(tmp) / "ws")
+        svc = Service(workspace=ws)
+        ir = svc.plan([src], "youtube", hash_sources=False)
+        self.assertIsNone(ir.doc["assets"][list(ir.doc["assets"])[0]]["technical"]["audio"])
+        self.assertEqual(ir.doc["audio"]["operations"], [])
+        self.assertEqual(ir.doc["video"]["operations"], [])
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["delivery_export", "delivery_check"])
+        self.assertTrue(any("no audio stream" in w for w in ir.doc["analysis"]["warnings"]))
+        p = str(Path(ws) / "s.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        self.assertIn(out["qa"]["status"], ("PASS", "WARN"))
+        self.assertFalse([i for i in out["qa"]["items"] if i["status"] == "FAIL"])
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=ws)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "analyze", src, "--no-hash"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no audio", r.stdout, "analyze must still print the asset line for video-only sources")

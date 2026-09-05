@@ -13,7 +13,8 @@ from .requirements import requirement_map
 
 
 def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, inferences: List[Inference], rules: RuleSet,
-           caps: Dict[str, Capability], registry: SkillRegistry) -> List[Decision]:
+           caps: Dict[str, Capability], registry: SkillRegistry, tool_supports=None) -> List[Decision]:
+    """tool_supports: callable(tool id) -> bool from the tool router; when given, a skill whose tools no adapter supports is BLOCKED too."""
     m = requirement_map(reqs)
     decs: List[Decision] = []
     by_asset: Dict[str, List[Inference]] = {}
@@ -32,6 +33,13 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                          evidence=[f"capability:{x}" for x in missing], risk="HIGH", approval="BLOCK", status="BLOCKED", provenance="SYSTEM", params={"skill": skill, "missing": missing})
             decs.append(d)
             return d
+        if tool_supports is not None:
+            tool, reason = registry.select_tool(skill, caps, tool_supports)
+            if tool is None:
+                d = Decision(subject=subject, decision=f"BLOCK: skill {skill} has no executable tool", reason=reason, confidence=1.0,
+                             evidence=[f"skill:{skill}"], risk="HIGH", approval="BLOCK", status="BLOCKED", provenance="SYSTEM", params={"skill": skill, "missing": []})
+                decs.append(d)
+                return d
         return None
 
     for asset in analysis.assets:
