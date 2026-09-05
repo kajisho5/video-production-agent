@@ -1242,18 +1242,30 @@ class AudioProductionRealTests(unittest.TestCase):
         a = next((s for s in doc["streams"] if s.get("codec_type") == "audio"), {})
         return float(doc["format"]["duration"]), int(a.get("channels") or 0), int(a.get("sample_rate") or 0), any(s.get("codec_type") == "video" for s in doc["streams"])
 
-    def _run(self, name, inputs, reqs, expect_skills, expect_ops):
+    def _run(self, name, inputs, reqs, expect_skills, expect_ops, expect_plan_status="APPROVED", pending_subjects=()):
+        """plan → (status as expected before any approval) → render(approve=all) → COMPLETED. `expect_plan_status` "REVIEW" means the
+        plan waits for the CONFIRM decisions in `pending_subjects` (ADR-033: a video container's audio.extract); the explicit
+        `approve=["all"]` of render is the existing approval mechanism, after which the saved plan must be APPROVED."""
         ws = str(Path(self.tmp) / name)
         svc = Service(workspace=ws)
         ir = svc.plan(inputs, "generic", user_requirements=reqs)
         d = ir.doc
-        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"]); self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual(d["plan"]["status"], expect_plan_status, d["plan"]["summary"]); self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual(sorted(x["subject"] for x in ir.pending_confirmations()), sorted(pending_subjects), "exactly these CONFIRM decisions are pending before approval")
         self.assertEqual([s["skill"] for s in d["plan"]["steps"]], expect_skills)
         self.assertTrue(all(s["tool"] == "audio-production/run" for s in d["plan"]["steps"]))
         self.assertEqual(d["video"]["operations"], [])
         p = str(Path(self.tmp) / f"{name}.json"); save_ir(ir, p)
+        if expect_plan_status == "REVIEW":
+            # without the explicit approval nothing runs: the render waits, no Skill result exists
+            waiting = svc.render(load_ir(p), p)
+            self.assertEqual(waiting["status"], "WAITING_FOR_APPROVAL", waiting)
+            self.assertEqual(sorted(x["subject"] for x in waiting["pending"]), sorted(pending_subjects))
         out = svc.render(load_ir(p), p, approve=["all"])
         self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"]); self.assertIn(out["status"], ("COMPLETED", "REVIEW"))
+        after = load_ir(p).doc
+        self.assertEqual(after["plan"]["status"], "APPROVED", "after the explicit approval the plan version is APPROVED")
+        self.assertEqual([x["subject"] for x in after["decisions"] if x["approval"] == "CONFIRM" and x["status"] == "PROPOSED"], [], "no CONFIRM decision is left pending")
         res = [r for r in out["execution"]["results"] if r["tool"] == "audio-production/run"]
         self.assertEqual([r["data"]["operation_type"] for r in res], expect_ops)
         import hashlib
@@ -1319,7 +1331,9 @@ class AudioProductionRealTests(unittest.TestCase):
     def test_video_container_delivers_audio_only(self):
         if not self.ap:
             self.skipTest("needs an audio-production-skill checkout")
-        svc, p, out, res, prov = self._run("B", [self.mp4], {"audio.production": True, "audio.fade_in": 0.5}, ["audio_cut", "audio_fade_in"], ["CUT", "FADE_IN"])
+        # ADR-033: before approval the plan is REVIEW with exactly the audio.extract CONFIRM pending; render(approve=all) approves it explicitly
+        svc, p, out, res, prov = self._run("B", [self.mp4], {"audio.production": True, "audio.fade_in": 0.5}, ["audio_cut", "audio_fade_in"], ["CUT", "FADE_IN"],
+                                           expect_plan_status="REVIEW", pending_subjects=("audio.extract",))
         dur, ch, sr, has_v = self._probe(res[-1]["output"])
         self.assertFalse(has_v, "the picture is not delivered on the audio path"); self.assertAlmostEqual(dur, 11.0, delta=0.2)
         dec = {x["subject"]: x for x in load_ir(p).doc["decisions"]}
