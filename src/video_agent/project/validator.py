@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
+from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF
 from ..agent.production_plan import validate_plan
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -26,6 +27,120 @@ class ValidationReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"ok": self.ok, "errors": self.errors, "warnings": self.warnings}
+
+
+def produced_subjects(d: Dict[str, Any]) -> set:
+    """Logical subjects an operation produced (the concat programme) that later operations may reference."""
+    return {op.get("output") for op in d["video"]["operations"] if op.get("type") == "video.concat" and op.get("output")}
+
+
+def check_video_operations(d: Dict[str, Any]) -> List[str]:
+    """Per-type rules of the video operations (ADR-029): explicit type, allowlisted parameters, references that exist at that
+    point of the chain, ranges inside the source, one concat at most, the fixed order, no fit + fill, image inside the allowed
+    input roots. Anything outside the vocabulary is an error, never a guess."""
+    errs: List[str] = []
+    assets = d["assets"]
+    ops = d["video"]["operations"]
+    known: set = set(assets)
+    order_seen: Dict[str, int] = {}
+    concat_seen = False
+    allowed_roots = [str(Path(r)) for r in (d.get("execution") or {}).get("allowed_inputs") or []]
+    for op in ops:
+        t = op.get("type")
+        subj = op.get("asset")
+        if t == "video.trim":
+            if subj not in assets:
+                continue   # reported by the caller
+            dur = (assets[subj].get("technical") or {}).get("duration") or 0.0
+            for k in op.get("keep") or []:
+                if k[1] <= k[0]:
+                    errs.append(f"video.trim keep range {k} is empty")
+                if dur and k[1] > dur + 0.01:
+                    errs.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
+            continue
+        if t not in OPERATIONS:
+            errs.append(f"unknown video operation type {t!r}")
+            continue
+        spec = OPERATIONS[t]
+        extra = sorted(k for k in op if k not in ("type", "asset", "input", "inputs", "output", "image", "segments", "timeline_duration", "temporal_scope", "decision_ids") and k not in spec["params"])
+        if extra:
+            errs.append(f"{t}: parameters {extra} are not in the operation's vocabulary")
+        rank = EDIT_ORDER.index(t)
+        if subj in order_seen and order_seen[subj] >= rank:
+            errs.append(f"{t} on {subj} is out of the fixed operation order {EDIT_ORDER}")
+        order_seen[subj] = rank
+        if t == "video.concat":
+            if concat_seen:
+                errs.append("more than one video.concat (one programme per plan)")
+            concat_seen = True
+            ins = op.get("inputs") or []
+            if len(ins) < 2 or len(set(ins)) != len(ins):
+                errs.append("video.concat needs two or more distinct inputs")
+            for i in ins:
+                if i not in assets:
+                    errs.append(f"video.concat input {i!r} is not an asset")
+                elif not ((assets[i].get("technical") or {}).get("video")):
+                    errs.append(f"video.concat input {i!r} has no video stream")
+            if op.get("output") != subj:
+                errs.append("video.concat: output must equal the operation's subject")
+            if subj in assets:
+                errs.append(f"video.concat output {subj!r} collides with an asset id")
+            segs = op.get("segments") or []
+            if [s_.get("input") for s_ in segs] and set(s_.get("input") for s_ in segs) != set(ins):
+                errs.append("video.concat segments do not cover exactly the inputs")
+            for s_ in segs:
+                sr, tr = s_.get("source_range") or [0, 0], s_.get("timeline_range") or [0, 0]
+                if not (sr[0] < sr[1] and tr[0] < tr[1]):
+                    errs.append(f"video.concat segment {s_.get('input')}: empty range")
+                sd = (assets.get(s_.get("input")) or {}).get("technical", {}).get("duration")
+                if sd and sr[1] > float(sd) + 0.01:
+                    errs.append(f"video.concat segment {s_.get('input')}: source range {sr} exceeds duration {sd:.3f}")
+            known.add(subj)
+            continue
+        if subj not in known:
+            errs.append(f"{t} references {subj!r} before it exists (the programme exists only after video.concat)")
+        if subj in assets and not ((assets[subj].get("technical") or {}).get("video")):
+            errs.append(f"{t} on {subj}: no video stream")
+        if op.get("input") is None:
+            errs.append(f"{t} on {subj}: input reference missing")
+        if t == "video.speed":
+            f = op.get("factor")
+            if not isinstance(f, (int, float)) or isinstance(f, bool) or not (0.25 <= float(f) <= 4.0) or float(f) == 1.0:
+                errs.append(f"video.speed factor {f!r} must be within 0.25..4 and not 1")
+        if t in ("video.resize", "video.fit", "video.fill", "video.concat") and op.get("width") is not None and (int(op["width"]) % 2 or int(op["width"]) < 16):
+            errs.append(f"{t}: width {op['width']} must be an even integer ≥ 16")
+        if t == "video.resize" and op.get("width") is None:
+            errs.append("video.resize needs width")
+        if t in ("video.fit", "video.fill") and not op.get("aspect"):
+            errs.append(f"{t} needs aspect")
+        if t == "video.overlay":
+            img = op.get("image")
+            if not isinstance(img, str) or not img:
+                errs.append("video.overlay needs image")
+            else:
+                if any(part == ".." for part in img.replace("\\", "/").split("/")):
+                    errs.append("video.overlay image path contains '..'")
+                if Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    errs.append(f"video.overlay image must be PNG / JPEG: {Path(img).name}")
+                if allowed_roots and not any(_under(img, r) for r in allowed_roots):
+                    errs.append(f"video.overlay image is outside the allowed input roots: {Path(img).name}")
+            if op.get("start") is not None and op.get("end") is not None and not float(op["start"]) < float(op["end"]):
+                errs.append("video.overlay: start must be before end")
+    subjects_with = {}
+    for op in ops:
+        subjects_with.setdefault(op.get("asset"), set()).add(op.get("type"))
+    for subj, types in subjects_with.items():
+        if "video.fit" in types and "video.fill" in types:
+            errs.append(f"video.fit and video.fill both on {subj} (conflicting request)")
+    return errs
+
+
+def _under(path: str, root: str) -> bool:
+    try:
+        p, r = Path(path).resolve(), Path(root).resolve()
+    except OSError:
+        return False
+    return p == r or r in p.parents
 
 
 def load_schema() -> Dict[str, Any]:
@@ -54,17 +169,12 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         for did in op.get("decision_ids") or []:
             if did in rejected:
                 rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
-    # semantic: operations reference known assets and decisions, ranges inside durations
+    # semantic: operations reference known assets (or the concat programme once it exists) and decisions, ranges inside durations
+    rep.errors += check_video_operations(d)
     for op in d["video"]["operations"] + d["audio"]["operations"]:
-        if op["asset"] not in assets:
+        if op["asset"] not in assets and op["asset"] not in produced_subjects(d):
             rep.errors.append(f"operation {op['type']} references unknown asset {op['asset']}")
             continue
-        dur = (assets[op["asset"]].get("technical") or {}).get("duration") or 0.0
-        for k in op.get("keep") or []:
-            if k[1] <= k[0]:
-                rep.errors.append(f"video.trim keep range {k} is empty")
-            if dur and k[1] > dur + 0.01:
-                rep.errors.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
         for did in op.get("decision_ids") or []:
             if did not in ids:
                 rep.errors.append(f"operation {op['type']} cites unknown decision {did}")
@@ -116,6 +226,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     for op in d["video"]["operations"]:
         if op["type"] == "video.trim" and ("silence_cleanup", op["asset"]) not in step_keys:
             rep.errors.append(f"video.trim on {op['asset']} has no plan step")
+        if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in d["audio"]["operations"]:
         if op["type"] == "audio.loudness" and ("loudness_normalization", op["asset"]) not in step_keys:
             rep.errors.append(f"audio.loudness on {op['asset']} has no plan step")
@@ -185,6 +297,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                         needed.update(ts.required_capabilities)
         if d["video"]["operations"] or any(t.get("preset") for t in d["delivery"]["targets"]):
             needed.add("encoder:libx264")
+        if any(op["type"] in SKILL_OF for op in d["video"]["operations"]):
+            needed.add("video-editing")   # the editing operations exist only in video-editing-skill (ADR-029): UNKNOWN is not AVAILABLE
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if any(t.get("preset") == "prores" for t in d["delivery"]["targets"]):

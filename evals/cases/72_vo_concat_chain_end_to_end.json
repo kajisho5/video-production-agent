@@ -1,0 +1,55 @@
+{
+ "name": "vo_concat_chain_end_to_end",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing_ops": {
+  "inputs": 2,
+  "image": "inside"
+ },
+ "requirements": {
+  "edit.concat": true,
+  "edit.speed": 2,
+  "edit.resize": 640,
+  "edit.fit": "1:1",
+  "edit.overlay.position": "top-right"
+ },
+ "expect": {
+  "ir_ops": [
+   "video.concat",
+   "video.speed",
+   "video.resize",
+   "video.fit",
+   "video.overlay"
+  ],
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "tools": [
+    "video-editing/concat",
+    "video-editing/speed",
+    "video-editing/resize",
+    "video-editing/fit",
+    "video-editing/overlay"
+   ],
+   "qa_status": "PASS",
+   "duration": 11.0,
+   "sources": [
+    2
+   ]
+  }
+ }
+}

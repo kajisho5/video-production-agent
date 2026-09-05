@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..agent.editing import delivery_subjects
 from ..media.analysis import loudness_facts, probe_facts
 from ..models import Incident, ToolResult
 from ..tools.base import ToolAdapter, ToolError
@@ -77,13 +78,10 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
     dur_tol = float(th.get("duration_tolerance_s", 0.5))
     lu_tol = float(th.get("loudness_tolerance_lu", 2.0))
     required = set(ir_doc["qa"]["required"])
-    for asset_id, asset in ir_doc["assets"].items():
-        src_dur = (asset.get("technical") or {}).get("duration") or 0.0
-        kept = src_dur
-        for op in ir_doc["video"]["operations"]:
-            if op["asset"] == asset_id and op["type"] == "video.trim":
-                kept = sum(e - s for s, e in op["keep"])
-        target_lufs = next((op["target_lufs"] for op in ir_doc["audio"]["operations"] if op["asset"] == asset_id), None)
+    for subject in delivery_subjects(ir_doc):   # each asset, or the concat programme (ADR-029) whose expectations derive from the IR chain
+        asset_id, asset = subject["id"], {"technical": subject["technical"]}
+        kept = subject["duration"]        # expected output duration: kept ranges → concat timeline → speed factor (from the IR, not measured)
+        target_lufs = subject["target_lufs"]
         for t in ir_doc["delivery"]["targets"]:
             art = f"{asset_id}_delivery_{t['id']}"
             path = paths.get(art)

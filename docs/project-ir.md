@@ -19,7 +19,7 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 | `decisions[]` | subject, type (KEEP / REMOVE / TRANSFORM / DELIVER / SKIP / REVIEW / BLOCK), decision, reason, confidence, evidence, alternatives, risk, approval, status, params, basis (settings / approval / intent / requirements / risk with provenance, ADR-027) | DecisionEngine |
 | `plan` | version, steps[{skill, tool, decision_ids, params}], summary[] (人間向け) | Planner |
 | `timeline` | timelines{id: offset, drift_ratio}, events[] | MediaAnalyzer, approve() |
-| `video.operations[]` | `video.trim {asset, keep[[s,e]], decision_ids}` | Planner |
+| `video.operations[]` | `video.trim {asset, keep[[s,e]], accurate, decision_ids}`、`video.concat {asset: programme, inputs[], output, segments[{input, track, source_range, timeline_range}], timeline_duration, transition?, width?, height?, fps?, mode?, pad_color?, temporal_scope, decision_ids}`、`video.speed {asset, input, output, factor}`、`video.resize {asset, input, output, width, fps?}`、`video.fit {asset, input, output, aspect, width?, pad_color?, fps?}`、`video.fill {asset, input, output, aspect, width?, fps?}`、`video.overlay {asset, input, output, image, position?, margin?, scale?, opacity?, start?, end?, fade?}`（ADR-029。順序固定、語彙外 key は schema / validator が拒否） | Planner |
 | `audio.operations[]` | `audio.loudness {asset, target_lufs, true_peak, decision_ids}` | Planner |
 | `captions` / `graphics` / `color` | 予約（Phase 3+） | — |
 | `delivery.targets[]` | id, preset(ffmpeg-skill export preset 名), platform(check.py platform 名), artifact_type | Profile |
@@ -30,14 +30,14 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 ## 不変条件（validator が検査）
 
 - inference.evidence は observation / event / inference の id を指す。
-- operation は既知の asset と decision を参照し、keep 範囲は 0 < s < e ≤ duration。
+- operation は既知の asset（concat 後は論理 subject `programme`）と decision を参照し、keep 範囲は 0 < s < e ≤ duration。編集 operation は固定順・concat は 1 つ・fit と fill は排他・speed factor は 0.25–4 かつ ≠1・overlay 画像は allowed_inputs 内の PNG / JPEG（`check_video_operations`）。
 - preset / platform は ffmpeg-skill が知っている名前のみ（数値仕様は複製しない）。
 - 必要 capability が MISSING の IR は validate で error。
 - approval=BLOCK の decision があれば render は BLOCKED、CONFIRM が PROPOSED のままなら WAITING_FOR_APPROVAL。
 
 ## コンパイル
 
-`execution/compiler.py` が asset ごとに trim → loudness → export → check の順で Operation を生成する。
+`execution/compiler.py` が asset ごとに trim → (speed → resize → fit | fill → overlay) → loudness → export → check の順で Operation を生成する。concat があれば全 asset の trim の後に concat（出力 `programme`）を置き、以降の操作は programme に対して生成する（ADR-029）。
 中間ファイルは `<workspace>/jobs/<job_id>/ops/NN_<stage>/`、納品物は `artifacts/`。
 Operation.args は adapter のカタログ型（`tools/ffmpeg_skill/catalog.py`）で検証され、ffmpeg のオプションはどこにも現れない。
 

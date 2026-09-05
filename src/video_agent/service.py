@@ -12,6 +12,7 @@ from .agent import build_plan, decide, extract_requirements, infer, resolve_inte
 from .agent.ai_reasoning import AIReasoner, build_request, to_inferences
 from .agent.decision_engine import basis_rows
 from .agent.production_plan import plan_status
+from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, write_audit
@@ -179,6 +180,7 @@ class Service:
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
+        _check_edit_requirements(user_requirements or {})
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
@@ -261,7 +263,9 @@ class Service:
         d["audio"] = {"operations": plan["audio_ops"]}
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
-        d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in (request.args or {}).get("inputs", [])})
+        # allowed input roots: the media inputs' directories and, for an overlay, the image's directory (both named by the user)
+        images = [op["image"] for op in plan["video_ops"] if op.get("type") == "video.overlay" and op.get("image")]
+        d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
                                 "skill_versions": {s.name: s.version for s in self.registry.all() if s.phase == 1}, "tool_versions": d["source"]["tool_versions"],
@@ -297,6 +301,7 @@ class Service:
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
+        _check_edit_requirements(user_requirements or {})
         fb_ids: List[str] = []
         duplicate_feedback = False
         if feedback or user_requirements:
@@ -334,7 +339,7 @@ class Service:
         nd["decisions"] = rejected + nd["decisions"]            # rejected decisions stay visible, with their reviews
         nd["execution"]["reviews"] = {k: v for k, v in (old["execution"].get("reviews") or {}).items() if k in {d["id"] for d in rejected}}
         nd["execution"]["approvals"] = {}
-        nd["execution"]["allowed_inputs"] = old["execution"].get("allowed_inputs", [])
+        nd["execution"]["allowed_inputs"] = sorted(set(old["execution"].get("allowed_inputs", [])) | set(nd["execution"].get("allowed_inputs") or []))   # + an overlay image's directory named in this revision
         nd["revision"] = {"feedback": list(ir.doc["revision"]["feedback"]), "history": list(old["revision"]["history"]), "approved_plan_version": None}
         nd["provenance"]["runs"] = list(old["provenance"].get("runs") or [])
         nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
@@ -527,7 +532,8 @@ class Service:
         st = self.artifact_store()
         out: List[Artifact] = []
         planned = {o["logical"]: o for o in d["plan"].get("outputs") or []}
-        for asset_id in d["assets"]:
+        for subject in delivery_subjects(d):   # each asset, or the concat programme made of several sources (ADR-029)
+            asset_id = subject["id"]
             for t in d["delivery"]["targets"]:
                 logical = f"{asset_id}_delivery_{t['id']}"
                 if logical not in paths or not t.get("preset"):
@@ -545,7 +551,7 @@ class Service:
                 probe = next((m for m in qa.measurements if str(m.get("tool", "")).endswith("/probe") and (m.get("args") or {}).get("inputs") == [path]), None)
                 media = {"measured_by": probe.get("tool")} if probe else {}
                 media.update({i.name: i.observed for i in items if i.layer in ("video", "audio") and i.kind != "judgement"})   # QA facts (codec / stream / duration …)
-                a = Artifact(path=path, type=t.get("artifact_type", "MASTER"), hash=chk["sha256"], source=[asset_id], generation=1,
+                a = Artifact(path=path, type=t.get("artifact_type", "MASTER"), hash=chk["sha256"], source=list(subject["sources"]), generation=1,
                              tool=exp.tool if exp else "", tool_version=tool_version_of(d["source"]["tool_versions"], exp.tool) if exp else "",
                              qa_status=art_qa, stage="candidate" if art_qa in ("PASS", "WARN") else "working",
                              id=artifact_id(d["project"]["id"], d["plan"].get("id", ""), logical, chk["sha256"]),
@@ -776,6 +782,14 @@ class Service:
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
 REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.")
+
+
+def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
+    """Explicit `edit.*` requirements are range-checked before any analysis runs (an invalid value is a planning error, not a
+    guess and not something a later stage corrects)."""
+    from .models import Requirement
+    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith("edit.")]
+    parse_edit_requirements(requirement_map(reqs))
 
 
 def _default_who() -> str:

@@ -20,7 +20,11 @@ STEP_STATUSES = ("PROPOSED", "APPROVED", "REJECTED", "BLOCKED")
 PLANNER_ID = "production_planner@1.0"
 # parameters a step may carry (domain vocabulary): anything else is dropped by the planner and refused by the validator
 STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), "loudness_normalization": ("asset", "target_lufs", "true_peak"),
-                   "delivery_export": ("preset", "target"), "delivery_check": ("platform", "target")}
+                   "delivery_export": ("preset", "target"), "delivery_check": ("platform", "target"),
+                   # editing operations (ADR-029): the IR parameter allowlist of each operation plus the subject / references
+                   "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color"), "video_speed": ("asset", "factor"),
+                   "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
+                   "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade")}
 
 
 @dataclass
@@ -98,17 +102,17 @@ def step_status(step: Dict[str, Any], decisions: Dict[str, Dict[str, Any]]) -> s
 
 def plan_status(doc: Dict[str, Any]) -> str:
     """DRAFT: no steps yet (nothing to run). REJECTED: a step cites a rejected decision. BLOCKED: a step cannot execute
-    here (BLOCK decision / no tool). REVIEW: a CONFIRM decision is pending or the version needs re-approval.
+    here (BLOCK decision / no tool) or a BLOCK decision is in force (ADR-029: a refused request blocks the plan even without a step). REVIEW: a CONFIRM decision is pending or the version needs re-approval.
     APPROVED: every step's decisions are approved (explicitly, or AUTO by policy) and the version is not awaiting review."""
     decisions = {d["id"]: d for d in doc.get("decisions") or []}
     steps = (doc.get("plan") or {}).get("steps") or []
-    if not steps:
-        return "DRAFT"
     statuses = [step_status(s, decisions) for s in steps]
     if "REJECTED" in statuses:
         return "REJECTED"
-    if "BLOCKED" in statuses:
-        return "BLOCKED"
+    if "BLOCKED" in statuses or any(d["approval"] == "BLOCK" and d["status"] == "BLOCKED" for d in decisions.values()):
+        return "BLOCKED"   # a BLOCK decision in force blocks the whole plan, whether or not a step cites it (a refused request is never partially run)
+    if not steps:
+        return "DRAFT"
     version = int(doc["plan"].get("version", 1))
     approved_version = (doc.get("revision") or {}).get("approved_plan_version")
     pending = [d for d in decisions.values() if d["approval"] == "CONFIRM" and d["status"] == "PROPOSED"]
@@ -123,6 +127,28 @@ def executable_steps(doc: Dict[str, Any]) -> List[str]:
     """Step ids whose decisions allow execution (partial approval: only these reach the compiler through the IR)."""
     decisions = {d["id"]: d for d in doc.get("decisions") or []}
     return [s["id"] for s in (doc.get("plan") or {}).get("steps") or [] if step_status(s, decisions) == "APPROVED"]
+
+
+def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str, Any]] = None) -> Optional[float]:
+    """Length of the timeline a step's temporal scope refers to: the source duration of an asset, the concat programme's
+    timeline (a derived scope from the IR operation, not a source), and — for the speed step and every step after it — the
+    length changed by the video.speed factor (the scope of a step is on the timeline its output has)."""
+    ops = (doc.get("video") or {}).get("operations") or []
+    assets = doc.get("assets") or {}
+    steps = (doc.get("plan") or {}).get("steps") or []
+    if subject in assets:
+        dur = ((assets[subject].get("technical") or {}).get("duration"))
+    else:
+        dur = next((op.get("timeline_duration") for op in ops if op.get("type") == "video.concat" and op.get("output") == subject), None)
+    if dur is None:
+        return None
+    speed = next((op for op in ops if op.get("type") == "video.speed" and op.get("asset") == subject and op.get("factor")), None)
+    if speed is not None:
+        speed_step = next((s for s in steps if s.get("skill") == "video_speed" and (s.get("params") or {}).get("asset") == subject), None)
+        after = step is None or speed_step is None or int(step.get("order", 0)) >= int(speed_step.get("order", 0))
+        if after:
+            dur = float(dur) / float(speed["factor"])
+    return float(dur)
 
 
 # ---- validation
@@ -183,7 +209,7 @@ def validate_plan(doc: Dict[str, Any], registry=None, supports=None) -> List[str
             try:
                 rng = TimeRange(scope["start"], scope.get("end"))
                 aid = (s.get("params") or {}).get("asset")
-                dur = ((assets.get(aid) or {}).get("technical") or {}).get("duration") if aid else None
+                dur = subject_duration(doc, aid, s) if aid else None
                 if not rng.within(dur):
                     errs.append(f"step {s['id']}: temporal scope {scope} exceeds asset duration {dur}")
             except (ValueError, KeyError, TypeError) as ex:

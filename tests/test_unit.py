@@ -3184,7 +3184,8 @@ class ProductionContextTests(unittest.TestCase):
         self.assertEqual([(c.scope["start"], c.scope["end"]) for c in contexts_between(ctxs, 8.0, 12.5)], [(3.5, 8.8), (8.8, 9.0), (9.0, 12.0), (12.0, 12.3), (12.3, 13.5)])
         # deterministic: same events → same contexts and ids; a second build is identical
         again = build_contexts(an.timeline.events, an.assets, an.observations, [])
-        self.assertEqual([c.to_dict() for c in ctxs], [c.to_dict() for c in again])
+        strip = lambda c: {k: v for k, v in c.to_dict().items() if k != "created_at"}   # the build timestamp is wall-clock (CI crossed a second boundary), not content
+        self.assertEqual([strip(c) for c in ctxs], [strip(c) for c in again])
         self.assertEqual(c.id, ProductionContext.make_id(c.timeline_id, c.scope, c.event_ids))
         self.assertTrue(all(x.id.startswith("ctx_") for x in ctxs))
         # validation: references must exist, ids must match content, scope inside the asset
@@ -4053,3 +4054,316 @@ class VideoEditingAdapterTests(unittest.TestCase):
         os.environ["FAKE_VE_MODE"] = "validation_error"
         out4 = svc.render(load_ir(p), p)
         self.assertEqual(out4["execution"]["recovery"][0]["class"], "SKILL_ERROR"); self.assertEqual(out4["execution"]["recovery"][0]["action"], "BLOCK")
+
+
+class VideoEditingOperationsTests(unittest.TestCase):
+    """ADR-029: video-editing-skill operations (concat / speed / resize / fit / fill / overlay) from explicit `edit.*` requirements
+    through Decision → ProductionPlan → Project IR → compiler → VideoEditingAdapter. Requirement vocabulary and refusals,
+    decision semantics (BLOCK on an ambiguous / conflicting / unsupported request; capability gating), plan / IR shape and
+    determinism, validator rules on tampered IR, per-operation lowering, security (no command / filter / executable material
+    can enter through a requirement, an IR operation or the compiler), the fake end-to-end chain with QA expectations derived
+    from the IR, provenance, and failure handling. video.trim is untouched (PR #18 tests keep covering it)."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_video_editing.py")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.a = fake_media(self.tmp, "a.mp4")
+        self.b = fake_media(self.tmp, "b.mp4")
+        self.png = str(Path(self.tmp) / "src" / "logo.png"); Path(self.png).write_bytes(b"\x89PNG fake")
+        for k in ("FAKE_VE_MODE", "FAKE_VE_CALLS"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("FAKE_VE_MODE", "FAKE_VE_CALLS"):
+            os.environ.pop(k, None)
+
+    def _svc(self, caps=None, workspace=None):
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.video_editing import VideoEditingAdapter, VideoEditingSkill
+        ws = workspace or self.tmp
+        skill = VideoEditingSkill([sys.executable, self.FAKE], None, {})
+        ad = VideoEditingAdapter(skill, workspace=ws, allowed_inputs=[str(Path(self.a).parent)], ffmpeg_skill_dir=self.tmp)
+        return make_service(ws, caps=caps or FakeCaps(extra=["video-editing", "encoder:aac"]), adapter=ToolRouter([FakeAdapter(), ad]))
+
+    CHAIN = {"edit.concat": True, "edit.speed": 2, "edit.resize": 640, "edit.fit": "1:1", "edit.overlay.position": "top-right", "edit.overlay.scale": 80}
+
+    def test_requirement_vocabulary_and_refusals(self):
+        from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+
+        def parse(**kv):
+            return parse_edit_requirements(requirement_map([Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in kv.items()]))
+        ops = parse(**{**self.CHAIN, "edit.overlay": self.png, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.5, "edit.resize.fps": 30})
+        self.assertEqual(sorted(ops), ["video.concat", "video.fit", "video.overlay", "video.resize", "video.speed"])
+        self.assertEqual(ops["video.concat"]["params"], {"transition": {"type": "fade", "duration": 0.5}})
+        self.assertEqual(ops["video.speed"]["params"], {"factor": 2.0}); self.assertEqual(ops["video.resize"]["params"], {"width": 640, "fps": 30})
+        self.assertEqual(ops["video.overlay"]["params"], {"image": os.path.abspath(self.png), "position": "top-right", "scale": 80})
+        self.assertEqual([r.key for r in ops["video.overlay"]["requirements"]][0], "edit.overlay")
+        self.assertEqual(parse(**{"edit.concat": "false"}), {}, "edit.concat=false switches nothing on")
+        # a DEFAULT never switches an operation on; a refinement without its operation is an ambiguous request
+        self.assertEqual(parse_edit_requirements(requirement_map([Requirement(key="edit.speed", value=2, provenance="DEFAULT", source="d")])), {})
+        for bad, msg in ((dict(**{"edit.speed": 9}), "within"), ({"edit.speed": 1}, "changes nothing"), ({"edit.speed": "fast"}, "number"), ({"edit.resize": 641}, "even"),
+                         ({"edit.resize": 8}, "within"), ({"edit.fit": "16x9"}, "aspect"), ({"edit.fill": "0:9"}, "aspect"), ({"edit.overlay": self.png + ".txt"}, "one of"),
+                         ({"edit.overlay": str(Path(self.tmp) / "missing.png")}, "not found"), ({"edit.overlay": self.png, "edit.overlay.opacity": 2}, "within"),
+                         ({"edit.overlay": self.png, "edit.overlay.position": "somewhere"}, "one of"), ({"edit.overlay": self.png, "edit.overlay.start": 5, "edit.overlay.end": 2}, "before"),
+                         ({"edit.concat": True, "edit.concat.mode": "stretch"}, "pad or crop"), ({"edit.concat": True, "edit.concat.transition_duration": 1}, "needs edit.concat.transition"),
+                         ({"edit.concat": True, "edit.concat.pad_color": "rgb(0,0,0)"}, "colour"), ({"edit.resize.fps": 30}, "ambiguous"),
+                         ({"edit.overlay": str(Path(self.tmp) / "src" / ".." / "src" / "logo.png")}, "traversal"), ({"edit.concat": "maybe"}, "true or false")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse(**bad)
+            self.assertIn(msg, str(cm.exception), str(bad))
+        # the service refuses an invalid value before any analysis; unknown keys stay refused as before
+        svc = self._svc()
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([self.a], "generic", user_requirements={"edit.speed": 0})
+        self.assertIn("edit.speed", str(cm.exception))
+        with self.assertRaises(ValueError):
+            svc.plan([self.a], "generic", user_requirements={"command": "ffmpeg -i x y"})
+
+    def test_decisions_block_ambiguous_conflicting_and_unsupported_requests(self):
+        svc = self._svc()
+        # one input cannot be joined; nothing else is guessed
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.concat": True, "edit.speed": 2})
+        blk = [d for d in ir.doc["decisions"] if d["approval"] == "BLOCK"]
+        self.assertEqual([d["subject"] for d in blk], ["video.concat"]); self.assertEqual(blk[0]["type"], "BLOCK"); self.assertEqual(blk[0]["status"], "BLOCKED")
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        self.assertEqual([op["type"] for op in ir.doc["video"]["operations"] if op["type"] != "video.trim"], ["video.speed"], "the speed request on the input itself is still planned")
+        sp = next(d for d in ir.doc["decisions"] if d["subject"] == "video.speed")
+        self.assertEqual((sp["type"], sp["params"]["asset_id"], sp["params"]["factor"]), ("TRANSFORM", list(ir.doc["assets"])[0], 2.0))
+        self.assertIn("requirement", sp["basis"]["evidence_classes"]); self.assertEqual(sp["basis"]["approval"]["key"], "video.speed.approval")
+        self.assertEqual(sp["basis"]["approval"]["provenance"], "DEFAULT"); self.assertTrue(any("explicit" in n for n in sp["basis"]["approval"]["notes"]))
+        p = str(Path(self.tmp) / "blk.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "BLOCKED"); self.assertIsNone(out.get("execution"))
+        # fit + fill contradict each other → BLOCK, neither is planned
+        ir2 = svc.plan([self.a], "generic", user_requirements={"edit.fit": "1:1", "edit.fill": "9:16"})
+        self.assertEqual([d["subject"] for d in ir2.doc["decisions"] if d["approval"] == "BLOCK"], ["video.fit"])
+        self.assertEqual([op["type"] for op in ir2.doc["video"]["operations"] if op["type"] != "video.trim"], [])
+        # approval policy: a profile / request rule can keep CONFIRM (never lowered below what policy says)
+        ir3 = svc.plan([self.a], "generic", user_requirements={"edit.resize": 640, "edit.resize.fps": 25})
+        rs = next(d for d in ir3.doc["decisions"] if d["subject"] == "video.resize")
+        self.assertEqual(rs["approval"], "AUTO", "an explicit USER request for exactly this edit is its own confirmation (PR #16 semantics)")
+        from video_agent.agent.decision_engine import resolve_approval
+        from video_agent.policy.rules import Rule, resolve_rules
+        rules = resolve_rules([Rule("c1", "CONSTRAINT", "PROFILE", "video.resize.approval", "CONFIRM", "profile")])
+        req = next(r for r in ir3.doc["requirements"] if r["key"] == "edit.resize")
+        from video_agent.models import Requirement
+        self.assertEqual(resolve_approval(rules, "video.resize.approval", "CONFIRM", explicit=Requirement.from_dict(req))["approval"], "CONFIRM")
+        self.assertEqual(resolve_approval(resolve_rules([Rule("c2", "POLICY", "PROFILE", "video.fill.approval", "BLOCK", "profile")]), "video.fill.approval", "CONFIRM", explicit=Requirement.from_dict(req))["approval"], "BLOCK")
+
+    def test_plan_ir_shape_and_determinism(self):
+        svc = self._svc()
+        reqs = {**self.CHAIN, "edit.overlay": self.png}
+        ir = svc.plan([self.a, self.b], "youtube", user_requirements=reqs)
+        d = ir.doc
+        a_id, b_id = list(d["assets"])
+        self.assertEqual(d["plan"]["status"], "APPROVED"); self.assertEqual(svc.validate(ir).errors, [])
+        steps = d["plan"]["steps"]
+        self.assertEqual([s["skill"] for s in steps], ["silence_cleanup", "silence_cleanup", "video_concat", "video_speed", "video_resize", "video_fit", "video_overlay",
+                                                       "loudness_normalization", "delivery_export", "delivery_check"])
+        self.assertTrue(all(s["tool"].startswith("video-editing/") for s in steps if s["skill"].startswith("video_")))
+        concat = next(s for s in steps if s["skill"] == "video_concat")
+        self.assertEqual(concat["inputs"], [f"{a_id}_trim", f"{b_id}_trim"]); self.assertEqual(concat["outputs"], ["programme"])
+        self.assertEqual(sorted(concat["depends_on"]), sorted([f"step_trim_{a_id}", f"step_trim_{b_id}"]))
+        self.assertEqual(concat["params"], {"asset": "programme", "inputs": [a_id, b_id]})
+        chain = [s for s in steps if s["skill"] in ("video_speed", "video_resize", "video_fit", "video_overlay")]
+        self.assertEqual([s["inputs"][0] for s in chain], ["programme", "programme_speed", "programme_resize", "programme_fit"])
+        self.assertEqual([s["depends_on"] for s in chain], [["step_concat_programme"], ["step_speed_programme"], ["step_resize_programme"], ["step_fit_programme"]])
+        self.assertEqual(next(s for s in steps if s["skill"] == "loudness_normalization")["inputs"], ["programme_overlay"])
+        self.assertEqual(next(s for s in steps if s["skill"] == "delivery_export")["outputs"], ["programme_delivery_youtube"])
+        # IR operations: explicit type, references, allowlisted parameters, temporal scope, decisions, multi-source segments
+        ops = [op for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual([op["type"] for op in ops], ["video.concat", "video.speed", "video.resize", "video.fit", "video.overlay"])
+        c = ops[0]
+        self.assertEqual((c["asset"], c["inputs"], c["output"], c["timeline_duration"]), ("programme", [a_id, b_id], "programme", 22.0))
+        self.assertEqual(c["segments"], [{"input": a_id, "track": "V1", "source_range": [2.85, 13.85], "timeline_range": [0.0, 11.0]},
+                                         {"input": b_id, "track": "V1", "source_range": [2.85, 13.85], "timeline_range": [11.0, 22.0]}])
+        self.assertEqual(ops[1], {"type": "video.speed", "asset": "programme", "input": "programme", "output": "programme_speed", "factor": 2.0, "temporal_scope": {"start": 0.0, "end": 11.0}, "decision_ids": ops[1]["decision_ids"]})
+        self.assertEqual(ops[4]["image"], os.path.abspath(self.png)); self.assertEqual((ops[4]["position"], ops[4]["scale"]), ("top-right", 80))
+        self.assertNotIn("image", ops[4].get("params", {}))
+        for op in ops:
+            self.assertTrue(op["decision_ids"] and all(any(x["id"] == i and x["type"] == "TRANSFORM" for x in d["decisions"]) for i in op["decision_ids"]), op)
+        self.assertIn(str(Path(self.png).parent.resolve()), d["execution"]["allowed_inputs"])
+        # loudness applies once to the programme (no per-input normalisation that the join would undo)
+        self.assertEqual([op["asset"] for op in d["audio"]["operations"]], ["programme"])
+        self.assertEqual(next(x for x in d["decisions"] if x["subject"] == "audio.loudness")["params"]["asset_id"], "programme")
+        # determinism: the same request yields the same steps and operations (asset / decision ids are per-project identities)
+        ir2 = svc.plan([self.a, self.b], "youtube", user_requirements=reqs)
+
+        def shape(doc):
+            ids = {aid: f"A{n}" for n, aid in enumerate(doc["assets"])}
+            blob = json.dumps({"ops": doc["video"]["operations"], "steps": [[s["skill"], s["params"], s["inputs"], s["outputs"], s["depends_on"]] for s in doc["plan"]["steps"]]}, sort_keys=True)
+            for aid, tag in ids.items():
+                blob = blob.replace(aid, tag)
+            import re
+            return re.sub(r"dec_[0-9a-f]{10}", "dec", blob)
+        self.assertEqual(shape(d), shape(ir2.doc))
+        # a request without edits keeps the PR #18 plan untouched (video.trim only; asset-keyed delivery)
+        ir3 = svc.plan([self.a], "youtube")
+        self.assertEqual([op["type"] for op in ir3.doc["video"]["operations"]], ["video.trim"])
+        self.assertEqual([s["skill"] for s in ir3.doc["plan"]["steps"]], ["silence_cleanup", "loudness_normalization", "delivery_export", "delivery_check"])
+        # explain: Decision → step → IR operation chain is visible
+        ex = svc.explain_decision(d, ops[1]["decision_ids"][0])
+        self.assertTrue(any(r.get("kind") == "requirement" or "edit.speed" in json.dumps(r) for r in ex), ex)
+
+    def test_validator_refuses_tampered_operations(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={**self.CHAIN, "edit.overlay": self.png})
+        base = json.loads(json.dumps(ir.doc))
+        from video_agent.project.ir import ProjectIR
+
+        def errors(fn):
+            doc = json.loads(json.dumps(base))
+            fn(doc)
+            return validate_ir(ProjectIR(doc), check_paths=False, registry=svc.registry).errors
+
+        def op(doc, t):
+            return next(o for o in doc["video"]["operations"] if o["type"] == t)
+        self.assertEqual(errors(lambda doc: None), [])
+        self.assertTrue(any("not in the operation's vocabulary" in e or "additional properties" in e.lower() for e in errors(lambda doc: op(doc, "video.speed").update(filter="scale=1:1"))))
+        self.assertTrue(any("additional properties" in e.lower() for e in errors(lambda doc: op(doc, "video.resize").update(command="ffmpeg -i a b"))))
+        self.assertTrue(any("factor" in e for e in errors(lambda doc: op(doc, "video.speed").update(factor=8))))
+        self.assertTrue(any("factor" in e for e in errors(lambda doc: op(doc, "video.speed").update(factor=1))))
+        self.assertTrue(any("even integer" in e for e in errors(lambda doc: op(doc, "video.resize").update(width=641))))
+        self.assertTrue(any("aspect" in e for e in errors(lambda doc: op(doc, "video.fit").update(aspect="wide"))))
+        self.assertTrue(any("outside the allowed input roots" in e for e in errors(lambda doc: op(doc, "video.overlay").update(image=str(Path(self.tmp) / "x" / "logo.png")))))
+        self.assertTrue(any("'..'" in e for e in errors(lambda doc: op(doc, "video.overlay").update(image=str(Path(self.tmp) / "src" / ".." / "src" / "logo.png")))))
+        self.assertTrue(any("PNG / JPEG" in e for e in errors(lambda doc: op(doc, "video.overlay").update(image=self.a))))
+        self.assertTrue(any("before it exists" in e for e in errors(lambda doc: doc["video"]["operations"].remove(op(doc, "video.concat")))))
+        self.assertTrue(any("out of the fixed operation order" in e for e in errors(lambda doc: doc["video"]["operations"].append(dict(op(doc, "video.speed"))))))
+        self.assertTrue(any("more than one video.concat" in e for e in errors(lambda doc: doc["video"]["operations"].insert(2, dict(op(doc, "video.concat"))))))
+        self.assertTrue(any("distinct inputs" in e for e in errors(lambda doc: op(doc, "video.concat").update(inputs=[op(doc, "video.concat")["inputs"][0]] * 2))))
+        self.assertTrue(any("no video stream" in e for e in errors(lambda doc: doc["assets"][op(doc, "video.concat")["inputs"][0]]["technical"].update(video=None))))
+        self.assertTrue(any("has no plan step" in e for e in errors(lambda doc: doc["plan"]["steps"].remove(next(s for s in doc["plan"]["steps"] if s["skill"] == "video_fit")))))
+        self.assertTrue(any("conflicting request" in e for e in errors(lambda doc: doc["video"]["operations"].append({**op(doc, "video.fit"), "type": "video.fill", "output": "programme_fill"}))))
+        self.assertTrue(any("not a domain parameter" in e for e in errors(lambda doc: next(s for s in doc["plan"]["steps"] if s["skill"] == "video_speed")["params"].update(argv=["x"]))))
+        self.assertTrue(any("not a declared tool" in e for e in errors(lambda doc: next(s for s in doc["plan"]["steps"] if s["skill"] == "video_speed").update(tool="ffmpeg-skill/cut"))))
+        self.assertTrue(any("enum" in e or "video.crop" in e for e in errors(lambda doc: op(doc, "video.speed").update(type="video.crop"))))
+
+    def test_lowering_per_operation_and_compiler_boundary(self):
+        from video_agent.execution.compiler import lower_video_edit
+        self.assertEqual(lower_video_edit("video-editing/concat", {"type": "video.concat", "asset": "programme", "inputs": ["a", "b"], "output": "programme", "transition": {"type": "fade", "duration": 0.5}, "segments": [], "decision_ids": []},
+                                          ["a_trim", "b_trim"], "programme"), {"inputs": ["a_trim", "b_trim"], "transition": {"type": "fade", "duration": 0.5}, "output": "programme"})
+        self.assertEqual(lower_video_edit("video-editing/speed", {"type": "video.speed", "asset": "a", "factor": 2.0}, "a_trim", "a_speed"), {"input": "a_trim", "factor": 2.0, "output": "a_speed"})
+        self.assertEqual(lower_video_edit("video-editing/resize", {"type": "video.resize", "asset": "a", "width": 640, "fps": 30}, "a", "o"), {"input": "a", "width": 640, "fps": 30, "output": "o"})
+        self.assertEqual(lower_video_edit("video-editing/fit", {"type": "video.fit", "asset": "a", "aspect": "1:1", "pad_color": "black"}, "a", "o"), {"input": "a", "aspect": "1:1", "pad_color": "black", "output": "o"})
+        self.assertEqual(lower_video_edit("video-editing/fill", {"type": "video.fill", "asset": "a", "aspect": "9:16", "width": 1080}, "a", "o"), {"input": "a", "aspect": "9:16", "width": 1080, "output": "o"})
+        self.assertEqual(lower_video_edit("video-editing/overlay", {"type": "video.overlay", "asset": "a", "image": "/x/l.png", "position": {"x": 10, "y": 20}, "opacity": 0.5}, "a", "o", {"image": "a_overlay_image"}),
+                         {"input": "a", "position": {"x": 10, "y": 20}, "opacity": 0.5, "image": "a_overlay_image", "output": "o"})
+        # parameters outside the allowlist never reach the tool; the wrong tool for an operation is a compile error, never a substitution
+        self.assertNotIn("filter", lower_video_edit("video-editing/speed", {"type": "video.speed", "asset": "a", "factor": 2.0, "filter": "setpts"}, "a", "o"))
+        with self.assertRaises(CompileError):
+            lower_video_edit("ffmpeg-skill/cut", {"type": "video.speed", "asset": "a", "factor": 2.0}, "a", "o")
+        # compiled chain: order, paths under the job, the image as a path reference (never a path in args), chained idempotency keys
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={**self.CHAIN, "edit.overlay": self.png})
+        ops, paths = compile_ir(ir, str(Path(self.tmp) / "job"))
+        self.assertEqual([o.tool for o in ops][2:], ["video-editing/concat", "video-editing/speed", "video-editing/resize", "video-editing/fit", "video-editing/overlay"])
+        self.assertEqual(ops[2].inputs, [ops[0].outputs[0], ops[1].outputs[0]]); self.assertEqual(ops[2].outputs, ["programme"])
+        self.assertTrue(paths["programme"].startswith(str(Path(self.tmp) / "job" / "ops" / "programme_01_concat")))
+        self.assertEqual(paths["programme_overlay_image"], os.path.abspath(self.png)); self.assertEqual(ops[6].args["image"], "programme_overlay_image")
+        self.assertIn("programme_overlay_image", ops[6].inputs)
+        self.assertEqual(paths["programme_delivery_main"], paths["programme_overlay"], "generic profile delivers the last intermediate")
+        keys = [o.idempotency_key for o in ops]
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual([o.idempotency_key for o in compile_ir(ir, str(Path(self.tmp) / "job"))[0]], keys, "compiling the same IR twice gives the same keys")
+        next(op for op in ir.doc["video"]["operations"] if op["type"] == "video.speed")["factor"] = 3.0
+        ops2, _ = compile_ir(ir, str(Path(self.tmp) / "job"))
+        self.assertEqual(ops2[2].idempotency_key, ops[2].idempotency_key, "the concat is unchanged")
+        self.assertNotEqual(ops2[3].idempotency_key, ops[3].idempotency_key); self.assertNotEqual(ops2[4].idempotency_key, ops[4].idempotency_key, "downstream keys change with the speed")
+        for o in ops:
+            blob = json.dumps(o.args).lower()
+            for k in ("argv", "command", "filter", "shell", "exec", "ffmpeg -"):
+                self.assertNotIn(k, blob, o.tool)
+        # the plan's tool is the only source: a step without a video-editing tool leaves the compiler without one (no default engine)
+        ir.doc["plan"]["steps"][3]["tool"] = None
+        with self.assertRaises(CompileError):
+            compile_ir(ir, str(Path(self.tmp) / "job2"))
+
+    def test_capability_gating_unknown_is_not_available(self):
+        svc = self._svc(caps=FakeCaps())   # no video-editing capability in this environment
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True, "edit.speed": 2})
+        blk = sorted(d["subject"] for d in ir.doc["decisions"] if d["approval"] == "BLOCK")
+        self.assertEqual(blk, ["capability.video_concat", "capability.video_speed"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        self.assertTrue(all(s["tool"] is None for s in ir.doc["plan"]["steps"] if s["skill"].startswith("video_")), "no fallback tool")
+        self.assertTrue(any("has no selected tool" in e for e in svc.validate(ir).errors))
+        p = str(Path(self.tmp) / "cap.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertIn(out["status"], ("BLOCKED", "FAILED")); self.assertIsNone(out.get("execution"))
+        # a doctor failure / contract drift makes the capability non-AVAILABLE upstream (PR #18); UNKNOWN is treated as MISSING by the registry
+        from video_agent.capabilities.resolver import Capability
+        caps = FakeCaps(extra=["video-editing"]).resolve(); caps["video-editing"] = Capability("video-editing", "UNKNOWN", "fake", {})
+        self.assertEqual(svc.registry.missing_capabilities("video_concat", caps), ["video-editing"])
+        self.assertIsNone(svc.registry.select_tool("video_overlay", caps, lambda t: True)[0])
+        # the registry's skills are declared with the only tool that implements them; nothing else is a candidate
+        for name in ("video_concat", "video_speed", "video_resize", "video_fit", "video_fill", "video_overlay"):
+            self.assertEqual(svc.registry.get(name).tools, [f"video-editing/{name.split('_', 1)[1]}"]); self.assertEqual(svc.registry.get(name).approval, "CONFIRM")
+
+    def test_end_to_end_chain_qa_provenance_and_failures(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "youtube", user_requirements={**self.CHAIN, "edit.overlay": self.png})
+        p = str(Path(self.tmp) / "chain.json"); save_ir(ir, p)
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_VE_CALLS"] = log
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"]); self.assertIn(out["status"], ("COMPLETED", "REVIEW"))
+        res = [r for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")]
+        self.assertEqual([r["data"]["operation"]["type"] for r in res], ["CONCAT", "SPEED", "RESIZE", "FIT", "OVERLAY"])
+        self.assertEqual(res[1]["data"]["operation"]["parameters"], {"factor": 2.0}); self.assertEqual(res[4]["data"]["operation"]["parameters"], {"image": "image", "position": "top-right", "scale": 80})
+        calls = [json.loads(l) for l in Path(log).read_text().splitlines() if json.loads(l).get("cmd") == "run"]
+        self.assertEqual(len(calls), 5)
+        for c in calls:   # the Skill saw an argv list of the canonical form only; no command / filter / executable / credential material, no VIDEO_* environment
+            self.assertEqual(c["argv"][:3], ["run", "-", "--json"]); self.assertNotIn("VIDEO_EDITING_FFMPEG_SKILL_DIR", c["env_video"])
+            self.assertEqual(sorted(set(a for a in c["argv"] if a.startswith("--"))), ["--allowed-input", "--ffmpeg-skill-dir", "--json", "--workspace"])
+        self.assertEqual(sorted(res[0]["data"]["operation"]["inputs"][0]), ["kind", "ref", "sha256"]); self.assertEqual([i["ref"] for i in res[0]["data"]["operation"]["inputs"]], ["s0", "s1"])
+        # QA expectations come from the IR (22 s programme at 2× → 11 s); the artifact names both sources
+        dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual((dur["status"], dur["observed"]), ("PASS", 11.0)); self.assertIn("11.000", dur["expected"])
+        art = out["artifacts"][0]
+        self.assertEqual(art["logical_name"], "programme_delivery_youtube"); self.assertEqual(sorted(art["source"]), sorted(ir.doc["assets"]))
+        self.assertEqual(art["step_id"], "step_export_youtube")
+        exp_op = next(r for r in out["execution"]["results"] if r["tool"] == "ffmpeg-skill/export")
+        self.assertIn(exp_op["op_id"], art["operations"], "the artifact names its producing export; the editing operations are in the step chain / provenance below")
+        # provenance: Decision → step → IR op → tool → Skill op → input → output, per operation
+        prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        rows = [e for e in prov["operations"] if e["tool"].startswith("video-editing/")]
+        self.assertEqual([e["skill"] for e in rows], ["video_concat", "video_speed", "video_resize", "video_fit", "video_overlay"])
+        for e in rows:
+            self.assertTrue(e["decision"]); self.assertEqual(e["skill_package"], "video-editing"); self.assertEqual(e["tool_version"], "0.1.0")
+            self.assertTrue(e["skill_result"]["artifact"]["sha256"]); self.assertTrue(e["input"] and e["output"])
+            self.assertEqual(e["skill_result"]["observation"]["provenance"], "OBSERVED")
+        self.assertEqual(len(rows[0]["input"]), 2); self.assertEqual(rows[4]["input"][1], os.path.abspath(self.png))
+        self.assertEqual(len(prov["skill_observations"]), 5)
+        steps = {s["id"]: s for s in ir.doc["plan"]["steps"]}
+        self.assertEqual(steps["step_speed_programme"]["decision_ids"], rows[1]["decision"])
+        # resume reuses every completed editing operation (no Skill call)
+        Path(log).unlink()
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertEqual(len(out2["execution"]["skipped"]), len(out["execution"]["results"]) - 1)
+        self.assertFalse(os.path.exists(log) and any(json.loads(l).get("cmd") == "run" for l in Path(log).read_text().splitlines()))
+        # failures: a missing output is never a success (SKILL_ERROR → BLOCK, no retry); an invalid request is not retried; a tool error retries once
+        os.environ["FAKE_VE_MODE"] = "output_missing"
+        o3 = svc.render(load_ir(p), p)
+        self.assertEqual(o3["execution"]["status"], "FAILED"); self.assertEqual([r["class"] for r in o3["execution"]["recovery"]], ["SKILL_ERROR"])
+        self.assertEqual(o3["execution"]["failed_op"], res[0]["op_id"], "the concat fails first; nothing downstream runs")
+        os.environ["FAKE_VE_MODE"] = "validation_error"
+        o4 = svc.render(load_ir(p), p)
+        self.assertEqual([(r["class"], r["action"]) for r in o4["execution"]["recovery"]], [("SKILL_ERROR", "BLOCK")])
+        os.environ["FAKE_VE_MODE"] = "tool_error_final"
+        o5 = svc.render(load_ir(p), p)
+        self.assertEqual([(r["class"], r["action"]) for r in o5["execution"]["recovery"]], [("SKILL_ERROR", "BLOCK")], "the Skill said not retryable")
+        os.environ["FAKE_VE_MODE"] = "timeout"
+        o6 = svc.render(load_ir(p), p)
+        self.assertEqual([r["class"] for r in o6["execution"]["recovery"]], ["TIMEOUT", "TIMEOUT"])
+        os.environ.pop("FAKE_VE_MODE", None)
+        # fill instead of fit, and a single asset without concat: the chain applies to the asset itself
+        ir7 = svc.plan([self.a], "generic", user_requirements={"edit.speed": 0.5, "edit.fill": "9:16", "edit.fill.width": 1080})
+        a_id = list(ir7.doc["assets"])[0]
+        self.assertEqual([(op["type"], op["asset"]) for op in ir7.doc["video"]["operations"]], [("video.trim", a_id), ("video.speed", a_id), ("video.fill", a_id)])
+        self.assertEqual(svc.validate(ir7).errors, [])
+        p7 = str(Path(self.tmp) / "one.json"); save_ir(ir7, p7)
+        o7 = svc.render(load_ir(p7), p7, approve=["all"])
+        self.assertEqual(o7["execution"]["status"], "COMPLETED")
+        self.assertEqual(next(i for i in o7["qa"]["items"] if i["name"] == "duration")["observed"], 22.0, "11 s kept at 0.5× → 22 s, expected from the IR")

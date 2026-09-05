@@ -151,6 +151,91 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    vo = case.get("video_editing_ops")
+    if vo:
+        # ADR-029: editing operations (concat / speed / resize / fit / fill / overlay) from explicit requirements through Decision → plan →
+        # IR → compiler → the fake video-editing process; refusals (invalid parameter, path violation, conflicting or unsupported
+        # request), capability gating, and output failures are never a success
+        import os
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.video_editing import VideoEditingAdapter, VideoEditingSkill
+        from video_agent.project import load_ir, save_ir
+        os.environ.pop("FAKE_VE_MODE", None)
+        inputs = [str(src)]
+        for n in range(1, int(vo.get("inputs", 1))):
+            extra = src.parent / f"in{n}.mp4"; extra.write_bytes(b"0" * (16 + n)); inputs.append(str(extra))
+        reqs = dict(case.get("requirements") or {})
+        if vo.get("image"):
+            img = Path(tmp) / ("outside" if vo["image"] == "outside" else "src") / "logo.png"
+            img.parent.mkdir(parents=True, exist_ok=True); img.write_bytes(b"\x89PNG fake")
+            reqs["edit.overlay"] = str(img) if vo["image"] != "traversal" else str(img.parent / ".." / "src" / "logo.png")
+        skill = VideoEditingSkill([sys.executable, str(ROOT / "tests" / "fake_video_editing.py")], None, {})
+        ad = VideoEditingAdapter(skill, workspace=tmp, allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if vo.get("no_capability") else ["video-editing", "encoder:aac"])
+        fake_engine = FakeAdapter(**fake)
+        svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine, ad]), caps=caps, provider=provider)
+        try:
+            ir = svc.plan(inputs, case.get("profile", "generic"), user_requirements=reqs)
+        except ValueError as e:
+            if exp.get("plan_error") and exp["plan_error"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"plan refused: {e!s:.200}"]}
+        if exp.get("plan_error"):
+            return {"case": case["name"], "ok": False, "failures": ["an invalid request was planned"]}
+        d = ir.doc
+        types = [op["type"] for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        if "ir_ops" in exp and types != exp["ir_ops"]:
+            failures.append(f"IR operations {types} != {exp['ir_ops']}")
+        if "blocked" in exp and bool(ir.blocked()) != exp["blocked"]:
+            failures.append(f"blocked {bool(ir.blocked())} != {exp['blocked']} ({[b['subject'] for b in ir.blocked()]})")
+        if exp.get("blocked_subjects") and sorted({b["subject"] for b in ir.blocked()}) != sorted(exp["blocked_subjects"]):
+            failures.append(f"blocked subjects {sorted({b['subject'] for b in ir.blocked()})} != {exp['blocked_subjects']}")
+        if "plan_status" in exp and d["plan"]["status"] != exp["plan_status"]:
+            failures.append(f"plan status {d['plan']['status']} != {exp['plan_status']}")
+        rep = svc.validate(ir)
+        if exp.get("validate_error"):
+            if not any(exp["validate_error"] in e for e in rep.errors):
+                failures.append(f"validator did not report {exp['validate_error']!r}: {rep.errors}")
+        elif not rep.ok:
+            failures.append(f"IR invalid: {rep.errors}")
+        for s_ in d["plan"]["steps"]:
+            if s_["skill"].startswith("video_") and s_.get("tool") and not s_["tool"].startswith("video-editing/"):
+                failures.append(f"step {s_['id']} selected a non video-editing tool {s_['tool']}")
+        if exp.get("render"):
+            if vo.get("run_mode"):
+                os.environ["FAKE_VE_MODE"] = vo["run_mode"]
+            ir_path = str(Path(tmp) / "vo.json"); save_ir(ir, ir_path)
+            rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
+            os.environ.pop("FAKE_VE_MODE", None)
+            want = exp["render"]
+            if want.get("status") and rr.get("status") != want["status"]:
+                failures.append(f"render status {rr.get('status')} != {want['status']}")
+            if want.get("execution_status") and (rr.get("execution") or {}).get("status") != want["execution_status"]:
+                failures.append(f"execution status {(rr.get('execution') or {}).get('status')} != {want['execution_status']}")
+            results = (rr.get("execution") or {}).get("results") or []
+            used = [r["tool"] for r in results if r["tool"].startswith("video-editing/")]
+            if want.get("tools") is not None and used != want["tools"]:
+                failures.append(f"video-editing tools {used} != {want['tools']}")
+            if want.get("recovery_classes") is not None and [r["class"] for r in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
+                failures.append(f"recovery {[r['class'] for r in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
+            if want.get("qa_status") and (rr.get("qa") or {}).get("status") != want["qa_status"]:
+                failures.append(f"qa {(rr.get('qa') or {}).get('status')} != {want['qa_status']}")
+            if want.get("duration") is not None:
+                item = next((i for i in (rr.get("qa") or {}).get("items") or [] if i["name"] == "duration"), None)
+                if not item or abs(float(item["observed"]) - float(want["duration"])) > 0.01:
+                    failures.append(f"delivered duration {item and item['observed']} != {want['duration']}")
+            if (rr.get("execution") or {}).get("status") == "COMPLETED":
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                for e in prov["operations"]:
+                    if e["tool"].startswith("video-editing/"):
+                        blob = json.dumps(e["args"]).lower()
+                        if any(k in blob for k in ('"argv"', '"command"', '"filter"', '"executable"', '"shell"', "ffmpeg -")):
+                            failures.append(f"provenance args of {e['tool']} carry command material")
+                        if not e.get("decision"):
+                            failures.append(f"provenance of {e['tool']} cites no decision")
+                if want.get("sources") is not None and sorted(len(a["source"]) for a in rr.get("artifacts") or []) != sorted(want["sources"]):
+                    failures.append(f"artifact sources {[a['source'] for a in rr.get('artifacts') or []]}")
+        return {"case": case["name"], "ok": not failures, "failures": failures}
     ve = case.get("video_editing")
     if ve:
         # PR #18 (ADR-028): video-editing-skill behind its CLI (fake process): selection by registry / capability, lowering, execution, provenance, failures

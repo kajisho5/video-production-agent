@@ -8,6 +8,7 @@ BLOCKED, no executable material) and records the basis on the decision (policy /
 provenance, approval resolution, intent, requirements) for `explain --decision`."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..capabilities.resolver import Capability
@@ -17,6 +18,7 @@ from ..policy.rules import RuleSet
 from ..skills.registry import SkillRegistry
 from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
+from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, parse_edit_requirements
 from .requirements import requirement_map
 
 # production-skill intent → decision subjects that would already execute it (measured path)
@@ -31,7 +33,10 @@ SERVING_SUBJECTS = {"clean_and_deliver": ("silence.leading", "silence.trailing",
 APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silence.trailing": ("silence.trailing.approval", "AUTO"),
                  "silence.internal": ("silence.internal.approval", "CONFIRM"), "audio.loudness": ("audio.loudness.approval", "AUTO"),
                  "delivery.export": ("delivery.export.approval", "AUTO"), "video.vfr": ("video.vfr.approval", "AUTO"),
-                 "video.hdr": ("video.hdr.approval", "CONFIRM"), "ai.recommendation": ("ai.recommendation.approval", "CONFIRM")}
+                 "video.hdr": ("video.hdr.approval", "CONFIRM"), "ai.recommendation": ("ai.recommendation.approval", "CONFIRM"),
+                 # editing operations (ADR-029): CONFIRM unless the profile / request says otherwise; an explicit USER requirement waives it
+                 "video.concat": ("video.concat.approval", "CONFIRM"), "video.speed": ("video.speed.approval", "CONFIRM"), "video.resize": ("video.resize.approval", "CONFIRM"),
+                 "video.fit": ("video.fit.approval", "CONFIRM"), "video.fill": ("video.fill.approval", "CONFIRM"), "video.overlay": ("video.overlay.approval", "CONFIRM")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -76,6 +81,29 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                   evidence=[f"skill:{skill}"], risk="HIGH", approval="BLOCK", provenance="SYSTEM", params={"skill": skill, "missing": []})
         return None
 
+    # ---- editing operations (ADR-029): explicit `edit.*` requirements only; an invalid value is refused here (EditRequirementError)
+    edits = parse_edit_requirements(m)
+    video_assets = [a for a in analysis.assets if a.technical.get("video")]
+
+    def probe_ids_of(asset_ids: List[str]) -> List[str]:
+        return [o.id for o in analysis.observations if o.asset_id in asset_ids and o.kind in ("media_probe", "probe")]
+
+    concat_ok = False
+    if "video.concat" in edits:
+        req = edits["video.concat"]["requirements"]
+        ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
+        if len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
+            eng.decide(subject="video.concat", type="BLOCK", decision="BLOCK: concat needs two or more inputs with a video stream",
+                       reason=f"{len(video_assets)} of {len(analysis.assets)} input(s) carry a video stream; an ambiguous or unsupported multi-source request is never guessed",
+                       confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"inputs": [a.id for a in analysis.assets]}, requirements=req)
+        else:
+            p = edits["video.concat"]["params"]
+            concat_ok = True
+            eng.decide(subject="video.concat", type="TRANSFORM", decision="concat " + " + ".join(a.id for a in video_assets) + f" → {PROGRAMME}" + (f" ({p['transition']['type']} {p['transition']['duration']:g}s)" if p.get("transition") else ""),
+                       reason=f"user asked to join the inputs in the given order ({req[0].source}); the trimmed inputs become one programme timeline",
+                       confidence=1.0, evidence=ev, risk=OPERATIONS["video.concat"]["risk"], approval=approval_for("video.concat", explicit=req[0]), provenance="USER",
+                       params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
+            cap_block("video_concat", "capability.video_concat")
     for asset in analysis.assets:
         infs = by_asset.get(asset.id, [])
         dur = asset.technical.get("duration") or 0.0
@@ -170,6 +198,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=amb.statement, confidence=amb.confidence, evidence=[amb.id] + amb.evidence, risk="MEDIUM", approval="AUTO",
                            alternatives=[Alternative(f"normalize to {target.value:g} LUFS", "force normalisation", "raises noise floor").to_dict()], provenance="INFERRED",
                            requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
+            elif concat_ok:
+                pass   # the joined programme is normalised once (decision below); a per-input normalisation would be undone by the join
             elif off or want_norm.provenance == "USER":
                 tp = m.get("audio.loudness.true_peak")
                 ev = ([off.id] + off.evidence) if off else [target.id] + loud_obs
@@ -193,6 +223,46 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             eng.decide(subject="video.hdr", type="KEEP", decision=f"keep HDR ({v.get('hdr_format')}) through intermediates; SDR presets warn", reason="probe reports HDR; intermediates keep HDR on re-encode, platform presets output SDR without tone mapping",
                        confidence=0.9, evidence=probe_ids, risk="MEDIUM", approval=approval_for("video.hdr"), provenance="OBSERVED",
                        alternatives=[Alternative("tone-map to SDR first", "correct colours on SDR-only platforms", "one extra re-encode").to_dict()])
+    # ---- loudness of the concat programme (one decision for the joined output; evidence: every input's measurement)
+    if concat_ok:
+        want_norm = m.get("audio.normalize")
+        target = m.get("audio.loudness.target_lufs")
+        offs = [i for i in inferences if i.kind == "loudness_off_target" and i.asset_id in {a.id for a in video_assets}]
+        loud_obs = [o.id for o in analysis.observations if o.kind == "loudness" and o.asset_id in {a.id for a in video_assets}]
+        if want_norm and want_norm.value in (True, "auto") and target is not None and all(a.technical.get("audio") for a in video_assets) and (offs or want_norm.provenance == "USER") and (loud_obs or offs):
+            tp = m.get("audio.loudness.true_peak")
+            eng.decide(subject="audio.loudness", type="TRANSFORM", decision=f"normalize {PROGRAMME} to {float(target.value):g} LUFS / {float(tp.value) if tp else -1:g} dBTP",
+                       reason=("; ".join(i.statement for i in offs) if offs else "user asked for normalisation") + f"; applied once to the joined programme; target from {target.provenance.lower()} ({target.source})",
+                       confidence=min(i.confidence for i in offs) if offs else 1.0, evidence=[i.id for i in offs] + [e for i in offs for e in i.evidence] + loud_obs, risk="LOW",
+                       approval=approval_for("audio.loudness"), provenance="USER" if want_norm.provenance == "USER" else target.provenance,
+                       params={"asset_id": PROGRAMME, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0},
+                       settings=[resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)], requirements=[want_norm, target] + ([tp] if tp else []), serves_intent=_serves(intent, "audio.loudness"))
+            cap_block("loudness_normalization", "capability.loudness_normalization")
+    # ---- single-source editing operations on the programme (concat) or on each video asset, in the fixed order
+    if "video.fit" in edits and "video.fill" in edits:
+        req = edits["video.fit"]["requirements"] + edits["video.fill"]["requirements"]
+        eng.decide(subject="video.fit", type="BLOCK", decision="BLOCK: fit and fill both requested", reason="edit.fit (letterbox) and edit.fill (crop) contradict each other; a conflicting request is never resolved by guessing",
+                   confidence=1.0, evidence=[r.id for r in req], risk="HIGH", approval="BLOCK", provenance="USER", params={"ops": ["video.fit", "video.fill"]}, requirements=req)
+        edits = {k: v for k, v in edits.items() if k not in ("video.fit", "video.fill")}
+    subjects = [(PROGRAMME, [a.id for a in video_assets])] if concat_ok else [(a.id, [a.id]) for a in analysis.assets]
+    for op in EDIT_ORDER[1:]:
+        if op not in edits:
+            continue
+        req = edits[op]["requirements"]
+        p = edits[op]["params"]
+        for subject, sources in subjects:
+            src = [a for a in analysis.assets if a.id in sources]
+            ev = [r.id for r in req] + probe_ids_of(sources)
+            if not all(a.technical.get("video") for a in src):
+                eng.decide(subject=op, type="BLOCK", decision=f"BLOCK: {op} on {subject} (no video stream)", reason=f"{subject} has no video stream; {op} is a video operation (unsupported input, not guessed)",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=req)
+                continue
+            words = ", ".join(f"{k}={v}" for k, v in p.items() if k != "image") or "defaults"
+            eng.decide(subject=op, type="TRANSFORM", decision=f"{op} on {subject}: {words}" + (f" (image {Path(p['image']).name})" if op == "video.overlay" else ""),
+                       reason=f"user asked for {op} ({req[0].source}); applied to {'the joined programme' if subject == PROGRAMME else 'the input'} after the trims",
+                       confidence=1.0, evidence=ev, risk=OPERATIONS[op]["risk"], approval=approval_for(op, explicit=req[0]), provenance="USER",
+                       params={"asset_id": subject, **p}, requirements=req, serves_intent=None)
+        cap_block(OPERATIONS[op]["skill"], f"capability.{OPERATIONS[op]['skill']}")
     # ---- delivery
     targets = m.get("delivery.targets")
     for t in (targets.value if targets else []):

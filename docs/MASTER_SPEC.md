@@ -1731,6 +1731,49 @@ video-production-agent ─(typed Operation: input / output ids, keep ranges, pre
 - **Not here:** new editing features, changes to either Skill, tool details in the Decision Engine, a parallel executor,
   MCP / plugin loader / ranking, direct FFmpeg.
 
+### video-editing-skill operations: concat / speed / resize / fit / fill / overlay (implemented, ADR-029)
+
+```
+Requirement edit.* (explicit --set) → Decision (TRANSFORM / BLOCK, policy video.<op>.approval) → ProductionPlan step (skill video_<op>, tool video-editing/<op>)
+    → IR video.operations[] (type, subject, references, allowlisted params, temporal scope, decision ids; concat: segments + timeline_duration)
+    → compiler lower_video_edit (names only) → VideoEditingAdapter (ADR-028) → video-editing CLI → ffmpeg-skill → FFmpeg
+```
+
+- **Four stages are kept apart:** *Skill supports* (contract), *agent adapter supports* (`Lowering.ARGS`, PR #18), *planner can
+  generate* (this section: the six operations above; TRIM / CUT stay `video.trim`), *E2E verified* (real-media integration
+  tests: A + B → concat (plain and with a fade transition) → speed → resize → fit / fill → overlay with a real PNG → QA).
+- **Vocabulary (`agent/editing.py`):** `OPERATIONS` maps each IR type to its production skill, its only tool and the parameter
+  allowlist (concat: transition {type, duration}, width, height, fps, mode, pad_color; speed: factor; resize: width, fps; fit:
+  aspect, width, pad_color, fps; fill: aspect, width, fps; overlay: position, margin, scale, opacity, start, end, fade + the
+  `image` reference). Nothing free-form exists: an IR operation, a plan step parameter or a compiled argument outside the
+  allowlist is refused by the validator / compiler / adapter respectively.
+- **Requirements → Decision:** `edit.<op>` switches an operation on, `edit.<op>.<param>` refines it; a refinement without its
+  operation, a DEFAULT, or a value outside the range is refused at planning time (`EditRequirementError`). A decision is
+  TRANSFORM with the requirement and the inputs' probe observations as evidence; approval comes from `video.<op>.approval`
+  (DEFAULT CONFIRM; an explicit USER request for exactly this edit is its own confirmation unless a CONSTRAINT says CONFIRM;
+  BLOCK is never lowered). BLOCK decisions: concat with fewer than two video inputs or with an input lacking a video stream, a
+  video operation on an audio-only subject, fit and fill requested together, a missing / UNKNOWN `video-editing` capability
+  (doctor failure or contract drift) or no executable tool. A BLOCK decision in force makes the plan BLOCKED whether or not a
+  step cites it.
+- **Multi-source timeline:** with concat, the planner joins the (trimmed) inputs in the given order into the logical subject
+  `programme`; the IR operation records `inputs`, `output`, `segments[{input, track, source_range, timeline_range}]` (a
+  transition overlaps consecutive clips by its duration) and `timeline_duration`. Later operations, loudness and delivery apply
+  to the programme (`programme_delivery_<target>`; artifact.source lists every input). Without concat every asset is its own
+  subject and the PR #18 plan is byte-identical.
+- **Compiler:** trims per asset → concat → speed → resize → fit | fill → overlay → loudness → export → check. Paths under the
+  job (`ops/programme_01_concat/programme.mp4`, …); the overlay image is a path reference (`<subject>_overlay_image`) resolved
+  by the adapter, never a path inside arguments. Idempotency keys chain through the programme so a changed speed invalidates
+  everything downstream and nothing upstream.
+- **Validation / QA:** schema (video_op additionalProperties false), per-type rules (`check_video_operations`: order, one concat,
+  programme only after concat, distinct inputs with video streams, factor 0.25–4 and ≠ 1, even width, aspect W:H, image PNG /
+  JPEG inside `execution.allowed_inputs` without traversal, no fit + fill), every operation has a plan step naming a
+  `video-editing/<op>` tool, `video-editing` capability required when any of these operations is planned. QA derives the
+  expected duration from the IR (kept ranges → concat timeline → speed factor) and checks the delivered subject; output missing /
+  hash mismatch / validation failure stay failures (ADR-028).
+- **Not here:** autonomous editing, semantic / speaker / scene inference, captions, colour, audio mastering, thumbnails,
+  motion graphics, conference-specific rules, changes to either Skill, CROP / FREEZE / REVERSE / IMAGE_INSERT / POSITION
+  (unsupported by the Skill: not tools).
+
 ## 52. Architecture / Repository
 
 A possible structure:

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
+from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, concat_segments, ir_operation, kept_duration
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 
 
@@ -48,6 +49,83 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     summary: List[str] = []
     blocked = [d for d in decisions if d.approval == "BLOCK"]
     order = 0
+    durations = {a.id: float(a.technical.get("duration") or 0.0) for a in analysis.assets}
+    concat_dec = next((d for d in decisions if d.subject == "video.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)
+    current_of: Dict[str, str] = {}      # subject → latest logical output
+    last_of: Dict[str, Optional[str]] = {}
+    scope_of: Dict[str, Dict[str, float]] = {}   # subject → temporal scope on the timeline the subject's current output has
+
+    def edit_steps(subject: str, sources: List[str]) -> None:
+        """The single-source editing operations decided for `subject` (video.speed → resize → fit / fill → overlay), chained on its
+        current output. Each becomes one plan step and one IR operation with allowlisted parameters; nothing is inferred."""
+        nonlocal order
+        for op_type in EDIT_ORDER[1:]:
+            d = next((x for x in decisions if x.subject == op_type and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == subject), None)
+            if d is None:
+                continue
+            spec = OPERATIONS[op_type]
+            params = {k: v for k, v in d.params.items() if k in spec["params"]}
+            out_id = f"{subject}_{op_type.split('.', 1)[1]}"
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            refs: Dict[str, Any] = {"input": current_of[subject], "output": out_id}
+            if op_type == "video.speed":
+                scope = {"start": 0.0, "end": round((scope["end"] - scope["start"]) / float(params["factor"]), 3)}
+            if op_type == "video.overlay":
+                refs["image"] = d.params["image"]
+            video_ops.append(ir_operation(op_type, subject, params, [d.id], scope=scope, **refs))
+            order += 1
+            st = ProductionStep(id=f"step_{op_type.split('.', 1)[1]}_{subject}", order=order, skill=spec["skill"], tool=tool_for(spec["skill"]), inputs=[current_of[subject]],
+                                params={"asset": subject, **params, **({"image": d.params["image"]} if op_type == "video.overlay" else {})}, outputs=[out_id],
+                                depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                temporal_scope=scope)
+            steps.append(st)
+            current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
+            summary.append(d.decision)
+
+    def loudness_steps(subject: str) -> None:
+        nonlocal order
+        dur = (scope_of.get(subject) or {}).get("end") or durations.get(subject) or 0.0
+        for d in decisions:
+            if d.subject == "audio.loudness" and d.params.get("asset_id") == subject and d.decision.startswith("normalize"):
+                audio_ops.append({"type": "audio.loudness", "asset": subject, "target_lufs": d.params["target_lufs"], "true_peak": d.params["true_peak"], "decision_ids": [d.id]})
+                order += 1
+                st = ProductionStep(id=f"step_loudness_{subject}", order=order, skill="loudness_normalization", tool=tool_for("loudness_normalization"), inputs=[current_of[subject]],
+                                    params={"asset": subject, "target_lufs": d.params["target_lufs"], "true_peak": d.params["true_peak"]}, outputs=[f"{subject}_loudnorm"],
+                                    depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                    temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
+                steps.append(st)
+                current_of[subject], last_of[subject] = st.outputs[0], st.id
+                summary.append(f"Normalise audio to {d.params['target_lufs']:g} LUFS / {d.params['true_peak']:g} dBTP")
+
+    def delivery_steps(subject: str, first: bool, single: bool) -> None:
+        nonlocal order
+        dur = (scope_of.get(subject) or {}).get("end") or durations.get(subject) or 0.0
+        current, last_step = current_of[subject], last_of.get(subject)
+        for d in decisions:
+            if d.subject.startswith("delivery."):
+                t = d.params
+                if not any(x["id"] == t["id"] for x in delivery):
+                    delivery.append({"id": t["id"], "preset": t.get("preset"), "platform": t.get("platform", "custom"), "artifact_type": t.get("artifact_type", "MASTER"), "decision_ids": [d.id]})
+                art = f"{subject}_delivery_{t['id']}"
+                if t.get("preset"):
+                    order += 1
+                    exp = ProductionStep(id=f"step_export_{t['id']}" if single else f"step_export_{t['id']}_{subject}", order=order, skill="delivery_export",
+                                         tool=tool_for("delivery_export"), inputs=[current], params={"preset": t["preset"], "target": t["id"]}, outputs=[art],
+                                         depends_on=[last_step] if last_step else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                         temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
+                    order += 1
+                    chk = ProductionStep(id=f"step_check_{t['id']}" if single else f"step_check_{t['id']}_{subject}", order=order, skill="delivery_check",
+                                         tool=tool_for("delivery_check"), inputs=[art], params={"platform": t.get("platform", "custom"), "target": t["id"]}, outputs=[],
+                                         depends_on=[exp.id], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+                    steps.extend([exp, chk])
+                    outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": t["preset"], "expected": {"platform": t.get("platform", "custom"), "source": subject}})
+                    if first:
+                        summary.append(f"Export '{t['id']}' with preset {t['preset']} and check against {t.get('platform', 'custom')} spec")
+                else:
+                    outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": "source", "expected": {"platform": t.get("platform", "custom"), "source": subject}})
+                    if first:
+                        summary.append(f"Deliver '{t['id']}' as processed (no platform preset)")
+
     for asset in analysis.assets:
         dur = asset.technical.get("duration") or 0.0
         start, end = 0.0, dur
@@ -93,41 +171,32 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             kept_total = sum(e - s for s, e in keep)
             summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s of silence"
                            + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + ")")
-        for d in decisions:
-            if d.subject == "audio.loudness" and d.params.get("asset_id") == asset.id and d.decision.startswith("normalize"):
-                audio_ops.append({"type": "audio.loudness", "asset": asset.id, "target_lufs": d.params["target_lufs"], "true_peak": d.params["true_peak"], "decision_ids": [d.id]})
-                order += 1
-                st = ProductionStep(id=f"step_loudness_{asset.id}", order=order, skill="loudness_normalization", tool=tool_for("loudness_normalization"), inputs=[current],
-                                    params={"asset": asset.id, "target_lufs": d.params["target_lufs"], "true_peak": d.params["true_peak"]}, outputs=[f"{asset.id}_loudnorm"],
-                                    depends_on=[last_step] if last_step else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
-                                    temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
-                steps.append(st)
-                current, last_step = st.outputs[0], st.id
-                summary.append(f"Normalise audio to {d.params['target_lufs']:g} LUFS / {d.params['true_peak']:g} dBTP")
-        for d in decisions:
-            if d.subject.startswith("delivery."):
-                t = d.params
-                if not any(x["id"] == t["id"] for x in delivery):
-                    delivery.append({"id": t["id"], "preset": t.get("preset"), "platform": t.get("platform", "custom"), "artifact_type": t.get("artifact_type", "MASTER"), "decision_ids": [d.id]})
-                art = f"{asset.id}_delivery_{t['id']}"
-                if t.get("preset"):
-                    order += 1
-                    exp = ProductionStep(id=f"step_export_{t['id']}" if len(analysis.assets) == 1 else f"step_export_{t['id']}_{asset.id}", order=order, skill="delivery_export",
-                                         tool=tool_for("delivery_export"), inputs=[current], params={"preset": t["preset"], "target": t["id"]}, outputs=[art],
-                                         depends_on=[last_step] if last_step else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
-                                         temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
-                    order += 1
-                    chk = ProductionStep(id=f"step_check_{t['id']}" if len(analysis.assets) == 1 else f"step_check_{t['id']}_{asset.id}", order=order, skill="delivery_check",
-                                         tool=tool_for("delivery_check"), inputs=[art], params={"platform": t.get("platform", "custom"), "target": t["id"]}, outputs=[],
-                                         depends_on=[exp.id], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
-                    steps += [exp, chk]
-                    outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": t["preset"], "expected": {"platform": t.get("platform", "custom"), "source": asset.id}})
-                    if asset is analysis.assets[0]:
-                        summary.append(f"Export '{t['id']}' with preset {t['preset']} and check against {t.get('platform', 'custom')} spec")
-                else:
-                    outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": "source", "expected": {"platform": t.get("platform", "custom"), "source": asset.id}})
-                    if asset is analysis.assets[0]:
-                        summary.append(f"Deliver '{t['id']}' as processed (no platform preset)")
+        current_of[asset.id], last_of[asset.id] = current, last_step
+        if (dec_ids or internal) and end > start:
+            scope_of[asset.id] = {"start": 0.0, "end": kept_duration(video_ops, asset.id, dur)}
+        if concat_dec is None:
+            edit_steps(asset.id, [asset.id])
+            loudness_steps(asset.id)
+            delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
+    if concat_dec is not None:
+        # ---- multi-source timeline: the trimmed inputs, in the decided order, become one programme; later operations apply to it
+        inputs = list(concat_dec.params["inputs"])
+        params = {k: v for k, v in concat_dec.params.items() if k in OPERATIONS["video.concat"]["params"]}
+        segments, total = concat_segments(inputs, video_ops, durations, params.get("transition"))
+        scope = {"start": 0.0, "end": total}
+        video_ops.append(ir_operation("video.concat", PROGRAMME, params, [concat_dec.id], scope=scope, inputs=inputs, output=PROGRAMME, segments=segments, timeline_duration=total))
+        order += 1
+        st = ProductionStep(id=f"step_concat_{PROGRAMME}", order=order, skill="video_concat", tool=tool_for("video_concat"), inputs=[current_of[a] for a in inputs],
+                            params={"asset": PROGRAMME, "inputs": inputs, **params}, outputs=[PROGRAMME],
+                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of([concat_dec.id]), decision_ids=[concat_dec.id], decision_id=concat_dec.id,
+                            temporal_scope=scope)
+        steps.append(st)
+        current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope
+        durations[PROGRAMME] = total
+        summary.append(f"Join {' + '.join(inputs)} into one programme ({total:.2f}s)")
+        edit_steps(PROGRAMME, inputs)
+        loudness_steps(PROGRAMME)
+        delivery_steps(PROGRAMME, first=True, single=True)
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:
