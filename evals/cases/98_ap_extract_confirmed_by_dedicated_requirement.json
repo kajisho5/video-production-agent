@@ -1,5 +1,5 @@
 {
- "name": "ap_video_container_delivers_audio",
+ "name": "ap_extract_confirmed_by_dedicated_requirement",
  "profile": "generic",
  "fake": {
   "silences": [
@@ -24,7 +24,8 @@
  },
  "requirements": {
   "audio.production": true,
-  "audio.fade_in": 0.5
+  "audio.fade_in": 0.5,
+  "audio.extract": true
  },
  "expect": {
   "ir_ops": [
@@ -40,7 +41,7 @@
    ],
    "qa_status": "PASS"
   },
-  "plan_status": "REVIEW",
-  "note": "ADR-033: audio.production=true enables the path but does not waive the audio.extract CONFIRM; the render approves it explicitly"
+  "plan_status": "APPROVED",
+  "note": "ADR-033: only the dedicated explicit requirement audio.extract=true waives the CONFIRM"
  }
 }

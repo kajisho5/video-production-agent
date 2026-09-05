@@ -329,4 +329,15 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 - 統合済み: subtitle / thumbnail / color-grading / motion-graphics / qc の adapter・capability・registry・Decision・ProductionPlan・IR section・compiler・QA・artifact。fake 10 scenario（`tests/test_pipeline.py`）、実 Skill 10 scenario（`tests/test_integration.py::IntegratedPipelineRealTests`）、evals 89–97。
 - 未実装（次の作業）: 「話者が変わったらカメラを切り替える」。SPEAKER / CAMERA event は schema のみ、speaker_id は常に null（推定禁止）。ProductionContext の `transition` inference は存在するが、それを実行する operation（multicam 切替）を持つ Skill が無く、`multi_source_sync` は phase 2 未実装。必要なもの: (1) 同期 Skill（offsets）、(2) source 切替 operation を持つ編集 Skill、(3) `transition` inference → `camera.switch` decision（CONFIRM）→ plan step。Event から step への近道は作らない。
 - Accepted limitation: thumbnail `extract_frame` は ffmpeg-skill look の既定幅 1280 で出る（agent は寸法を期待値にしない）。subtitle-skill は workspace 相対入力のみ → burn-in は中間物にのみ適用（source 直接は BLOCK）。motion-graphics の title / lower_third / image_overlay は doctor が unknown → resolver の filter 実測で AVAILABLE（実測できない環境では UNKNOWN → BLOCK）。thumbnail-skill は Pillow 未導入だと MISSING。qc-skill の request timeout は Skill 側で未使用（process boundary の timeout のみ）。Windows / macOS の実 E2E、HDR 素材の HDR_TO_SDR / LUT / STRIP_DOVI、lower_third / image_overlay の実描画は未検証（unit fake のみ）。
-- P1（次PR）: audio.extract の CONFIRM waiver（PR #21 audit）は据え置き。QC WARN の promotion policy は profile の `qc.warn.promotion` で制御、既定 CONFIRM。
+- P1（次PR）: audio.extract の CONFIRM waiver（PR #21 audit）は据え置き → §23（ADR-033）で修正。QC WARN の promotion policy は profile の `qc.warn.promotion` で制御、既定 CONFIRM。
+
+## 23. P1-1 — `audio.extract` の CONFIRM waiver（ADR-033、2026-09-05 追記）
+
+| Gap | 旧実装 | 修正 |
+|---|---|---|
+| G94 generic な `audio.production=true` が `audio.extract` の CONFIRM を waive した | `approval_for("audio.extract", explicit=<switch>)` | `explicit` は専用 requirement `audio.extract=true` のみ（語彙追加、switch 無しは ambiguous 拒否） |
+| G95 `audio.extract` decision を cite する operation が無く、reject しても audio 操作が走り得た | extract decision は step / op に紐付かない | video container の audio op / step / delivery target が extract id を cite。reject → rejected-cited BLOCK、revise 後は audio path に何も計画しない |
+| G96 IR の `approval` / `status` を書き換えると gate を抜けられた | validator は BLOCK ⇔ BLOCKED のみ | `check_decisions`: approval は basis の resolved より緩くできない、APPROVED には review record 必須 |
+
+- 検証: unit `AudioExtractConfirmTests`（8 case: generic switch → CONFIRM / 専用 requirement → AUTO / 他 audio op 不変 / BLOCK 不変 / reject・revise / resume / explain / IR・validator・compiler）、evals 81 更新 + 98 / 99、integration `test_video_container_delivers_audio` に CONFIRM + review record + `audio.extract=true` の assert 追加。
+- 残 P1: speaker → camera switching（§22）。残 P2: approve 後の revise で USER_DECISION event が旧 decision id を cite し validator error（main で再現、pre-existing）。

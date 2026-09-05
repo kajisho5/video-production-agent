@@ -247,6 +247,15 @@ def check_decisions(doc: Dict[str, Any]) -> List[str]:
             errs.append(f"{tag}: {d['type']} rests on {sorted(classes)} only (no measured fact or requirement)")
         if classes == {"ai"} and d.get("type") != "REVIEW":
             errs.append(f"{tag}: AI-only evidence must be a REVIEW item")
+        # the recorded approval must be the one the engine resolved (basis): an IR whose `approval` was edited from CONFIRM to AUTO
+        # after planning is refused instead of executed (ADR-033); an APPROVED status needs the review record that produced it
+        res = ((d.get("basis") or {}).get("approval") or {}).get("resolved")
+        if res in APPROVALS and d.get("approval") in APPROVALS and APPROVALS.index(d["approval"]) < APPROVALS.index(res):
+            errs.append(f"{tag}: approval {d.get('approval')!r} differs from the resolved approval {res!r} in its basis (never lowered after planning)")
+        if d.get("status") == "APPROVED" and d.get("approval") == "CONFIRM":
+            rec = ((doc.get("execution") or {}).get("reviews") or {}).get(d["id"]) or {}
+            if rec.get("action") != "APPROVED":
+                errs.append(f"{tag}: status APPROVED without an APPROVED review record")
         if (d.get("approval") == "BLOCK") != (d.get("status") == "BLOCKED"):
             errs.append(f"{tag}: approval {d.get('approval')} with status {d.get('status')} (BLOCK ⇔ BLOCKED)")
         if leak_scan({"params": d.get("params") or {}, "decision": d.get("decision")}):

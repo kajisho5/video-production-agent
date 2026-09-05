@@ -1324,6 +1324,14 @@ class AudioProductionRealTests(unittest.TestCase):
         self.assertFalse(has_v, "the picture is not delivered on the audio path"); self.assertAlmostEqual(dur, 11.0, delta=0.2)
         dec = {x["subject"]: x for x in load_ir(p).doc["decisions"]}
         self.assertEqual(dec["audio.extract"]["type"], "TRANSFORM"); self.assertEqual(dec["audio.extract"]["basis"]["approval"]["key"], "audio.extract.approval")
+        # ADR-033: the generic switch did not waive the extraction; it ran because `_run` approved it explicitly (recorded review)
+        self.assertEqual((dec["audio.extract"]["approval"], dec["audio.extract"]["status"]), ("CONFIRM", "APPROVED"))
+        self.assertEqual(load_ir(p).doc["execution"]["reviews"][dec["audio.extract"]["id"]]["action"], "APPROVED")
+        self.assertTrue(all(dec["audio.extract"]["id"] in op["decision_ids"] for op in load_ir(p).doc["audio"]["operations"]))
+        # the dedicated requirement waives it up front: AUTO, plan APPROVED before any approval call
+        ir2 = svc.plan([self.mp4], "generic", user_requirements={"audio.production": True, "audio.fade_in": 0.5, "audio.extract": True})
+        dec2 = {x["subject"]: x for x in ir2.doc["decisions"]}
+        self.assertEqual((dec2["audio.extract"]["approval"], ir2.doc["plan"]["status"]), ("AUTO", "APPROVED"))
 
     def test_two_inputs_concat_mono_normalize_end_to_end(self):
         if not self.ap:

@@ -4679,10 +4679,11 @@ class AudioProductionPathTests(unittest.TestCase):
         norm = lambda doc: json.dumps(doc["audio"]["operations"], sort_keys=True).replace(list(doc["assets"])[0], "A")   # noqa: E731
         import re
         self.assertEqual(re.sub(r"dec_[0-9a-f]{10}", "dec", norm(d)), re.sub(r"dec_[0-9a-f]{10}", "dec", norm(ir2.doc)))
-        # B: a video container on the audio path: the audio is delivered (CONFIRM-class decision audio.extract, waived by the explicit request)
+        # B: a video container on the audio path: the audio is delivered (CONFIRM decision audio.extract; the generic switch does not waive it — ADR-033)
         irb = svc.plan([self.mp4], "generic", user_requirements={"audio.production": True, "audio.fade_in": 0.5})
         decb = {x["subject"]: x for x in irb.doc["decisions"]}
-        self.assertEqual((decb["audio.extract"]["type"], decb["audio.extract"]["basis"]["approval"]["key"]), ("TRANSFORM", "audio.extract.approval"))
+        self.assertEqual((decb["audio.extract"]["type"], decb["audio.extract"]["basis"]["approval"]["key"], decb["audio.extract"]["approval"]), ("TRANSFORM", "audio.extract.approval", "CONFIRM"))
+        self.assertEqual(irb.doc["plan"]["status"], "REVIEW")
         self.assertEqual([s["skill"] for s in irb.doc["plan"]["steps"]], ["audio_cut", "audio_fade_in"]); self.assertEqual(svc.validate(irb).errors, [])
         # KEEP: the target layout already holds → no operation
         irk = svc.plan([self.mono], "generic", user_requirements={"audio.production": True, "audio.channels": "mono"})
@@ -4808,3 +4809,249 @@ class AudioProductionPathTests(unittest.TestCase):
         self.assertEqual(oc["execution"]["status"], "COMPLETED", oc["execution"])
         self.assertEqual(next(i for i in oc["qa"]["items"] if i["name"] == "duration")["observed"], 21.5)
         self.assertTrue(oc["paths"]["programme_audio_delivery_main"].endswith("programme_audio_loudnorm.wav"))
+
+
+class AudioExtractConfirmTests(unittest.TestCase):
+    """ADR-033: `audio.production=true` only enables the audio path
+    it never waives the CONFIRM of `audio.extract` (a video container
+    delivered as audio only). Only the dedicated explicit requirement `audio.extract=true` (USER) does, through the same engine rule every
+    other operation uses. Every audio operation of the container cites the extraction decision, so a rejection is rejected-cited and a
+    revision never quietly extracts
+    resume, the compiler and a tampered IR cannot bypass the gate."""
+
+    FAKE = AudioProductionPathTests.FAKE
+    CAPS = AudioProductionPathTests.CAPS
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.mp4 = fake_media(self.tmp, "talk.mp4")
+        self.wav = fake_audio(self.tmp, "voice.wav", channels=2)
+        self.calls = str(Path(self.tmp) / "calls.jsonl")
+        os.environ["FAKE_AP_CALLS"] = self.calls
+        os.environ.pop("FAKE_AP_MODE", None)
+
+    def tearDown(self):
+        for k in ("FAKE_AP_MODE", "FAKE_AP_CALLS"):
+            os.environ.pop(k, None)
+
+    def _svc(self):
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.audio_production import AudioProductionAdapter, AudioProductionSkill
+        ad = AudioProductionAdapter(AudioProductionSkill([sys.executable, self.FAKE], None, {}), workspace=self.tmp, allowed_inputs=[str(Path(self.mp4).parent)], ffmpeg_skill_dir=self.tmp)
+        return make_service(self.tmp, caps=FakeCaps(extra=self.CAPS), adapter=ToolRouter([FakeAdapter(lufs=-11.0), ad]))
+
+    def _runs(self):
+        if not os.path.exists(self.calls):
+            return 0
+        return sum(1 for line in Path(self.calls).read_text(encoding="utf-8").splitlines() if json.loads(line)["cmd"] == "run")
+
+    def _plan(self, svc, reqs, name="p"):
+        ir = svc.plan([self.mp4], "generic", user_requirements=reqs)
+        p = str(Path(self.tmp) / f"{name}.json")
+        save_ir(ir, p)
+        return ir, p
+
+    def test_case1_generic_switch_keeps_confirm(self):
+        svc = self._svc()
+        ir, p = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5})
+        dec = {x["subject"]: x for x in ir.doc["decisions"]}
+        ex = dec["audio.extract"]
+        self.assertEqual((ex["approval"], ex["status"], ex["basis"]["approval"]["resolved"]), ("CONFIRM", "PROPOSED", "CONFIRM"))
+        self.assertFalse(any("waived" in n for n in ex["basis"]["approval"]["notes"]), ex["basis"]["approval"]["notes"])
+        self.assertEqual(ir.doc["plan"]["status"], "REVIEW", "the switch enables the path; the extraction still needs confirmation")
+        self.assertEqual(svc.validate(ir).errors, [])
+        # every audio operation and step of the container cites the extraction (a pending CONFIRM keeps them PROPOSED, never executable)
+        self.assertTrue(all(ex["id"] in op["decision_ids"] for op in ir.doc["audio"]["operations"]), ir.doc["audio"]["operations"])
+        self.assertTrue(all(ex["id"] in s["decision_ids"] for s in ir.doc["plan"]["steps"] if s["skill"].startswith("audio_")))
+        self.assertTrue(all(ex["id"] in t["decision_ids"] for t in ir.doc["delivery"]["targets"]))
+        # without an explicit approval nothing runs: no job execution, no Skill process
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "WAITING_FOR_APPROVAL", out)
+        self.assertIn(ex["id"], [x["id"] for x in out["pending"]])
+        self.assertEqual(self._runs(), 0)
+        # the same request through the CLI --set path: still CONFIRM (no option waives it)
+        from video_agent.cli import _kv
+        ir2 = svc.plan([self.mp4], "generic", user_requirements=_kv(["audio.production=true", "audio.fade_in=0.5"]))
+        self.assertEqual(next(x for x in ir2.doc["decisions"] if x["subject"] == "audio.extract")["approval"], "CONFIRM")
+        # approving the decision explicitly is the way through (existing approval mechanism): then it renders and the Skill runs
+        out2 = svc.render(load_ir(p), p, approve=[ex["id"]])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED", out2)
+        self.assertGreater(self._runs(), 0)
+        d2 = load_ir(p).doc
+        self.assertEqual(next(x for x in d2["decisions"] if x["subject"] == "audio.extract")["status"], "APPROVED")
+        self.assertEqual(d2["execution"]["reviews"][ex["id"]]["action"], "APPROVED")
+
+    def test_case2_dedicated_requirement_waives(self):
+        from video_agent.agent.audio import EditRequirementError, parse_audio_requirements
+        from video_agent.agent.decision_engine import resolve_approval
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+        svc = self._svc()
+        ir, p = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5, "audio.extract": True})
+        ex = next(x for x in ir.doc["decisions"] if x["subject"] == "audio.extract")
+        self.assertEqual((ex["approval"], ex["basis"]["approval"]["resolved"], ex["basis"]["approval"]["provenance"]), ("AUTO", "AUTO", "DEFAULT"))
+        self.assertTrue(any("CONFIRM waived" in n and "audio.extract" in n for n in ex["basis"]["approval"]["notes"]), ex["basis"]["approval"]["notes"])
+        self.assertIn("audio.extract", ex["reason"])
+        self.assertEqual(ir.doc["plan"]["status"], "APPROVED")
+        self.assertEqual(svc.validate(ir).errors, [])
+        req_ids = {r["id"] for r in ir.doc["requirements"] if r["key"] == "audio.extract"}
+        self.assertTrue(req_ids & set(ex["evidence"]), "the dedicated requirement is evidence of the decision")
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out)
+        # audio.extract=false is not a confirmation; audio.extract without the switch is an ambiguous request (refused like every audio.<op>)
+        irf = svc.plan([self.mp4], "generic", user_requirements={"audio.production": True, "audio.fade_in": 0.5, "audio.extract": False})
+        self.assertEqual(next(x for x in irf.doc["decisions"] if x["subject"] == "audio.extract")["approval"], "CONFIRM")
+        with self.assertRaises(ValueError):
+            svc.plan([self.mp4], "generic", user_requirements={"audio.extract": True})
+        with self.assertRaises(EditRequirementError):
+            parse_audio_requirements(requirement_map([Requirement(key="audio.production", value=True, provenance="USER", source="cli"), Requirement(key="audio.extract", value="maybe", provenance="USER", source="cli")]))
+        # only a USER requirement waives (engine rule): a PROFILE / DEFAULT `audio.extract` never does, and a CONSTRAINT keeps CONFIRM
+        rules = resolve_rules([])
+        for prov in ("PROFILE", "DEFAULT", "SYSTEM"):
+            self.assertEqual(resolve_approval(rules, "audio.extract.approval", "CONFIRM", explicit=Requirement(key="audio.extract", value=True, provenance=prov, source="x"))["approval"], "CONFIRM", prov)
+        hard = resolve_rules([Rule("c", "CONSTRAINT", "PROFILE", "audio.extract.approval", "CONFIRM", "profile")])
+        self.assertEqual(resolve_approval(hard, "audio.extract.approval", "CONFIRM", explicit=Requirement(key="audio.extract", value=True, provenance="USER", source="cli"))["approval"], "CONFIRM")
+
+    def test_case3_other_audio_operations_unchanged(self):
+        svc = self._svc()
+        ir = svc.plan([self.wav], "generic", user_requirements={"audio.production": True, "audio.gain": -3, "audio.fade_out": 1.0})
+        dec = {x["subject"]: x for x in ir.doc["decisions"]}
+        self.assertNotIn("audio.extract", dec, "an audio-only asset needs no extraction decision")
+        self.assertEqual((dec["audio.gain"]["approval"], dec["audio.fade_out"]["approval"], ir.doc["plan"]["status"]), ("AUTO", "AUTO", "APPROVED"), "their own explicit requirements still waive their CONFIRM")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["audio_cut", "audio_gain", "audio_fade_out"])
+        # on the container the other operations keep their own approvals; only the extraction is pending
+        irc = svc.plan([self.mp4], "generic", user_requirements={"audio.production": True, "audio.gain": -3})
+        decc = {x["subject"]: x for x in irc.doc["decisions"]}
+        self.assertEqual((decc["audio.gain"]["approval"], decc["audio.extract"]["approval"]), ("AUTO", "CONFIRM"))
+        self.assertEqual([d["subject"] for d in irc.pending_confirmations()], ["audio.extract"])
+
+    def test_case4_block_is_never_waived(self):
+        svc = self._svc()
+        for reqs in ({"audio.production": True, "audio.fade_in": 0.5, "audio.extract.approval": "BLOCK"},
+                     {"audio.production": True, "audio.fade_in": 0.5, "audio.extract": True, "audio.extract.approval": "BLOCK"}):
+            ir, p = self._plan(svc, reqs, name="b")
+            ex = next(x for x in ir.doc["decisions"] if x["subject"] == "audio.extract")
+            self.assertEqual((ex["approval"], ex["status"], ir.doc["plan"]["status"]), ("BLOCK", "BLOCKED", "BLOCKED"), reqs)
+            out = svc.render(load_ir(p), p, approve=["all"])
+            self.assertEqual(out["status"], "BLOCKED", out)
+            self.assertEqual(self._runs(), 0)
+
+    def test_case5_revision_reject_and_revise(self):
+        svc = self._svc()
+        ir, p = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5})
+        ex = next(x for x in ir.doc["decisions"] if x["subject"] == "audio.extract")
+        svc.reject(load_ir(p), p, [ex["id"]], reason="the picture must stay", who="reviewer")
+        self.assertEqual(load_ir(p).doc["plan"]["status"], "REJECTED")
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "BLOCKED", "a rejected extraction is cited by every audio operation: nothing runs")
+        self.assertEqual(self._runs(), 0)
+        self.assertTrue(svc.validate(load_ir(p)).errors, "the validator reports the rejected citation too")
+        rev = svc.revise(load_ir(p), p, who="editor")
+        self.assertTrue(rev["created"])
+        self.assertIn("audio.extract", {d["subject"] for d in rev["dropped_proposals"]})
+        v2 = load_ir(p).doc
+        self.assertEqual([s for s in v2["plan"]["steps"] if s["skill"].startswith("audio_")], [], "no audio operation on the container without its extraction decision")
+        self.assertEqual(v2["audio"]["operations"], [])
+        self.assertTrue(any("extraction was rejected" in s for s in v2["plan"]["summary"]))
+        self.assertNotIn("audio.extract", {d["subject"] for d in v2["decisions"] if d["status"] != "REJECTED"})
+        out2 = svc.render(load_ir(p), p, approve=["all"])
+        self.assertNotIn(out2["status"], ("COMPLETED",))
+        self.assertEqual(self._runs(), 0)
+        # approve instead of reject: v1 approval is recorded, the render runs; a later revision needs its own approval again
+        ir2, p2 = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5}, name="ok")
+        ex2 = next(x for x in ir2.doc["decisions"] if x["subject"] == "audio.extract")
+        svc.approve(load_ir(p2), p2, [ex2["id"]], who="reviewer")
+        self.assertEqual(load_ir(p2).doc["plan"]["status"], "APPROVED")
+        svc.revise(load_ir(p2), p2, feedback="louder", user_requirements={"audio.production": True, "audio.gain": 3}, who="editor")
+        v2b = load_ir(p2)
+        self.assertEqual(v2b.version, 2)
+        self.assertEqual(next(x for x in v2b.doc["decisions"] if x["subject"] == "audio.extract")["status"], "PROPOSED", "approval is never inherited by a revision")
+        self.assertNotEqual(svc.render(v2b, p2)["status"], "COMPLETED")
+        self.assertEqual(self._runs(), 0)
+
+    def test_case6_resume_never_bypasses(self):
+        svc = self._svc()
+        ir, p = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5})
+        ex = next(x for x in ir.doc["decisions"] if x["subject"] == "audio.extract")
+        out = svc.render(load_ir(p), p, approve=[ex["id"]])
+        self.assertEqual(out["execution"]["status"], "COMPLETED")
+        runs = self._runs()
+        self.assertGreater(runs, 0)
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED")
+        self.assertTrue(out2["execution"]["skipped"])
+        self.assertEqual(self._runs(), runs, "resume reused every operation")
+        # a fresh plan of the same request (extraction PROPOSED again) cannot borrow the earlier job: the gate comes first
+        ir3, p3 = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5}, name="again")
+        out3 = svc.render(load_ir(p3), p3, resume=out["job"]["id"])
+        self.assertEqual(out3["status"], "WAITING_FOR_APPROVAL", out3)
+        self.assertEqual(self._runs(), runs)
+
+    def test_case7_explain(self):
+        svc = self._svc()
+        for reqs, want, absent in (({"audio.production": True, "audio.fade_in": 0.5}, "CONFIRM", "waived"), ({"audio.production": True, "audio.fade_in": 0.5, "audio.extract": True}, "AUTO", None),
+                                   ({"audio.production": True, "audio.fade_in": 0.5, "audio.extract.approval": "BLOCK"}, "BLOCK", None)):
+            ir = svc.plan([self.mp4], "generic", user_requirements=reqs)
+            rows = Service.explain_decision(ir.doc, "audio.extract")
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["decision"]["approval"], want, reqs)
+            basis = row["basis"]
+            blob = json.dumps(row)
+            self.assertIn("audio.extract.approval", blob)
+            self.assertTrue(any(b.get("kind") == "approval" for b in basis), basis)
+            if absent:
+                self.assertNotIn(absent, blob)
+            if want == "AUTO":
+                self.assertIn("CONFIRM waived", blob)
+                self.assertIn("audio.extract from", blob)
+            self.assertTrue(any(e.get("kind") == "requirement" for e in row["evidence"]), "the switch (and the confirmation) are requirement evidence")
+        # CLI text
+        import contextlib
+        import io
+        from video_agent.cli import main as cli_main
+        p = str(Path(self.tmp) / "e.json")
+        save_ir(ir, p)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cli_main(["--workspace", self.tmp, "explain", p, "--decision", "audio.extract"])
+        self.assertEqual(rc, 0)
+        self.assertIn("audio.extract.approval", buf.getvalue())
+
+    def test_case8_ir_validator_and_compiler_cannot_bypass(self):
+        from video_agent.project.ir import ProjectIR
+        svc = self._svc()
+        ir, p = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5})
+        ex = next(x for x in ir.doc["decisions"] if x["subject"] == "audio.extract")
+        self.assertEqual(svc.validate(ir).errors, [])
+        blob = json.dumps(ir.doc)
+        for key in ("bypass", "waiver", "skip_confirm", "auto_approve"):
+            self.assertNotIn(key, blob)
+        # an IR whose approval was edited after planning is refused by the validator and never rendered
+        doc = json.loads(blob)
+        next(x for x in doc["decisions"] if x["subject"] == "audio.extract")["approval"] = "AUTO"
+        errs = validate_ir(ProjectIR(doc), check_paths=False, registry=svc.registry).errors
+        self.assertTrue(any("differs from the resolved approval" in e for e in errs), errs)
+        doc["plan"]["status"] = "APPROVED"   # rewriting the derived statuses as well does not help
+        for st in doc["plan"]["steps"]:
+            st["status"] = "APPROVED"
+        errs = validate_ir(ProjectIR(doc), check_paths=False, registry=svc.registry).errors
+        self.assertTrue(any("differs from the resolved approval" in e for e in errs), errs)
+        save_ir(ProjectIR(doc), p)
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "FAILED")
+        self.assertEqual(self._runs(), 0)
+        # a status forged to APPROVED without a review record is refused too
+        doc = json.loads(blob)
+        next(x for x in doc["decisions"] if x["subject"] == "audio.extract")["status"] = "APPROVED"
+        errs = validate_ir(ProjectIR(doc), check_paths=False, registry=svc.registry).errors
+        self.assertTrue(any("without an APPROVED review record" in e for e in errs), errs)
+        save_ir(ProjectIR(doc), p)
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "FAILED")
+        self.assertEqual(self._runs(), 0)
+        # the compiler is reached only through the render gate; compiled operations carry the decision id, not an approval
+        ops, _ = compile_ir(ir, str(Path(self.tmp) / "job"))
+        self.assertTrue(all(ex["id"] in o.decision_ids for o in ops if o.tool == "audio-production/run"))
+        self.assertNotIn("approval", json.dumps([o.args for o in ops]))
+        # steps that cite the pending extraction are PROPOSED, not executable
+        from video_agent.agent.production_plan import executable_steps
+        self.assertEqual([s for s in executable_steps(ir.doc) if s.startswith(("step_cut", "step_fade"))], [])

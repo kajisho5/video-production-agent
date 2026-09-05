@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
-from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, ir_audio_operation, is_audio_capable, kept_after_cut
+from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, has_video, ir_audio_operation, is_audio_capable, kept_after_cut
 from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, concat_segments, ir_operation
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
@@ -65,6 +65,24 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     # audio production path (ADR-030): explicit `audio.production` puts every asset with audio on it (its audio is the subject, delivered as audio)
     audio_subjects = {a.id for a in analysis.assets if is_audio_capable(a.technical)} if audio_production else set()
     audio_concat_dec = next((d for d in decisions if d.subject == "audio.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if audio_production else None
+    # ADR-033: a video container on the audio path is delivered as audio only under its `audio.extract` decision. Every audio operation of
+    # that subject cites it (a REJECTED extraction is rejected-cited → BLOCKED; a pending CONFIRM keeps the steps PROPOSED), and once the user
+    # rejected it (revise drops the proposal) nothing is planned for the asset on the audio path — the picture is never quietly dropped.
+    extract_of: Dict[str, Optional[Decision]] = {a.id: next((d for d in decisions if d.subject == "audio.extract" and d.type == "TRANSFORM" and d.status != "REJECTED"
+                                                              and d.params.get("asset_id") == a.id), None)
+                                                 for a in analysis.assets if a.id in audio_subjects and has_video(a.technical)}
+    extract_refused = {a for a, d in extract_of.items() if d is None}
+    if audio_concat_dec is not None and any(a in extract_refused for a in audio_concat_dec.params.get("inputs") or []):
+        summary.append("audio concat not planned: the extraction of a video input was rejected")
+        audio_concat_dec = None
+
+    def extract_ids(subject: str) -> List[str]:
+        """The `audio.extract` decision id(s) an audio operation on `subject` additionally cites (programme: those of its inputs)."""
+        if subject == PROGRAMME_AUDIO:
+            inputs: List[str] = list(audio_concat_dec.params.get("inputs") or []) if audio_concat_dec is not None else []
+            return [x.id for x in (extract_of.get(a) for a in inputs) if x is not None]
+        d = extract_of.get(subject)
+        return [d.id] if d is not None else []
     current_of: Dict[str, str] = {}      # subject → latest logical output
     last_of: Dict[str, str] = {}
     scope_of: Dict[str, Dict[str, float]] = {}   # subject → temporal scope on the timeline the subject's current output has
@@ -249,12 +267,13 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                         if d.params.get(k) is not None:
                             op[k] = d.params[k]; params[k] = d.params[k]
                     op["temporal_scope"] = {"start": 0.0, "end": round(dur, 3)}
-                op["decision_ids"] = [d.id]
+                ids = [d.id] + (extract_ids(subject) if audio_path else [])
+                op["decision_ids"] = ids
                 audio_ops.append(op)
                 order += 1
                 st = ProductionStep(id=f"step_loudness_{subject}", order=order, skill=skill, tool=tool_for(skill), inputs=[current_of[subject]],
                                     params=params, outputs=[f"{subject}_loudnorm"],
-                                    depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                    depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id,
                                     temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
                 steps.append(st)
                 current_of[subject], last_of[subject] = st.outputs[0], st.id
@@ -276,11 +295,12 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             params = {k: v for k, v in d.params.items() if k in spec["params"]}
             out_id = f"{subject}_{op_type.split('.', 1)[1]}"
             scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
-            audio_ops.append(ir_audio_operation(op_type, subject, params, [d.id], scope=scope, input=current_of[subject], output=out_id))
+            ids = [d.id] + extract_ids(subject)
+            audio_ops.append(ir_audio_operation(op_type, subject, params, ids, scope=scope, input=current_of[subject], output=out_id))
             order += 1
             st = ProductionStep(id=f"step_{op_type.split('.', 1)[1]}_{subject}", order=order, skill=spec["skill"], tool=tool_for(spec["skill"]), inputs=[current_of[subject]],
                                 params={"asset": subject, **params}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [],
-                                evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+                                evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id, temporal_scope=scope)
             steps.append(st)
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(d.decision)
@@ -289,22 +309,24 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         nonlocal order
         dur = (scope_of.get(subject) or {}).get("end") or durations.get(subject) or 0.0
         current, last_step = current_of[subject], last_of.get(subject)
+        ex_ids = extract_ids(subject) if (subject in audio_subjects or subject == PROGRAMME_AUDIO) else []
         for d in decisions:
             if d.subject.startswith("delivery."):
                 t = d.params
+                ids = [d.id] + ex_ids
                 if not any(x["id"] == t["id"] for x in delivery):
-                    delivery.append({"id": t["id"], "preset": t.get("preset"), "platform": t.get("platform", "custom"), "artifact_type": t.get("artifact_type", "MASTER"), "decision_ids": [d.id]})
+                    delivery.append({"id": t["id"], "preset": t.get("preset"), "platform": t.get("platform", "custom"), "artifact_type": t.get("artifact_type", "MASTER"), "decision_ids": ids})
                 art = f"{subject}_delivery_{t['id']}"
                 if t.get("preset"):
                     order += 1
                     exp = ProductionStep(id=f"step_export_{t['id']}" if single else f"step_export_{t['id']}_{subject}", order=order, skill="delivery_export",
                                          tool=tool_for("delivery_export"), inputs=[current], params={"preset": t["preset"], "target": t["id"]}, outputs=[art],
-                                         depends_on=[last_step] if last_step else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                         depends_on=[last_step] if last_step else [], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id,
                                          temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
                     order += 1
                     chk = ProductionStep(id=f"step_check_{t['id']}" if single else f"step_check_{t['id']}_{subject}", order=order, skill="delivery_check",
                                          tool=tool_for("delivery_check"), inputs=[art], params={"platform": t.get("platform", "custom"), "target": t["id"]}, outputs=[],
-                                         depends_on=[exp.id], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+                                         depends_on=[exp.id], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id)
                     steps.extend([exp, chk])
                     outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": t["preset"], "expected": {"platform": t.get("platform", "custom"), "source": subject}})
                     if first:
@@ -315,6 +337,9 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                         summary.append(f"Deliver '{t['id']}' as processed (no platform preset)")
 
     for asset in analysis.assets:
+        if asset.id in extract_refused:
+            summary.append(f"{asset.path.split('/')[-1]}: audio extraction was rejected; nothing is planned for it on the audio path")
+            continue
         dur = asset.technical.get("duration") or 0.0
         start, end = 0.0, dur
         dec_ids: List[str] = []
@@ -353,9 +378,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if asset.id in audio_subjects:
                 # audio production path: the same silence decisions as one audio.cut (explicit remove ranges; the Skill joins the remainder)
                 remove = cut_ranges(removed)
-                audio_ops.append(ir_audio_operation("audio.cut", asset.id, {"remove": remove}, dec_ids, scope={"start": 0.0, "end": kept_after_cut(dur, remove)}, input=current, output=f"{asset.id}_cut"))
+                cut_ids = dec_ids + extract_ids(asset.id)
+                audio_ops.append(ir_audio_operation("audio.cut", asset.id, {"remove": remove}, cut_ids, scope={"start": 0.0, "end": kept_after_cut(dur, remove)}, input=current, output=f"{asset.id}_cut"))
                 st = ProductionStep(id=f"step_cut_{asset.id}", order=order, skill="audio_cut", tool=tool_for("audio_cut"), inputs=[current],
-                                    params={"asset": asset.id, "remove": remove}, outputs=[f"{asset.id}_cut"], depends_on=[], evidence=evidence_of(dec_ids), decision_ids=dec_ids,
+                                    params={"asset": asset.id, "remove": remove}, outputs=[f"{asset.id}_cut"], depends_on=[], evidence=evidence_of(cut_ids), decision_ids=cut_ids,
                                     decision_id=dec_ids[0], temporal_scope={"start": 0.0, "end": kept_after_cut(dur, remove)})
                 scope_of[asset.id] = {"start": 0.0, "end": kept_after_cut(dur, remove)}
             else:
@@ -390,11 +416,12 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         cf = float(audio_concat_dec.params.get("crossfade") or 0.0)
         segments, total = audio_concat_segments(inputs, {a: (scope_of.get(a) or {}).get("end") or durations.get(a, 0.0) for a in inputs}, cf)
         scope = {"start": 0.0, "end": total}
-        audio_ops.append(ir_audio_operation("audio.concat", PROGRAMME_AUDIO, {"crossfade": cf}, [audio_concat_dec.id], scope=scope, inputs=inputs, output=PROGRAMME_AUDIO, segments=segments, timeline_duration=total))
+        cat_ids = [audio_concat_dec.id] + extract_ids(PROGRAMME_AUDIO)
+        audio_ops.append(ir_audio_operation("audio.concat", PROGRAMME_AUDIO, {"crossfade": cf}, cat_ids, scope=scope, inputs=inputs, output=PROGRAMME_AUDIO, segments=segments, timeline_duration=total))
         order += 1
         st = ProductionStep(id=f"step_concat_{PROGRAMME_AUDIO}", order=order, skill="audio_concat", tool=tool_for("audio_concat"), inputs=[current_of[a] for a in inputs],
                             params={"asset": PROGRAMME_AUDIO, "inputs": inputs, "crossfade": cf}, outputs=[PROGRAMME_AUDIO],
-                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of([audio_concat_dec.id]), decision_ids=[audio_concat_dec.id], decision_id=audio_concat_dec.id,
+                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of(cat_ids), decision_ids=cat_ids, decision_id=audio_concat_dec.id,
                             temporal_scope=scope)
         steps.append(st)
         current_of[PROGRAMME_AUDIO], last_of[PROGRAMME_AUDIO], scope_of[PROGRAMME_AUDIO] = PROGRAMME_AUDIO, st.id, scope

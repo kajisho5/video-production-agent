@@ -1,0 +1,33 @@
+{
+ "name": "ap_extract_without_switch_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "video": true
+   }
+  ]
+ },
+ "requirements": {
+  "audio.extract": true,
+  "audio.fade_in": 0.5
+ },
+ "expect": {
+  "plan_error": "ambiguous",
+  "note": "audio.extract alone is an ambiguous request (like every audio.<op> without the switch)"
+ }
+}
