@@ -5239,7 +5239,7 @@ class SyncObservationTests(unittest.TestCase):
     the policy gate. Nothing is decided from it."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())   # Windows: asset paths are resolved (no 8.3 short names); the lookups below compare against them
         self.a = fake_media(self.tmp, "camA.mp4")
         self.b = self._fake("recorder.wav", sync_offset=1.25, sync_confidence=0.91, video=False, channels=1)
         os.environ.pop("FAKE_SYNC_MODE", None)
