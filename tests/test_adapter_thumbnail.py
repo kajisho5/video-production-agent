@@ -36,7 +36,7 @@ def set_mode(mode: str) -> None:
 class FakeBase(unittest.TestCase):
     def setUp(self):
         set_mode("ok")
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.ws = os.path.join(self.tmp, "ws")
         self.src_dir = os.path.join(self.tmp, "src")
         os.makedirs(self.ws)
@@ -439,7 +439,7 @@ class RealSkillTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp())
         cls.ws = os.path.join(cls.tmp, "ws")
         os.makedirs(cls.ws)
         root = Path(os.environ["VIDEO_AGENT_THUMBNAIL_DIR"]).resolve()

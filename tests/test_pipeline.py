@@ -33,7 +33,7 @@ def tools_of(doc):
 class PipelineScenarioTests(unittest.TestCase):
     def setUp(self):
         clear_modes()
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.a = fake_media(self.tmp, "a.mp4")
         self.b = fake_media(self.tmp, "b.mp4")
 
@@ -291,7 +291,7 @@ class PipelineScenarioTests(unittest.TestCase):
 class PipelineGateAndRefusalTests(unittest.TestCase):
     def setUp(self):
         clear_modes()
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.a = fake_media(self.tmp, "a.mp4")
 
     def tearDown(self):
@@ -358,7 +358,7 @@ class PipelineGateAndRefusalTests(unittest.TestCase):
         dec = {x["subject"]: x for x in ir.doc["decisions"]}
         self.assertEqual((dec["color.hdr_to_sdr"]["type"], dec["color.hdr_to_sdr"]["provenance"]), ("KEEP", "OBSERVED")); self.assertEqual(ir.doc["color"], {})
         # a burn-in with no intermediate before it is refused (the source is never rewritten)
-        tmp2 = tempfile.mkdtemp()   # its own workspace: the observation cache of self.tmp already holds the silences of the same bytes
+        tmp2 = os.path.realpath(tempfile.mkdtemp())   # its own workspace: the observation cache of self.tmp already holds the silences of the same bytes
         flat = pipeline_service(tmp2, silences=[])
         ir = flat.plan([fake_media(tmp2, "flat.mp4")], "generic", user_requirements={"subtitle": True, "subtitle.burn_in": True}, params={"language": "ja"})
         dec = {x["subject"]: x for x in ir.doc["decisions"]}

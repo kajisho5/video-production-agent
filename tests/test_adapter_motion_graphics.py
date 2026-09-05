@@ -36,7 +36,7 @@ def write_fake_media(path: str, duration: float = 3.0) -> str:
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.ws = os.path.join(self.tmp, "ws")
         self.src_dir = os.path.join(self.tmp, "src")
         os.makedirs(self.ws)
@@ -425,7 +425,7 @@ class SecurityTests(Base):
 @unittest.skipUnless(os.environ.get(ENV_DIR), f"set {ENV_DIR} to run against the real motion-graphics-skill")
 class RealSkillTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.ws = os.path.join(self.tmp, "ws")
         os.makedirs(self.ws)
         self.video = os.path.join(self.tmp, "src", "bars.mp4")

@@ -41,7 +41,7 @@ def fake_media(tmp: str, name: str = "clip.mp4", duration: float = 3.0, video: b
 
 class QcAdapterTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.src_dir = str(Path(self.tmp) / "src")
         os.makedirs(self.src_dir)
         self.src = fake_media(self.src_dir)
@@ -204,7 +204,7 @@ class QcAdapterTests(unittest.TestCase):
         self.assertEqual(classify_error(r), "TIMEOUT"); self.assertEqual(next_attempt(r, 1, 2, 1)["timeout"], 2)
         # the Skill's own refusals arrive as its codes, never retried
         os.environ.pop("FAKE_QC_MODE", None)
-        out_of_roots = fake_media(tempfile.mkdtemp(), "far.mp4"); paths["far"] = out_of_roots
+        out_of_roots = fake_media(os.path.realpath(tempfile.mkdtemp()), "far.mp4"); paths["far"] = out_of_roots
         r = QcAdapter(self._skill(), workspace=self.ws).run(self._op(input="far"), {"far": out_of_roots, "clip": self.src})   # no agent roots: the workspace is the only root on argv, the Skill refuses the rest
         self.assertFalse(r.ok); self.assertEqual((r.data["error"]["code"], r.data["error"]["recovery_class"]), ("PATH_NOT_ALLOWED", "INPUT_MISSING"))
 
@@ -241,7 +241,7 @@ class QcAdapterTests(unittest.TestCase):
         self.assertFalse(ad.supports("qc/validate")); self.assertTrue(ad.supports(TOOL_INSPECT))
         self.assertFalse(os.path.exists(log), "nothing reached the Skill process")
         # paths: outside the allowed roots (and the workspace), traversal, a directory — refused before the Skill runs
-        far = fake_media(tempfile.mkdtemp(), "far.mp4"); paths["far"] = far; paths["dir"] = self.src_dir; paths["trav"] = str(Path(self.src_dir) / ".." / "src" / "clip.mp4")
+        far = fake_media(os.path.realpath(tempfile.mkdtemp()), "far.mp4"); paths["far"] = far; paths["dir"] = self.src_dir; paths["trav"] = str(Path(self.src_dir) / ".." / "src" / "clip.mp4")
         for ref, what in (("far", "outside the allowed roots"), ("dir", "not found")):
             with self.assertRaises(ToolError) as cm:
                 ad.build_request(TOOL_CHECK, {"input": ref, "kind": "video"}, paths)
@@ -312,7 +312,7 @@ class QcRealSkillTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp())
         cls.src_dir = str(Path(cls.tmp) / "src"); os.makedirs(cls.src_dir)
         cls.ws = str(Path(cls.tmp) / "ws"); os.makedirs(cls.ws)
         cls.src = str(Path(cls.src_dir) / "bars.mp4")

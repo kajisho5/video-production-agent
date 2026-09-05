@@ -33,7 +33,7 @@ def fake_video(tmp: str, name: str = "clip.mp4", hdr: bool = False) -> str:
 
 class ColorGradingAdapterTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
         self.src = fake_video(self.tmp)
         self.ws = str(Path(self.tmp) / "ws")
         os.makedirs(self.ws)
@@ -104,7 +104,7 @@ class ColorGradingAdapterTests(unittest.TestCase):
             with self.assertRaises(ToolError, msg=str(bad)) as cm:
                 ad.build_request("color-grading/run", args, dict(paths, missing=str(Path(self.tmp) / "nope.mp4")))
             self.assertIn(msg, str(cm.exception).lower() if msg.islower() else str(cm.exception), str(bad))
-        far = fake_video(tempfile.mkdtemp(), "far.mp4")
+        far = fake_video(os.path.realpath(tempfile.mkdtemp()), "far.mp4")
         with self.assertRaises(ToolError):
             ad.build_request("color-grading/run", self._op(input="far").args, dict(paths, far=far))
         with self.assertRaises(ToolError):
@@ -174,7 +174,7 @@ class ColorGradingRealSkillTests(unittest.TestCase):
     def setUpClass(cls):
         cls.skill = locate_color_grading(os.environ.get("VIDEO_AGENT_COLOR_GRADING_DIR")) if os.environ.get("VIDEO_AGENT_COLOR_GRADING_DIR") else None
         cls.engine = os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
-        cls.tmp = tempfile.mkdtemp()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp())
         cls.src = str(Path(cls.tmp) / "src" / "bars.mp4")
         if cls.skill and cls.engine and shutil.which("ffmpeg"):
             os.makedirs(os.path.dirname(cls.src))

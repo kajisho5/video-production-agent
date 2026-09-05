@@ -57,7 +57,7 @@ class Env:
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="subtitle-adapter-")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="subtitle-adapter-"))
         self.ws = os.path.join(self.tmp, "ws")
         self.engine = os.path.join(self.tmp, "engine")   # a directory standing in for the ffmpeg-skill checkout (never executed by the fake)
         os.makedirs(self.ws)
@@ -488,7 +488,7 @@ class SecurityTests(Base):
 @unittest.skipUnless(os.environ.get(ENV_DIR), f"set {ENV_DIR} to a subtitle-skill checkout")
 class RealSkillTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="subtitle-real-")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="subtitle-real-"))
         self.ws = os.path.join(self.tmp, "ws")
         os.makedirs(self.ws)
         self.engine = os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
