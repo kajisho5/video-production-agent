@@ -1,0 +1,14 @@
+{
+ "name": "ve_validation_error_not_retried",
+ "video_editing": {
+  "mode": "error:VALIDATION_ERROR",
+  "prefer": true
+ },
+ "expect": {
+  "error": {
+   "code": "VALIDATION_ERROR",
+   "class": "OUTPUT_INVALID",
+   "attempts": 1
+  }
+ }
+}

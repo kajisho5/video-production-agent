@@ -18,6 +18,7 @@ from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 from video_agent.tools.media_analysis import locate_media_analysis
 from video_agent.tools.transcription import locate_transcription
+from video_agent.tools.video_editing import locate_video_editing
 
 TONE = "0.5*sin(2*PI*440*t)*between(t\\,3\\,14)*gt(sin(2*PI*0.7*t)\\,-0.6)"
 
@@ -1016,3 +1017,91 @@ class ProductionDecisionEngineRealTests(unittest.TestCase):
         self.assertTrue(cut["ok"])
         out2 = svc.render(load_ir(pg), pg, resume=out["job"]["id"])
         self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill() and locate_video_editing(), "needs ffmpeg, ffmpeg-skill and video-editing-skill")
+class VideoEditingRealTests(unittest.TestCase):
+    """External editing Skill (video-editing-skill, ADR-028) on real media through the JSON process boundary, with the real
+    ffmpeg-skill underneath: contract discovery from the installed checkout, capability from its doctor, a full plan → render
+    where the trim is executed by video-editing/cut, output validation by the Skill, provenance (commands recorded, OBSERVED probe),
+    resume through the agent's idempotency record, and a Skill-side refusal that never becomes a success."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_ve_")
+        cls.src = str(Path(cls.tmp) / "src" / "talk.mp4")
+        Path(cls.src).parent.mkdir(parents=True)
+        make_media(cls.src)
+
+    def _service(self, ws: str) -> Service:
+        svc = Service(workspace=ws)
+        svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]   # prefer the editing Skill for the cut
+        return svc
+
+    def test_contract_capability_and_live_snapshot_agree(self):
+        from video_agent.tools.video_editing import PACKAGE, check_contract, pinned_contract
+        svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
+        cap = svc.caps.resolve()["video-editing"]
+        self.assertEqual(cap.status, "AVAILABLE", cap.detail)
+        self.assertEqual((cap.evidence["version"], cap.evidence["contract"], cap.evidence["execution"], cap.evidence["engine"]), ("0.1.0", "video-editing/contract@1", "local_subprocess", "ffmpeg-skill"))
+        self.assertEqual(cap.evidence["contract_only"], [], "every operation the installed contract declares has a lowering here")
+        self.assertEqual(cap.evidence["doctor"].get("ffmpeg-skill"), "AVAILABLE")
+        ad = svc.adapter([str(Path(self.src).parent)]).adapter_for("video-editing/cut")
+        self.assertEqual(check_contract(ad.contract), [])
+        live, pinned = ad.contract, pinned_contract()
+        for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "schemas"):
+            self.assertEqual(live[k], pinned[k], f"contract drift in {k}: regenerate tools/video_editing/contract_0.1.0.json and review the adapter")
+        self.assertEqual([t["tool_id"] for t in live["tools"]], PACKAGE.tool_ids())
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertTrue(rows["video-editing"]["available"] and rows["ffmpeg-skill"]["available"])
+        self.assertEqual(svc.tools_for()["silence_cleanup"], "ffmpeg-skill/cut", "the Reference Skill stays the first candidate when both are installed")
+
+    def test_plan_render_provenance_and_resume(self):
+        ws = str(Path(self.tmp) / "ws_render")
+        svc = self._service(ws)
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual({s["skill"]: s["tool"] for s in ir.doc["plan"]["steps"]}["silence_cleanup"], "video-editing/cut")
+        rep = svc.validate(ir)
+        self.assertTrue(rep.ok, rep.to_dict())
+        prev = svc.dry_run(ir)
+        cut_prev = next(c for c in prev["operations"] if c["tool"] == "video-editing/cut")
+        self.assertIn("run - --json", " ".join(cut_prev["command"]))
+        self.assertNotIn("ffmpeg ", " ".join(cut_prev["command"]))
+        ir_path = str(Path(ws) / "p.json")
+        out = svc.render(ir, ir_path, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out["execution"].get("recovery"))
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/cut")
+        self.assertTrue(res["ok"] and os.path.isfile(res["output"]))
+        self.assertEqual(res["data"]["status"], "completed")
+        self.assertEqual(len(res["data"]["sha256"]), 64)
+        self.assertTrue(res["data"]["timeline"]["duration_known"])
+        self.assertTrue(res["commands"] and all("ffmpeg" in c for c in res["commands"]), "ffmpeg-skill's command lines, reported through the Skill")
+        seg = res["data"]["timeline"]["tracks"][0]["segments"][0]
+        keep = ir.doc["video"]["operations"][0]["keep"][0]
+        self.assertAlmostEqual(float(seg["source_range"]["start"]["seconds"]), keep[0], places=3)
+        prov = json.loads((Path(out["job"]["workspace"]) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        rec = next(e for e in prov["operations"] if e["tool"] == "video-editing/cut")
+        self.assertEqual((rec["skill_package"], rec["tool_version"]), ("video-editing", "0.1.0"))
+        obs = prov["skill_observations"]
+        self.assertEqual((len(obs), obs[0]["provenance"], obs[0]["source"]), (1, "OBSERVED", "ffmpeg-skill/probe@" + svc.caps.resolve()["ffmpeg-skill"].evidence["version"]))
+        self.assertAlmostEqual(obs[0]["data"]["duration"], keep[1] - keep[0], delta=0.35)
+        self.assertEqual(out["qa"]["status"] in ("PASS", "WARN"), True, out["qa"])
+        # resume: the agent's idempotency record skips the editing operation; the Skill is not even asked
+        out2 = svc.render(load_ir(ir_path), ir_path, approve=["all"], resume="last")
+        self.assertEqual(out2["status"], "COMPLETED")
+        self.assertTrue(out2["execution"]["skipped"], out2["execution"])
+        self.assertTrue(any(v == res["output"] for v in out2["execution"]["reused"].values()), out2["execution"]["reused"])
+
+    def test_skill_refusal_is_a_structured_failure(self):
+        from video_agent.models import Operation
+        ws = str(Path(self.tmp) / "ws_fail")
+        Path(ws).mkdir()
+        svc = self._service(ws)
+        ad = svc.adapter([str(Path(self.src).parent)]).adapter_for("video-editing/cut")
+        out = str(Path(ws) / "jobs" / "x" / "o.mp4")
+        r = ad.run(Operation(tool="video-editing/cut", args={"input": "a", "segments": "20-30", "output": "o"}, inputs=["a"], outputs=["o"], id="op_x"), {"a": self.src, "o": out}, timeout=120)
+        self.assertEqual((r.ok, r.output, r.data["error"]["code"], r.data["error"]["retryable"]), (False, None, "INVALID_TIME_RANGE", False))
+        self.assertFalse(os.path.exists(out))
+        r2 = ad.run(Operation(tool="video-editing/freeze", args={"input": "a", "output": "o"}, inputs=["a"], outputs=["o"], id="op_y"), {"a": self.src, "o": out}, timeout=120)
+        self.assertEqual((r2.ok, r2.data["error"]["code"]), (False, "INVALID_REQUEST"))
+        self.assertFalse(ad.supports("video-editing/freeze"))

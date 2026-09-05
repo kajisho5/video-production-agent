@@ -1,0 +1,13 @@
+{
+ "name": "ve_no_capability_falls_back",
+ "video_editing": {
+  "mode": "ok",
+  "prefer": true,
+  "no_capability": true
+ },
+ "expect": {
+  "selected_tools": {
+   "silence_cleanup": "ffmpeg-skill/cut"
+  }
+ }
+}

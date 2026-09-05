@@ -2,7 +2,8 @@
 
 ```text
 video-production-agent = Brain / Orchestrator
-ffmpeg-skill           = First Reference Skill（deterministic media processing）— 実装済みの唯一の Skill package
+ffmpeg-skill           = First Reference Skill（deterministic media processing）— 唯一の FFmpeg execution boundary
+media-analysis-skill   = observation Skill（PR #12）、transcription-skill = recognition Skill（PR #13）、video-editing-skill = editing Skill（PR #19）
 future skills          = 独立した専門 Skill（未実装、ドキュメント上の構想のみ）
 ```
 
@@ -14,7 +15,7 @@ future skills          = 独立した専門 Skill（未実装、ドキュメン�
 | **Tool** | その Skill package が提供する具体的操作 | `ToolSpec`（tool_id `<skill_id>/<name>` / skill_id / version / required_capabilities / 実行契約: inputs, produces_output, deterministic, result_keys） | `ffmpeg-skill/probe`, `ffmpeg-skill/cut`, `ffmpeg-skill/loudness` |
 | **Production skill** | Agent が実現できること（環境に依存しない知識） | `skills/registry.py` の `SkillSpec`（required_capabilities / risk / approval / tools 候補 / phase） | `silence_cleanup` |
 | **Capability** | 実行環境が今何をサポートしているか | `capabilities/resolver.py`（AVAILABLE / MISSING / DEGRADED / UNKNOWN） | `ffmpeg`, `encoder:libx264`, `ffmpeg-skill` |
-| **Adapter** | Tool を実際の runtime に接続する | `tools/base.py` の `ToolAdapter`（`package()` / `supports` / `preview` / `run` / `measure`）。現在は `FfmpegSkillAdapter` のみ | `tools/ffmpeg_skill/` |
+| **Adapter** | Tool を実際の runtime に接続する | `tools/base.py` の `ToolAdapter`（`package()` / `supports` / `preview` / `run` / `measure`）。`FfmpegSkillAdapter` / `MediaAnalysisAdapter` / `TranscriptionAdapter` / `VideoEditingAdapter` | `tools/ffmpeg_skill/`, `tools/video_editing/` |
 | **Registry** | Skill package と production skill を登録・列挙し、環境ごとに tool を選ぶ | `SkillRegistry` | — |
 | **Router** | 選択された tool id を対応 adapter へ dispatch する | `tools/router.py` の `ToolRouter` | — |
 | **Agent** | Production 全体として何をすべきか判断する | `agent/`, `service.py` | — |
@@ -74,5 +75,6 @@ planner / compiler / decision / QA の engine 固有ロジックを変更する�
 
 - 実装済み・利用可能: `kajisho5/ffmpeg-skill`（0.8.4 ≤ v < 0.10、契約テスト + unit テストで固定。0.9.0 は contract / doctor 追加と `--json` の "status" のみで media 挙動は不変、integration 全件通過を確認済み。0.10 は未検証のため拒否）。`video-agent skills` の "Skill packages" に唯一表示される。
 - 宣言のみ（NOT_IMPLEMENTED）: production skill `multi_source_sync`（phase 2）、`caption_generation`（phase 3）、`semantic_deletion`（phase 4）。ffmpeg-skill の既存スクリプトを tool 候補として宣言しているだけで、planner は使わない。
-- 将来 Skill（構想のみ、コード上に痕跡無し）: media-analysis-skill / audio-production-skill / transcription-skill / subtitle-skill / video-editing-skill / motion-graphics-skill / color-grading-skill / thumbnail-skill / qc-skill。
+- 実装済み（外部 Skill、process boundary）: media-analysis-skill（ADR-023）、transcription-skill（ADR-024）、video-editing-skill（ADR-028: `tools/video_editing/`、contract `video-editing/contract@1` 0.1.x、tool `video-editing/<type>`、`silence_cleanup` の第二候補）。
+- 将来 Skill（構想のみ、コード上に痕跡無し）: audio-production-skill / subtitle-skill / motion-graphics-skill / color-grading-skill / thumbnail-skill / qc-skill。
 - 作らないもの: plugin manager / package installer / dynamic import / marketplace / remote registry / 任意コードローダ。

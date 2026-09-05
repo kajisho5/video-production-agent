@@ -1,0 +1,14 @@
+{
+ "name": "ve_output_missing_never_success",
+ "video_editing": {
+  "mode": "no_output",
+  "prefer": true
+ },
+ "expect": {
+  "error": {
+   "code": "INVALID_RESULT",
+   "class": "OUTPUT_INVALID",
+   "attempts": 1
+  }
+ }
+}

@@ -13,11 +13,37 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "ENCODER_FAILED": {"action": "RETRY_ALT", "hint": "retry once with frame-accurate mode", "alt_args": {"ffmpeg-skill/cut": {"accurate": True}}},
     "TIMEOUT":        {"action": "RETRY_LONGER", "hint": "retry once with a doubled timeout"},
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},
+    "OUTPUT_INVALID": {"action": "BLOCK", "hint": "the Skill validated its own output and rejected it, or wrote none (deterministic; not retried)"},
+    "INTERRUPTED":    {"action": "BLOCK", "hint": "the Skill was cancelled (interrupt); re-run the job"},
     "UNKNOWN":        {"action": "RETRY_SAME", "hint": "retry once with identical arguments"},
 }
 
+# Structured error codes of external Skills (their contracts' error tables) → recovery class. A Skill's `retryable` flag is
+# honoured: a non-retryable TOOL_ERROR (engine missing) blocks; a retryable one gets the finite retry. Unlisted codes fall back
+# to the text classification below (media-analysis / transcription codes are handled by the analysis failure domain instead).
+STRUCTURED_CLASSES: Dict[str, str] = {
+    "INVALID_REQUEST": "INVALID_ARGS", "INVALID_INPUT": "INVALID_ARGS", "PATH_NOT_ALLOWED": "INPUT_MISSING", "UNSUPPORTED_OPERATION": "INVALID_ARGS",
+    "UNSUPPORTED_FORMAT": "INVALID_ARGS", "MISSING_INPUT": "INPUT_MISSING", "INVALID_TIME_RANGE": "INVALID_ARGS", "DEPENDENCY_ERROR": "INVALID_ARGS",
+    "OUTPUT_ERROR": "OUTPUT_INVALID", "VALIDATION_ERROR": "OUTPUT_INVALID", "INVALID_RESULT": "OUTPUT_INVALID", "INTERNAL_ERROR": "UNKNOWN",
+}
+
+
+def structured_class(r: ToolResult) -> Optional[str]:
+    err = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+    if not isinstance(err, dict) or not isinstance(err.get("code"), str):
+        return None
+    code = err["code"]
+    if code == "TOOL_ERROR":
+        return "ENCODER_FAILED" if err.get("retryable", True) else "TOOL_MISSING"
+    if code == "CANCELLED":
+        return "TIMEOUT" if (err.get("details") or {}).get("reason") == "timeout" else "INTERRUPTED"
+    return STRUCTURED_CLASSES.get(code)
+
 
 def classify_error(r: ToolResult) -> str:
+    cls = structured_class(r)
+    if cls is not None:
+        return cls
     txt = (r.stderr_tail or "").lower()
     if r.exit_code == 127 or "was not found on path" in txt:
         return "TOOL_MISSING"

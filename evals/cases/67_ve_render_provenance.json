@@ -1,0 +1,13 @@
+{
+ "name": "ve_render_provenance",
+ "video_editing": {
+  "mode": "ok",
+  "prefer": true
+ },
+ "expect": {
+  "selected_tools": {
+   "silence_cleanup": "video-editing/cut"
+  },
+  "render": "ok"
+ }
+}

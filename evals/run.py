@@ -151,6 +151,80 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    ve = case.get("video_editing")
+    if ve:
+        # external editing Skill (ADR-028) through the fake video-editing process: contract discovery, candidate selection, lowering,
+        # the error contract, provenance (commands recorded, never rebuilt), unsupported operations refused
+        import os
+        from video_agent.execution import compile_ir
+        from video_agent.models import Operation
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.ffmpeg_skill.adapter import PathPolicy
+        from video_agent.tools.video_editing import ContractError, VideoEditingAdapter, VideoEditingSkill
+        os.environ.pop("FAKE_VE_MODE", None)
+        if ve.get("mode"):
+            os.environ["FAKE_VE_MODE"] = ve["mode"]
+        skill = VideoEditingSkill([sys.executable, str(ROOT / "tests" / "fake_video_editing.py")], None, {})
+        roots = [str(src.parent)]
+        try:
+            ad = VideoEditingAdapter(skill, workspace=tmp, allowed_inputs=roots + [tmp], path_policy=PathPolicy(roots, tmp), ffmpeg_skill_dir=tmp)
+        except ContractError as e:
+            os.environ.pop("FAKE_VE_MODE", None)
+            if exp.get("contract_refused") and exp["contract_refused"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e}"]}
+        if exp.get("contract_refused"):
+            os.environ.pop("FAKE_VE_MODE", None)
+            return {"case": case["name"], "ok": False, "failures": ["an incompatible contract was accepted"]}
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if ve.get("no_capability") else ["video-editing"])
+        svc = Service(workspace=tmp, adapter=ToolRouter([FakeAdapter(**fake), ad]), caps=caps, provider=provider)
+        if ve.get("prefer"):
+            svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]
+        tools = svc.tools_for()
+        for sk, tool in (exp.get("selected_tools") or {}).items():
+            if tools.get(sk) != tool:
+                failures.append(f"skill {sk} tool {tools.get(sk)} != {tool}")
+        if exp.get("unsupported_refused"):
+            r = ad.run(Operation(tool="video-editing/" + exp["unsupported_refused"].lower(), args={"input": str(src), "output": str(Path(tmp) / "o.mp4")}, inputs=[], outputs=[], id="x"), {})
+            if r.ok or r.data["error"]["code"] != "INVALID_REQUEST" or "not declared" not in r.data["error"]["message"]:
+                failures.append(f"unsupported operation not refused by the adapter: {r.data.get('error')}")
+            if any(k in json.dumps(r.data) for k in ("ffmpeg -", "argv", "filter_complex")):
+                failures.append("a refusal carried command-like content")
+        if exp.get("render") is not None or exp.get("error"):
+            ir = svc.plan([str(src)], case.get("profile", "generic"))
+            steps = {s["skill"]: s["tool"] for s in ir.doc["plan"]["steps"]}
+            if steps.get("silence_cleanup") != "video-editing/cut":
+                failures.append(f"silence_cleanup step tool {steps.get('silence_cleanup')} != video-editing/cut")
+            if any(o["type"] != "video.trim" for o in ir.doc["video"]["operations"]):
+                failures.append("the IR vocabulary changed")
+            out = svc.render(ir, str(Path(tmp) / "p.json"), approve=["all"])
+            if exp.get("error"):
+                rec = [r for r in out["execution"]["recovery"]]
+                res = [r for r in out["execution"]["results"] if r["tool"] == "video-editing/cut"]
+                if out["status"] == "COMPLETED" or not res or res[-1]["ok"] or res[-1]["data"].get("error", {}).get("code") != exp["error"]["code"]:
+                    failures.append(f"expected {exp['error']['code']}, got status {out['status']} results {[r['data'].get('error') for r in res]}")
+                if exp["error"].get("class") and (not rec or rec[-1]["class"] != exp["error"]["class"]):
+                    failures.append(f"recovery class {rec[-1]['class'] if rec else None} != {exp['error']['class']}")
+                if exp["error"].get("attempts") and len(res) != exp["error"]["attempts"]:
+                    failures.append(f"attempts {len(res)} != {exp['error']['attempts']}")
+            else:
+                if out["status"] != "COMPLETED":
+                    failures.append(f"render status {out['status']}: {out['execution'].get('recovery')}")
+                else:
+                    prov = json.loads((Path(out["job"]["workspace"]) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+                    rec = next((e for e in prov["operations"] if e["tool"] == "video-editing/cut"), None)
+                    if not rec or rec["skill_package"] != "video-editing" or rec["tool_version"] != "0.1.0" or not rec["result"]["commands"]:
+                        failures.append(f"provenance record incomplete: {rec}")
+                    obs = prov.get("skill_observations") or []
+                    if len(obs) != 1 or obs[0]["provenance"] != "OBSERVED" or obs[0]["skill"] != "video-editing" or not obs[0]["source"].startswith("ffmpeg-skill/probe@"):
+                        failures.append(f"skill observation not recorded: {obs}")
+                    if any(o.get("skill") == "video-editing" for o in ir.doc["analysis"]["observations"]):
+                        failures.append("a Skill output observation leaked into the IR analysis")
+                    ops, _ = compile_ir(ir, str(Path(tmp) / "jobs" / "x"))
+                    if any("ffmpeg" in json.dumps(o.args) for o in ops):
+                        failures.append("compiled args carry engine content")
+        os.environ.pop("FAKE_VE_MODE", None)
+        return {"case": case["name"], "ok": not failures, "failures": failures}
     ts = case.get("transcription")
     if ts:
         # external recognition Skill (ADR-024) through the fake transcription process: contract, lifting, provenance, SpeechEvents, refusals

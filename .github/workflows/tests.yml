@@ -28,9 +28,12 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
       - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
       - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
+      # video-editing-skill PR #1 is not merged yet: pin its branch (switch to the default branch once merged)
+      - run: git clone --depth 1 --branch claude/video-editing-skill-sd9vgt https://github.com/kajisho5/video-editing-skill ../video-editing-skill
       - run: pip install -e .
       - run: python -m unittest -v tests/test_integration.py
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
           VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
           VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
+          VIDEO_AGENT_VIDEO_EDITING_DIR: "${{ github.workspace }}/../video-editing-skill"

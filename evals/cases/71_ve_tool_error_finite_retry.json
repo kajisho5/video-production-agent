@@ -1,0 +1,14 @@
+{
+ "name": "ve_tool_error_finite_retry",
+ "video_editing": {
+  "mode": "error:TOOL_ERROR",
+  "prefer": true
+ },
+ "expect": {
+  "error": {
+   "code": "TOOL_ERROR",
+   "class": "ENCODER_FAILED",
+   "attempts": 2
+  }
+ }
+}

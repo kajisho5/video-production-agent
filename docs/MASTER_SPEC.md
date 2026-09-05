@@ -1429,8 +1429,8 @@ Status vocabulary (no new statuses): **DECLARED** = a production skill registere
 
 Current state: **ffmpeg-skill is the only implemented Skill package.** The following are future skills, present in
 documentation only and never registered, stubbed or reported as available:
-media-analysis-skill, audio-production-skill, transcription-skill, subtitle-skill, video-editing-skill,
-motion-graphics-skill, color-grading-skill, thumbnail-skill, qc-skill.
+audio-production-skill, subtitle-skill, motion-graphics-skill, color-grading-skill, thumbnail-skill, qc-skill
+(media-analysis-skill, transcription-skill and video-editing-skill are integrated: ADR-023 / ADR-024 / ADR-028).
 
 Not part of the ecosystem contract (deliberately absent): plugin manager, package installer, dynamic import, marketplace,
 remote registry, arbitrary code loading. A package becomes known through its adapter module and one registration line.
@@ -1442,6 +1442,7 @@ remote registry, arbitrary code loading. A package becomes known through its ada
 | ffmpeg-skill | deterministic media **execution** (hands) | Reference Skill, integrated (ADR-001 / ADR-016 / ADR-017) |
 | media-analysis-skill | deterministic **measurement / observation** (eyes / meters) | integrated: `tools/media_analysis/`, contract `media-analysis/contract@1`, 0.1.x |
 | transcription-skill | deterministic **speech recognition** (ears): audio → timestamped Transcript | integrated: `tools/transcription/`, contract `transcription skill --json` (transcript/0.1, engine-spec/0.1, speech-event/0.1), 0.2.x (ADR-024) |
+| video-editing-skill | deterministic **edit execution** (hands, typed): edit request → validated output + provenance, through ffmpeg-skill | integrated: `tools/video_editing/`, contract `video-editing contract --json` (`video-editing/contract@1`), 0.1.x (ADR-028) |
 | video-production-agent | orchestration / inference / decision / planning | this repository |
 
 - Boundary: an external process. The adapter runs `media-analysis contract --json` / `doctor --json` once and

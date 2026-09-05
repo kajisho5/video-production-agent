@@ -1,0 +1,13 @@
+{
+ "name": "ve_contract_discovery",
+ "video_editing": {
+  "mode": "ok"
+ },
+ "expect": {
+  "selected_tools": {
+   "silence_cleanup": "ffmpeg-skill/cut",
+   "media_probe": "ffmpeg-skill/probe"
+  },
+  "unsupported_refused": "FREEZE"
+ }
+}

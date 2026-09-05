@@ -1,0 +1,9 @@
+{
+ "name": "ve_contract_version_refused",
+ "video_editing": {
+  "mode": "wrong_version_contract"
+ },
+ "expect": {
+  "contract_refused": "not in supported range"
+ }
+}

@@ -98,18 +98,40 @@ class SkillRegistry:
         spec = self.get(name)
         return [c for c in spec.required_capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
 
+    def tool_missing_capabilities(self, tool_id: str, caps: Dict[str, Any]) -> List[str]:
+        """Capabilities the owning package or the ToolSpec require that are known to be MISSING here. A package-level
+        capability (the Skill itself, e.g. "video-editing", resolved by its doctor) counts as missing when it is MISSING or
+        not resolved at all, exactly as package_availability reports it. A ToolSpec capability (encoders, filters) only
+        disqualifies on an explicit MISSING: an undetected one is reported by the validator as a warning, never guessed."""
+        pkg = self.package(tool_id.split("/", 1)[0])
+        if pkg is None:
+            return []
+        ts = pkg.tool(tool_id)
+        missing = {c for c in pkg.capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED", "UNKNOWN")}
+        missing |= {c for c in (ts.required_capabilities if ts else []) if getattr(caps.get(c), "status", None) == "MISSING"}
+        return sorted(missing)
+
     def select_tool(self, name: str, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Tuple[Optional[str], str]:
-        """Skill → Capability check → first tool candidate that a registered adapter supports.
-        Returns (tool id, reason). Declared-but-unimplemented skills are never selected."""
+        """Skill → Capability check → first tool candidate that a registered adapter supports and whose package / tool
+        capabilities are not known to be missing. Returns (tool id, reason). Declared-but-unimplemented skills are never
+        selected."""
         spec = self.get(name)
         if not spec.implemented:
             return None, f"skill {name} is declared for phase {spec.phase} and not implemented"
         missing = self.missing_capabilities(name, caps)
         if missing:
             return None, "required capability missing: " + ", ".join(missing)
+        blocked: List[str] = []
         for tool in spec.tools:
-            if supports(tool):
-                return tool, "ok"
+            if not supports(tool):
+                continue
+            tm = self.tool_missing_capabilities(tool, caps)
+            if tm:
+                blocked.append(f"{tool} (missing {', '.join(tm)})")
+                continue
+            return tool, "ok"
+        if blocked:
+            return None, "candidate tools blocked by missing capabilities: " + "; ".join(blocked)
         return None, "no registered adapter supports any of: " + ", ".join(spec.tools)
 
     def resolve_tools(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Dict[str, str]:
@@ -142,8 +164,11 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg"], "LOW", True, "AUTO", ["ffmpeg-skill/silence", "media-analysis/silence"]))
     r.register(SkillSpec("loudness_analysis", "1.0", "Measure integrated loudness / true peak", {"asset": "media"}, {"observation": "loudness"},
                          ["ffmpeg", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness", "media-analysis/loudness"]))
+    # silence_cleanup: the Reference Skill first; video-editing-skill (ADR-028) realises the same keep-ranges operation through its
+    # own typed contract on top of ffmpeg-skill, so it is the second candidate (selected when ffmpeg-skill's adapter is absent
+    # or when a caller reorders the candidates; never by planner / compiler code)
     r.register(SkillSpec("silence_cleanup", "1.0", "Trim technical leading/trailing silence", {"asset": "video|audio", "keep": "ranges"}, {"artifact": "INTERMEDIATE"},
-                         ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/cut"]))
+                         ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/cut", "video-editing/cut"]))
     r.register(SkillSpec("loudness_normalization", "1.0", "Two-pass EBU R128 normalisation", {"asset": "video|audio", "target_lufs": "float"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness"]))
     r.register(SkillSpec("delivery_export", "1.0", "Encode a delivery target with a platform preset", {"asset": "video", "preset": "str"}, {"artifact": "delivery"},
@@ -172,5 +197,5 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("caption_generation", "0.1", "Transcribe and burn captions", {"asset": "video"}, {"artifact": "CAPTIONS"},
                          ["ffmpeg", "ffmpeg-skill", "filter:libass", "asr:whisper"], "MEDIUM", False, "CONFIRM", ["ffmpeg-skill/caption"], phase=3))
     r.register(SkillSpec("semantic_deletion", "0.1", "Remove content based on meaning", {"asset": "video", "ranges": "ranges"}, {"artifact": "INTERMEDIATE"},
-                         ["ffmpeg", "ffmpeg-skill"], "HIGH", False, "CONFIRM", ["ffmpeg-skill/cut"], phase=4))
+                         ["ffmpeg", "ffmpeg-skill"], "HIGH", False, "CONFIRM", ["ffmpeg-skill/cut", "video-editing/cut"], phase=4))
     return r

@@ -69,4 +69,4 @@ python3 evals/run.py                            # 期待 intent / decision / pro
 
 ## レイアウト
 
-`src/video_agent/{models,temporal,capabilities,tools/ffmpeg_skill,media,policy,profiles,skills,agent,project,execution,qa,jobs,audit,providers}`、`schemas/project.schema.json`、`profiles/*.json`、`tests/`、`evals/`。
+`src/video_agent/{models,temporal,capabilities,tools/ffmpeg_skill,tools/media_analysis,tools/transcription,tools/video_editing,media,policy,profiles,skills,agent,project,execution,qa,jobs,audit,providers}`、`schemas/project.schema.json`、`profiles/*.json`、`tests/`、`evals/`。
