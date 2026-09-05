@@ -233,7 +233,10 @@ class Lowering:
             in_paths.append(img_path)
         if not isinstance(args.get("output"), str) or not args["output"]:
             raise ToolError(f"video-editing: {t} needs an `output`")
-        out_path = str(Path(paths.get(args["output"], args["output"])).resolve())
+        # the agent's own path string (absolute, not canonicalised): ToolResult.output must equal what the executor / QA /
+        # artifact registry key on, exactly as the ffmpeg-skill adapter reports it; the Skill compares canonical forms
+        # (Windows 8.3 short names, symlinked temp directories resolve to a different spelling of the same file)
+        out_path = os.path.abspath(paths.get(args["output"], args["output"]))
         operation: Dict[str, Any] = {"id": "edit", "type": t, "params": params}
         if t == "CONCAT":
             operation["inputs"] = [s["id"] for s in sources]

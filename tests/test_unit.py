@@ -3882,7 +3882,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         argv = json.loads(Path(self.tmp, "calls.log").read_text(encoding="utf-8").strip().splitlines()[-1])
         self.assertEqual(argv[:3], ["run", "-", "--json"])
         self.assertEqual(argv[argv.index("--workspace") + 1], str(Path(self.tmp).resolve()))
-        self.assertIn(str(Path(self.src).parent), argv)
+        self.assertIn(str(Path(self.src).parent.resolve()), argv)
         self.assertEqual(argv[argv.index("--ffmpeg-skill-dir") + 1], str(Path(self.tmp).resolve()))
         self.assertNotIn("--", " ".join(a for a in argv if a.startswith("-") and a not in ("--json", "--workspace", "--allowed-input", "--ffmpeg-skill-dir", "-")), "no other flags reach the Skill")
 
@@ -3896,7 +3896,8 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual((r.data["status"], r.data["skill"]["id"], r.data["engine"]["ffmpeg-skill"]), ("completed", "video-editing", "0.9.0"))
         self.assertEqual(len(r.data["sha256"]), 64)
         self.assertEqual(r.data["timeline"]["duration"]["rational"], "5/2")
-        self.assertEqual(r.commands, ["/usr/bin/ffmpeg -hide_banner -i fake -c:v libx264 " + paths["asset_1_trim"]], "what the Skill ran, recorded; never rebuilt or replayed here")
+        self.assertEqual(r.commands, r.data["operations"][0]["commands"], "what the Skill ran, recorded verbatim; never rebuilt or replayed here")
+        self.assertTrue(r.commands[0].startswith("/usr/bin/ffmpeg -hide_banner -i fake -c:v libx264 ") and r.commands[0].endswith("01_talk_trim.mp4"), r.commands)
         self.assertEqual(r.data["operations"][0]["tool"], "ffmpeg-skill/cut")
         # dry run plans, writes nothing
         Path(paths["asset_1_trim"]).unlink()

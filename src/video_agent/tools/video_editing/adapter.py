@@ -341,7 +341,7 @@ class VideoEditingAdapter(ToolAdapter):
         o = ex["outputs"][0]
         if o.get("delivered") is not True:
             errs.append("output not delivered")
-        if os.path.normcase(str(Path(str(o.get("path") or "")).resolve())) != os.path.normcase(out_path):
+        if os.path.normcase(str(Path(str(o.get("path") or "")).resolve())) != os.path.normcase(str(Path(out_path).resolve())):
             errs.append(f"delivered path {o.get('path')!r} is not the requested output")
         if not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
             errs.append("output file missing or empty on disk")
