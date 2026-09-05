@@ -119,4 +119,11 @@
 - Observation の lifting は provenance を簡略化しない（skill / skill_version / tool / external id / fingerprint / parameters / cache）。Skill が所有する cache を agent は二重化せず、状態を記録するだけ。
 - 選択は SkillRegistry のまま（ffmpeg-skill を第一候補に維持、media-analysis を第二候補、media-analysis 固有の計測は専用 production skill）。Event は同じ変換で生成し、Event から command は作らない。
 - 計測語彙は消費側で正規化する（`loudness_facts` / `probe_facts`）。Observation の data は tool が返した通りに保持し、inference / QA だけが共通 view を読む。QA も同じ adapter boundary（`measurement_args`）で計測する。
-- contract が無い Skill（transcription-skill）は接続しない。stub・推測 contract・fake event は作らない。
+- contract が無い Skill は接続しない。stub・推測 contract・fake event は作らない（transcription-skill は 0.2.0 で contract が公開されたため ADR-024 で接続）。
+
+## ADR-024 transcription-skill は「認識まで」を process boundary で接続し、Transcript を Observation、segment を SpeechEvent にする
+- 事実: transcription-skill 0.2.0（main）が `skill --json`（id / version / capabilities / tools / engines=EngineSpec / schemas）、`doctor --json`、`run -`（`{"tool","params"}` → `{"ok","tool","result"}`）を公開している。指示書が想定した `contract --json` / `run - --json` は存在せず、実物の transport に合わせた。schema は transcript/0.1・engine-spec/0.1・speech-event/0.1。実装済み engine は faster_whisper（local）のみ。cache hit は保存文書を無変更で返す（asset_id は初回呼び出し側の値）。
+- 決定: media-analysis と同じ方式（locate → contract 取得 → 互換検査 → typed request → 1 process → response 検証 → lifting）。Python import・engine 直接実行・model download・ffmpeg 実行は agent 側で一切しない。workspace と allowed_input_roots は adapter が固定し request からは変更不可。engine 選択・model 状態は Skill の contract / selector を尊重し、agent 側に ranking を作らない。`offline` は締める方向にしか作用しない。
+- Transcript は認識事実として Observation(kind=transcript, provenance=OBSERVED) に無加工で保存し、provenance（skill / skill_version / tool / transcript id / fingerprint / engine / engine_version / execution_mode / model / model_version / parameters / cache）を保持する。asset identity は fingerprint（Skill の sha256 = agent の asset hash）で照合し、別 asset を作らない。
+- SpeechEvent は segment ごとに 1 つ、`speaker_id` は常に null。SpeechEvent ≠ speaker identification。inference / decision / planner / compiler / executor は SpeechEvent を読まない（静的テスト）。Event → command は存在しない。
+- transcription 結果は AI inference ではない。AI / LLM / diarization / 字幕 / 編集判断はこの PR に含まれず、SpeechEvent → Inference → Decision は次の段階。

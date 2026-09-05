@@ -1,0 +1,16 @@
+{
+ "name": "ts_model_unavailable",
+ "transcription": {
+  "mode": "model_unavailable",
+  "params": {
+   "offline": true
+  }
+ },
+ "expect": {
+  "transcript_failed": {
+   "kind": "ANALYZER_UNAVAILABLE",
+   "skill_error": "MODEL_UNAVAILABLE",
+   "availability": "MODEL_MISSING"
+  }
+ }
+}

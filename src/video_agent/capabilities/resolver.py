@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
+from ..tools.transcription import TranscriptionAdapter, locate_transcription
 
 ENCODERS = ["libx264", "libx265", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv"]
 DECODERS = ["h264", "hevc", "av1", "prores", "vp9"]
@@ -41,8 +42,11 @@ def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
 
 
 class CapabilityResolver:
-    def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None, media_analysis_dir: Optional[str] = None):
+    def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None, media_analysis_dir: Optional[str] = None,
+                 transcription_dir: Optional[str] = None, offline: bool = False):
         self.media_analysis_dir = media_analysis_dir
+        self.transcription_dir = transcription_dir
+        self.offline = bool(offline)
         self.env = dict(os.environ if env is None else env)
         self.skill_dir = ffmpeg_skill_dir
         self._cache: Optional[Dict[str, Capability]] = None
@@ -104,6 +108,27 @@ class CapabilityResolver:
                 caps["media-analysis"] = Capability("media-analysis", "MISSING", f"found at {ma.describe()} but unusable: {str(e)[:160]}")
         else:
             caps["media-analysis"] = Capability("media-analysis", "MISSING", "set VIDEO_AGENT_MEDIA_ANALYSIS_DIR to a media-analysis-skill checkout or install `media-analysis`")
+        # transcription-skill (external recognition Skill): located checkout / console script + its own doctor and engine contract
+        ts = locate_transcription(self.transcription_dir, self.env)
+        if ts:
+            try:
+                ad = TranscriptionAdapter(ts, timeout=120.0, offline=self.offline)
+                doc = ad.doctor()
+                rows = {c.get("check"): c for c in doc.get("checks") or []}
+                engines = ad.engine_status()
+                usable = [e for e in engines if e.get("available")]
+                st = "AVAILABLE" if doc.get("ok") else ("DEGRADED" if usable else "MISSING")
+                caps["transcription"] = Capability("transcription", st, f"{ad.version} at {ts.describe()} (doctor {'ok' if doc.get('ok') else doc.get('summary', 'not ready')})",
+                                                   {"version": ad.version, "root": ts.describe(), "schemas": dict(ad.contract.get("schemas") or {}), "tools": sorted(ad.tools),
+                                                    "capabilities": list(ad.contract.get("capabilities") or []), "offline": self.offline,
+                                                    "engines": [{"id": e.get("id"), "version": e.get("version"), "execution_mode": e.get("execution_mode"), "requires_network": e.get("requires_network"),
+                                                                 "available": e.get("available"), "capabilities": e.get("capabilities"), "default_model": e.get("default_model"),
+                                                                 "models": [{"model": m.get("model"), "availability": m.get("availability")} for m in e.get("models") or []]} for e in engines],
+                                                    "doctor": {k: v.get("status") for k, v in rows.items()}, "doctor_ok": bool(doc.get("ok"))})
+            except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used
+                caps["transcription"] = Capability("transcription", "MISSING", f"found at {ts.describe()} but unusable: {str(e)[:160]}")
+        else:
+            caps["transcription"] = Capability("transcription", "MISSING", "set VIDEO_AGENT_TRANSCRIPTION_DIR to a transcription-skill checkout or install `transcription`")
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

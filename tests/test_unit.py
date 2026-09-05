@@ -1005,11 +1005,11 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["ffmpeg-skill", "media-analysis"], "implemented packages: the Reference Skill and the observation Skill (PR #12)")
+        self.assertEqual(list(pkgs), ["ffmpeg-skill", "media-analysis", "transcription"], "implemented packages: the Reference Skill, the observation Skill (PR #12) and the recognition Skill (PR #13)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
-        self.assertEqual(sorted(rows), ["ffmpeg-skill", "media-analysis"])
+        self.assertEqual(sorted(rows), ["ffmpeg-skill", "media-analysis", "transcription"])
         self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
         self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
         self.assertTrue(rows["media-analysis"]["implemented"] and not rows["media-analysis"]["available"], "adapter exists; no installation in unit tests")
@@ -1050,8 +1050,8 @@ class EcosystemContractTests(unittest.TestCase):
         for name in ("multi_source_sync", "caption_generation", "semantic_deletion"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
         src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
-        future = ("transcription-skill", "subtitle-skill", "video-editing-skill", "audio-production-skill",
-                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill is integrated (PR #12)
+        future = ("subtitle-skill", "video-editing-skill", "audio-production-skill",
+                  "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill (PR #12) and transcription-skill (PR #13) are integrated
         hits = [f"{py.relative_to(src)}: {n}" for py in src.rglob("*.py") for n in future if n in py.read_text(encoding="utf-8")]
         self.assertEqual(hits, [], "future skill packages must not appear in production code")
 
@@ -1086,7 +1086,7 @@ class EcosystemContractTests(unittest.TestCase):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
         # the only "core" change a new package needs: a production skill cites its tool as a candidate
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill", "media-analysis"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["fake-skill", "ffmpeg-skill", "media-analysis", "transcription"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube")
         self.assertTrue(svc.validate(ir).ok)
@@ -1109,7 +1109,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill", "media-analysis"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["ffmpeg-skill", "media-analysis", "transcription"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):
@@ -1362,7 +1362,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         from video_agent.media import AnalysisRequest, AnalysisError, ANALYSIS_KINDS
         from video_agent.media.analysis import CORE_KINDS
         self.assertEqual(CORE_KINDS, ("media_probe", "silence", "loudness"), "FULL runs the core kinds")
-        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "stream_layout", "timing", "video_format"],
+        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "stream_layout", "timing", "transcript", "video_format"],
                          "every kind maps to a production skill with a real tool (media-analysis-skill contract@1)")
         r = AnalysisRequest(inputs=[self.src], kinds=["silence"], strategy="FULL_ANALYSIS")
         self.assertEqual((r.strategy, r.kinds, r.cache_policy), ("FULL", ["media_probe", "silence"], "use"))
@@ -1380,7 +1380,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         self.assertIsInstance(an, Analyzer)
         self.assertEqual((an.id, an.version, an.identity), ("media", "1.0", "media@1.0"))
         self.assertEqual(an.supported_kinds[:3], ("media_probe", "silence", "loudness"))
-        self.assertEqual(len(an.supported_kinds), 10)
+        self.assertEqual(len(an.supported_kinds), 11)
         with self.assertRaises(NotImplementedError):
             Analyzer().analyze(None)
         self.assertFalse(any(hasattr(Analyzer, m) for m in ("decide", "approve", "compile", "render", "complete")))
@@ -1669,7 +1669,7 @@ class TemporalEventSessionTests(unittest.TestCase):
         from video_agent.models import Event, TimeRange
         from video_agent.temporal import EVENT_CODES, EVENT_TYPES, IMPLEMENTED_CODES, classify, validate_event
         self.assertEqual(sorted(EVENT_TYPES), ["AudioEvent", "CameraEvent", "CaptionEvent", "IncidentEvent", "SceneEvent", "SlideEvent", "SpeakerEvent", "SpeechEvent", "UserDecisionEvent"])
-        self.assertEqual(IMPLEMENTED_CODES, ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "USER_DECISION"), "only codes with a real generator")
+        self.assertEqual(IMPLEMENTED_CODES, ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH", "USER_DECISION"), "only codes with a real generator")
         for code, (et, st) in EVENT_CODES.items():
             self.assertIn(st, EVENT_TYPES[et])
         assets = {"a": 16.0, "nodur": None}
@@ -2506,3 +2506,367 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertFalse(any(o.tool.startswith("media-analysis/") for o in ops))
         self.assertTrue(all(i["provenance"] in ("INFERRED", "AI_GENERATED") for i in ir.doc["analysis"]["inferences"]))
         self.assertTrue(all(o["provenance"] == "OBSERVED" for o in ir.doc["analysis"]["observations"]))
+
+
+class TranscriptionAdapterTests(unittest.TestCase):
+    """External recognition Skill boundary (transcription-skill, ADR-024): transport, contract compatibility, typed requests,
+    input boundary, Transcript lifting with provenance, SpeechEvents, failures — against a fake transcription process that
+    speaks the real `skill --json` / `doctor --json` / `run -` protocol (no ASR engine, no ffmpeg, no import)."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_transcription.py")
+    CLEAR = ("FAKE_TS_MODE", "FAKE_TS_CACHE", "FAKE_TS_CALLS")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+        for k in self.CLEAR:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in self.CLEAR:
+            os.environ.pop(k, None)
+
+    def _skill(self):
+        from video_agent.tools.transcription import TranscriptionSkill
+        return TranscriptionSkill([sys.executable, self.FAKE], None, {})
+
+    def _adapter(self, **kw):
+        from video_agent.tools.transcription import TranscriptionAdapter
+        kw.setdefault("workspace", str(Path(self.tmp) / "ws" / "cache" / "transcription"))
+        return TranscriptionAdapter(self._skill(), **kw)
+
+    def _checkout(self) -> str:
+        """A checkout-shaped directory whose `transcription_skill.cli` module runs the fake, so locate / resolver / Service find it."""
+        root = Path(self.tmp) / "fake-transcription-skill"
+        pkg = root / "src" / "transcription_skill"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "cli.py").write_text(f"import runpy\nrunpy.run_path({self.FAKE!r}, run_name='__main__')\n", encoding="utf-8")
+        return str(root)
+
+    def _service(self, adapters=None, extra=("transcription",), **kw):
+        from video_agent.tools import ToolRouter
+        return make_service(self.tmp, caps=FakeCaps(extra=list(extra)), adapter=ToolRouter(adapters if adapters is not None else [FakeAdapter(), self._adapter(**kw)]))
+
+    # 1. contract discovery, compatibility, package, tool ownership, engine contract
+    def test_contract_discovery_package_and_refusals(self):
+        from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
+        ad = self._adapter()
+        self.assertEqual(check_contract(ad.contract), [])
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.2.0", "transcription-skill"))
+        self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
+        pkg = ad.package()
+        self.assertEqual(pkg.validate(), [])
+        self.assertEqual(pkg.tool_ids(), PACKAGE.tool_ids(), "pinned snapshot and live contract agree on the tools")
+        self.assertEqual((pkg.skill_id, pkg.capabilities), ("transcription", ["ffmpeg", "ffprobe"]))
+        self.assertTrue(all(not t.produces_output and t.kind == "measure" for t in pkg.tools))
+        self.assertTrue(ad.supports("transcription/transcribe"))
+        for other in ("transcription/segments", "transcription/export", "transcription/check", "media-analysis/probe", "ffmpeg-skill/cut"):
+            self.assertFalse(ad.supports(other), f"{other}: recognition only")
+        eng = {e["id"]: e for e in ad.engine_status()}
+        self.assertEqual((eng["faster_whisper"]["execution_mode"], eng["faster_whisper"]["requires_network"]), ("local", False))
+        self.assertEqual({m["model"]: m["availability"] for m in eng["faster_whisper"]["models"]}, {"tiny": "MODEL_DOWNLOAD_REQUIRED", "base": "MODEL_AVAILABLE", "small": "MODEL_DOWNLOAD_REQUIRED"},
+                         "model availability is the Skill's vocabulary, untouched")
+        self.assertEqual(pinned_contract()["id"], "transcription-skill")
+        self.assertFalse(any(e.get("available") for e in pinned_contract()["engines"]), "the snapshot never claims an engine is available")
+        for mode in ("wrong_version", "wrong_schema", "wrong_skill"):
+            os.environ["FAKE_TS_MODE"] = mode
+            with self.assertRaises(ContractError, msg=mode):
+                TranscriptionAdapter(self._skill(), workspace=self.tmp)
+        os.environ.pop("FAKE_TS_MODE")
+        c = pinned_contract()
+        for mutate, needle in ((lambda x: x["engine_contract"].update(execution_modes=["remote"]), "local"), (lambda x: x["tools"][0].update(name="other/transcribe"), "belong"),
+                               (lambda x: x["tools"][0].update(side_effects=["writes output file"]), "side effect"), (lambda x: x.update(capabilities=["speech_recognition"]), "capability"),
+                               (lambda x: x["tools"][0]["input"].pop("allowed_input_roots"), "allowed_input_roots"), (lambda x: x["engines"][0].update(requires_network="yes"), "malformed"),
+                               (lambda x: x.update(engines=[]), "no engines"), (lambda x: x["schemas"].update(engine_spec="transcription-skill/engine-spec/0.2"), "engine_spec")):
+            d = json.loads(json.dumps(c)); mutate(d)
+            self.assertTrue(any(needle in e for e in check_contract(d)), (needle, check_contract(d)))
+
+    # 2. typed request → {"tool", "params"}; nothing else crosses; adapter pins workspace and roots; offline only tightens
+    def test_request_construction_and_refusals(self):
+        from video_agent.tools import ToolError
+        roots = [str(Path(self.tmp) / "src")]
+        ad = self._adapter(allowed_inputs=roots)
+        req = ad.build_request("transcription/transcribe", {"input": self.src, "asset_id": "asset_1", "language": "JA", "model": "base", "word_timestamps": True, "beam_size": 3,
+                                                            "timeout": 30, "cache_policy": "bypass", "analysis_id": "ana_x", "kind": "transcript"})
+        self.assertEqual(req["tool"], "transcription/transcribe")
+        p = req["params"]
+        self.assertEqual(sorted(p), ["allowed_input_roots", "asset_id", "beam_size", "budget", "cache", "input", "language", "model", "word_timestamps", "workspace"])
+        self.assertEqual((p["language"], p["cache"], p["budget"], p["allowed_input_roots"][0], p["word_timestamps"]), ("ja", False, {"timeout": 30.0}, os.path.realpath(roots[0]), True))
+        self.assertEqual(p["workspace"], ad.workspace)
+        self.assertTrue(os.path.isabs(p["input"]))
+        for bad in ({"command": "rm -rf /"}, {"argv": ["x"]}, {"executable": "/bin/sh"}, {"api_key": "sk"}, {"shell": "x"}, {"env": {"X": "1"}}, {"token": "t"}):
+            with self.assertRaises(ToolError, msg=str(bad)):
+                ad.build_request("transcription/transcribe", {"input": self.src, "asset_id": "a", **bad})
+        for pinned in ({"workspace": "/elsewhere"}, {"allowed_input_roots": ["/"]}):
+            with self.assertRaises(ToolError, msg=str(pinned)):
+                ad.build_request("transcription/transcribe", {"input": self.src, "asset_id": "a", **pinned})
+        for bad in ({"engine": "cloud_asr"}, {"engine": "../x"}, {"model": "../../etc/passwd"}, {"model": "/abs/model"}, {"language": "japanese"}, {"beam_size": 0}, {"temperature": 2},
+                    {"word_timestamps": "yes"}, {"asset_id": "bad id!"}, {"timeout": -1}, {"cache_policy": "sometimes"}):
+            with self.assertRaises(ToolError, msg=str(bad)):
+                ad.build_request("transcription/transcribe", {"input": self.src, "asset_id": "a", **bad})
+        with self.assertRaises(ToolError):
+            ad.build_request("transcription/segments", {"input": self.src, "asset_id": "a"})
+        off = self._adapter(offline=True)
+        self.assertTrue(off.build_request("transcription/transcribe", {"input": self.src, "asset_id": "a", "offline": False})["params"]["offline"], "a request cannot loosen the adapter's offline constraint")
+        shaped = ad.measurement_args("transcription/transcribe", "transcript", self.src, "asset_1", {"language": "ja", "bogus": 1, "threshold_db": -40, "timeout": 12}, "ana_1", "use")
+        self.assertEqual((shaped["parameters"], shaped["budget"]), ({"language": "ja"}, {"timeout": 12}), "only the Skill's declared typed keys are forwarded")
+        self.assertIn("run -", ad.preview(Operation(tool="transcription/transcribe", args={"input": self.src, "asset_id": "a"}, inputs=[], outputs=[]), {})[0])
+
+    # 3. valid transcript → ToolResult → Observation (provenance intact) → SpeechEvents; shared asset identity; Skill-owned cache
+    def test_transcript_lifting_provenance_and_speech_events(self):
+        from video_agent.media import AnalysisRequest, MediaAnalyzer
+        from video_agent.media.analyzer import sha256_file
+        ad = self._adapter()
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1", "language": "ja"})
+        self.assertTrue(r.ok and r.exit_code == 0, r.data)
+        self.assertEqual(r.data["cache"], {"status": "miss", "key": "c" * 64, "owner": "transcription"})
+        self.assertEqual(r.data["engine"]["id"], "faster_whisper")
+        self.assertEqual(r.commands, ["faster_whisper@1.2.1-fake: recognition (local)"], "the Skill reports what ran; the agent built no command")
+        svc = self._service()
+        an = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=self.tmp)
+        res = an.run(AnalysisRequest(inputs=[self.src], kinds=["silence", "loudness", "transcript"], params={"language": "ja", "word_timestamps": True}))
+        obs = {o.kind: o for o in res.observations}
+        self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
+        t = obs["transcript"]
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.2.0", "transcription/transcribe", "transcription/transcribe@0.2.0"))
+        self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
+        self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
+        self.assertEqual(t.fingerprint, res.assets[0].hash)
+        self.assertEqual(t.asset_id, res.assets[0].id, "the transcript is stamped with the agent's asset id, never a second asset")
+        self.assertEqual(t.data["asset_id"], res.assets[0].id)
+        self.assertEqual(t.analyzer, "faster_whisper@1.2.1-fake")
+        self.assertEqual({k: t.parameters[k] for k in ("engine", "engine_version", "execution_mode", "model", "model_version", "language", "word_timestamps")},
+                         {"engine": "faster_whisper", "engine_version": "1.2.1-fake", "execution_mode": "local", "model": "base", "model_version": "fake-model-rev", "language": "ja", "word_timestamps": True})
+        self.assertEqual(t.cache, {"status": "miss", "key": "c" * 64, "owner": "transcription"})
+        self.assertEqual(t.data["schema"], "transcription-skill/transcript/0.1")
+        self.assertEqual(t.data["segments"][0]["text"], "本日の公園を始めます", "recognised text as-is, homophone errors included")
+        self.assertTrue(all(s["speaker_id"] is None for s in t.data["segments"]))
+        self.assertEqual(t.data["provenance"]["skill"], "transcription-skill")
+        rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
+        self.assertEqual((rows["transcript"]["cache_owner"], rows["transcript"]["cache_hit"], rows["transcript"]["engine"]["model"]), ("transcription", False, "base"))
+        self.assertEqual(an.cache.hits + an.cache.misses, 3, "the agent's cache serves the three engine measurements only; recognition is never stored in it")
+        self.assertEqual(rows["transcript"].get("produced_by"), None)
+        self.assertFalse(any("transcript" in str(k) for k in (Path(self.tmp) / "cache").rglob("*")) if (Path(self.tmp) / "cache").exists() else False, "no agent-side transcript cache file")
+        # SpeechEvents: one per segment, OBSERVED, evidence = the transcript observation, speaker_id null, no command-like content
+        sp = res.timeline.query(type="SPEECH")
+        self.assertEqual(len(sp), 2)
+        self.assertEqual([(e.range["start"], e.range["end"]) for e in sp], [(0.5, 3.2), (4.0, 8.4)])
+        for e in sp:
+            self.assertEqual((e.kind, e.provenance, e.event_type, e.subtype, e.evidence, e.source, e.asset_id), ("OBSERVED", "OBSERVED", "SpeechEvent", "speech", [t.id], t.source, res.assets[0].id))
+            self.assertIsNone(e.metadata["speaker_id"])
+            self.assertIn("text", e.metadata)
+            self.assertNotIn("speaker", json.dumps({k: v for k, v in e.metadata.items() if k != "speaker_id"}))
+        self.assertEqual(sp[0].confidence, 0.72)
+        self.assertEqual(sp[0].metadata["words"], 2)
+        self.assertEqual({e.type for e in res.timeline.events}, {"AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH"})
+        # deterministic: the same transcript yields the same event ids
+        from video_agent.temporal.events import events_from_observation
+        again = events_from_observation(t, res.assets[0])
+        self.assertEqual([e.id for e in again], [e.id for e in sp])
+        # cache hit is provenance, not a second cache
+        os.environ["FAKE_TS_CACHE"] = "hit"
+        res2 = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=self.tmp).run(AnalysisRequest(inputs=[self.src], kinds=["transcript"], params={"language": "ja"}))
+        t2 = next(o for o in res2.observations if o.kind == "transcript")
+        self.assertEqual((t2.cache["status"], t2.cache["stored_asset_id"]), ("hit", "asset_first_caller"))
+        self.assertEqual((t2.asset_id, t2.fingerprint), (res2.assets[0].id, res2.assets[0].hash), "a cached document keeps its bytes; identity is the fingerprint, the agent's asset id is this analysis'")
+        os.environ.pop("FAKE_TS_CACHE")
+        os.environ["FAKE_TS_MODE"] = "wrong_asset"
+        res3 = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=self.tmp).run(AnalysisRequest(inputs=[self.src], kinds=["transcript"]))
+        self.assertNotIn("transcript", {o.kind for o in res3.observations}, "a fresh recognition about another asset is refused")
+        self.assertTrue(next(x for x in res2.analyses[0]["rows"] if x["kind"] == "transcript")["cache_hit"])
+
+    # 4. malformed / failed responses are never transcripts; failure kinds stay distinct
+    def test_failures_are_distinct_and_never_partial_transcripts(self):
+        from video_agent.media import AnalysisRequest, MediaAnalyzer
+        from video_agent.tools import ToolError
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill, locate_transcription
+        ad = self._adapter()
+        expect = {"empty": "INVALID_RESULT", "text": "INVALID_RESULT", "two_docs": "INVALID_RESULT", "no_transcript": "INVALID_RESULT", "wrong_engine": "INVALID_RESULT",
+                  "wrong_asset": "INVALID_RESULT", "bad_source": "INVALID_RESULT", "invalid_provenance": "INVALID_RESULT", "speaker_set": "INVALID_RESULT", "bad_segments": "INVALID_RESULT",
+                  "crash": "INVALID_RESULT", "nonzero": "TRANSCRIPTION_FAILED", "timeout_error": "TRANSCRIPTION_TIMEOUT", "model_unavailable": "MODEL_UNAVAILABLE", "engine_unavailable": "ENGINE_UNAVAILABLE"}
+        for mode, code in expect.items():
+            os.environ["FAKE_TS_MODE"] = mode
+            r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1"})
+            self.assertFalse(r.ok, mode)
+            self.assertEqual(r.data["error"]["code"], code, (mode, r.data["error"]))
+            self.assertNotIn("transcript", r.data, f"{mode}: no partial transcript is ever a result")
+        self.assertEqual(r.data["error"]["details"]["reason"], "engine_not_installed")
+        os.environ["FAKE_TS_MODE"] = "model_unavailable"
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "offline": True})
+        self.assertEqual(r.data["error"]["details"]["availability"], "MODEL_MISSING", "the Skill's model vocabulary is preserved, not re-interpreted")
+        os.environ["FAKE_TS_MODE"] = "crash"
+        self.assertEqual(ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a"}).exit_code, 8)
+        os.environ["FAKE_TS_MODE"] = "hang"
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a"}, timeout=1.0)
+        self.assertEqual((r.ok, r.exit_code, r.data["error"]["code"]), (False, 124, "TRANSCRIPTION_TIMEOUT"))
+        os.environ.pop("FAKE_TS_MODE")
+        self.assertIsNone(locate_transcription("/nonexistent", env={"PATH": "/nonexistent"}))
+        with self.assertRaises(ToolError):
+            TranscriptionAdapter(TranscriptionSkill([sys.executable, "-c", "import sys; sys.exit(3)"], None, {}), workspace=self.tmp)
+        # through the analyzer: the failure lands in the analysis failure domain; the transcript row is FAILED, no observation, no event
+        for mode, kind in (("two_docs", "ANALYSIS_INVALID_RESULT"), ("speaker_set", "ANALYSIS_INVALID_RESULT"), ("nonzero", "ANALYZER_UNAVAILABLE"), ("timeout_error", "ANALYZER_TIMEOUT"),
+                           ("model_unavailable", "ANALYZER_UNAVAILABLE"), ("engine_unavailable", "ANALYZER_UNAVAILABLE")):
+            os.environ["FAKE_TS_MODE"] = mode
+            svc = self._service()
+            res = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=None).run(AnalysisRequest(inputs=[self.src], kinds=["transcript"]))
+            row = next(x for x in res.analyses[0]["rows"] if x["kind"] == "transcript")
+            self.assertEqual((row["status"], row["error"]["kind"]), ("FAILED", kind), mode)
+            self.assertNotIn("transcript", {o.kind for o in res.observations})
+            self.assertEqual(res.timeline.query(type="SPEECH"), [])
+            self.assertTrue(any("transcript" in w for w in res.warnings))
+        self.assertEqual(row["error"]["skill_error"], "ENGINE_UNAVAILABLE")
+        # fingerprint mismatch (the Skill transcribed other bytes) is refused as a shared-identity violation
+        os.environ.pop("FAKE_TS_MODE")
+        from video_agent.models import Asset
+        from video_agent.tools.transcription.adapter import check_transcript
+        ok = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1"}).data
+        asset = Asset(path=self.src, hash="0" * 64)
+        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.2.0", "k", "transcription/transcribe")
+        self.assertNotEqual(o.fingerprint, asset.hash)
+        tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.2.0", ad.engines, ad.contract["schemas"])))
+
+    # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
+    def test_cached_only_policy(self):
+        ad = self._adapter()
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "cache_policy": "only"})
+        self.assertEqual((r.ok, r.data["error"]["code"]), (False, "CACHE_MISS"))
+        os.environ["FAKE_TS_CACHE"] = "hit"
+        calls = ad.calls
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "cache_policy": "only"})
+        self.assertTrue(r.ok and r.data["cache"]["status"] == "hit")
+        self.assertEqual(ad.calls - calls, 2, "one dry run + one cached run; no other process")
+
+    # 6. input boundary: allowed roots, traversal, symlink escape — refused by the adapter and by the Skill alike
+    def test_input_boundary_allowed_roots_and_symlink_escape(self):
+        import subprocess
+        roots = [str(Path(self.tmp) / "src")]
+        ad = self._adapter(allowed_inputs=roots)
+        outside = Path(self.tmp) / "outside" / "secret.mp4"
+        outside.parent.mkdir(); outside.write_bytes(b"\x00" * 64)
+        link = Path(self.tmp) / "src" / "link.mp4"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not available")
+        calls = ad.calls
+        cases = ((str(outside), "outside_allowed_roots"), (str(link), "symlink_escape"), (str(Path(self.tmp) / "src" / ".." / "outside" / "secret.mp4"), "traversal"))
+        for path, reason in cases:
+            r = ad.measure("transcription/transcribe", {"input": path, "asset_id": "a"})
+            self.assertEqual((r.ok, r.data["error"]["code"]), (False, "INVALID_INPUT"), path)
+            self.assertIn(reason, r.data["error"]["message"])
+        self.assertEqual(ad.calls, calls, "refused before any process starts")
+        self.assertTrue(ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a"}).ok, "inside the root: accepted")
+        # the Skill enforces the same boundary with the roots the adapter passes (defence in depth): drive the fake directly
+        for path, reason in cases[:2]:
+            req = {"tool": "transcription/transcribe", "params": {"input": path, "asset_id": "a", "allowed_input_roots": roots}}
+            p = subprocess.run([sys.executable, self.FAKE, "run", "-"], input=json.dumps(req), capture_output=True, text=True)
+            doc = json.loads(p.stdout)
+            self.assertEqual((p.returncode, doc["ok"], doc["error"]["code"], doc["error"]["details"]["reason"]), (2, False, "INVALID_INPUT", reason))
+        # no roots declared on the adapter → the Skill's unrestricted mode; the agent's own Service always declares roots
+        self.assertNotIn("allowed_input_roots", self._adapter().build_request("transcription/transcribe", {"input": self.src, "asset_id": "a"})["params"])
+        svc = Service(workspace=self.tmp, transcription_dir=self._checkout(), caps=FakeCaps(extra=["transcription"]))
+        ts = next(a for a in svc.adapter([str(Path(self.tmp) / "src")]).adapters if a.name == "transcription")
+        self.assertEqual(ts.allowed_inputs, [os.path.realpath(str(Path(self.tmp) / "src")), os.path.realpath(svc.workspace)], "Service roots: inputs' directories + the workspace, like the engine's PathPolicy")
+        self.assertEqual(ts.workspace, os.path.realpath(str(Path(svc.workspace) / "cache" / "transcription")))
+
+    # 7. registry / capability resolver / Service / doctor: transcription is a capability, the tool a candidate only when it is present
+    def test_registry_capability_service_and_doctor(self):
+        from video_agent.capabilities.resolver import CapabilityResolver
+        svc = self._service()
+        tools = svc.tools_for()
+        self.assertEqual(tools["speech_transcription"], "transcription/transcribe")
+        self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.2.0", ["speech_transcription"]))
+        sk = {r["skill"]: r for r in svc.skills()}
+        self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
+        self.assertEqual(sk["caption_generation"]["status"], "NOT_IMPLEMENTED", "captions / burn-in stay unimplemented")
+        no_cap = self._service(extra=())
+        self.assertNotIn("speech_transcription", no_cap.tools_for(), "without the capability the tool is never a candidate")
+        self.assertIn("required capability missing: transcription", svc.registry.select_tool("speech_transcription", FakeCaps().resolve(), lambda t: True)[1])
+        with self.assertRaises(RuntimeError):
+            no_cap.analyze([self.src], "generic", kinds=["transcript"])
+        # resolver: the Skill's own doctor decides; evidence carries engines / models / schemas; nothing secret
+        root = self._checkout()
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
+        self.assertEqual(cap.status, "AVAILABLE", cap.detail)
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.2.0", "faster_whisper", "local", True))
+        self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
+        self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
+        os.environ["FAKE_TS_MODE"] = "model_unavailable"
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}, transcription_dir=root, offline=True).resolve(refresh=True)["transcription"]
+        self.assertEqual(cap.status, "DEGRADED", "engine present, model missing: the Skill is installed but not ready")
+        os.environ["FAKE_TS_MODE"] = "engine_unavailable"
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}, transcription_dir=root).resolve(refresh=True)["transcription"]
+        self.assertEqual(cap.status, "MISSING")
+        os.environ["FAKE_TS_MODE"] = "wrong_version"
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}, transcription_dir=root).resolve(refresh=True)["transcription"]
+        self.assertEqual(cap.status, "MISSING"); self.assertIn("unusable", cap.detail)
+        os.environ.pop("FAKE_TS_MODE")
+        self.assertEqual(CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}, transcription_dir="/nonexistent").resolve()["transcription"].status, "MISSING")
+        # Service(offline=True) reaches the adapter; the Skill refuses a model that is not local
+        off = Service(workspace=self.tmp, transcription_dir=root, caps=FakeCaps(extra=["transcription"]), offline=True)
+        ts = next(a for a in off.adapter([str(Path(self.tmp) / "src")]).adapters if a.name == "transcription")
+        self.assertTrue(ts.offline)
+        r = ts.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "small"})
+        self.assertEqual((r.data["error"]["code"], r.data["error"]["details"]["availability"], r.data["error"]["details"]["offline"]), ("MODEL_UNAVAILABLE", "MODEL_MISSING", True))
+
+    # 8. Observation → SpeechEvent only: no inference, decision, plan step or command derives from a transcript; explain stops at facts
+    def test_speech_events_never_become_commands_and_explain_chain(self):
+        from video_agent.tools import ToolRouter
+        svc = self._service()
+        ir = svc.plan([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        d = ir.doc
+        t = next(o for o in d["analysis"]["observations"] if o["kind"] == "transcript")
+        sp = [e for e in d["timeline"]["events"] if e["type"] == "SPEECH"]
+        self.assertEqual(len(sp), 2)
+        self.assertTrue(all(e["evidence"] == [t["id"]] and e["provenance"] == "OBSERVED" for e in sp))
+        self.assertEqual(svc.validate(ir).errors, [])
+        blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "delivery": d["delivery"], "decisions": d["decisions"], "inferences": d["analysis"]["inferences"]})
+        for forbidden in ("SPEECH", "transcription", "speaker", t["id"], "faster_whisper"):
+            self.assertNotIn(forbidden, blob, f"{forbidden!r} reached the decision / plan layer")
+        self.assertEqual([s["skill"] for s in d["plan"]["steps"]], ["silence_cleanup", "loudness_normalization", "delivery_export", "delivery_check"])
+        self.assertTrue(all(s["tool"].startswith("ffmpeg-skill/") for s in d["plan"]["steps"]))
+        self.assertFalse([dec for dec in d["decisions"] if any(ev in {e["id"] for e in sp} for ev in dec["evidence"])], "no decision cites a SpeechEvent")
+        info = Service.explain_observation(d, t["id"])
+        kinds = [row["kind"] for row in info["chain"]]
+        self.assertEqual(kinds, ["observation", "skill", "tool", "engine", "model", "transcript", "asset", "analysis", "event", "event"])
+        self.assertTrue(next(row for row in info["chain"] if row["kind"] == "asset")["shared_identity"])
+        self.assertEqual(next(row for row in info["chain"] if row["kind"] == "engine")["id"], "faster_whisper@1.2.1-fake")
+        self.assertEqual(Service.explain_observation(d, t["external_id"])["observation"]["id"], t["id"], "the Skill's transcript id resolves too")
+        self.assertIn("no inference, decision", info["boundary"])
+        # media-analysis and transcription observations of one asset share its identity
+        from video_agent.tools.media_analysis import MediaAnalysisAdapter, MediaAnalysisSkill
+        ma = MediaAnalysisAdapter(MediaAnalysisSkill([sys.executable, str(Path(__file__).resolve().parent / "fake_media_analysis.py")], None, {}), workspace=self.tmp)
+        svc2 = make_service(self.tmp, caps=FakeCaps(extra=["media-analysis", "transcription"]), adapter=ToolRouter([FakeAdapter(), ma, self._adapter()]))
+        _, _, an = svc2.analyze([self.src], "generic", kinds=["duration", "transcript"])
+        obs = {o.kind: o for o in an.observations}
+        self.assertEqual((obs["duration"].asset_id, obs["transcript"].asset_id), (an.assets[0].id, an.assets[0].id))
+        self.assertEqual(len(an.assets), 1, "one asset, two Skills: no second asset for the transcript")
+        self.assertEqual(obs["transcript"].fingerprint, an.assets[0].hash)
+
+    # 9. static boundaries: no import of the Skill or an engine, no engine execution, no shell, no event → command path
+    def test_boundaries_static(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        for rel in ("tools/transcription/adapter.py", "tools/transcription/locate.py"):
+            text = (root / rel).read_text(encoding="utf-8")
+            for l in text.splitlines():
+                code = l.split("#", 1)[0]
+                if code.lstrip().startswith(("import ", "from ")):
+                    for bad in ("transcription_skill", "faster_whisper", "whisper", "ctranslate2", "providers", "execution", "urllib", "http", "socket", "requests"):
+                        self.assertNotIn(bad, code, f"{rel}: {l}")
+            for bad in ("shell=True", "os.system", "subprocess.Popen", "eval(", "exec(", "__import__", "huggingface", "snapshot_download"):
+                self.assertNotIn(bad, text.replace("run_process_group", ""), f"{rel} contains {bad}")
+        for rel in ("temporal/events.py", "media/analyzer.py", "media/analysis.py", "agent/decision.py", "agent/inference.py", "agent/planner.py", "agent/production_plan.py", "execution/compiler.py"):
+            text = (root / rel).read_text(encoding="utf-8")
+            self.assertNotIn("transcription_skill", text); self.assertNotIn("faster_whisper", text)
+        for rel in ("agent/decision.py", "agent/inference.py", "agent/planner.py", "agent/production_plan.py", "execution/compiler.py", "execution/executor.py"):
+            text = (root / rel).read_text(encoding="utf-8")
+            self.assertNotIn("SPEECH", text, f"{rel}: SpeechEvents must not feed decisions, plans or commands")
+            self.assertNotIn("speaker", text.lower(), f"{rel}: no speaker identity anywhere")
+        from video_agent.temporal.events import EVENT_CODES, IMPLEMENTED_CODES
+        self.assertIn("SPEECH", IMPLEMENTED_CODES); self.assertNotIn("SPEAKER", IMPLEMENTED_CODES)
+        self.assertEqual(EVENT_CODES["SPEECH"], ("SpeechEvent", "speech"))

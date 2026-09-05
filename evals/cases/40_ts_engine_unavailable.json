@@ -1,0 +1,12 @@
+{
+ "name": "ts_engine_unavailable",
+ "transcription": {
+  "mode": "engine_unavailable"
+ },
+ "expect": {
+  "transcript_failed": {
+   "kind": "ANALYZER_UNAVAILABLE",
+   "skill_error": "ENGINE_UNAVAILABLE"
+  }
+ }
+}

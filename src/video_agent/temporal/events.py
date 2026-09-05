@@ -5,8 +5,9 @@ Event ≠ Observation ≠ Inference ≠ Decision. Events exist on the time axis;
 (INFERRED / AI_GENERATED). An AI provider can never produce an OBSERVED event.
 
 Defining an event type here does not mean it is detected: only the codes in IMPLEMENTED_CODES are ever generated, from
-the observation kinds PR #8 implements (silence, loudness). Speech / speaker / slide / camera / scene / caption types are
-schema only until an analyzer or skill exists for them.
+the observation kinds that are implemented (silence, loudness, transcript). Speaker / slide / camera / scene / caption types
+are schema only until an analyzer or skill exists for them. A SpeechEvent says "speech with this transcript exists in this
+interval"; it never says who speaks (speaker_id stays null) and never becomes a command.
 """
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ EVENT_CODES: Dict[str, Tuple[str, str]] = {
     "INCIDENT_AUDIO_DROPOUT": ("IncidentEvent", "audio_dropout"), "INCIDENT_CORRUPTED_FRAME": ("IncidentEvent", "corrupted_frame"),
     "USER_DECISION": ("UserDecisionEvent", "approved"),   # subtype refined from metadata.action
 }
-IMPLEMENTED_CODES = ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "USER_DECISION")   # the only codes this codebase generates
+IMPLEMENTED_CODES = ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH", "USER_DECISION")   # the only codes this codebase generates
 KIND_FOR_PROVENANCE = {"OBSERVED": "OBSERVED", "DERIVED": "OBSERVED", "INFERRED": "INFERRED", "AI_GENERATED": "INFERRED", "USER": "USER"}
 
 
@@ -105,6 +106,17 @@ def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
     elif obs.kind == "loudness":
         if dur is not None:   # the integrated measurement covers the whole programme; without a duration there is no range to place it on
             out.append(mk("LOUDNESS_MEASURE", TimeRange(0.0, dur), dict(obs.data)))
+    elif obs.kind == "transcript":
+        # one SpeechEvent per recognised segment: interval + text as recognised. No merge, no speaker, no importance, no edit point.
+        tr = obs.data
+        for seg in tr.get("segments") or []:
+            if seg.get("speaker_id") is not None:
+                raise ValueError(f"transcript segment {seg.get('id')} carries a speaker id; recognition never identifies speakers")
+            e = mk("SPEECH", TimeRange(float(seg["start"]), float(seg["end"])),
+                   {"text": seg.get("text", ""), "language": tr.get("language"), "language_source": tr.get("language_source"), "segment_id": seg.get("id"),
+                    "transcript_id": tr.get("id"), "engine": tr.get("engine"), "speaker_id": None, "words": len(seg["words"]) if isinstance(seg.get("words"), list) else None})
+            e.confidence = seg.get("confidence") if isinstance(seg.get("confidence"), (int, float)) else None
+            out.append(e)
     return out
 
 

@@ -1,0 +1,9 @@
+{
+ "name": "ts_path_traversal_and_symlink_rejected",
+ "transcription": {
+  "mode": "ok"
+ },
+ "expect": {
+  "path_refused": true
+ }
+}

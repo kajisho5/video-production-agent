@@ -37,16 +37,19 @@ from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
 from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from .tools.media_analysis import PACKAGE as MEDIA_ANALYSIS_PACKAGE, MediaAnalysisAdapter, locate_media_analysis
+from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, TranscriptionAdapter, locate_transcription
 from .tools.base import ToolError
 
 
 class Service:
     def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
-                 provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None):
+                 provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None, transcription_dir: Optional[str] = None, offline: bool = False):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
         self.media_analysis_dir = media_analysis_dir or os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR")
-        self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir)
+        self.transcription_dir = transcription_dir or os.environ.get("VIDEO_AGENT_TRANSCRIPTION_DIR")
+        self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
+        self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline)
         self._adapter = adapter
         self.registry = default_registry()
         self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
@@ -54,6 +57,7 @@ class Service:
         # Reference Skill package: implemented in this codebase (tools/ffmpeg_skill) whether or not a checkout is installed.
         self.registry.register_package(FFMPEG_SKILL_PACKAGE)
         self.registry.register_package(MEDIA_ANALYSIS_PACKAGE)   # external observation Skill: adapter exists here; availability needs an installation
+        self.registry.register_package(TRANSCRIPTION_PACKAGE)    # external recognition Skill (transcription-skill): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -76,6 +80,13 @@ class Service:
                 router.register(MediaAnalysisAdapter(ma, workspace=self.workspace, allowed_inputs=roots, cache_dir=str(Path(self.workspace) / "cache" / "media-analysis")))
             except ToolError:
                 pass   # incompatible / broken installation: doctor reports it; the tool stays unavailable rather than half-usable
+        ts = locate_transcription(self.transcription_dir)
+        if ts:
+            try:
+                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else []
+                router.register(TranscriptionAdapter(ts, workspace=str(Path(self.workspace) / "cache" / "transcription"), allowed_inputs=roots, offline=self.offline))
+            except ToolError:
+                pass   # same rule: an incompatible transcription-skill is reported by doctor and never used
         return self._sync_packages(router)
 
     def _sync_packages(self, router: ToolRouter) -> ToolRouter:
@@ -116,20 +127,23 @@ class Service:
 
     # ---- lifecycle
     def analyze(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None, hash_sources: bool = True,
-                strategy: Optional[str] = None, cache_policy: Optional[str] = None, use_cache: bool = True, kinds: Optional[List[str]] = None):
+                strategy: Optional[str] = None, cache_policy: Optional[str] = None, use_cache: bool = True, kinds: Optional[List[str]] = None,
+                params: Optional[Dict[str, Any]] = None, allowed_inputs: Optional[List[str]] = None):
+        """params: typed per-kind parameters (e.g. transcript: language / model / offline) merged into the AnalysisRequest;
+        allowed_inputs: input roots for the measurement Skills' path policy (default: the inputs' own directories)."""
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
-        adapter = self.adapter([str(Path(p).resolve().parent) for p in inputs])
+        adapter = self.adapter(list(allowed_inputs) if allowed_inputs else [str(Path(p).resolve().parent) for p in inputs])
         tools = self.tools_for(adapter)
-        self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"], adapter)
-        req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy, kinds=kinds)
+        self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"] + [ANALYSIS_KINDS[k]["skill"] for k in (kinds or []) if k in ANALYSIS_KINDS and k not in CORE_KINDS], adapter)
+        req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy, kinds=kinds, params=params)
         analyzer = MediaAnalyzer(adapter, tools=tools, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), hash_sources=hash_sources,
                                  cache_dir=self.workspace if use_cache else None)
         analysis = analyzer.run(req)
         return profile, rules, analysis
 
     def analysis_request(self, inputs: List[str], rules, request_text: str, user_requirements, profile, hash_sources: bool = True,
-                         strategy: Optional[str] = None, cache_policy: Optional[str] = None, kinds: Optional[List[str]] = None) -> AnalysisRequest:
+                         strategy: Optional[str] = None, cache_policy: Optional[str] = None, kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None) -> AnalysisRequest:
         """What to observe is decided here (system / policy / requirements), never by an AI provider:
         strategy from `analysis.strategy` (policy or `--set analysis.strategy=`), kinds from the requirements under TARGETED,
         budget from `analysis.budget.*` (only enforceable items; others are refused), parameters from policy."""
@@ -141,14 +155,16 @@ class Service:
         kinds = base + extra
         return AnalysisRequest(inputs=list(inputs), kinds=kinds, strategy=strat, budget=AnalysisBudget.from_rules(rules),
                                cache_policy=cache_policy or ("only" if strat == "CACHED_ONLY" else "use"),
-                               params={"threshold_db": float(rules.get("silence.threshold_db", -40)), "min_silence": 0.5}, hash_sources=hash_sources)
+                               params={"threshold_db": float(rules.get("silence.threshold_db", -40)), "min_silence": 0.5, **{k: v for k, v in (params or {}).items() if v is not None}},
+                               hash_sources=hash_sources)
 
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
-             project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True) -> ProjectIR:
+             project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
+             kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None) -> ProjectIR:
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
-        profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache)
+        profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         self._ai_calls = []
@@ -538,6 +554,38 @@ class Service:
 
     def archive_artifact(self, art_id: str, who: Optional[str] = None, reason: str = "") -> Dict[str, Any]:
         return self.promote_artifact(art_id, "archive", who, reason)
+
+    @staticmethod
+    def explain_observation(doc: Dict[str, Any], obs_id: str) -> Dict[str, Any]:
+        """Why does this observation exist? Observation → Skill package → tool → (engine → model for a transcript) → asset identity
+        (fingerprint) → analysis request → the events derived from it. Facts only: no inference or decision is part of this chain."""
+        o = next((x for x in doc["analysis"]["observations"] if x["id"] == obs_id or x.get("external_id") == obs_id), None)
+        if o is None:
+            raise KeyError(obs_id)
+        asset = doc["assets"].get(o["asset_id"]) or {}
+        analysis = next((a for a in doc["analysis"].get("analyses") or [] if a.get("analysis_id") == o.get("analysis_id")), None)
+        row = next((r for r in (analysis or {}).get("rows", []) if r.get("kind") == o["kind"] and r.get("asset_id") == o["asset_id"]), None)
+        chain = [{"level": 0, "kind": "observation", "id": o["id"], "provenance": o.get("provenance"), "detail": f"{o['kind']} observed_at {o.get('observed_at')}", "source": o.get("source")},
+                 {"level": 1, "kind": "skill", "id": o.get("skill") or o["source"].split("/", 1)[0], "detail": f"version {o.get('skill_version') or '-'}", "source": o.get("source")},
+                 {"level": 2, "kind": "tool", "id": o.get("tool") or o["source"].split("@", 1)[0], "detail": f"external id {o.get('external_id') or '-'}; cache {json.dumps(o.get('cache') or {}, sort_keys=True)}"}]
+        params = o.get("parameters") or {}
+        if o["kind"] == "transcript":
+            tr = o.get("data") or {}
+            prov = tr.get("provenance") or {}
+            chain.append({"level": 3, "kind": "engine", "id": f"{tr.get('engine')}@{tr.get('engine_version')}", "detail": f"execution_mode {prov.get('execution_mode')}; requires no interpretation"})
+            chain.append({"level": 4, "kind": "model", "id": str(prov.get("model")), "detail": f"model_version {prov.get('model_version') or '-'}; parameters {json.dumps(prov.get('parameters') or {}, sort_keys=True, ensure_ascii=False)}"})
+            chain.append({"level": 5, "kind": "transcript", "id": str(tr.get("id")), "detail": f"language {tr.get('language')} ({tr.get('language_source')}), {len(tr.get('segments') or [])} segment(s), speaker_id always null (no diarization)"})
+        elif params:
+            chain.append({"level": 3, "kind": "parameters", "id": "-", "detail": json.dumps(params, sort_keys=True, ensure_ascii=False)})
+        chain.append({"level": 6, "kind": "asset", "id": o["asset_id"], "detail": f"{Path(asset.get('path', '')).name} sha256 {(asset.get('hash') or '-')[:16]}; observation fingerprint {(o.get('fingerprint') or '-')[:16]}",
+                      "shared_identity": bool(asset.get("hash")) and (o.get("fingerprint") or "") == asset.get("hash")})
+        if analysis:
+            chain.append({"level": 7, "kind": "analysis", "id": analysis["analysis_id"], "detail": f"{analysis['request']['strategy']} by {analysis.get('analyzer')}; row {json.dumps({k: row.get(k) for k in ('status', 'cache_hit', 'cache_owner')}, sort_keys=True) if row else '-'}"})
+        events = [e for e in doc["timeline"]["events"] if o["id"] in (e.get("evidence") or [])]
+        for e in events:
+            chain.append({"level": 8, "kind": "event", "id": e["id"], "provenance": e.get("provenance"), "detail": f"{e['type']} {e['range'].get('start')}–{e['range'].get('end')}", "source": e.get("source")})
+        return {"observation": o, "chain": chain, "events": [e["id"] for e in events], "asset": {"id": o["asset_id"], "path": asset.get("path"), "hash": asset.get("hash")},
+                "boundary": "observation → event only; no inference, decision, plan step or command derives from this chain"}
 
     def explain_artifact(self, art_id: str) -> Dict[str, Any]:
         """Artifact → job → operations → production step → decisions → inferences → events → observations."""

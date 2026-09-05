@@ -1440,7 +1440,7 @@ remote registry, arbitrary code loading. A package becomes known through its ada
 |---|---|---|
 | ffmpeg-skill | deterministic media **execution** (hands) | Reference Skill, integrated (ADR-001 / ADR-016 / ADR-017) |
 | media-analysis-skill | deterministic **measurement / observation** (eyes / meters) | integrated: `tools/media_analysis/`, contract `media-analysis/contract@1`, 0.1.x |
-| transcription-skill | speech recognition / transcript | **not integrated**: its `main` carries no implementation or contract yet (README only); no adapter, no stub |
+| transcription-skill | deterministic **speech recognition** (ears): audio → timestamped Transcript | integrated: `tools/transcription/`, contract `transcription skill --json` (transcript/0.1, engine-spec/0.1, speech-event/0.1), 0.2.x (ADR-024) |
 | video-production-agent | orchestration / inference / decision / planning | this repository |
 
 - Boundary: an external process. The adapter runs `media-analysis contract --json` / `doctor --json` once and
@@ -1477,6 +1477,77 @@ The Brain includes an **AI Provider** (reasoning / model interface, §42): it co
 inferences with evidence and confidence; it never selects a skill or tool, never emits commands, and never bypasses
 policy. ffmpeg-skill, the first Reference Skill, is external OSS (100+ GitHub stars at the time of writing) — the
 first real component of the ecosystem; that adoption is project context, not a functional specification.
+
+### External recognition Skill: transcription-skill (implemented, ADR-024)
+
+```
+Agent → SkillRegistry (speech_transcription) → TranscriptionAdapter → `transcription run -` (JSON stdin/stdout)
+      → transcription-skill → Engine (faster_whisper, local) → Transcript → Observation(kind=transcript) → SpeechEvent
+```
+
+- **Recognition only.** The Skill turns speech into timestamped text; the agent stores the Transcript as an Observation
+  (a recognition *fact*, provenance OBSERVED) and derives SpeechEvents from its segments. Nothing here interprets the
+  text, summarises it, identifies a speaker, chooses a camera, cuts, or renders a subtitle. **transcription result ≠ AI
+  inference**: no AI provider is involved; the engine's output is evidence as recognised, homophone errors included.
+- **Boundary.** `transcription skill --json` (contract), `doctor --json [--offline] [--allowed-input …]`, and `run -`
+  with `{"tool": "transcription/transcribe", "params": {…}}` on stdin → exactly one `{"ok", "tool", "result"}` document.
+  The agent never imports `transcription_skill`, never runs faster-whisper / ffmpeg / ffprobe for it, never forwards
+  commands, argv, executables, environment or credentials, and never downloads a model.
+- **Contract is the source of truth.** Tools, engines (EngineSpec: id, version, `execution_mode`, `requires_network`,
+  capabilities, models and their availability), schema ids, capabilities and versions come from the contract;
+  `tools/transcription/contract_0.2.0.json` is a snapshot for package identity only (engine availability stripped).
+  `check_contract` refuses another skill id, an unsupported skill / schema version, an engine contract without `local`,
+  a tool of another skill, a transcribe tool with output-writing side effects, and missing declared capabilities.
+  Only `transcription/transcribe` is a measurement tool; `segments` / `export` / `check` are not called by the agent.
+- **Typed request only.** `input`, `asset_id`, `language`, `engine` (must be declared by the contract), `model` (a name,
+  never a path), `word_timestamps`, `temperature`, `initial_prompt`, `beam_size`, `offline`, `budget{timeout,
+  max_audio_seconds}`, `cache`. `workspace` (`<workspace>/cache/transcription`) and `allowed_input_roots` (the agent's
+  allowed inputs + the workspace, the same boundary as the engine's `PathPolicy`) are pinned by the adapter and refused
+  in a request. Command / argv / shell / env / credential keys are refused before any process starts.
+- **Input security.** raw path → traversal check → absolute → realpath → component-wise containment in a resolved
+  allowed root; a symlink or junction whose target leaves the root is `symlink_escape`. The adapter refuses early; the
+  Skill enforces the same roots again (`INVALID_INPUT` with `details.reason`).
+- **Engine selection.** No ranking in the agent. The agent passes constraints (`engine`, `model`, `offline`,
+  `language`, `word_timestamps`); the Skill's selector / model status decide and report. `MODEL_AVAILABLE` /
+  `MODEL_DOWNLOAD_REQUIRED` / `MODEL_MISSING` / `MODEL_UNKNOWN` and `ENGINE_UNAVAILABLE` reasons are recorded verbatim
+  (`skill_error`, `skill_details`), never re-interpreted. `--offline` (CLI / `Service(offline=True)`) is a hard
+  constraint the adapter can only tighten: remote engines are refused, a model that is not local is unavailable.
+- **Transcript → Observation.** `kind=transcript`, `data` = the Transcript document unchanged; `source`
+  `transcription/transcribe@<skill version>`, `skill` / `skill_version` / `tool`, `external_id` = transcript id,
+  `fingerprint` = the Skill's sha256 of the input, `parameters` = decoding parameters + engine / engine_version /
+  execution_mode / model / model_version, `cache` = {status, key, owner: transcription}, `analyzer` = engine@version.
+  `check_transcript` refuses another schema, another asset (on a fresh recognition), a non-sha256 fingerprint, an engine
+  the contract does not declare, provenance from another skill / tool / version / execution mode, a missing model,
+  malformed or out-of-order segments, and any segment carrying a `speaker_id`. A failed or partial result is never a
+  transcript.
+- **Shared asset identity.** The request carries the agent's asset id and the analyzer checks the Skill's fingerprint
+  against the asset's own sha256; media-analysis and transcription observations of one file cite one asset. A cache
+  hit returns the Skill's stored document unchanged (its `asset_id` is the first caller's, recorded as
+  `cache.stored_asset_id`); identity is the fingerprint.
+- **Cache.** Owned by the Skill (`<workspace>/cache/transcription/transcripts`). The agent records owner / status /
+  key as provenance and keeps no transcript cache of its own. `CACHED_ONLY` asks the Skill (dry run) whether the
+  result is cached; on a miss nothing is recognised.
+- **SpeechEvent.** One `SPEECH` (`SpeechEvent` / `speech`) per segment: interval, text, language, segment / transcript
+  ids, engine, confidence, `speaker_id: null`. **SpeechEvent ≠ speaker identification**: `SPEAKER` stays unimplemented,
+  and no name, role or camera is ever attached. **Event → command does not exist**: inference, decision, planner,
+  compiler and executor contain no SpeechEvent handling (static test); a plan built with a transcript has no step,
+  operation or decision that cites it.
+- **Failure domain.** Skill codes (`INVALID_INPUT`, `FILE_NOT_FOUND`, `UNSUPPORTED_MEDIA`, `ENGINE_UNAVAILABLE`,
+  `MODEL_UNAVAILABLE`, `TRANSCRIPTION_FAILED`, `TRANSCRIPTION_TIMEOUT`, `BUDGET_EXCEEDED`, `INVALID_RESULT`,
+  `CACHE_INVALID`) and transport failures (empty / non-JSON / several documents / crash / non-zero exit / process
+  timeout 124 / contract incompatibility) map to the analysis domain (`ANALYZER_UNAVAILABLE`, `ANALYZER_TIMEOUT`,
+  `ANALYSIS_INVALID_RESULT`, `ANALYSIS_UNSUPPORTED`, `ANALYSIS_BUDGET_EXCEEDED`) with the Skill's code kept alongside.
+- **Capability / registry / CLI / explain.** Capability `transcription` from the Skill's doctor (AVAILABLE when the
+  doctor is ok, DEGRADED when an engine is available but a model or the model cache is missing, MISSING otherwise;
+  evidence: version, schemas, tools, capabilities, engines with models and availability, doctor rows; no secrets).
+  Production skill `speech_transcription` (LOW / AUTO, requires `ffmpeg`, `ffprobe`, `transcription`) is the only
+  candidate route to `transcription/transcribe`. `video-agent transcribe <media> [--language ja] [--engine …]
+  [--model …] [--offline] [--word-timestamps] [--allowed-input DIR] [--timeout s]`, `analyze / plan --kind transcript`,
+  `explain <ir> --observation <id|transcript id>` (observation → skill → tool → engine → model → transcript → asset
+  → analysis → events; the chain ends at facts).
+- **Not in scope (deliberately absent):** AI / LLM, speaker identification / diarization, speaker naming, camera
+  switching, subtitle rendering / burn-in, semantic segmentation, chapters, automatic editing, new or cloud engines,
+  whisper.cpp, MCP, plugin loader, ranking, arbitrary command execution.
 
 ## 52. Architecture / Repository
 

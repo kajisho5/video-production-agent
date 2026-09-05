@@ -1,0 +1,9 @@
+{
+ "name": "ts_wrong_contract_rejected",
+ "transcription": {
+  "mode": "wrong_version"
+ },
+ "expect": {
+  "contract_refused": "skill version"
+ }
+}

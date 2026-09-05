@@ -1,0 +1,9 @@
+{
+ "name": "ts_wrong_schema_rejected",
+ "transcription": {
+  "mode": "wrong_schema"
+ },
+ "expect": {
+  "contract_refused": "schemas.transcript"
+ }
+}

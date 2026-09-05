@@ -1,0 +1,15 @@
+{
+ "name": "ts_cache_hit_is_provenance",
+ "transcription": {
+  "mode": "ok",
+  "cache": "hit"
+ },
+ "expect": {
+  "transcript": {
+   "cache_status": "hit",
+   "cache_owner": "transcription",
+   "provenance": "OBSERVED"
+  },
+  "agent_cache_untouched": true
+ }
+}

@@ -212,12 +212,24 @@ class MediaAnalyzer(Analyzer):
             ext = (r.data or {}).get("error") if isinstance(r.data, dict) else None
             ekind = (ext or {}).get("code") if ext else None
             mapped = {"ANALYZER_TIMEOUT": "ANALYZER_TIMEOUT", "BUDGET_EXCEEDED": "ANALYSIS_BUDGET_EXCEEDED", "CACHE_INVALID": "ANALYSIS_CACHE_INVALID", "CACHE_MISS": "ANALYZER_UNAVAILABLE",
-                      "INVALID_RESULT": "ANALYSIS_INVALID_RESULT", "VERIFICATION_FAILED": "ANALYSIS_INVALID_RESULT", "INVALID_INPUT": "ANALYSIS_UNSUPPORTED"}.get(ekind or "", None)
+                      "INVALID_RESULT": "ANALYSIS_INVALID_RESULT", "VERIFICATION_FAILED": "ANALYSIS_INVALID_RESULT", "INVALID_INPUT": "ANALYSIS_UNSUPPORTED",
+                      # transcription-skill codes (recognition failure domain): kept verbatim under skill_error, mapped to the analysis domain here
+                      "TRANSCRIPTION_TIMEOUT": "ANALYZER_TIMEOUT", "ENGINE_UNAVAILABLE": "ANALYZER_UNAVAILABLE", "MODEL_UNAVAILABLE": "ANALYZER_UNAVAILABLE",
+                      "TRANSCRIPTION_FAILED": "ANALYZER_UNAVAILABLE", "UNSUPPORTED_MEDIA": "ANALYSIS_UNSUPPORTED", "FILE_NOT_FOUND": "ANALYSIS_UNSUPPORTED"}.get(ekind or "", None)
             row.update({"status": "FAILED", "error": {"kind": mapped or ("ANALYZER_TIMEOUT" if r.exit_code == 124 or "timeout" in (r.stderr_tail or "").lower() else "ANALYZER_UNAVAILABLE"),
-                                                       "message": ((ext or {}).get("message") or r.stderr_tail or "")[:200], "skill_error": ekind}})
+                                                       "message": ((ext or {}).get("message") or r.stderr_tail or "")[:200], "skill_error": ekind,
+                                                       **({"skill_details": ext.get("details")} if isinstance((ext or {}).get("details"), dict) and ext.get("details") else {})}})
             return None, row
         ext_obs = (r.data or {}).get("observation") if isinstance(r.data, dict) else None
-        if isinstance(ext_obs, dict) and isinstance(ext_obs.get("analysis"), dict):
+        if kind == "transcript" and isinstance(r.data, dict) and isinstance(r.data.get("transcript"), dict):
+            o = self._lift_transcript(r.data, asset, req, source, key, tool)
+            if not o.fingerprint or (asset.hash and o.fingerprint != asset.hash):   # shared asset identity is the content fingerprint
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"transcript fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+                return None, row
+            row["cache"] = (r.data or {}).get("cache")
+            row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
+            row["engine"] = (r.data or {}).get("engine")
+        elif isinstance(ext_obs, dict) and isinstance(ext_obs.get("analysis"), dict):
             o = self._lift(ext_obs, r.data, kind, asset, req, source, key)
             row["cache"] = (r.data or {}).get("cache")
             row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
@@ -244,6 +256,24 @@ class MediaAnalyzer(Analyzer):
                            analysis_id=req.analysis_id, analyzer=f"{an.get('analyzer', source.split('@')[0])}@{an.get('analyzer_version', '')}", cache_key=key, provenance="OBSERVED",
                            skill=str(sk.get("id") or source.split("/", 1)[0]), skill_version=str(sk.get("version") or ""), tool=source.split("@", 1)[0], external_id=str(ext.get("id") or ""),
                            fingerprint=str((ext.get("asset") or {}).get("fingerprint") or ""), parameters=dict(an.get("parameters") or {}), cache=dict(data.get("cache") or {}))
+
+    @staticmethod
+    def _lift_transcript(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str) -> Observation:
+        """Lift a Transcript (transcription-skill/transcript) into an Observation of kind `transcript`: the document is the fact,
+        stored as recognised (segments, text, language, confidence, the Skill's provenance). Identity and provenance travel with
+        it: skill / skill version / tool / transcript id / content fingerprint / decoding parameters + engine / model identity /
+        the Skill's cache status. Provenance stays OBSERVED: a recognition result is neither an inference nor AI output."""
+        tr = data["transcript"]
+        prov = tr.get("provenance") or {}
+        sk = data.get("skill") or {}
+        fp = str((tr.get("source") or {}).get("fingerprint") or "")
+        params = dict(prov.get("parameters") or {})
+        params.update({"engine": tr.get("engine"), "engine_version": tr.get("engine_version"), "execution_mode": prov.get("execution_mode"),
+                       "model": prov.get("model"), "model_version": prov.get("model_version")})
+        return Observation(kind="transcript", asset_id=asset.id, source=source, data=dict(tr), observed_at=str(tr.get("created_at") or now_iso()), analysis_id=req.analysis_id,
+                           analyzer=f"{tr.get('engine')}@{tr.get('engine_version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
+                           skill_version=str(sk.get("version") or prov.get("skill_version") or ""), tool=tool, external_id=str(tr.get("id") or ""),
+                           fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp, parameters=params, cache=dict(data.get("cache") or {}))
 
     @staticmethod
     def _shape(kind: str, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:

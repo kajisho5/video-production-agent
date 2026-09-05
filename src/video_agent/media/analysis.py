@@ -38,6 +38,9 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     "integrity": {"skill": "integrity_analysis", "needs_audio": False, "params": ("max_error_lines",)},
     "scene_detection": {"skill": "scene_analysis", "needs_audio": False, "params": ("threshold", "min_scene_duration")},
     "timing": {"skill": "timing_analysis", "needs_audio": False, "params": ("gap_factor", "av_mismatch_tolerance")},
+    # speech recognition (transcription-skill, ADR-024): a Transcript is a recognition fact; parameters are the Skill's own typed request keys
+    "transcript": {"skill": "speech_transcription", "needs_audio": True,
+                   "params": ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline", "timeout", "max_audio_seconds")},
 }
 CORE_KINDS = ("media_probe", "silence", "loudness")   # what FULL runs by default; other kinds are requested explicitly
 STRATEGIES = ("FULL", "TARGETED", "CACHED_ONLY")

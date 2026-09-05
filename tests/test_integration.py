@@ -17,6 +17,7 @@ from video_agent.service import Service
 from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 from video_agent.tools.media_analysis import locate_media_analysis
+from video_agent.tools.transcription import locate_transcription
 
 TONE = "0.5*sin(2*PI*440*t)*between(t\\,3\\,14)*gt(sin(2*PI*0.7*t)\\,-0.6)"
 
@@ -600,3 +601,145 @@ class MediaAnalysisRealTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "doctor"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["media-analysis"]["status"], "AVAILABLE")
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill() and locate_transcription(), "needs ffmpeg, ffmpeg-skill and transcription-skill")
+class TranscriptionRealTests(unittest.TestCase):
+    """External recognition Skill (transcription-skill, ADR-024) on real media through the `run -` process boundary.
+    Contract discovery, doctor and the engine contract always run against the installed Skill. Real recognition runs only
+    when the Skill's doctor reports the engine and its default model as locally available (no model download is forced
+    by CI): otherwise the recognition tests are skipped with the doctor's reason."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.transcription import TranscriptionAdapter
+        cls.tmp = tempfile.mkdtemp(prefix="va_ts_")
+        src_dir = Path(cls.tmp) / "src"
+        src_dir.mkdir()
+        cls.src = str(src_dir / "talk.mp4")
+        make_media(cls.src)
+        fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
+        cls.ja = str(src_dir / "ja_short.wav") if fixture.is_file() else None
+        if cls.ja:
+            shutil.copy(fixture, cls.ja)
+        cls.adapter = TranscriptionAdapter(workspace=str(Path(cls.tmp) / "ws" / "cache" / "transcription"), allowed_inputs=[str(src_dir)], offline=True)
+        cls.doctor = cls.adapter.doctor()
+        rows = {c.get("check"): c for c in cls.doctor.get("checks") or []}
+        eng = next((e for e in cls.adapter.engine_status() if e.get("id") == "faster_whisper"), {})
+        default_model = eng.get("default_model") or "base"
+        cls.model_row = rows.get(f"model:faster_whisper:{default_model}") or {}
+        cls.can_recognise = bool(eng.get("available")) and cls.model_row.get("status") == "AVAILABLE"
+        cls.skip_reason = f"recognition needs faster_whisper and a local '{default_model}' model: engine available={eng.get('available')}, model {cls.model_row.get('status')} ({cls.model_row.get('detail', '')[:80]})"
+
+    def test_contract_doctor_and_engine_contract_from_the_installed_skill(self):
+        from video_agent.tools.transcription import check_contract
+        ad = self.adapter
+        self.assertEqual(check_contract(ad.contract), [])
+        self.assertEqual((ad.contract["id"], ad.version[:4], ad.contract["schemas"]["transcript"]), ("transcription-skill", "0.2.", "transcription-skill/transcript/0.1"))
+        self.assertEqual(sorted(ad.tools), ["transcription/check", "transcription/export", "transcription/segments", "transcription/transcribe"])
+        self.assertTrue(ad.supports("transcription/transcribe") and not ad.supports("transcription/export"))
+        eng = {e["id"]: e for e in ad.engine_status()}
+        self.assertEqual((eng["faster_whisper"]["execution_mode"], eng["faster_whisper"]["requires_network"]), ("local", False), "the only implemented engine is local")
+        self.assertEqual(list(eng), ["faster_whisper"], "no cloud engine, no whisper.cpp: the contract lists implemented engines only")
+        self.assertIsInstance(self.doctor.get("checks"), list)
+        rows = {c["check"]: c["status"] for c in self.doctor["checks"]}
+        self.assertEqual(rows["skill"], "AVAILABLE")
+        self.assertIn("engine:faster_whisper", rows)
+        policy = next(c for c in self.doctor["checks"] if c["check"] == "input path policy")
+        self.assertEqual(policy["mode"], "allowed_roots", "the adapter's roots reach the Skill's doctor")
+        self.assertTrue(self.doctor.get("offline"))
+        self.assertNotRegex(json.dumps(self.doctor), r"(?i)(api[_-]?key|token|secret|password)")
+        svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
+        cap = svc.caps.resolve()["transcription"]
+        engine_installed = bool(eng["faster_whisper"].get("available"))
+        # the Skill's doctor decides: engine installed → AVAILABLE (model local) / DEGRADED (model missing); no engine → MISSING (CI has none)
+        self.assertIn(cap.status, ("AVAILABLE", "DEGRADED") if engine_installed else ("MISSING",), cap.detail)
+        if engine_installed:
+            self.assertEqual(cap.evidence["engines"][0]["id"], "faster_whisper")
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertTrue(rows["transcription"]["implemented"])
+        self.assertEqual(svc.tools_for().get("speech_transcription"), "transcription/transcribe" if engine_installed else None, "no engine → no candidate tool, never a fallback")
+        # an engine-level constraint the Skill refuses is reported as the Skill says it (no reinterpretation)
+        r = self.adapter.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_x", "engine": "faster_whisper", "model": "large-v3", "offline": True})
+        if not r.ok:
+            self.assertIn(r.data["error"]["code"], ("MODEL_UNAVAILABLE", "ENGINE_UNAVAILABLE"))
+            if r.data["error"]["code"] == "MODEL_UNAVAILABLE":
+                self.assertEqual(r.data["error"]["details"]["availability"], "MODEL_MISSING")
+        # the Skill's path policy refuses an input outside the adapter's roots even when the adapter is bypassed
+        import subprocess
+        outside = Path(self.tmp) / "outside.wav"
+        outside.write_bytes(b"RIFF" + b"\x00" * 64)
+        req = {"tool": "transcription/transcribe", "params": {"input": str(outside), "asset_id": "a", "allowed_input_roots": [str(Path(self.tmp) / "src")], "offline": True}}
+        skill = locate_transcription()
+        env = dict(os.environ, **skill.env)
+        p = subprocess.run(list(skill.command) + ["run", "-"], input=json.dumps(req), capture_output=True, text=True, env=env)
+        doc = json.loads(p.stdout)
+        self.assertEqual((doc["ok"], doc["error"]["code"], doc["error"]["details"]["reason"]), (False, "INVALID_INPUT", "outside_allowed_roots"))
+
+    def test_real_recognition_lifting_provenance_cache_and_speech_events(self):
+        if not self.can_recognise:
+            self.skipTest(self.skip_reason)
+        if not self.ja:
+            self.skipTest("transcription-skill fixture ja_short.wav not found")
+        ws = str(Path(self.tmp) / "ws_real")
+        svc = Service(workspace=ws, offline=True)
+        _, _, an = svc.analyze([self.ja], "generic", kinds=["transcript"], params={"language": "ja"})
+        obs = {o.kind: o for o in an.observations}
+        self.assertIn("transcript", obs, [r for r in an.analyses[0]["rows"] if r["status"] != "OK"])
+        t = obs["transcript"]
+        self.assertEqual((t.provenance, t.skill, t.tool, t.source), ("OBSERVED", "transcription", "transcription/transcribe", f"transcription/transcribe@{self.adapter.version}"))
+        self.assertEqual(t.skill_version, self.adapter.version)
+        self.assertEqual((t.parameters["engine"], t.parameters["execution_mode"], t.parameters["model"], t.parameters["language"]), ("faster_whisper", "local", "base", "ja"))
+        self.assertTrue(t.parameters["engine_version"] and t.parameters["model_version"])
+        self.assertEqual(t.fingerprint, an.assets[0].hash, "shared asset identity: the Skill's sha256 is the agent's asset hash")
+        self.assertEqual((t.asset_id, t.data["asset_id"]), (an.assets[0].id, an.assets[0].id))
+        self.assertEqual(t.data["language"], "ja")
+        self.assertGreaterEqual(len(t.data["segments"]), 1)
+        self.assertTrue(all(s["speaker_id"] is None for s in t.data["segments"]))
+        self.assertIn("本日", t.data["segments"][0]["text"], "recognised text as produced by the engine (no correction)")
+        self.assertEqual(t.data["provenance"]["skill"], "transcription-skill")
+        self.assertEqual(t.cache["status"], "miss")
+        rows = {r["kind"]: r for r in an.analyses[0]["rows"]}
+        self.assertEqual((rows["transcript"]["cache_owner"], rows["transcript"]["engine"]["id"]), ("transcription", "faster_whisper"))
+        sp = an.timeline.query(type="SPEECH")
+        self.assertEqual(len(sp), len(t.data["segments"]))
+        self.assertTrue(all(e.provenance == "OBSERVED" and e.evidence == [t.id] and e.metadata["speaker_id"] is None for e in sp))
+        self.assertLessEqual(sp[-1].range["end"], an.assets[0].technical["duration"] + 0.5)
+        # second run in the same workspace: the Skill's cache answers; the fact is byte-identical
+        _, _, an2 = Service(workspace=ws, offline=True).analyze([self.ja], "generic", kinds=["transcript"], params={"language": "ja"})
+        t2 = next(o for o in an2.observations if o.kind == "transcript")
+        self.assertEqual(t2.cache["status"], "hit")
+        self.assertEqual((t2.data["id"], t2.data["segments"]), (t.data["id"], t.data["segments"]))
+        self.assertEqual([(e.range, e.metadata["text"]) for e in an2.timeline.query(type="SPEECH")], [(e.range, e.metadata["text"]) for e in sp],
+                         "identical speech intervals from the cached fact (event ids carry the per-analysis asset / observation ids by design, ADR-020)")
+        # media-analysis (when installed) and transcription observe the same asset
+        from video_agent.tools.media_analysis import locate_media_analysis
+        if locate_media_analysis():
+            _, _, an3 = Service(workspace=ws, offline=True).analyze([self.ja], "generic", kinds=["duration", "transcript"], params={"language": "ja"})
+            o3 = {o.kind: o for o in an3.observations}
+            self.assertEqual(len(an3.assets), 1)
+            self.assertEqual((o3["duration"].asset_id, o3["transcript"].asset_id), (an3.assets[0].id, an3.assets[0].id))
+            self.assertEqual(o3["transcript"].fingerprint, an3.assets[0].hash)
+        # plan with a transcript: SpeechEvents in the IR, nothing derived from them; explain follows the chain to facts only
+        ir = svc.plan([self.src], "youtube", kinds=["transcript"], params={"language": "en"})
+        d = ir.doc
+        self.assertTrue(svc.validate(ir).ok, svc.validate(ir).errors)
+        tr = next(o for o in d["analysis"]["observations"] if o["kind"] == "transcript")
+        blob = json.dumps({"plan": d["plan"], "decisions": d["decisions"], "inferences": d["analysis"]["inferences"]})
+        for bad in ("SPEECH", "transcription", "speaker", tr["id"]):
+            self.assertNotIn(bad, blob)
+        info = Service.explain_observation(d, tr["id"])
+        self.assertEqual([r["kind"] for r in info["chain"]][:6], ["observation", "skill", "tool", "engine", "model", "transcript"])
+        self.assertTrue(next(r for r in info["chain"] if r["kind"] == "asset")["shared_identity"])
+        # CLI round trip: transcribe / explain --observation / doctor
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=ws)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "transcribe", self.ja, "--language", "ja", "--offline", "--allowed-input", str(Path(self.ja).parent)], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("transcript tr_", r.stdout); self.assertIn("SPEECH", r.stdout); self.assertIn("speaker_id null", r.stdout); self.assertIn("cache hit", r.stdout)
+        ir_path = str(Path(ws) / "p.json")
+        save_ir(ir, ir_path)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", ir_path, "--observation", tr["external_id"]], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("faster_whisper@", r.stdout); self.assertIn("no inference, decision", r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "doctor"], capture_output=True, text=True, env=env)
+        self.assertEqual(json.loads(r.stdout)["transcription"]["status"], "AVAILABLE")
