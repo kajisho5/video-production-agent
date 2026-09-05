@@ -3798,12 +3798,13 @@ class VideoEditingAdapterTests(unittest.TestCase):
         paths, out = self._paths()
         r = ad.run(self._op(), paths)
         self.assertTrue(r.ok, r.data)
-        self.assertEqual((r.exit_code, r.output, r.tool, r.dry_run), (0, out, "video-editing/cut", False))
+        same = lambda a, b: os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))  # noqa: E731  (Windows: the adapter reports the resolved path, tempfile may give an 8.3 short name)
+        self.assertEqual((r.exit_code, r.tool, r.dry_run), (0, "video-editing/cut", False)); self.assertTrue(same(r.output, out), (r.output, out))
         self.assertTrue(os.path.isfile(out))
         self.assertEqual(r.data["skill"], {"id": "video-editing", "version": "0.1.0"})
         self.assertEqual(r.data["status"], "completed")
         art = r.data["artifact"]
-        self.assertEqual((art["path"], art["size"], art["reused"]), (out, os.path.getsize(out), False))
+        self.assertTrue(same(art["path"], out)); self.assertEqual((art["size"], art["reused"]), (os.path.getsize(out), False))
         self.assertEqual(art["sha256"], __import__("hashlib").sha256(Path(out).read_bytes()).hexdigest(), "execution.outputs[].sha256 is verified against the file and carried to the Artifact")
         self.assertTrue(art["operation_id"].startswith("op_"))
         obs = r.data["observation"]
@@ -3817,9 +3818,10 @@ class VideoEditingAdapterTests(unittest.TestCase):
         calls = [json.loads(line) for line in Path(log).read_text().splitlines()]
         run = next(c for c in calls if c["cmd"] == "run")
         self.assertEqual(run["argv"][:4], ["run", "-", "--json", "--workspace"])
-        self.assertEqual(run["argv"][4], os.path.dirname(out))
-        self.assertIn("--allowed-input", run["argv"]); self.assertIn(str(Path(self.src).parent), run["argv"]); self.assertIn(self.ws, run["argv"])
-        self.assertEqual(run["argv"][run["argv"].index("--ffmpeg-skill-dir") + 1], str(Path(self.tmp).resolve()))
+        self.assertTrue(same(run["argv"][4], os.path.dirname(out)))
+        roots = [run["argv"][i + 1] for i, a in enumerate(run["argv"]) if a == "--allowed-input"]
+        self.assertTrue(any(same(r_, str(Path(self.src).parent)) for r_ in roots) and any(same(r_, self.ws) for r_ in roots), roots)
+        self.assertTrue(same(run["argv"][run["argv"].index("--ffmpeg-skill-dir") + 1], self.tmp))
         self.assertFalse(any("keep" in a or "0.5" in a for a in run["argv"]), "operation parameters travel on stdin, never in argv")
         self.assertNotIn("VIDEO_EDITING_FFMPEG_SKILL_DIR", run["env_video"], "the engine location is a CLI argument from agent config, not an environment side channel")
         # preview shows the same boundary without executing
