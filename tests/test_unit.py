@@ -4466,7 +4466,8 @@ class AudioProductionAdapterTests(unittest.TestCase):
         calls = [json.loads(l) for l in Path(log).read_text().splitlines()]
         run = next(c for c in calls if c["cmd"] == "run")
         self.assertEqual(run["argv"][:3], ["run", "-", "--json"]); self.assertEqual(run["argv"][run["argv"].index("--workspace") + 1], os.path.dirname(paths["a_norm"]))
-        self.assertIn(str(Path(self.src).parent), run["argv"][run["argv"].index("--allowed-input") + 1:]); self.assertIn("--ffmpeg-skill", run["argv"]); self.assertIn("--timeout", run["argv"])
+        roots = [os.path.normcase(os.path.realpath(a)) for a in run["argv"][run["argv"].index("--allowed-input") + 1:] if not a.startswith("--")]   # realpath: Windows 8.3 temp names
+        self.assertIn(os.path.normcase(os.path.realpath(str(Path(self.src).parent))), roots); self.assertIn("--ffmpeg-skill", run["argv"]); self.assertIn("--timeout", run["argv"])
         self.assertNotIn("AUDIO_PRODUCTION_FFMPEG_SKILL_DIR", run["env_video"])
         # lifting: the probe and the re-measurement become agent Observations (provenance only)
         from video_agent.tools.audio_production import lift_measurement, lift_observation
