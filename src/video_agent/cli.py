@@ -49,12 +49,19 @@ def cmd_doctor(args, svc: Service) -> int:
 
 def cmd_skills(args, svc: Service) -> int:
     rows = svc.skills()
+    pkgs = svc.packages()
     if args.json:
-        _print(rows, True)
+        _print({"packages": pkgs, "skills": rows}, True)
         return 0
+    print("Skill packages (implemented in this codebase):")
+    for pk in pkgs:
+        state = "AVAILABLE" if pk["available"] else "UNAVAILABLE"
+        print(f"  {state:11s} {pk['skill_id']}  v{pk['version']}  {pk['repository'] or ''}  {pk['role']}")
+        print(f"              tools {len(pk['usable_tools'])}/{len(pk['tools'])} usable" + ("" if pk["available"] else f"  ({pk['reason']})"))
+    print("Production skills (DECLARED = NOT_IMPLEMENTED; AVAILABLE = a tool was selected here):")
     w = max(len(r["skill"]) for r in rows)
     for r in rows:
-        print(f"{r['status']:15s} {r['skill']:{w}s}  v{r['version']}  phase {r['phase']}  tool={r['tool'] or '-'}" + ("" if r["status"] == "AVAILABLE" else f"  ({r['reason']})"))
+        print(f"  {r['status']:15s} {r['skill']:{w}s}  v{r['version']}  phase {r['phase']}  tool={r['tool'] or '-'}" + ("" if r["status"] == "AVAILABLE" else f"  ({r['reason']})"))
     return 0
 
 

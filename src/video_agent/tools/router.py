@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ..models import Operation, ToolResult
+from ..skills.contract import SkillPackage
 from .base import ToolAdapter, ToolError
 
 
@@ -35,6 +36,10 @@ class ToolRouter(ToolAdapter):
 
     def describe(self) -> Dict[str, Any]:
         return {"name": self.name, "adapters": [a.describe() for a in self.adapters]}
+
+    def packages(self) -> List[SkillPackage]:
+        """Skill packages implemented by the registered adapters (identity + tools, versions as detected)."""
+        return [a.package() for a in self.adapters]
 
     def _need(self, tool: str) -> ToolAdapter:
         a = self.adapter_for(tool)

@@ -69,6 +69,38 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(all(e["result"]["ok"] for e in prov["operations"]))
         self.assertTrue(any("ffmpeg" in c for e in prov["operations"] for c in (e["result"]["commands"] or [])))
 
+    def test_reference_skill_contract_on_real_runtime(self):
+        """Ecosystem contract with the real Reference Skill: registry package → ToolSpec → router → FfmpegSkillAdapter →
+        ffmpeg-skill script → FFmpeg. Measurement (probe, loudness) and transform (cut) tools, selected by the registry."""
+        from video_agent.tools.ffmpeg_skill import FfmpegSkillAdapter
+        svc = Service(workspace=self.ws)
+        router = svc.adapter([str(Path(self.src).parent)])
+        pkg = svc.registry.package("ffmpeg-skill")
+        self.assertEqual(pkg.version, router.version_of("ffmpeg-skill/probe"), "registry carries the detected version")
+        self.assertIs(router.adapter_for("ffmpeg-skill/cut").__class__, FfmpegSkillAdapter)
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertTrue(rows["ffmpeg-skill"]["available"])
+        self.assertTrue({"ffmpeg-skill/probe", "ffmpeg-skill/cut", "ffmpeg-skill/loudness"} <= set(rows["ffmpeg-skill"]["usable_tools"]))
+        tools = svc.tools_for(router)
+        for skill in ("media_probe", "loudness_analysis", "silence_cleanup"):
+            self.assertEqual(svc.registry.tool(tools[skill]).skill_id, "ffmpeg-skill")
+        pr = router.measure(tools["media_probe"], {"inputs": [self.src]})
+        self.assertTrue(pr.ok and set(svc.registry.tool(tools["media_probe"]).result_keys) <= set(pr.data), pr.data.keys())
+        lm = router.measure(tools["loudness_analysis"], {"input": self.src, "measure_only": True})
+        self.assertTrue(lm.ok and "input_i" in lm.data)
+        from video_agent.models import Operation
+        from video_agent.tools import ToolError
+        outside = str(Path(self.tmp) / "contract_cut.mp4")
+        with self.assertRaises(ToolError):   # adapter contract: outputs stay inside the workspace, sources are never overwritten
+            router.run(Operation(tool=tools["silence_cleanup"], args={"input": self.src, "segments": "3-8", "output": outside}, inputs=[self.src], outputs=[outside]), {}, timeout=300)
+        out = str(Path(self.ws) / "contract_cut.mp4")
+        Path(self.ws).mkdir(parents=True, exist_ok=True)
+        op = Operation(tool=tools["silence_cleanup"], args={"input": self.src, "segments": "3-8", "output": out}, inputs=[self.src], outputs=[out], skill="silence_cleanup")
+        r = router.run(op, {}, timeout=300)
+        self.assertTrue(r.ok, r.stderr_tail)
+        self.assertTrue(os.path.exists(out) and os.path.exists(self.src), "source preserved, artifact produced")
+        self.assertEqual(r.tool, tools["silence_cleanup"])
+
     def test_resume_reuses_real_intermediates(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube", hash_sources=False)

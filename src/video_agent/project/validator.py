@@ -100,6 +100,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 rep.errors.append(f"plan step {s['id']}: tool {s['tool']} is not a declared tool of skill {s['skill']} ({', '.join(spec.tools)})")
             elif supports is not None and not supports(s["tool"]):
                 rep.errors.append(f"plan step {s['id']}: no registered adapter supports {s['tool']}")
+            elif registry.packages() and registry.tool(s["tool"]) is None:
+                rep.errors.append(f"plan step {s['id']}: tool {s['tool']} is not declared by any registered skill package")
     # every executable operation must have a step (otherwise the compiler cannot know its tool)
     step_keys = {(s["skill"], (s.get("params") or {}).get("asset") or (s.get("params") or {}).get("target")) for s in d["plan"]["steps"]}
     for op in d["video"]["operations"]:
@@ -118,7 +120,18 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 rep.errors.append(f"asset {a['id']} path missing: {a['path']}")
     # capabilities: a plan must not silently depend on unavailable capabilities
     if caps is not None:
-        needed = {"ffmpeg", "ffprobe", "ffmpeg-skill"}
+        # skill-level needs come from the registry (production skill + owning package); preset-level encoder needs below
+        needed = set()
+        if registry is not None:
+            for st in d["plan"]["steps"]:
+                if st["skill"] in registry.names():
+                    needed.update(registry.get(st["skill"]).required_capabilities)
+                pkg = registry.package(str(st.get("tool") or "").split("/", 1)[0])
+                if pkg:
+                    needed.update(pkg.capabilities)
+                    ts = registry.tool(st["tool"]) if st.get("tool") else None
+                    if ts:
+                        needed.update(ts.required_capabilities)
         if d["video"]["operations"] or any(t.get("preset") for t in d["delivery"]["targets"]):
             needed.add("encoder:libx264")
         if d["audio"]["operations"]:
