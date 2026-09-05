@@ -1,0 +1,12 @@
+{
+ "name": "sp_speaker_id_result_refused",
+ "profile": "youtube",
+ "transcription": {
+  "mode": "speaker_set"
+ },
+ "expect": {
+  "transcript_failed": {
+   "kind": "ANALYSIS_INVALID_RESULT"
+  }
+ }
+}

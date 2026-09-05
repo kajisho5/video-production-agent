@@ -1,0 +1,52 @@
+{
+ "name": "sp_rejected_candidate_never_executes",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    3.5,
+    8.8,
+    "a"
+   ],
+   [
+    12.3,
+    13.5,
+    "b"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "speech": {
+   "candidates": 1,
+   "reject_then": {
+    "keep": [
+     [
+      2.85,
+      13.85
+     ]
+    ]
+   }
+  }
+ }
+}

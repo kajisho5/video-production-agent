@@ -113,6 +113,8 @@ def run_case(case: dict) -> dict:
             os.environ["FAKE_TS_MODE"] = ts["mode"]
         if ts.get("cache"):
             os.environ["FAKE_TS_CACHE"] = ts["cache"]
+        if ts.get("segments"):
+            os.environ["FAKE_TS_SEGMENTS"] = json.dumps(ts["segments"])
         skill = TranscriptionSkill([sys.executable, str(ROOT / "tests" / "fake_transcription.py")], None, {})
         roots = [str(src.parent)] if ts.get("roots", True) else None
         try:
@@ -175,6 +177,72 @@ def run_case(case: dict) -> dict:
                 failures.append("a failed recognition still produced a transcript observation or SpeechEvents")
             os.environ.pop("FAKE_TS_MODE", None)
             return {"case": case["name"], "ok": not failures, "failures": failures}
+        sp_exp = exp.get("speech")
+        if sp_exp:
+            # PR #14: SpeechEvent → Inference → Decision → ProductionPlan → IR, reviewable and traceable; never AUTO for a removal
+            from video_agent.agent.production_plan import executable_steps, explain_step
+            from video_agent.project import load_ir, save_ir
+            ir = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+            d = ir.doc
+            infs = d["analysis"]["inferences"]
+            by_kind = {}
+            for i in infs:
+                by_kind.setdefault(i["kind"], []).append(i)
+            for kind, n in (sp_exp.get("inferences") or {}).items():
+                if len(by_kind.get(kind, [])) != n:
+                    failures.append(f"inference {kind}: {len(by_kind.get(kind, []))} != {n}")
+            if any(i["data"].get("speaker_id") is not None for i in infs) or any(i["provenance"] != "INFERRED" for i in infs if i["kind"].startswith(("speech_", "internal_silence_removable"))):
+                failures.append("speech inference carries a speaker id or a non-INFERRED provenance")
+            cands = [x for x in d["decisions"] if x["subject"].startswith("silence.internal.")]
+            if "candidates" in sp_exp and len(cands) != sp_exp["candidates"]:
+                failures.append(f"removal candidates {len(cands)} != {sp_exp['candidates']}")
+            if any(x["approval"] == "AUTO" for x in cands):
+                failures.append("a removal candidate is AUTO")
+            for x in cands:
+                if x["approval"] != sp_exp.get("candidate_approval", "CONFIRM"):
+                    failures.append(f"candidate approval {x['approval']} != {sp_exp.get('candidate_approval', 'CONFIRM')}")
+            if "plan_status" in sp_exp and d["plan"]["status"] != sp_exp["plan_status"]:
+                failures.append(f"plan status {d['plan']['status']} != {sp_exp['plan_status']}")
+            trim = next((s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"), None)
+            if "keep" in sp_exp and (trim or {}).get("params", {}).get("keep") != sp_exp["keep"]:
+                failures.append(f"trim keep {(trim or {}).get('params', {}).get('keep')} != {sp_exp['keep']}")
+            if trim and cands and trim["id"] in executable_steps(d):
+                failures.append("the trim executes while a removal candidate is unconfirmed")
+            if not svc.validate(ir).ok:
+                failures.append(f"IR invalid: {svc.validate(ir).errors}")
+            if trim and sp_exp.get("chain"):
+                want = {("decision", "silence.internal."), ("inference", "candidate"), ("event", "SpeechEvent"), ("event", "AudioEvent"), ("observation", "transcript")}
+                for k, frag in want:
+                    if not any(kk == k and frag in det for kk, det in {(r["kind"], r.get("detail") or "") for r in explain_step(d, trim["id"])["chain"]}):
+                        failures.append(f"explain chain lacks {k} {frag!r}")
+            for x in d["decisions"]:
+                if x["subject"] in sp_exp.get("confirm_subjects", []) and x["approval"] != "CONFIRM":
+                    failures.append(f"{x['subject']} should be CONFIRM, is {x['approval']}")
+            blob = json.dumps({"plan": d["plan"], "video": d["video"]})
+            if any(k in blob for k in ("SPEECH", "speaker", "transcription", "argv", "command")):
+                failures.append("plan / operations carry event, speaker, transcript or command material")
+            if sp_exp.get("approve_then") or sp_exp.get("reject_then"):
+                ir_path = str(Path(tmp) / "sp.json"); save_ir(ir, ir_path)
+                if sp_exp.get("approve_then"):
+                    svc.approve(load_ir(ir_path), ir_path, ["all"])
+                    st = load_ir(ir_path).doc["plan"]["status"]
+                    if st != sp_exp["approve_then"]:
+                        failures.append(f"after approve: {st} != {sp_exp['approve_then']}")
+                if sp_exp.get("reject_then") and cands:
+                    svc.reject(load_ir(ir_path), ir_path, [cands[0]["id"]], reason="eval")
+                    r = load_ir(ir_path)
+                    if r.doc["plan"]["status"] != "REJECTED" or svc.render(r, ir_path)["status"] != "BLOCKED":
+                        failures.append("a rejected candidate still renders")
+                    svc.revise(load_ir(ir_path), ir_path)
+                    v2 = load_ir(ir_path)
+                    if [x for x in v2.doc["decisions"] if x["subject"].startswith("silence.internal.") and x["status"] != "REJECTED"]:
+                        failures.append("the rejected candidate was proposed again")
+                    t2 = next((s for s in v2.doc["plan"]["steps"] if s["skill"] == "silence_cleanup"), None)
+                    if sp_exp["reject_then"].get("keep") is not None and (t2 or {}).get("params", {}).get("keep") != sp_exp["reject_then"]["keep"]:
+                        failures.append(f"after revise keep {(t2 or {}).get('params', {}).get('keep')} != {sp_exp['reject_then']['keep']}")
+            for k in ("FAKE_TS_MODE", "FAKE_TS_CACHE", "FAKE_TS_SEGMENTS"):
+                os.environ.pop(k, None)
+            return {"case": case["name"], "ok": not failures, "failures": failures}
         _, _, an = svc.analyze([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
         t = next((o for o in an.observations if o.kind == "transcript"), None)
         if t is None:
@@ -205,9 +273,12 @@ def run_case(case: dict) -> dict:
             ir = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
             d = ir.doc
             sp_ids = {e["id"] for e in d["timeline"]["events"] if e["type"] == "SPEECH"}
-            blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "decisions": d["decisions"], "inferences": d["analysis"]["inferences"]})
+            blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "delivery": d["delivery"]})
             if any(x in blob for x in ("SPEECH", "transcription", "speaker")) or any(i in blob for i in sp_ids):
-                failures.append("SpeechEvents reached inferences / decisions / the plan")
+                failures.append("SpeechEvents / transcript / speaker material reached the plan or its operations")
+            reasoning = json.dumps({"decisions": d["decisions"], "inferences": d["analysis"]["inferences"]})
+            if "speaker_name" in reasoning or "camera" in reasoning or any(i.get("data", {}).get("speaker_id") is not None for i in d["analysis"]["inferences"]):
+                failures.append("speaker identity appeared in inferences / decisions")
             if not svc.validate(ir).ok:
                 failures.append(f"IR with transcript is invalid: {svc.validate(ir).errors}")
         os.environ.pop("FAKE_TS_MODE", None); os.environ.pop("FAKE_TS_CACHE", None)

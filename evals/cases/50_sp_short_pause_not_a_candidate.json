@@ -1,0 +1,55 @@
+{
+ "name": "sp_short_pause_not_a_candidate",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    10.5
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    3.5,
+    8.8,
+    "a"
+   ],
+   [
+    10.8,
+    13.5,
+    "b"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "speech": {
+   "inferences": {
+    "internal_silence_removable": 0,
+    "internal_silence_candidate": 1
+   },
+   "candidates": 0,
+   "plan_status": "APPROVED",
+   "keep": [
+    [
+     2.85,
+     13.85
+    ]
+   ]
+  }
+ }
+}

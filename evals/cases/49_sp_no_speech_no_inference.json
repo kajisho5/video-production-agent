@@ -1,0 +1,41 @@
+{
+ "name": "sp_no_speech_no_inference",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "prefer": false,
+  "kinds": [
+   "silence",
+   "loudness"
+  ],
+  "params": {}
+ },
+ "expect": {
+  "speech": {
+   "inferences": {
+    "speech_interval": 0,
+    "speech_activity": 0,
+    "internal_silence_removable": 0
+   },
+   "candidates": 0,
+   "plan_status": "APPROVED"
+  }
+ }
+}

@@ -57,30 +57,69 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         trim_evidence: List[str] = []
         lead = next((i for i in infs if i.kind == "leading_silence_unwanted"), None)
         tail = next((i for i in infs if i.kind == "trailing_silence_unwanted"), None)
+        conflicts = [i for i in infs if i.kind == "speech_silence_conflict"]
+
+        def disputed(start: float, end: float) -> List[Inference]:
+            """Speech / silence conflicts overlapping a trim range: recognised speech inside a 'technical' silence. The trim then
+            needs confirmation whatever the policy says (safe side); nothing is corrected."""
+            return [c for c in conflicts if c.data["silence"]["start"] < end and c.data["silence"]["end"] > start]
+
         if lead and want_lead and want_lead.value in (True, "auto"):
             approval = str(rules.get("silence.leading.approval", "AUTO"))
             if want_lead.provenance == "USER" and approval == "CONFIRM":
                 approval = "AUTO"  # the user asked explicitly; confirmation would be redundant
+            lead_conf = disputed(0.0, lead.data["end"])
+            if lead_conf and approval == "AUTO":
+                approval = "CONFIRM"
             keep_start = lead.data["end"]
             trim_evidence += [lead.id] + lead.evidence
-            decs.append(Decision(subject="silence.leading", decision=f"trim 0.000-{keep_start:.3f}s", reason=lead.statement + f"; policy silence.leading.approval={rules.get('silence.leading.approval', 'AUTO')}",
-                                 confidence=lead.confidence, evidence=[lead.id] + lead.evidence, risk="LOW", approval=approval,
+            decs.append(Decision(subject="silence.leading", decision=f"trim 0.000-{keep_start:.3f}s", reason=lead.statement + f"; policy silence.leading.approval={rules.get('silence.leading.approval', 'AUTO')}"
+                                 + ("; recognised speech overlaps this silence, so the trim needs confirmation" if lead_conf else ""),
+                                 confidence=lead.confidence, evidence=[lead.id] + lead.evidence + [c.id for c in lead_conf], risk="MEDIUM" if lead_conf else "LOW", approval=approval,
                                  alternatives=[Alternative("keep", "leave the lead-in untouched", "output keeps the silent seconds").to_dict()],
                                  provenance="USER" if want_lead.provenance == "USER" else "INFERRED", params={"asset_id": asset.id, "start": 0.0, "end": keep_start}))
         if tail and want_tail and want_tail.value in (True, "auto"):
             approval = str(rules.get("silence.trailing.approval", "AUTO"))
             if want_tail.provenance == "USER" and approval == "CONFIRM":
                 approval = "AUTO"
+            tail_conf = disputed(tail.data["start"], dur)
+            if tail_conf and approval == "AUTO":
+                approval = "CONFIRM"
             keep_end = tail.data["start"]
             trim_evidence += [tail.id] + tail.evidence
-            decs.append(Decision(subject="silence.trailing", decision=f"trim {keep_end:.3f}-{dur:.3f}s", reason=tail.statement,
-                                 confidence=tail.confidence, evidence=[tail.id] + tail.evidence, risk="LOW", approval=approval,
+            decs.append(Decision(subject="silence.trailing", decision=f"trim {keep_end:.3f}-{dur:.3f}s", reason=tail.statement
+                                 + ("; recognised speech overlaps this silence, so the trim needs confirmation" if tail_conf else ""),
+                                 confidence=tail.confidence, evidence=[tail.id] + tail.evidence + [c.id for c in tail_conf], risk="MEDIUM" if tail_conf else "LOW", approval=approval,
                                  alternatives=[Alternative("keep", "leave the tail untouched").to_dict()],
                                  provenance="USER" if want_tail.provenance == "USER" else "INFERRED", params={"asset_id": asset.id, "start": keep_end, "end": dur}))
+        # ---- speech (recognition evidence): continuity is kept as a fact-backed decision; long internal pauses between speech
+        # become removal *candidates*. Approval comes from policy (`silence.internal.approval`, generic / conference: CONFIRM) and is
+        # never lowered below CONFIRM here: "speech was recognised" ≠ "this pause must go". Who speaks is never part of it.
+        activity = next((i for i in infs if i.kind == "speech_activity"), None)
+        if activity:
+            decs.append(Decision(subject="speech.continuity", decision=f"keep all {activity.data['intervals']} speech interval(s)", reason=activity.statement + "; recognised speech is never removed by an automatic edit",
+                                 confidence=activity.confidence, evidence=[activity.id] + activity.evidence, risk="LOW", approval="AUTO", provenance="INFERRED",
+                                 params={"asset_id": asset.id, "intervals": activity.data["intervals"], "speech_seconds": activity.data["speech_seconds"]}))
+        removable = [i for i in infs if i.kind == "internal_silence_removable"]
+        covered = {(i.data["silence"]["start"], i.data["silence"]["end"]) for i in removable}
+        internal_policy = str(rules.get("silence.internal.approval", "CONFIRM"))
+        for inf in removable:
+            approval = "BLOCK" if internal_policy.startswith("BLOCK") else "CONFIRM"
+            decs.append(Decision(subject=f"silence.internal.{inf.data['silence']['start']:.3f}-{inf.data['silence']['end']:.3f}", decision=f"remove {inf.data['start']:.3f}-{inf.data['end']:.3f}s (candidate)",
+                                 reason=inf.statement + f"; policy silence.internal.approval={internal_policy}: a pause between speech is content-adjacent and needs confirmation",
+                                 confidence=inf.confidence, evidence=[inf.id] + inf.evidence, risk="MEDIUM", approval=approval, status="BLOCKED" if approval == "BLOCK" else "PROPOSED",
+                                 alternatives=[Alternative("keep", "leave the pause untouched", "output keeps the silent seconds").to_dict()], provenance="INFERRED",
+                                 params={"asset_id": asset.id, "start": inf.data["start"], "end": inf.data["end"], "seconds": inf.data["seconds"]}))
         for inf in (i for i in infs if i.kind == "internal_silence_candidate"):
+            if (inf.data.get("start"), inf.data.get("end")) in covered:
+                continue   # the same pause is a removal candidate above (one decision per pause)
             decs.append(Decision(subject="silence.internal", decision="keep", reason=inf.statement + "; internal gaps are content-adjacent, removal needs CONFIRM and is not proposed automatically",
                                  confidence=inf.confidence, evidence=[inf.id] + inf.evidence, risk="MEDIUM", approval="AUTO", provenance="INFERRED", params={"asset_id": asset.id, **inf.data}))
-        if keep_start > 0 or keep_end < dur:
+        for inf in (i for i in infs if i.kind == "speech_silence_conflict"):
+            decs.append(Decision(subject=f"silence.conflict.{inf.data['silence']['start']:.3f}-{inf.data['silence']['end']:.3f}", decision="keep", reason=inf.statement + "; a disputed interval is never edited automatically",
+                                 confidence=inf.confidence, evidence=[inf.id] + inf.evidence, risk="MEDIUM", approval="AUTO", provenance="INFERRED",
+                                 params={"asset_id": asset.id, **inf.data["silence"]}))
+        if keep_start > 0 or keep_end < dur or removable:
             cap_block("silence_cleanup", "capability.silence_cleanup")
         # ---- loudness
         want_norm = m.get("audio.normalize")

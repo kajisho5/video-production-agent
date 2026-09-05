@@ -8,6 +8,7 @@ from ..media.analysis import loudness_facts
 from ..media.analyzer import AnalysisResult
 from ..models import Inference
 from ..policy.rules import RuleSet
+from .speech_inference import infer_speech
 
 EDGE_TOL = 0.05  # seconds: a silence starting within this of 0 counts as "leading"
 
@@ -53,4 +54,5 @@ def infer(analysis: AnalysisResult, rules: RuleSet, target_lufs: float = None, t
                     out.append(Inference(kind="loudness_off_target", asset_id=asset.id, confidence=0.95,
                                          statement=f"measured {lufs:.1f} LUFS vs target {target_lufs:g} (tolerance ±{tolerance_lu:g} LU)",
                                          evidence=[obs.id], data={"lufs": lufs, "target": target_lufs, "true_peak": lf["true_peak"]}))
+    out += infer_speech(analysis, rules)   # speech intervals / removable internal pauses from SpeechEvents + measured silences (deterministic)
     return out

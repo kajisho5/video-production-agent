@@ -743,3 +743,98 @@ class TranscriptionRealTests(unittest.TestCase):
         self.assertIn("faster_whisper@", r.stdout); self.assertIn("no inference, decision", r.stdout)
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "doctor"], capture_output=True, text=True, env=env)
         self.assertEqual(json.loads(r.stdout)["transcription"]["status"], "AVAILABLE")
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill() and locate_transcription(), "needs ffmpeg, ffmpeg-skill and transcription-skill")
+class SpeechToPlanRealTests(unittest.TestCase):
+    """PR #14 on real media: transcription-skill → Transcript → SpeechEvent → speech inferences (intervals, conflicts with the
+    measured silence) → decisions → ProductionPlan → Project IR → validate → explain. Fixture: the Skill's ja_short.wav twice
+    with a 3 s pause in between (real speech, real pause). Runs only when the engine and its default model are local."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.transcription import TranscriptionAdapter
+        cls.tmp = tempfile.mkdtemp(prefix="va_sp_")
+        src_dir = Path(cls.tmp) / "src"
+        src_dir.mkdir()
+        fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
+        cls.ready = fixture.is_file()
+        if cls.ready:
+            cls.src = str(src_dir / "two_takes.wav")
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fixture), "-i", str(fixture), "-filter_complex",
+                            "[0:a]apad=pad_dur=3[a0];[a0][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "pcm_s16le", cls.src], check=True)
+            ad = TranscriptionAdapter(workspace=str(Path(cls.tmp) / "ws" / "cache" / "transcription"), allowed_inputs=[str(src_dir)], offline=True)
+            rows = {c.get("check"): c for c in ad.doctor().get("checks") or []}
+            eng = next((e for e in ad.engine_status() if e.get("id") == "faster_whisper"), {})
+            cls.ready = bool(eng.get("available")) and (rows.get(f"model:faster_whisper:{eng.get('default_model') or 'base'}") or {}).get("status") == "AVAILABLE"
+
+    def test_speech_and_silence_to_reviewable_plan(self):
+        if not self.ready:
+            self.skipTest("needs the transcription-skill fixture, faster-whisper and a local default model")
+        from video_agent.agent.production_plan import executable_steps, explain_step
+        ws = str(Path(self.tmp) / "ws")
+        svc = Service(workspace=ws, offline=True)
+        # the measured facts, before any planning: speech events and silence events on one timeline, timestamps as measured
+        _, _, an = svc.analyze([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        sp = sorted(an.timeline.query(type="SPEECH"), key=lambda e: e.range["start"])
+        sil = sorted(an.timeline.query(type="AUDIO_SILENCE"), key=lambda e: e.range["start"])
+        self.assertEqual(len(sp), 2, [(e.range, e.metadata.get("text")) for e in sp])
+        self.assertTrue(all(e.metadata["speaker_id"] is None for e in sp))
+        self.assertTrue(any(8.0 <= e.range["start"] <= 10.0 and 12.0 <= (e.range["end"] or 0) <= 13.5 for e in sil), f"the 3 s pause is measured as silence: {[e.range for e in sil]}")
+        pause = next(e for e in sil if 8.0 <= e.range["start"] <= 10.0)
+        ir = svc.plan([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        d = ir.doc
+        rep = svc.validate(ir)
+        self.assertEqual(rep.errors, [], rep.errors)
+        # events in the IR are the measured ones, unchanged by inference
+        ir_sp = sorted([e for e in d["timeline"]["events"] if e["type"] == "SPEECH"], key=lambda e: e["range"]["start"])
+        ir_sil = [e for e in d["timeline"]["events"] if e["type"] == "AUDIO_SILENCE" and e["range"]["start"] == pause.range["start"]]
+        self.assertEqual([e["range"] for e in ir_sp], [e.range for e in sp])
+        self.assertEqual(ir_sil[0]["range"], pause.range)
+        self.assertEqual(ir_sil[0]["source"], pause.source, "silence provenance (the measurement tool) is kept")
+        infs = d["analysis"]["inferences"]
+        by = {}
+        for i in infs:
+            by.setdefault(i["kind"], []).append(i)
+        self.assertEqual(len(by["speech_interval"]), 2)
+        self.assertEqual(len(by["speech_activity"]), 1)
+        self.assertTrue(all(i["provenance"] == "INFERRED" and i["data"]["speaker_id"] is None for k in ("speech_interval", "speech_activity") for i in by[k]))
+        self.assertTrue(all(any(e["id"] in i["evidence"] for e in ir_sp) for i in by["speech_interval"]), "each interval cites a SpeechEvent of this plan's analysis")
+        # Whisper's segments extend into the measured pause on this recording, so the layers disagree: recorded as a conflict,
+        # no removal candidate, nothing corrected; a trim overlapping a conflict needs confirmation
+        conflicts = by.get("speech_silence_conflict", [])
+        cands = [x for x in d["decisions"] if x["subject"].startswith("silence.internal.")]
+        if conflicts:
+            self.assertTrue(any(c["data"]["silence"]["start"] == pause.range["start"] for c in conflicts))
+            self.assertEqual([c for c in cands if c["params"]["start"] >= pause.range["start"] and c["params"]["end"] <= pause.range["end"]], [], "a disputed pause is never a removal candidate")
+        else:
+            self.assertEqual(len(cands), 1, "no conflict on this recording: the pause is a CONFIRM candidate")
+            self.assertEqual(cands[0]["approval"], "CONFIRM")
+        for x in d["decisions"]:
+            if x["subject"] in ("silence.leading", "silence.trailing") and any(c["id"] in x["evidence"] for c in conflicts):
+                self.assertEqual(x["approval"], "CONFIRM", x["subject"])
+        self.assertTrue(all(x["approval"] != "AUTO" for x in cands))
+        cont = next(x for x in d["decisions"] if x["subject"] == "speech.continuity")
+        self.assertEqual((cont["approval"], cont["params"]["intervals"]), ("AUTO", 2))
+        # plan / IR: no event, transcript, engine or speaker material; the trim (if any) waits for confirmation when disputed
+        blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "delivery": d["delivery"]})
+        for bad in ("SPEECH", "speaker", "transcription", "faster_whisper", "argv"):
+            self.assertNotIn(bad, blob)
+        trim = next((s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"), None)
+        if trim and any(x["approval"] == "CONFIRM" and x["status"] == "PROPOSED" for x in d["decisions"] if x["id"] in trim["decision_ids"]):
+            self.assertEqual(d["plan"]["status"], "REVIEW")
+            self.assertNotIn(trim["id"], executable_steps(d))
+            chain = explain_step(d, trim["id"])["chain"]
+            details = [(r["kind"], r.get("detail") or "") for r in chain]
+            self.assertTrue(any(k == "event" and "SpeechEvent" in det for k, det in details), "explain reaches the SpeechEvent")
+            self.assertTrue(any(k == "observation" and det == "transcript" for k, det in details), "…and the transcript observation")
+            self.assertTrue(any(k == "event" and "AudioEvent/silence" in det for k, det in details))
+        # CLI: explain --step / --decision on the saved IR
+        ir_path = str(Path(ws) / "p.json")
+        save_ir(ir, ir_path)
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=ws)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", ir_path, "--decision", "speech.continuity"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keep all 2 speech interval(s)", r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "validate", ir_path], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)

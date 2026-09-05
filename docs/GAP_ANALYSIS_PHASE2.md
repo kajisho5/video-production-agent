@@ -220,3 +220,17 @@ transcription-skill: 未接続。理由は main に実装・contract が無い�
 既知の別件: ffmpeg-skill の silencedetect が container duration を超える end を返す fixture（transcription-skill の lecture_short.mp4）では `plan` が validation error（event range exceeds asset duration）になる。base branch でも同じ（本 PR の変更ではない）。
 
 テスト: unit（fake transcription process 21 モード: valid / empty / text / two_docs / wrong schema・skill・version・engine・asset / bad source / no transcript / invalid provenance / speaker_id / bad segments / timeout / hang / crash / non-zero / model・engine unavailable、SpeechEvent、cached-only、allowed roots + symlink escape（adapter と Skill 双方）、registry / resolver / Service(offline)、explain chain、静的境界）、integration（実 transcription-skill 0.2.0 + faster-whisper 1.2.1 + base model local: contract / doctor / path policy は常時、実認識・lifting・provenance・cache hit・SpeechEvent・shared identity・CLI は model が local のときのみ。CI は clone のみで model download を強制しない）、evals 15 件（negative 中心）。
+
+## 15. PR #14 — SpeechEvent → Inference → Decision → ProductionPlan（2026-09-04 追記）
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G67 SpeechEvent が inference に届かない | SPEECH は timeline 記録のみ | `agent/speech_inference.py`: speech_interval / speech_activity / internal_silence_removable / speech_silence_conflict（決定的、speaker_id null、AI 無し） |
+| G68 発話統合・削除候補の閾値が無い | `silence.internal.min_seconds` のみ | `speech.merge_gap_seconds`（DEFAULT 0.5）、`silence.internal.removable_min_seconds`（DEFAULT 2.0）を policy キー化し、値 + provenance を inference に記録 |
+| G69 内部無音は常に keep | `silence.internal: keep`（AUTO） | 発話に挟まれた長い無音は `silence.internal.<range>: remove (candidate)`（CONFIRM / BLOCK、AUTO 無し）。conflict と重なる lead / tail trim は CONFIRM |
+| G70 planner が内部区間を扱えない | keep は単一区間 | 候補（未 REJECTED）を removed に加え keep を補集合化（多区間 trim、compiler / QA 既存対応） |
+| G71 provenance chain | — | explain --step が decision → removable inference → silence event + speech_interval → SPEECH → transcript observation まで到達 |
+
+既知・未対応: silencedetect end > duration（別 PR）。実メディアでは Whisper segment が無音側へ伸びるため conflict になりやすい（単語タイムスタンプでの精緻化は次 PR 候補）。
+
+テスト: unit 4 件（fake: 統合、conflict、候補 → CONFIRM → approve / reject / revise / render / resume、境界・決定性・silencedetect 未修正）、evals 8 件、integration 1 件（実 transcription-skill + ffmpeg-skill、ja_short ×2 + 3 s 無音）。
