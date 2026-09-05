@@ -254,9 +254,27 @@ class Artifact(Model):
     tool: str = ""
     tool_version: str = ""
     created_at: str = field(default_factory=now_iso)
-    qa_status: str = "PENDING"      # PENDING | PASS | WARN | FAIL
-    stage: str = "working"          # ARTIFACT_STAGES
+    qa_status: str = "PENDING"      # PENDING | PASS | WARN | FAIL | UNKNOWN
+    stage: str = "working"          # ARTIFACT_STAGES: working → candidate → (approved) → final → archive
     id: str = field(default_factory=lambda: new_id("art"))
+    # ---- production identity and lifecycle (ADR-022); defaults keep older job records loadable
+    logical_name: str = ""          # ProductionPlan output name, e.g. "<asset>_delivery_youtube"
+    project_id: str = ""
+    plan_id: str = ""
+    plan_version: int = 1
+    job_id: str = ""                # producing job; `jobs` lists every job that produced or reused it
+    jobs: List[str] = field(default_factory=list)
+    format: str = ""                # preset / container name
+    name: str = ""                  # safe delivery file name (naming template), not the storage path
+    size: Optional[int] = None
+    media: Dict[str, Any] = field(default_factory=dict)      # probe subset recorded by QA
+    operations: List[str] = field(default_factory=list)      # IR operation ids that produced it
+    step_id: Optional[str] = None                            # ProductionStep
+    decision_ids: List[str] = field(default_factory=list)
+    qa: Dict[str, Any] = field(default_factory=dict)         # {pass, warn, fail, items}
+    delivery_status: str = "NOT_READY"                       # NOT_READY | READY | DELIVERED | ARCHIVED (view of stage)
+    delivery_history: List[Dict[str, Any]] = field(default_factory=list)
+    provenance: Dict[str, Any] = field(default_factory=dict) # {ir_path, plan_hash, ir_hash, provenance_path}
 
 
 @dataclass

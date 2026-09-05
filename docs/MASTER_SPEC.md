@@ -1054,6 +1054,45 @@ THUMBNAIL
 REPORT
 ```
 
+### Artifact / Delivery / Archive (implemented, ADR-022)
+
+```text
+ProductionPlan.outputs → Project IR → Execution → Artifact → QA → Delivery → Archive
+```
+
+| Concept | Meaning | Implementation |
+|---|---|---|
+| File | bytes on a filesystem | the compiler decides where a job writes (`<workspace>/jobs/<job>/artifacts/…`); never an AI, never a plan step |
+| Artifact | a production result: identity, links, QA status, lifecycle | `models.Artifact` + `artifacts/store.py` manifests in `<workspace>/artifacts/registry/<id>.json` |
+| QA | is the result technically / semantically correct | `qa/` (PASS / WARN / FAIL; UNKNOWN when nothing was checked) |
+| Delivery | promotion to a deliverable, recorded state (no upload today) | `ArtifactStore.promote(… "final")`, `video-agent deliver` |
+| Archive | keep the production history: artifact ↔ plan ↔ job ↔ QA ↔ provenance | stage `archive` + per-project index `<workspace>/archive/<project>.json` (logical, no copies / ZIP) |
+
+- Identity: `art_` + hash(project id, plan id, logical name, sha256). Same plan + same bytes → same artifact (a resumed job
+  is appended to `jobs`); a revised plan or different content → a different artifact. Never derived from the path, the
+  job id or a timestamp. Immutable: a promotion re-verifies the bytes; a changed file is a hash mismatch, never the same
+  artifact. Re-registering an identity with other bytes is `ARTIFACT_CONFLICT`.
+- Links: `job_id` / `jobs`, `operations` (IR operation ids), `step_id` (ProductionStep), `decision_ids`, `provenance`
+  (ir_path, plan_hash, ir_hash, provenance.json). `video-agent explain --artifact` walks artifact → job → operations →
+  step → decisions → inferences → events → observations.
+- QA association: `qa_status` (PASS / WARN / FAIL / UNKNOWN) and the QA items for the artifact. Initial stage:
+  `candidate` (READY) when QA is PASS or WARN (existing policy), `working` (NOT_READY) on FAIL.
+- Lifecycle (`stage`, view `delivery_status`): working=NOT_READY → candidate/approved=READY → final=DELIVERED →
+  archive=ARCHIVED. Gates for `final`: integrity ok, QA not FAIL / UNKNOWN, the artifact's plan currently APPROVED (a
+  REJECTED / BLOCKED / REVIEW plan, or an IR that moved on to a newer plan version, cannot deliver). Archive is
+  allowed from candidate / final and is terminal. No external delivery exists; `channel` (default `local`) is the
+  extension point for future delivery adapters (YouTube / S3 / NAS …), which are not implemented.
+- Registration happens after execution and QA inside `render`: a planned delivery output that is missing, unreadable
+  or outside the workspace fails the job (`FAILED`, `artifact_error`) instead of leaving a COMPLETED job without an
+  artifact. Registration never moves, renames or rewrites media.
+- Naming (`artifacts/naming.py`): the profile template (`{project}_{target}_{version}`) renders a safe delivery file
+  name (no separators / traversal, invalid and control characters replaced, Windows reserved names prefixed, trailing
+  dot / space stripped, bounded length). It is metadata on the manifest, not the storage path.
+- Path security: manifests accept only absolute, traversal-free, non-symlink paths inside the workspace (same
+  boundary as the tool `PathPolicy`).
+- Three hashes, three meanings: `plan_hash` = production plan identity (assets / video / audio / delivery / qa);
+  `ir_hash` = execution contract identity (whole IR); artifact `sha256` = the produced bytes.
+
 ## 37. Job and Lifecycle
 
 Support a job state machine such as:

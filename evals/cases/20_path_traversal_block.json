@@ -1,0 +1,18 @@
+{
+ "name": "path_traversal_block",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "artifact": {
+   "path_traversal": true
+  }
+ }
+}

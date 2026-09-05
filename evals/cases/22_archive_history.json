@@ -1,0 +1,19 @@
+{
+ "name": "archive_history",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "artifact": {
+   "deliver": true,
+   "archive": true
+  }
+ }
+}

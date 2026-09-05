@@ -40,8 +40,10 @@ class FakeAdapter(ToolAdapter):
     version = "0.8.4-fake"
     ALIASES: Dict[str, str] = {}   # subclasses standing in for another engine map their tool names onto the fake scripts
 
-    def __init__(self, duration: float = 16.0, silences: Optional[List[List[Optional[float]]]] = None, lufs: float = -11.0, fail_tools: Optional[Dict[str, int]] = None, audio: bool = True, vfr: bool = False, hdr: bool = False):
+    def __init__(self, duration: float = 16.0, silences: Optional[List[List[Optional[float]]]] = None, lufs: float = -11.0, fail_tools: Optional[Dict[str, int]] = None, audio: bool = True, vfr: bool = False, hdr: bool = False,
+                 true_peak: float = -5.0):
         self.duration, self.audio, self.vfr, self.hdr = duration, audio, vfr, hdr
+        self.true_peak = true_peak   # reported by loudness --measure-only; > 0 dBTP makes QA FAIL (clipping)
         self.silences = silences if silences is not None else [[0.0, 3.0], [13.7, None]]
         self.lufs = lufs
         self.fail_tools = dict(fail_tools or {})   # tool -> number of failures before success
@@ -87,7 +89,7 @@ class FakeAdapter(ToolAdapter):
         if script == "loudness":
             if op.args.get("measure_only"):
                 lufs = in_meta.get("lufs", self.lufs) if in_meta else self.lufs
-                return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(lufs), "input_tp": "-5.0", "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
+                return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(lufs), "input_tp": str(self.true_peak), "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
             self.lufs = float(op.args["lufs"])
             if out and not dry_run:
                 _write_fake(out, {"duration": in_dur, "lufs": self.lufs})

@@ -10,7 +10,9 @@ from typing import Any, Dict, List, Optional
 from . import __version__
 from .agent import build_plan, decide, extract_requirements, infer, resolve_intent
 from .agent.ai_reasoning import AIReasoner, build_request, to_inferences
+from .agent.production_plan import plan_status
 from .agent.requirements import requirement_map
+from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, write_audit
 from .capabilities import CapabilityResolver
 from .execution import CompileError, Executor, compile_ir
@@ -416,21 +418,15 @@ class Service:
             self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter)
             qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools)
             out["qa"] = qa.to_dict()
-            artifacts = []
-            for asset_id in ir.doc["assets"]:
-                for t in ir.doc["delivery"]["targets"]:
-                    art_id = f"{asset_id}_delivery_{t['id']}"
-                    if art_id in paths and os.path.exists(paths[art_id]):
-                        from .media.analyzer import sha256_file
-                        st = {i.status for i in qa.items if i.artifact == art_id}
-                        art_qa = "FAIL" if "FAIL" in st else ("WARN" if "WARN" in st else "PASS")
-                        exp = next((o for o in ops if o.skill == "delivery_export" and art_id in o.outputs), None)
-                        a = Artifact(path=paths[art_id], type=t.get("artifact_type", "MASTER"), hash=sha256_file(paths[art_id]), source=[asset_id], generation=1,
-                                     tool=exp.tool if exp else "", tool_version=tool_version_of(ir.doc["source"]["tool_versions"], exp.tool) if exp else "", qa_status=art_qa,
-                                     stage="candidate" if art_qa != "FAIL" else "working", id=art_id)
-                        artifacts.append(a.to_dict())
-            job.artifacts = artifacts
-            out["artifacts"] = artifacts
+            try:
+                artifacts = self._register_artifacts(ir, ir_path, job, ops, paths, qa)
+            except ArtifactError as e:
+                job.transition("FAILED", f"artifact registration failed: {e}")
+                store.save(job)
+                out.update({"job": job.to_dict(), "status": "FAILED", "artifact_error": {"kind": e.kind, "message": str(e)}})
+                return out
+            job.artifacts = [a.to_dict() for a in artifacts]
+            out["artifacts"] = job.artifacts
             job.transition("COMPLETED" if qa.status != "FAIL" else "REVIEW", f"qa {qa.status}")
             if qa.status == "FAIL":
                 out["status"] = "REVIEW"
@@ -452,6 +448,108 @@ class Service:
         out["job"] = job.to_dict()
         out["report"] = str(job.dir / "report.md")
         return out
+
+    # ---- artifacts (ADR-022): registration after QA, delivery promotion, archive
+    def artifact_store(self) -> ArtifactStore:
+        return ArtifactStore(self.workspace)
+
+    def _register_artifacts(self, ir: ProjectIR, ir_path: str, job: Job, ops, paths: Dict[str, str], qa) -> List[Artifact]:
+        """Every planned delivery output that the execution produced becomes a registered Artifact: identity from
+        (project, plan, logical name, sha256), links to the job / operations / production step / decisions, QA status and
+        the initial stage (candidate when QA is not FAIL, working otherwise). A missing or unreadable output is an error."""
+        d = ir.doc
+        st = self.artifact_store()
+        out: List[Artifact] = []
+        planned = {o["logical"]: o for o in d["plan"].get("outputs") or []}
+        for asset_id in d["assets"]:
+            for t in d["delivery"]["targets"]:
+                logical = f"{asset_id}_delivery_{t['id']}"
+                if logical not in paths or not t.get("preset"):
+                    continue
+                path = paths[logical]
+                chk = st.integrity(path)
+                if not chk["ok"]:
+                    raise ArtifactError(chk["error"].split(":")[0], f"{logical}: {chk['error']} ({path})")
+                items = [i for i in qa.items if i.artifact == logical]
+                statuses = {i.status for i in items}
+                art_qa = "FAIL" if "FAIL" in statuses else ("WARN" if "WARN" in statuses else ("PASS" if items else "UNKNOWN"))
+                exp = next((o for o in ops if o.skill == "delivery_export" and logical in o.outputs), None)
+                chain = [o for o in ops if logical in o.outputs or logical in o.inputs]
+                step = next((s for s in d["plan"].get("steps") or [] if logical in (s.get("outputs") or [])), None)
+                probe = next((m for m in qa.measurements if str(m.get("tool", "")).endswith("/probe") and (m.get("args") or {}).get("inputs") == [path]), None)
+                media = {"measured_by": probe.get("tool")} if probe else {}
+                media.update({i.name: i.observed for i in items if i.layer in ("video", "audio") and i.kind != "judgement"})   # QA facts (codec / stream / duration …)
+                a = Artifact(path=path, type=t.get("artifact_type", "MASTER"), hash=chk["sha256"], source=[asset_id], generation=1,
+                             tool=exp.tool if exp else "", tool_version=tool_version_of(d["source"]["tool_versions"], exp.tool) if exp else "",
+                             qa_status=art_qa, stage="candidate" if art_qa in ("PASS", "WARN") else "working",
+                             id=artifact_id(d["project"]["id"], d["plan"].get("id", ""), logical, chk["sha256"]),
+                             logical_name=logical, project_id=d["project"]["id"], plan_id=d["plan"].get("id", ""), plan_version=ir.version, job_id=job.id, jobs=[job.id],
+                             format=planned.get(logical, {}).get("format") or t.get("preset") or "", size=chk["size"], media=media,
+                             name=delivery_name(d["delivery"].get("naming") or "", {"project": d["project"]["name"], "target": t["id"], "version": f"v{ir.version}", "format": t.get("preset") or "", "date": str(d["project"].get("created_at", ""))[:10]}, Path(path).suffix.lstrip(".")),
+                             operations=[o.id for o in chain], step_id=step["id"] if step else None,
+                             decision_ids=sorted({x for o in chain for x in o.decision_ids}),
+                             qa={"status": art_qa, "pass": sum(1 for i in items if i.status == "PASS"), "warn": sum(1 for i in items if i.status == "WARN"),
+                                 "fail": sum(1 for i in items if i.status == "FAIL"), "items": [i.to_dict() for i in items]},
+                             provenance={"ir_path": ir_path, "plan_hash": ir.plan_hash(), "ir_hash": d["provenance"].get("ir_hash"), "provenance_path": str(job.dir / "provenance.json"),
+                                         "planned": planned.get(logical)})
+                out.append(st.register(a))
+        return out
+
+    def artifacts(self, ir: Optional[ProjectIR] = None, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        st = self.artifact_store()
+        return [a.to_dict() for a in st.list(project_id=ir.doc["project"]["id"] if ir else None, job_id=job_id)]
+
+    def artifact(self, art_id: str) -> Dict[str, Any]:
+        st = self.artifact_store()
+        a = st.get(art_id)
+        if a is None:
+            raise ArtifactError("ARTIFACT_MISSING", art_id)
+        return {**a.to_dict(), "integrity": st.integrity(a.path, a.hash, a.size)}
+
+    def promote_artifact(self, art_id: str, to: str = "final", who: Optional[str] = None, reason: str = "", channel: str = "local") -> Dict[str, Any]:
+        """Delivery = promotion to `final` (recorded, no upload); archive = promotion to `archive`. The plan's current review
+        state is read from the artifact's IR so a rejected / blocked plan can never deliver."""
+        st = self.artifact_store()
+        a = st.get(art_id)
+        if a is None:
+            raise ArtifactError("ARTIFACT_MISSING", art_id)
+        pstatus = None
+        ir_path = (a.provenance or {}).get("ir_path")
+        if ir_path and os.path.exists(ir_path):
+            ir = load_ir(ir_path)
+            pstatus = plan_status(ir.doc)
+            if ir.doc["plan"].get("id") and ir.doc["plan"]["id"] != a.plan_id and to == "final":
+                pstatus = "REVIEW"   # the IR moved on to another plan version: this artifact's plan is no longer the current one
+        return st.promote(art_id, to, who or _default_who(), reason, plan_status=pstatus, channel=channel).to_dict()
+
+    def archive_artifact(self, art_id: str, who: Optional[str] = None, reason: str = "") -> Dict[str, Any]:
+        return self.promote_artifact(art_id, "archive", who, reason)
+
+    def explain_artifact(self, art_id: str) -> Dict[str, Any]:
+        """Artifact → job → operations → production step → decisions → inferences → events → observations."""
+        from .agent.production_plan import explain_step
+        a = self.artifact(art_id)
+        chain: Dict[str, Any] = {"artifact": a, "jobs": a["jobs"], "operations": [], "step": None}
+        pp = (a.get("provenance") or {}).get("provenance_path")
+        if pp and os.path.exists(pp):
+            prov = json.loads(Path(pp).read_text(encoding="utf-8"))
+            chain["operations"] = [e for e in prov.get("operations", []) if a["path"] in (e.get("output") or []) or (e.get("skill") == "delivery_check" and a["path"] in (e.get("input") or []))]
+        ir_path = (a.get("provenance") or {}).get("ir_path")
+        if ir_path and os.path.exists(ir_path) and a.get("step_id"):
+            ir = load_ir(ir_path)
+            if ir.doc["plan"].get("id") == a["plan_id"]:
+                try:
+                    chain["step"] = explain_step(ir.doc, a["step_id"])
+                except KeyError:
+                    chain["step"] = None
+            else:
+                snap = snapshot_path(ir_path, a["plan_version"])
+                if snap and os.path.exists(snap):
+                    try:
+                        chain["step"] = explain_step(load_ir(snap).doc, a["step_id"])
+                    except KeyError:
+                        chain["step"] = None
+        return chain
 
     def check(self, path: str, platform: str = "custom") -> Dict[str, Any]:
         adapter = self.adapter([str(Path(path).resolve().parent)])

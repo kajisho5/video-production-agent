@@ -2063,3 +2063,233 @@ class ProductionPlanTests(unittest.TestCase):
                 for f in forbidden_calls:
                     self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
         self.assertNotIn("DEFAULT_TOOLS", (root / "agent/planner.py").read_text())
+
+
+class ArtifactLifecycleTests(unittest.TestCase):
+    """Artifact / Delivery / Archive (ADR-022): production results as first-class, immutable, traceable objects."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _render(self, svc=None, profile="youtube", name="a.json", approve=("all",)):
+        svc = svc or make_service(self.tmp)
+        ir = svc.plan([self.src], profile)
+        p = str(Path(self.tmp) / name)
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=list(approve) if approve else None)
+        return svc, ir, p, out
+
+    # 31 model: identity, relationships, hash, role, logical name, format, provenance, QA, delivery
+    def test_artifact_model_identity_and_relationships(self):
+        from video_agent.artifacts import artifact_id
+        svc, ir, p, out = self._render()
+        self.assertEqual(out["status"], "COMPLETED")
+        arts = out["artifacts"]
+        self.assertEqual(len(arts), 1)
+        a = arts[0]
+        d = ir.doc
+        self.assertEqual(a["id"], artifact_id(d["project"]["id"], d["plan"]["id"], a["logical_name"], a["hash"]))
+        self.assertTrue(a["id"].startswith("art_") and not a["id"].startswith(("job_", "plan_", "op_")))
+        self.assertEqual((a["project_id"], a["plan_id"], a["plan_version"], a["job_id"], a["jobs"]), (d["project"]["id"], d["plan"]["id"], 1, out["job"]["id"], [out["job"]["id"]]))
+        self.assertEqual((a["type"], a["logical_name"], a["format"]), ("YOUTUBE", d["plan"]["outputs"][0]["logical"], "youtube"))
+        self.assertEqual(len(a["hash"]), 64)
+        self.assertEqual(a["size"], os.path.getsize(a["path"]))
+        self.assertEqual(a["step_id"], next(st["id"] for st in d["plan"]["steps"] if st["skill"] == "delivery_export"))
+        self.assertTrue(set(a["decision_ids"]) >= set(next(st for st in d["plan"]["steps"] if st["skill"] == "delivery_export")["decision_ids"]))
+        self.assertTrue(len(a["operations"]) >= 2, "export and check operations")
+        self.assertEqual((a["qa_status"], a["qa"]["status"], a["stage"], a["delivery_status"]), ("PASS", "PASS", "candidate", "READY"))
+        self.assertEqual(a["provenance"]["plan_hash"], ir.plan_hash())
+        self.assertEqual(a["provenance"]["ir_path"], p)
+        self.assertTrue(a["name"].endswith(".mp4") and "/" not in a["name"])
+        # manifest persisted and readable through the service; integrity ok
+        m = svc.artifact(a["id"])
+        self.assertTrue(m["integrity"]["ok"])
+        self.assertEqual([x["id"] for x in svc.artifacts(ir)], [a["id"]])
+        # the three hashes are different things
+        self.assertNotEqual(a["hash"], ir.plan_hash()); self.assertNotEqual(a["hash"], ir.ir_hash()); self.assertNotEqual(ir.plan_hash(), ir.ir_hash())
+
+    # provenance chain artifact -> job -> operations -> step -> decision -> inference -> event -> observation
+    def test_artifact_provenance_chain(self):
+        svc, ir, p, out = self._render()
+        info = svc.explain_artifact(out["artifacts"][0]["id"])
+        self.assertEqual(info["jobs"], [out["job"]["id"]])
+        self.assertTrue(any(o["skill"] == "delivery_export" for o in info["operations"]))
+        self.assertIsNotNone(info["step"])
+        kinds = [r["kind"] for r in info["step"]["chain"]]
+        self.assertEqual(kinds[0], "decision")
+        # the export step's decision is the delivery target (profile requirement); the trim step chain reaches observations
+        from video_agent.agent.production_plan import explain_step
+        trim = next(st for st in ir.doc["plan"]["steps"] if st["skill"] == "silence_cleanup")
+        self.assertIn("observation", [r["kind"] for r in explain_step(ir.doc, trim["id"])["chain"]])
+
+    # 34 QA -> delivery gates; immutability
+    def test_qa_and_plan_gates_for_delivery(self):
+        from video_agent.artifacts import ArtifactError
+        svc, ir, p, out = self._render()
+        aid = out["artifacts"][0]["id"]
+        # deliver (READY -> DELIVERED), then archive
+        a = svc.promote_artifact(aid, "final", who="tester", reason="ok")
+        self.assertEqual((a["stage"], a["delivery_status"]), ("final", "DELIVERED"))
+        self.assertEqual(a["delivery_history"][-1]["to"], "final")
+        with self.assertRaises(ArtifactError):
+            svc.promote_artifact(aid, "final")        # not twice
+        a = svc.archive_artifact(aid, who="tester")
+        self.assertEqual((a["stage"], a["delivery_status"]), ("archive", "ARCHIVED"))
+        idx = svc.artifact_store().archive_index(ir.doc["project"]["id"])
+        self.assertEqual([e["artifact_id"] for e in idx["entries"]], [aid])
+        self.assertEqual(idx["entries"][0]["sha256"], out["artifacts"][0]["hash"])
+        with self.assertRaises(ArtifactError):
+            svc.promote_artifact(aid, "final")        # archived is terminal
+        # QA FAIL (true peak above 0 dBTP → CLIPPING) -> working / NOT_READY, cannot deliver
+        svc2 = make_service(self.tmp, adapter=FakeAdapter(true_peak=1.0))
+        ir2 = svc2.plan([self.src], "youtube")
+        p2 = str(Path(self.tmp) / "f.json"); save_ir(ir2, p2)
+        out2 = svc2.render(load_ir(p2), p2, approve=["all"])
+        self.assertEqual(out2["status"], "REVIEW", "QA FAIL puts the job in REVIEW")
+        art2 = out2["artifacts"][0]
+        self.assertEqual((art2["qa_status"], art2["stage"], art2["delivery_status"]), ("FAIL", "working", "NOT_READY"))
+        with self.assertRaises(ArtifactError) as cm:
+            svc2.promote_artifact(art2["id"], "final")
+        self.assertEqual(cm.exception.kind, "ARTIFACT_NOT_DELIVERABLE")
+        # rejected plan -> the artifact of that plan cannot be delivered (plan status wins even if QA passed)
+        svc3, ir3, p3, out3 = self._render(name="r.json")
+        svc3.reject(load_ir(p3), p3, [ir3.doc["plan"]["steps"][0]["decision_id"]], reason="changed my mind")
+        with self.assertRaises(ArtifactError):
+            svc3.promote_artifact(out3["artifacts"][0]["id"], "final")
+        # no-audio source (fresh workspace: the observation cache is keyed by file content, and the fake's "truth" differs per adapter)
+        tmp4 = tempfile.mkdtemp(); src4 = fake_media(tmp4)
+        svc4 = make_service(tmp4, adapter=FakeAdapter(audio=False))
+        ir4 = svc4.plan([src4], "youtube"); p4 = str(Path(tmp4) / "w.json"); save_ir(ir4, p4)
+        out4 = svc4.render(load_ir(p4), p4)
+        self.assertIn(out4["artifacts"][0]["qa_status"], ("PASS", "WARN"), "no audio is never a FAIL (real check.py reports WARN, the fake reports PASS)")
+        self.assertEqual(out4["artifacts"][0]["delivery_status"], "READY")
+        self.assertEqual(svc4.promote_artifact(out4["artifacts"][0]["id"], "final")["delivery_status"], "DELIVERED")
+
+    # 20-21 immutability + hash mismatch + missing
+    def test_immutability_hash_mismatch_and_missing(self):
+        from video_agent.artifacts import ArtifactError
+        svc, ir, p, out = self._render()
+        a = out["artifacts"][0]
+        Path(a["path"]).write_bytes(b"tampered")
+        self.assertEqual(svc.artifact(a["id"])["integrity"]["error"], "ARTIFACT_HASH_MISMATCH")
+        with self.assertRaises(ArtifactError) as cm:
+            svc.promote_artifact(a["id"], "final")
+        self.assertEqual(cm.exception.kind, "ARTIFACT_HASH_MISMATCH")
+        self.assertEqual(svc.artifact(a["id"])["stage"], "candidate", "the manifest is not rewritten by a failed promotion")
+        os.remove(a["path"])
+        self.assertEqual(svc.artifact(a["id"])["integrity"]["error"], "ARTIFACT_MISSING")
+        # re-registering the same identity with other bytes is a conflict
+        from video_agent.models import Artifact
+        Path(a["path"]).write_bytes(b"other")
+        st = svc.artifact_store()
+        bad = Artifact.from_dict({**a, "hash": st.integrity(a["path"])["sha256"], "size": 5})
+        with self.assertRaises(ArtifactError) as cm:
+            st.register(bad)
+        self.assertEqual(cm.exception.kind, "ARTIFACT_CONFLICT")
+
+    # 32 revision: v1 and v2 artifacts are separate, v1 untouched
+    def test_revision_artifacts_are_separate(self):
+        svc, ir, p, out1 = self._render()
+        a1 = out1["artifacts"][0]
+        h1 = Path(a1["path"]).read_bytes()
+        svc.reject(load_ir(p), p, [next(st for st in ir.doc["plan"]["steps"] if st["skill"] == "silence_cleanup")["decision_id"]], reason="keep lead-in")
+        svc.revise(load_ir(p), p); svc.approve(load_ir(p), p, ["all"])
+        out2 = make_service(self.tmp).render(load_ir(p), p)
+        self.assertEqual(out2["status"], "COMPLETED")
+        a2 = out2["artifacts"][0]
+        self.assertNotEqual(a1["id"], a2["id"])
+        self.assertNotEqual(a1["plan_id"], a2["plan_id"])
+        self.assertEqual((a1["plan_version"], a2["plan_version"]), (1, 2))
+        self.assertEqual(Path(a1["path"]).read_bytes(), h1, "v1 artifact untouched")
+        self.assertTrue(svc.artifact(a1["id"])["integrity"]["ok"])
+        ids = {x["id"] for x in svc.artifacts(load_ir(p))}
+        self.assertEqual(ids, {a1["id"], a2["id"]})
+        # v1 can still be archived; delivering v1 as final is refused because the IR moved on to plan v2
+        from video_agent.artifacts import ArtifactError
+        with self.assertRaises(ArtifactError):
+            svc.promote_artifact(a1["id"], "final")
+        self.assertEqual(svc.archive_artifact(a1["id"])["delivery_status"], "ARCHIVED")
+        self.assertEqual(svc.promote_artifact(a2["id"], "final")["delivery_status"], "DELIVERED")
+
+    # 33 resume: reuse keeps identity, missing / mismatch / plan change re-execute
+    def test_resume_artifact_reuse(self):
+        svc, ir, p, out1 = self._render()
+        a1 = out1["artifacts"][0]
+        out2 = make_service(self.tmp).render(load_ir(p), p, resume=out1["job"]["id"])
+        self.assertEqual(out2["status"], "COMPLETED")
+        self.assertTrue(out2["resume"] and not out2["resume"]["plan_changed"])
+        a2 = out2["artifacts"][0]
+        self.assertEqual(a2["id"], a1["id"], "same plan + same bytes -> same artifact")
+        self.assertEqual(a2["jobs"], [out1["job"]["id"], out2["job"]["id"]])
+        self.assertEqual(a2["hash"], a1["hash"])
+        self.assertTrue(any(h["event"] == "reused" for h in a2["delivery_history"]))
+        # output missing -> re-executed, new file, still a consistent artifact
+        os.remove(a1["path"])
+        out3 = make_service(self.tmp).render(load_ir(p), p, resume=out2["job"]["id"])
+        self.assertEqual(out3["status"], "COMPLETED")
+        self.assertTrue(os.path.exists(out3["artifacts"][0]["path"]))
+        self.assertIn(out3["job"]["id"], out3["artifacts"][0]["path"])
+        # output tampered (hash mismatch) -> not reused
+        Path(out3["artifacts"][0]["path"]).write_bytes(b"x")
+        out4 = make_service(self.tmp).render(load_ir(p), p, resume=out3["job"]["id"])
+        self.assertEqual(out4["status"], "COMPLETED")
+        self.assertNotEqual(out4["artifacts"][0]["path"], out3["artifacts"][0]["path"])
+
+    # 10, 35 naming and path security
+    def test_naming_and_path_security(self):
+        from video_agent.artifacts import ArtifactError, ArtifactStore, delivery_name, safe_filename
+        self.assertEqual(safe_filename("../../etc/passwd"), "passwd")
+        self.assertEqual(safe_filename("con"), "_con")
+        self.assertEqual(safe_filename("a<b>:c|d?e*f", "mp4"), "a_b__c_d_e_f.mp4")
+        self.assertEqual(safe_filename("  name. "), "name")
+        self.assertEqual(safe_filename(""), "artifact")
+        self.assertEqual(len(safe_filename("x" * 500)), 120)
+        self.assertEqual(delivery_name("{project}_{target}_{version}", {"project": "Talk 1", "target": "youtube", "version": "v1"}, "mp4"), "Talk_1_youtube_v1.mp4")
+        self.assertEqual(delivery_name("{nope}", {"project": "p", "target": "t", "version": "v1"}, "mp4"), "p_t_v1.mp4")
+        st = ArtifactStore(self.tmp)
+        outside = str(Path(tempfile.mkdtemp()) / "x.mp4"); Path(outside).write_bytes(b"1")
+        for bad in (outside, str(Path(self.tmp) / ".." / "x.mp4"), "relative.mp4"):
+            with self.assertRaises(ArtifactError) as cm:
+                st.check_path(bad)
+            self.assertEqual(cm.exception.kind, "ARTIFACT_OUTSIDE_WORKSPACE")
+        link = Path(self.tmp) / "link.mp4"
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            link = None
+        if link:
+            with self.assertRaises(ArtifactError):
+                st.check_path(str(link))
+        inside = Path(self.tmp) / "jobs" / "j" / "artifacts" / "ok.mp4"; inside.parent.mkdir(parents=True); inside.write_bytes(b"ok")
+        self.assertEqual(st.check_path(str(inside)), str(inside))
+
+    # 29 execution ok but artifact registration fails -> job FAILED, no artifact recorded
+    def test_registration_failure_keeps_job_consistent(self):
+        class VanishingAdapter(FakeAdapter):
+            def run(self, op, paths, timeout=None, dry_run=False, attempt=1):
+                r = super().run(op, paths, timeout, dry_run, attempt)
+                if op.tool == "ffmpeg-skill/check" and r.ok:
+                    os.remove(paths.get(op.args["input"], op.args["input"]))   # output disappears after execution, before registration
+                return r
+        svc = make_service(self.tmp, adapter=VanishingAdapter())
+        ir = svc.plan([self.src], "youtube"); p = str(Path(self.tmp) / "v.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "FAILED")
+        self.assertEqual(out["artifact_error"]["kind"], "ARTIFACT_MISSING")
+        self.assertEqual(out["job"]["state"], "FAILED")
+        self.assertEqual(svc.artifacts(ir), [])
+
+    # security: the artifact layer never executes or reaches AI / tools
+    def test_artifact_layer_has_no_path_to_execution(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        forbidden_imports = ("execution", "providers", "agent", "tools", "subprocess", "shlex", "ffmpeg", "shutil")
+        forbidden_calls = ("subprocess", "os.system", "os.popen", "exec(", "eval(", "compile_ir", "Executor(", "__import__", ".complete(", ".run(", "shutil.")
+        for rel in ("artifacts/store.py", "artifacts/naming.py"):
+            for l in (root / rel).read_text(encoding="utf-8").splitlines():
+                code = l.split("#", 1)[0]
+                if code.lstrip().startswith(("import ", "from ")):
+                    for f in forbidden_imports:
+                        self.assertNotIn(f, code, f"{rel} must not import {f}: {l}")
+                for f in forbidden_calls:
+                    self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
