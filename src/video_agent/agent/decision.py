@@ -307,8 +307,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            params={"asset_id": subject, "gain_db": audio["gain"]}, requirements=audio["requirements"], serves_intent=None)
                 planned_ops.append("audio_gain")
             if audio.get("channels"):
-                chans = [audio_channels(a.technical) for a in src]
-                ch = max(chans) if chans and all(c is not None for c in chans) else None   # a concat programme carries the widest input's layout (Skill contract)
+                chans = [c for c in (audio_channels(a.technical) for a in src) if c is not None]
+                ch: Optional[int] = max(chans) if chans and len(chans) == len(src) else None   # a concat programme carries the widest input's layout (Skill contract)
                 op_type, why = channel_operation(audio["channels"], ch)
                 if op_type == "BLOCK":
                     eng.decide(subject="audio.channels", type="BLOCK", decision=f"BLOCK: {audio['channels']} on {subject}", reason=why + "; a channel layout the Skill cannot produce is never guessed",

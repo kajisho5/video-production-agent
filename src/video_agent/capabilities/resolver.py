@@ -166,13 +166,13 @@ class CapabilityResolver:
         ap = locate_audio_production(self.audio_production_dir, self.env)
         if ap:
             try:
-                ad = AudioProductionAdapter(ap, timeout=180.0, ffmpeg_skill_dir=str(skill.root) if skill else None)
-                doc = ad.doctor()
-                drift = ad.drift()
+                apa = AudioProductionAdapter(ap, timeout=180.0, ffmpeg_skill_dir=str(skill.root) if skill else None)
+                doc = apa.doctor()
+                drift = apa.drift()
                 ok = doc.get("status") in ("ok", "degraded") and not drift
-                detail = f"{ad.version} at {ap.describe()} (doctor {doc.get('status')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
-                ops = ad.operation_status(doc)
-                specs = {o["type"]: o for o in ad.contract.get("operations") or []}
+                detail = f"{apa.version} at {ap.describe()} (doctor {doc.get('status')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
+                ops = apa.operation_status(doc)
+                specs = {o["type"]: o for o in apa.contract.get("operations") or []}
                 per_op: Dict[str, str] = {}
                 for typ, st in ops.items():
                     need = [c for c in (specs.get(typ) or {}).get("required_capabilities") or [] if c.startswith(("filter:", "encoder:"))]
@@ -188,9 +188,9 @@ class CapabilityResolver:
                     caps[f"audio-production:{typ}"] = Capability(f"audio-production:{typ}", status, f"doctor {st}" + ("" if st != "unknown" else f"; resolver checked {need}"),
                                                                 {"doctor": st, "required_capabilities": list((specs.get(typ) or {}).get("required_capabilities") or []), "tool": (specs.get(typ) or {}).get("tool")})
                 caps["audio-production"] = Capability("audio-production", "AVAILABLE" if ok else "MISSING", detail,
-                                                      {"version": ad.version, "root": ap.describe(), "contract": ad.contract.get("schema"), "tools": sorted(ad.tools),
-                                                       "operations": per_op, "unsupported": list(ad.lowering.unsupported), "formats": sorted(ad.lowering.formats),
-                                                       "engine": {"id": "ffmpeg-skill", "window": (ad.contract.get("ffmpeg_skill") or {}).get("version_window"),
+                                                      {"version": apa.version, "root": ap.describe(), "contract": apa.contract.get("schema"), "tools": sorted(apa.tools),
+                                                       "operations": per_op, "unsupported": list(apa.lowering.unsupported), "formats": sorted(apa.lowering.formats),
+                                                       "engine": {"id": "ffmpeg-skill", "window": (apa.contract.get("ffmpeg_skill") or {}).get("version_window"),
                                                                   "detected": ((doc.get("checks") or {}).get("ffmpeg_skill") or {}).get("version")},
                                                        "doctor": doc.get("status"), "problems": list(doc.get("problems") or []), "warnings": list(doc.get("warnings") or []), "drift": drift})
             except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used

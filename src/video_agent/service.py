@@ -44,7 +44,7 @@ from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, Transcription
 from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, lift_observation, locate_video_editing
 from .tools.audio_production import PACKAGE as AUDIO_PRODUCTION_PACKAGE, AudioProductionAdapter, locate_audio_production
 from .tools.audio_production import lift_measurement as lift_audio_measurement, lift_observation as lift_audio_observation
-from .agent.audio import SWITCH as AUDIO_SWITCH, parse_audio_requirements
+from .agent.audio import parse_audio_requirements
 from .tools.base import ToolError
 
 

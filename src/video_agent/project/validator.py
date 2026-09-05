@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
-from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SKILL_OF as AUDIO_SKILL_OF
+from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, SKILL_OF as AUDIO_SKILL_OF
 from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF
 from ..agent.production_plan import validate_plan
 from ..models import Event

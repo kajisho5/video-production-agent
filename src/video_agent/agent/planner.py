@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, ir_audio_operation, is_audio_capable, kept_after_cut
-from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, concat_segments, ir_operation, kept_duration
+from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, concat_segments, ir_operation
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 
 
@@ -57,7 +57,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     audio_subjects = {a.id for a in analysis.assets if is_audio_capable(a.technical)} if audio_production else set()
     audio_concat_dec = next((d for d in decisions if d.subject == "audio.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if audio_production else None
     current_of: Dict[str, str] = {}      # subject → latest logical output
-    last_of: Dict[str, Optional[str]] = {}
+    last_of: Dict[str, str] = {}
     scope_of: Dict[str, Dict[str, float]] = {}   # subject → temporal scope on the timeline the subject's current output has
 
     def edit_steps(subject: str, sources: List[str]) -> None:
@@ -225,7 +225,9 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             current, last_step = st.outputs[0], st.id
             summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s of silence"
                            + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
-        current_of[asset.id], last_of[asset.id] = current, last_step
+        current_of[asset.id] = current
+        if last_step:
+            last_of[asset.id] = last_step
         if asset.id in audio_subjects:
             if audio_concat_dec is None:
                 audio_steps(asset.id)

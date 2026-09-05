@@ -320,4 +320,6 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 
 四段階: Skill supports 14 / adapter supports 14 / Planner generates 9 / E2E verified 3 ケース（A 音声のみ、B video container、C 2 入力 concat + normalize）。
 
+未検証（accepted limitation）: Windows / macOS での実 audio-production-skill E2E（CI の integration job は ubuntu のみ。Windows / macOS では fake process による unit / evals のみ）、wav 以外の出力 format（mp3 / m4a / flac …）、5.1 / 7.1 入力の DOWNMIX（fake のみ）。
+
 未対応・別 PR 候補: MIX（複数入力のレベル指定 requirement）、NOISE_REDUCTION / DYNAMICS（根拠となる measurement が無い）、`audio.<op>.approval` の request 指定、video+audio asset で video と audio の両方を納品する二経路、QC Skill との接続（qc-skill は PR #1 未マージ）、mp3 / m4a 等の audio delivery format（現状 wav のみ）。
