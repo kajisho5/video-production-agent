@@ -419,6 +419,16 @@ def load_schema() -> Dict[str, Any]:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
+def historical_decision_ids(doc: Dict[str, Any]) -> set:
+    """Decision ids reviewed in an earlier plan version, as recorded by `revise` (revision.history[].reviews and
+    rejected_decision_ids). They are history: a USER_DECISION event may cite them, an operation or a step never may."""
+    out: set = set()
+    for h in (doc.get("revision") or {}).get("history") or []:
+        out |= set((h.get("reviews") or {}).keys())
+        out |= set(h.get("rejected_decision_ids") or [])
+    return out
+
+
 def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_paths: bool = True, registry=None, supports=None) -> ValidationReport:
     """registry: SkillRegistry (plan steps must cite implemented skills and their declared tools); supports: callable(tool) -> bool
     from the tool router (the named tool must be executable here). Both optional so pure schema checks stay cheap."""
@@ -537,6 +547,10 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     # temporal layer: events are validated domain objects on existing assets, within their duration, with real evidence
     durations = {aid: (a.get("technical") or {}).get("duration") for aid, a in assets.items()}
     known_evidence = {o.get("id") for o in d["analysis"].get("observations") or []} | {x.get("id") for x in d["decisions"]} | {i.get("id") for i in d["analysis"].get("inferences") or []}
+    # ADR-034: a USER_DECISION event carried from an earlier plan version cites the decision *of that version*; it is resolved against
+    # the review history (revision.history[].reviews / rejected_decision_ids), never promoted to an active decision of this version
+    historical = historical_decision_ids(d)
+    current_version = int((d.get("plan") or {}).get("version") or 1)
     events: Dict[str, Event] = {}
     for raw in d["timeline"].get("events") or []:
         try:
@@ -544,7 +558,14 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         except (TypeError, ValueError) as ex:
             rep.errors.append(f"event {raw.get('id')}: {ex}")
             continue
-        for err in validate_event(ev, durations, known_evidence - {ev.id}):
+        known = known_evidence
+        if ev.type == "USER_DECISION":
+            reviewed_version = (ev.metadata or {}).get("plan_version")
+            if isinstance(reviewed_version, int) and reviewed_version < current_version:
+                known = known_evidence | historical
+            elif any(x not in known_evidence and x in historical for x in ev.evidence):
+                rep.errors.append(f"event {ev.id}: cites a decision of an earlier plan version ({', '.join(ev.evidence)}) but is not recorded as that version's review")
+        for err in validate_event(ev, durations, known - {ev.id}):
             rep.errors.append(f"event {ev.id}: {err}")
         events[ev.id] = ev
     for raw in d["timeline"].get("sessions") or []:

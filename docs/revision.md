@@ -18,7 +18,7 @@ plan v1 ──reject(id, reason, by)──▶ v1 [REJECTED decision]  ── ren
 |---|---|
 | REJECTED を含む plan は実行できない | `render` は validation より前に `rejected_cited()` を検査し BLOCKED。validator も error。`approve` も拒否 |
 | 部分承認された operation 以外は実行しない | reject → revise で rejected の operation が消える。残りは CONFIRM なら承認必須、AUTO でも v≥2 は plan 承認必須 |
-| reject 理由・actor・timestamp | `execution.reviews[decision_id] = {action, by, at, reason, plan_version}` と `USER_DECISION` Event。revise 後も rejected decision と reviews は次版へ引き継ぐ。`revision.history[].rejection_reasons` にも複製 |
+| reject 理由・actor・timestamp | `execution.reviews[decision_id] = {action, by, at, reason, plan_version}` と `USER_DECISION` Event。revise 後も rejected decision と reviews は次版へ引き継ぐ。`revision.history[].rejection_reasons` にも複製。v(n) の review 全件は `revision.history[].reviews` に verbatim で残り、持ち越した USER_DECISION event はそこに対して解決される（ADR-034。承認は次版に継承されない） |
 | v1 を壊さない | revise は `<stem>.v<N>.json` を書いてから置き換える。既存 snapshot は上書きしない |
 | v1 の Job / Provenance を v2 で誤再利用しない | Job は `plan_version` を持ち、`--resume` 無しでは何も再利用しない。`--resume` 時も chained key で入力が変わった操作は再利用されない |
 | PlanDiff | `project/diff.py`: decisions（subject@asset）、video/audio ops（type@asset）、delivery（id）の added/removed/changed + summary。REJECTED 行は理由付き |

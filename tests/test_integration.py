@@ -376,6 +376,31 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(res["qa"]["status"], "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
         self.assertTrue(Path(str(Path(ir_path).with_name("conf.v1.json"))).exists())
 
+    def test_approve_revise_approve_render_real_media(self):
+        """ADR-034: APPROVED v1 → revise → APPROVED v2 → render → QA → artifact on real media; v1's reviews stay history."""
+        ws = str(Path(self.tmp) / "ws_rev2")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.src], "conference", hash_sources=False)
+        ir_path = str(Path(ws) / "conf2.json")
+        save_ir(ir, ir_path)
+        pending = [d["id"] for d in ir.pending_confirmations()]
+        self.assertTrue(svc.approve(load_ir(ir_path), ir_path, pending, who="reviewer")["renderable"])
+        v1_reviews = dict(load_ir(ir_path).doc["execution"]["reviews"])
+        out = svc.revise(load_ir(ir_path), ir_path, feedback="a little more headroom", user_requirements={"audio.loudness.true_peak": -2.0}, who="editor")
+        self.assertTrue(out["created"], out)
+        v2 = load_ir(ir_path)
+        self.assertEqual((v2.version, svc.validate(v2).errors), (2, []))
+        self.assertEqual(v2.doc["revision"]["history"][-1]["reviews"], v1_reviews)
+        self.assertEqual(svc.render(load_ir(ir_path), ir_path, timeout=600)["status"], "WAITING_FOR_APPROVAL")
+        self.assertTrue(svc.approve(load_ir(ir_path), ir_path, ["all"], who="reviewer")["renderable"])
+        res = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(res["status"], "COMPLETED", res.get("execution"))
+        self.assertEqual(res["job"]["plan_version"], 2)
+        self.assertEqual(res["qa"]["status"], "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
+        self.assertTrue(res["artifacts"] and os.path.isfile(res["artifacts"][0]["path"]))
+        self.assertEqual(next(op for op in v2.doc["audio"]["operations"] if op["type"] == "audio.loudness")["true_peak"], -2.0)
+        self.assertTrue(Path(str(Path(ir_path).with_name("conf2.v1.json"))).exists())
+
     @unittest.skipIf(os.name == "nt", "process-group check uses ps")
     def test_timeout_kills_the_whole_process_group(self):
         svc = Service(workspace=self.ws)
