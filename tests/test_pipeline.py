@@ -114,7 +114,7 @@ class PipelineScenarioTests(unittest.TestCase):
         self.assertTrue(res["thumbnail/extract_frame"]["output"].endswith(".png"))
         arts = {a["type"]: a for a in out["artifacts"]}
         self.assertEqual((arts["THUMBNAIL"]["stage"], arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["qa"].get("qc")), ("candidate", "PASS", None), "a thumbnail is checked by the agent only")
-        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         kinds = [o["kind"] for o in prov["skill_observations"]]
         self.assertIn("media.probe", kinds); self.assertIn("image.probe", kinds); self.assertIn("qc.report", kinds)
 
@@ -156,7 +156,7 @@ class PipelineScenarioTests(unittest.TestCase):
         self.assertEqual(out["execution"]["status"], "COMPLETED"); self.assertEqual(out["qa"]["status"], "PASS")
         self.assertEqual({a["type"]: a["stage"] for a in out["artifacts"]}, {"YOUTUBE": "approved", "CAPTIONS": "approved", "THUMBNAIL": "candidate"})
         # provenance links every operation to its decision and Skill package
-        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         pk = sorted({e["skill_package"] for e in prov["operations"]})
         self.assertEqual(pk, ["color-grading", "ffmpeg-skill", "motion-graphics", "qc", "subtitle", "thumbnail", "video-editing"])
         self.assertTrue(all(e["decision"] for e in prov["operations"]))

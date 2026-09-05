@@ -1488,7 +1488,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual(items[("delivery", "cues", arts["CAPTIONS"]["logical_name"])]["status"], "PASS")
         self.assertIn(arts["CAPTIONS"]["qa"]["qc"], ("PASS", "WARN")); self.assertEqual(arts["CAPTIONS"]["stage"], "approved" if arts["CAPTIONS"]["qa"]["qc"] == "PASS" else "candidate")
         self._gate_coherent(out, arts["YOUTUBE"])
-        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         self.assertIn("subtitle.file", [o["kind"] for o in prov["skill_observations"]]); self.assertIn("qc.report", [o["kind"] for o in prov["skill_observations"]])
 
     # ---- Scenario 3: video → color grading (RETAG) → thumbnail (with caption) → QC
@@ -1545,7 +1545,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         out = self._render(svc, p)
         self.assertEqual({a["type"] for a in out["artifacts"]}, {"YOUTUBE", "CAPTIONS", "THUMBNAIL"})
         self._gate_coherent(out, next(a for a in out["artifacts"] if a["type"] == "YOUTUBE"))
-        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(sorted({e["skill_package"] for e in prov["operations"]}), ["color-grading", "ffmpeg-skill", "motion-graphics", "qc", "subtitle", "thumbnail", "video-editing"])
         info = Service.explain_pipeline(d, provenance=prov, artifacts=out["artifacts"])
         self.assertTrue(all(info["counts"][lv] > 0 for lv in info["levels"]), info["counts"])
