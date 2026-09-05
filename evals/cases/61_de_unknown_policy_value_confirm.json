@@ -1,0 +1,52 @@
+{
+ "name": "de_unknown_policy_value_confirm",
+ "profile": "generic",
+ "requirements": {
+  "silence.leading.approval": "whatever",
+  "silence.trailing.approval": "BLOCK"
+ },
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -14.0
+ },
+ "expect": {
+  "decisions": {
+   "silence.leading": {
+    "approval": "CONFIRM"
+   },
+   "silence.trailing": {
+    "approval": "BLOCK",
+    "status": "BLOCKED"
+   }
+  },
+  "engine": {
+   "basis": {
+    "silence.leading": {
+     "approval_provenance": "USER",
+     "note_contains": "safe default"
+    },
+    "silence.trailing": {
+     "approval_provenance": "USER"
+    }
+   }
+  },
+  "blocked": true,
+  "production_plan": {
+   "status": "BLOCKED",
+   "validate": true,
+   "render_status": "BLOCKED",
+   "approve": [
+    "all"
+   ]
+  }
+ }
+}

@@ -516,10 +516,43 @@ def cmd_explain(args, svc: Service) -> int:
         return 0
     decs = ir.doc["decisions"]
     if args.decision:
-        decs = [d for d in decs if d["id"] == args.decision or d["subject"] == args.decision]
-        if not decs:
+        try:
+            infos = svc.explain_decision(ir.doc, args.decision)
+        except KeyError:
             print("no such decision", file=sys.stderr)
             return 1
+        if args.json:
+            _print(infos, True)
+            return 0
+        for info in infos:
+            d = info["decision"]
+            print(f"{d['id']}  {d['subject']}  [{d.get('type') or '-'}]\n  decision : {d['decision']}\n  why      : {d['reason']}\n  confidence {d['confidence']:.2f}  risk {d['risk']}  approval {d['approval']}  status {d['status']}  provenance {d['provenance']}  executable {'yes' if info['executable'] else 'no'}")
+            rv = info.get("review")
+            if rv:
+                print(f"  review   : {rv['action']} by {rv['by']} at {rv['at']} (plan v{rv['plan_version']})" + (f" — {rv['reason']}" if rv.get("reason") else ""))
+            print("  basis:")
+            for b in info["basis"]:
+                extra = f"  [{b['rule_id']}]" if b.get("rule_id") else ""
+                extra += "  (constraint)" if b.get("hard") else ""
+                extra += f"  source {b['source']}" if b.get("source") else ""
+                print(f"    {b['kind']:11s} {b.get('key') or '-'} = {json.dumps(b.get('value'), default=str, ensure_ascii=False)}  {b.get('provenance') or ''}{extra}")
+                for n in b.get("notes") or []:
+                    print(f"                {n}")
+            print("  evidence:")
+            for row in info["evidence"]:
+                print(f"{'  ' * (row['level'] + 1)}{row['kind']:11s} {row['id']}  {row.get('provenance') or ''}  {row.get('detail') or ''}" + (f"  source {row['source']}" if row.get("source") else ""))
+            for alt in d.get("alternatives") or []:
+                print(f"    alternative: {alt['decision']} — {alt['reason']}" + (f" (cost: {alt['cost']})" if alt.get("cost") else ""))
+            if info["plan"]["steps"] or info["plan"]["operations"]:
+                print("  plan:")
+                for st in info["plan"]["steps"]:
+                    print(f"    step {st['id']}  {st['skill']} -> {st.get('tool') or '-'}  status {st.get('status')}  params {json.dumps(st.get('params'), default=str)}")
+                for op in info["plan"]["operations"]:
+                    print(f"    ir   {op['section']}.{op['type']}  " + json.dumps({k: v for k, v in op.items() if k not in ('section', 'type') and v is not None}, default=str))
+            else:
+                print("  plan: no step / operation cites this decision (it is not executed)")
+            print(f"  boundary : {info['boundary']}")
+        return 0
     evidence = {o["id"]: o for o in ir.doc["analysis"]["observations"]}
     evidence.update({i["id"]: i for i in ir.doc["analysis"]["inferences"]})
     evidence.update({e["id"]: e for e in ir.doc["timeline"]["events"]})
@@ -529,7 +562,7 @@ def cmd_explain(args, svc: Service) -> int:
         return 0
     reviews = ir.doc["execution"].get("reviews") or {}
     for d in decs:
-        print(f"{d['id']}  {d['subject']}\n  decision : {d['decision']}\n  why      : {d['reason']}\n  confidence {d['confidence']:.2f}  risk {d['risk']}  approval {d['approval']}  status {d['status']}  provenance {d['provenance']}")
+        print(f"{d['id']}  {d['subject']}  [{d.get('type') or '-'}]\n  decision : {d['decision']}\n  why      : {d['reason']}\n  confidence {d['confidence']:.2f}  risk {d['risk']}  approval {d['approval']}  status {d['status']}  provenance {d['provenance']}")
         rv = reviews.get(d["id"])
         if rv:
             print(f"  review   : {rv['action']} by {rv['by']} at {rv['at']} (plan v{rv['plan_version']})" + (f" — {rv['reason']}" if rv.get("reason") else ""))
@@ -626,7 +659,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sessions", help="temporal sessions recorded in a Project IR")
     p.add_argument("project"); p.set_defaults(fn=cmd_sessions)
     p = sub.add_parser("explain", help="why was this decided? show reason, evidence, alternatives")
-    p.add_argument("project", nargs="?"); p.add_argument("--decision", help="decision id or subject"); p.add_argument("--step", help="production step id: show its evidence chain")
+    p.add_argument("project", nargs="?"); p.add_argument("--decision", help="decision id or subject: type, rationale, risk / approval, basis (policy / preference / constraint / intent), evidence chain, plan steps"); p.add_argument("--step", help="production step id: show its evidence chain")
     p.add_argument("--artifact", help="artifact id: show artifact -> job -> operations -> step -> decisions -> evidence")
     p.add_argument("--observation", help="observation id (or the Skill's external id, e.g. a transcript id): observation -> skill -> tool -> engine/model -> asset -> events")
     p.add_argument("--context", help="context id: context -> tracks -> events -> observations, plus the inferences / decisions resting on it")

@@ -1,0 +1,78 @@
+{
+ "name": "de_user_waives_policy_not_constraint",
+ "profile": "conference",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    4.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    4.5,
+    8.8,
+    "本日の講演を始めます"
+   ],
+   [
+    12.3,
+    13.5,
+    "以上です"
+   ]
+  ],
+  "kinds": [
+   "transcript"
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "requirements": {
+  "edit.trim_leading_silence": true,
+  "silence.internal.approval": "AUTO"
+ },
+ "expect": {
+  "speech": {
+   "inferences": {
+    "internal_silence_removable": 1
+   },
+   "candidates": 1,
+   "candidate_approval": "CONFIRM",
+   "candidate_approval_provenance": "PROFILE",
+   "types": {
+    "silence.internal.": "REMOVE",
+    "speech.continuity": "KEEP",
+    "silence.leading": "REMOVE"
+   },
+   "conflict_decision": "policy.silence.internal.approval",
+   "engine": {
+    "basis": {
+     "silence.leading": {
+      "approval_provenance": "PROFILE",
+      "note_contains": "CONFIRM waived"
+     },
+     "policy.silence.internal.approval": {
+      "evidence_classes": [
+       "rule"
+      ]
+     }
+    },
+    "explain": "silence.leading",
+    "executable": true
+   },
+   "plan_status": "REVIEW"
+  }
+ }
+}

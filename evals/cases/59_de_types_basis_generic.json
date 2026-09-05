@@ -1,0 +1,68 @@
+{
+ "name": "de_types_basis_generic",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "expect": {
+  "decisions": {
+   "silence.leading": {
+    "type": "REMOVE",
+    "approval": "AUTO",
+    "provenance": "INFERRED"
+   },
+   "silence.trailing": {
+    "type": "REMOVE",
+    "approval": "AUTO"
+   },
+   "delivery.main": {
+    "type": "DELIVER",
+    "approval": "AUTO"
+   }
+  },
+  "engine": {
+   "basis": {
+    "silence.leading": {
+     "approval_provenance": "PROFILE",
+     "approval_key": "silence.leading.approval",
+     "served": "inspect_and_clean",
+     "evidence_classes": [
+      "event",
+      "inference",
+      "observation"
+     ],
+     "settings": {
+      "silence.leading.min_seconds": "PROFILE",
+      "silence.margin_seconds": "DEFAULT",
+      "silence.leading.approval": "PROFILE"
+     }
+    },
+    "delivery.main": {
+     "evidence_classes": [
+      "requirement"
+     ],
+     "served": null
+    }
+   },
+   "explain": "silence.leading",
+   "executable": true
+  },
+  "production_plan": {
+   "status": "APPROVED",
+   "validate": true
+  },
+  "no_decisions": [
+   "audio.loudness"
+  ]
+ }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from ..agent.decision_engine import check_decisions
 from ..agent.production_plan import validate_plan
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -74,6 +75,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         for ev in inf["evidence"]:
             if ev not in obs_ids:
                 rep.errors.append(f"inference {inf['id']} cites missing evidence {ev}")
+    # decision engine invariants (evidence present and known, type, grounding, BLOCK ⇔ BLOCKED, executable citations only)
+    rep.errors += check_decisions(d)
     # decisions: BLOCK is never executable; CONFIRM must be approved before render (reported as warning here)
     for dec in d["decisions"]:
         if dec["approval"] == "BLOCK":

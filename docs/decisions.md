@@ -142,3 +142,13 @@
 - Decision / Plan は変更しない（汎用 inference は「何が起きているか」まで。「どうするか」は policy / preference / constraint を持つ decision 層）。Context / Inference → step / tool / command の経路は無い（静的テスト）。
 - IR: `analysis.contexts`（schema 追加）、validator が参照整合と id 整合を検査、revise は新しい contexts を持ち越す。explain に --context を追加。
 - 将来 AI は既存 reasoning boundary 経由で AI_GENERATED inference を生成できるのみ。tool / command / approval / path には届かない。
+
+## ADR-027 Decision は汎用 Decision Engine の不変条件の下でのみ生成し、policy 解決の provenance と basis を Decision 自身に記録する
+- 事実: PR #15 までの `decide()` は手続き的で、evidence が空の decision（loudness 計測失敗時の「許容範囲内」）や、approval 値の出所・未知値の扱い・floor が暗黙だった。Decision モデルには type 語彙も basis も無く、`explain --decision` は evidence の一覧止まりだった。既存の precedence（RuleSet、CONSTRAINT は上書き不可）と PR #14 の speech decision の挙動は正しく、壊してはならない。
+- 決定: `agent/decision_engine.py`（tool / domain 非依存）を追加し、`decide()` の全 decision をそこから生成する。不変条件: evidence 必須（無ければ生成拒否）、REMOVE / TRANSFORM / DELIVER は計測事実か request の requirement を根拠に持つ（preference / intent / AI 単独は不可、AI 単独は REVIEW のみ）、approval は policy key + 明示 DEFAULT から解決し未知値は CONFIRM、BLOCK* は BLOCK、floor は上げるのみ、BLOCK ⇔ BLOCKED、command / argv / shell / credential 様の内容は拒否（AI 提案 params は削除して記録）。
+- 語彙: `type` = KEEP / REMOVE / TRANSFORM / DELIVER / SKIP / REVIEW / BLOCK（既存 decision と 1:1、subject / 文言 / approval / plan への影響は不変）。CONFIRM_REQUIRED 等は approval が既に担うため追加しない。
+- basis: settings（key / value / kind / provenance USER・PROFILE・SYSTEM・DEFAULT / rule_id / hard）、approval 解決（key / provenance / notes）、intent（served）、requirements、risk（confidence 非依存）を Decision に記録する。plan_hash には含めない。
+- 既存挙動の扱い: USER 明示 requirement による CONFIRM → AUTO の waiver（eval 03）は維持しつつ notes に記録し、CONSTRAINT には適用しない（新規の安全側制限）。loudness 計測が無い場合は decision を出さない（evidence 無し decision の廃止。warning は従来通り）。`silence.internal.approval` の floor CONFIRM は PR #14 のまま。
+- validator に `check_decisions` を追加（IR 上で不変条件を再検査。revise で履歴として持ち越された REJECTED decision の evidence は前版のものなので unknown-evidence 検査から除外）。`explain --decision` は basis → evidence chain（inference → context → event → observation → asset / requirement / rule）→ plan step / IR operation まで辿る。
+- 対象外: AI / LLM、話者同定、カメラ / スライド選択、新しい decision domain、MCP / plugin / ranking、直接 ffmpeg、Skill 変更、silencedetect end > duration。
+

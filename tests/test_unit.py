@@ -3338,3 +3338,362 @@ class ProductionContextTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--context", pause["id"]], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("context", r.stdout); self.assertIn("never becomes a step", r.stdout)
+
+
+class ProductionDecisionEngineTests(unittest.TestCase):
+    """PR #16: generic Decision Engine — Inference + Policy / Preference / Constraint + Intent + Risk → Decision. Evidence is
+    mandatory, approvals come from policy with a safe default and recorded provenance, BLOCK / REJECTED never execute, the
+    basis of every decision is recorded and explainable, PR #14 speech decisions run unchanged through the same engine."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_transcription.py")
+    SEGMENTS = json.dumps([[3.5, 8.8, "本日の講演を始めます"], [12.3, 13.5, "以上です"]])
+    SILENCES = [[0.0, 3.0], [9.0, 12.0], [13.7, None]]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+        os.environ["FAKE_TS_SEGMENTS"] = self.SEGMENTS
+        for k in ("FAKE_TS_MODE", "FAKE_TS_CACHE"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in ("FAKE_TS_SEGMENTS", "FAKE_TS_MODE", "FAKE_TS_CACHE"):
+            os.environ.pop(k, None)
+
+    # ---- helpers
+    def _rules(self, *rules):
+        return resolve_rules(list(rules))
+
+    def _engine(self, rules=None, intent=None, known=None, reqs=None):
+        from video_agent.agent.decision_engine import DecisionEngine
+        from video_agent.models import Intent
+        return DecisionEngine(rules or self._rules(), intent or Intent(primary="clean_only", secondary=["cleanup_silence"]), known or {}, reqs or [])
+
+    def _service(self, silences=None, transcription=False, **fake):
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        adapters = [FakeAdapter(silences=silences if silences is not None else self.SILENCES, **fake)]
+        if transcription:
+            adapters.append(TranscriptionAdapter(TranscriptionSkill([sys.executable, self.FAKE], None, {}), workspace=str(Path(self.tmp) / "ws" / "cache" / "transcription")))
+        return make_service(self.tmp, caps=FakeCaps(extra=["transcription"]), adapter=ToolRouter(adapters))
+
+    def _speech_plan(self, profile="youtube", **kw):
+        svc = self._service(transcription=True)
+        return svc, svc.plan([self.src], profile, kinds=["transcript"], params={"language": "ja"}, **kw)
+
+    # 1-4: policy resolution with provenance (USER / PROFILE / SYSTEM / DEFAULT), precedence untouched
+    def test_setting_resolution_records_provenance_without_changing_precedence(self):
+        from video_agent.agent.decision_engine import resolve_setting
+        rs = self._rules(Rule("sys.k", "POLICY", "GLOBAL", "k.sys", 1, "system"), Rule("prof.k", "POLICY", "PROFILE", "k.prof", 2, "profile:x"),
+                         Rule("req.k", "PREFERENCE", "REQUEST", "k.prof", 3, "request"))
+        self.assertEqual(resolve_setting(rs, "k.sys", 0)["provenance"], "SYSTEM")
+        got = resolve_setting(rs, "k.prof", 0)
+        self.assertEqual((got["value"], got["provenance"], got["kind"], got["rule_id"], got["hard"]), (3, "USER", "PREFERENCE", "req.k", False), "REQUEST wins over PROFILE (existing precedence), reported as USER")
+        d = resolve_setting(rs, "k.absent", 0.5)
+        self.assertEqual((d["value"], d["provenance"], d["kind"], d["rule_id"]), (0.5, "DEFAULT", None, None), "an absent key is the explicit default the caller passed, marked DEFAULT")
+        hard = self._rules(Rule("c", "CONSTRAINT", "PROFILE", "k", "CONFIRM", "profile:conference"), Rule("r", "PREFERENCE", "REQUEST", "k", "AUTO", "request"))
+        self.assertEqual((resolve_setting(hard, "k", None)["value"], resolve_setting(hard, "k", None)["hard"], len(hard.conflicts)), ("CONFIRM", True, 1), "a CONSTRAINT is never overridden; the attempt is a conflict")
+
+    # 5-10: approval resolution: AUTO / CONFIRM / BLOCK, unknown → CONFIRM, floor never lowers, BLOCK never lowered, explicit waiver not on constraints
+    def test_approval_resolution_is_safe_by_default(self):
+        from video_agent.agent.decision_engine import raise_approval, resolve_approval
+        from video_agent.models import Requirement
+        for value, want in (("AUTO", "AUTO"), ("CONFIRM", "CONFIRM"), ("BLOCK", "BLOCK"), ("BLOCK_UNLESS_EXPLICIT", "BLOCK"), ("MAYBE", "CONFIRM"), ("", "CONFIRM"), (None, "CONFIRM"), (1, "CONFIRM")):
+            rs = self._rules(Rule("p", "POLICY", "PROFILE", "x.approval", value, "profile:t"))
+            got = resolve_approval(rs, "x.approval", "CONFIRM")
+            self.assertEqual(got["approval"], want, value)
+            if want == "CONFIRM" and value != "CONFIRM":
+                self.assertTrue(any("safe default" in n for n in got["notes"]), value)
+        self.assertEqual(resolve_approval(self._rules(), "x.approval", "AUTO")["setting"]["provenance"], "DEFAULT")
+        self.assertEqual(resolve_approval(self._rules(), "x.approval", "CONFIRM")["approval"], "CONFIRM")
+        with self.assertRaises(ValueError):
+            resolve_approval(self._rules(), "x.approval", "YES")
+        # floor raises, never lowers; raise_approval never lowers; BLOCK stays BLOCK
+        rs = self._rules(Rule("p", "POLICY", "PROFILE", "x.approval", "AUTO", "profile:t"))
+        self.assertEqual(resolve_approval(rs, "x.approval", "AUTO", floor="CONFIRM")["approval"], "CONFIRM")
+        got = resolve_approval(self._rules(Rule("p", "POLICY", "PROFILE", "x.approval", "BLOCK", "t")), "x.approval", "AUTO", floor="CONFIRM")
+        self.assertEqual(got["approval"], "BLOCK")
+        got = resolve_approval(self._rules(Rule("p", "POLICY", "PROFILE", "x.approval", "CONFIRM", "t")), "x.approval", "AUTO", floor="AUTO")
+        self.assertEqual(got["approval"], "CONFIRM", "a lower floor never lowers")
+        self.assertEqual(raise_approval({"approval": "CONFIRM", "setting": None, "notes": []}, "AUTO", "x")["approval"], "CONFIRM")
+        self.assertEqual(raise_approval({"approval": "AUTO", "setting": None, "notes": []}, "CONFIRM", "speech overlaps")["notes"], ["raised AUTO → CONFIRM: speech overlaps"])
+        # the explicit-request waiver (existing behaviour, eval 03) applies to a POLICY, never to a CONSTRAINT, never to BLOCK
+        user = Requirement(key="edit.trim_leading_silence", value=True, provenance="USER", source="cli")
+        pol = self._rules(Rule("p", "POLICY", "PROFILE", "x.approval", "CONFIRM", "profile:conference"))
+        self.assertEqual(resolve_approval(pol, "x.approval", "AUTO", explicit=user)["approval"], "AUTO")
+        con = self._rules(Rule("c", "CONSTRAINT", "PROFILE", "x.approval", "CONFIRM", "profile:conference"))
+        got = resolve_approval(con, "x.approval", "AUTO", explicit=user)
+        self.assertEqual(got["approval"], "CONFIRM"); self.assertTrue(any("CONSTRAINT" in n for n in got["notes"]))
+        self.assertEqual(resolve_approval(self._rules(Rule("p", "POLICY", "PROFILE", "x.approval", "BLOCK", "t")), "x.approval", "AUTO", explicit=user)["approval"], "BLOCK")
+        default_req = Requirement(key="edit.trim_leading_silence", value="auto", provenance="DEFAULT", source="defaults")
+        self.assertEqual(resolve_approval(pol, "x.approval", "AUTO", explicit=default_req)["approval"], "CONFIRM", "only a USER requirement waives")
+
+    # 11-18: construction invariants — evidence mandatory, grounding, AI-only → REVIEW, vocabulary, BLOCK ⇔ BLOCKED, no executable material
+    def test_engine_refuses_ungrounded_or_unsafe_decisions(self):
+        from video_agent.agent.decision_engine import DECISION_TYPES, DecisionError
+        from video_agent.models import Inference, Requirement
+        inf = Inference(kind="leading_silence_unwanted", asset_id="a", statement="s", confidence=0.9, evidence=["obs_1"])
+        ai = Inference(kind="ai_recommendation:silence_cleanup", asset_id="a", statement="AI says cut", confidence=0.9, evidence=["obs_1"], provenance="AI_GENERATED")
+        user_req = Requirement(key="edit.trim_leading_silence", value=True, provenance="USER", source="cli")
+        known = {"obs_1": "observation", inf.id: "inference", ai.id: "ai", user_req.id: "requirement", "pref": "rule"}   # "pref": a PREFERENCE rule id
+        eng = self._engine(known=known, reqs=[user_req])
+        base = dict(decision="trim 0-1s", reason="r", risk="LOW", approval="AUTO", confidence=0.9, provenance="INFERRED", params={"asset_id": "a", "start": 0.0, "end": 1.0})
+        with self.assertRaisesRegex(DecisionError, "no evidence"):
+            eng.decide(subject="silence.leading", type="REMOVE", evidence=[], **base)
+        with self.assertRaisesRegex(DecisionError, "not an observation"):
+            eng.decide(subject="silence.leading", type="REMOVE", evidence=["inf_unknown"], **base)
+        with self.assertRaisesRegex(DecisionError, "preference, intent or AI output alone"):
+            eng.decide(subject="silence.leading", type="REMOVE", evidence=["pref"], **base)   # preference-only
+        with self.assertRaisesRegex(DecisionError, "preference, intent or AI output alone"):
+            eng.decide(subject="silence.leading", type="REMOVE", evidence=[ai.id], **base)    # AI text only
+        with self.assertRaisesRegex(DecisionError, "REVIEW item"):
+            eng.decide(subject="x", type="KEEP", evidence=[ai.id], **base)                    # AI alone is not even a fact-backed keep
+        with self.assertRaisesRegex(DecisionError, "type"):
+            eng.decide(subject="x", type="CUT", evidence=[inf.id], **base)
+        with self.assertRaisesRegex(DecisionError, "risk"):
+            eng.decide(subject="x", type="REMOVE", evidence=[inf.id], **{**base, "risk": "NONE"})
+        with self.assertRaisesRegex(DecisionError, "approval"):
+            eng.decide(subject="x", type="REMOVE", evidence=[inf.id], **{**base, "approval": "YES"})
+        with self.assertRaisesRegex(DecisionError, "status BLOCKED needs approval BLOCK"):
+            eng.decide(subject="x", type="REMOVE", evidence=[inf.id], status="BLOCKED", **base)
+        for bad in ({"command": "ffmpeg -i x"}, {"argv": ["-y"]}, {"shell": "rm -rf"}, {"api_key": "sk-abc"}, {"note": "bash -c 'x'"}):
+            with self.assertRaisesRegex(DecisionError, "executable / credential"):
+                eng.decide(subject="x", type="REMOVE", evidence=[inf.id], **{**base, "params": {"asset_id": "a", **bad}})
+        self.assertEqual(eng.decisions, [], "nothing refused was recorded")
+        # accepted: fact-backed REMOVE; requirement-backed DELIVER; BLOCK carries status BLOCKED; AI-only REVIEW is never executable and its params are scrubbed
+        d = eng.decide(subject="silence.leading", type="REMOVE", evidence=[inf.id, "obs_1", inf.id], **base, requirements=[user_req], serves_intent="cleanup_silence")
+        self.assertEqual((d.type, d.evidence, d.status, d.basis["evidence_classes"], d.basis["intent"]["served"]), ("REMOVE", [inf.id, "obs_1"], "PROPOSED", ["inference", "observation"], "cleanup_silence"))
+        self.assertEqual(d.basis["requirements"][0]["provenance"], "USER")
+        deliver = eng.decide(subject="delivery.web", type="DELIVER", evidence=[user_req.id], **{**base, "decision": "export preset 'youtube'"})
+        self.assertEqual(deliver.basis["evidence_classes"], ["requirement"])
+        b = eng.decide(subject="capability.x", type="BLOCK", evidence=["capability:ffmpeg"], **{**base, "decision": "BLOCK: skill x unavailable", "approval": "BLOCK", "risk": "HIGH"})
+        self.assertEqual((b.status, b.approval, b.basis["evidence_classes"]), ("BLOCKED", "BLOCK", ["capability"]))
+        r = eng.decide(subject="ai.silence_cleanup", type="REVIEW", evidence=[ai.id], **{**base, "decision": "review: AI recommends silence_cleanup", "approval": "CONFIRM", "risk": "MEDIUM",
+                                                                                          "params": {"asset_id": "a", "executable": True, "ai_params": {"command": "ffmpeg -i in out", "ranges": [[0, 1]]}}})
+        self.assertEqual(r.params["ai_params"], {"ranges": [[0, 1]]}, "AI-proposed command material is dropped, never interpreted")
+        self.assertTrue(any("removed from proposed params" in n for n in r.basis["approval"]["notes"]))
+        self.assertEqual(sorted(DECISION_TYPES), sorted(["KEEP", "REMOVE", "TRANSFORM", "DELIVER", "SKIP", "REVIEW", "BLOCK"]))
+
+    # 19-23: decide() through the engine — every decision typed, grounded, with basis; policy provenance USER / PROFILE / DEFAULT; existing decisions unchanged
+    def test_decisions_carry_type_basis_and_policy_provenance(self):
+        from video_agent.agent.decision_engine import DECISION_TYPES, EXECUTABLE_TYPES
+        svc = self._service()
+        ir = svc.plan([self.src], "conference")
+        d = ir.doc
+        decs = {x["subject"]: x for x in d["decisions"]}
+        for x in d["decisions"]:
+            self.assertIn(x["type"], DECISION_TYPES, x["subject"])
+            self.assertTrue(x["evidence"], x["subject"])
+            self.assertEqual(x["basis"]["engine"], "decision_engine@1.0")
+            self.assertEqual(x["basis"]["risk"], {"level": x["risk"], "independent_of_confidence": True})
+            self.assertEqual(x["basis"]["approval"]["resolved"], x["approval"])
+        lead = decs["silence.leading"]
+        self.assertEqual((lead["type"], lead["approval"], lead["provenance"]), ("REMOVE", "CONFIRM", "INFERRED"))
+        appr = lead["basis"]["approval"]
+        self.assertEqual((appr["key"], appr["provenance"]), ("silence.leading.approval", "PROFILE"))
+        setting = next(s for s in lead["basis"]["settings"] if s["key"] == "silence.leading.approval")
+        self.assertEqual((setting["value"], setting["kind"], setting["rule_id"], setting["provenance"], setting["source"]), ("CONFIRM", "POLICY", "conf.silence.leading.approval", "PROFILE", "profile:conference"))
+        self.assertEqual(next(s for s in lead["basis"]["settings"] if s["key"] == "silence.leading.min_seconds")["value"], 3.0)
+        self.assertEqual(lead["basis"]["intent"], {"primary": "clean_and_deliver", "secondary": ["normalize_audio", "cleanup_silence"], "provenance": "SYSTEM", "served": "clean_and_deliver"})
+        self.assertEqual([r["key"] for r in lead["basis"]["requirements"]], ["edit.trim_leading_silence"])
+        loud = decs["audio.loudness"]
+        self.assertEqual((loud["type"], loud["approval"], loud["basis"]["approval"]["provenance"]), ("TRANSFORM", "AUTO", "DEFAULT"), "no approval policy for loudness: explicit DEFAULT AUTO, recorded as such")
+        self.assertEqual([(s["key"], s["provenance"]) for s in loud["basis"]["settings"]], [("audio.loudness.tolerance_lu", "PROFILE"), ("audio.loudness.approval", "DEFAULT")])
+        self.assertEqual({r["key"]: r["provenance"] for r in loud["basis"]["requirements"]}, {"audio.normalize": "DEFAULT", "audio.loudness.target_lufs": "PROFILE", "audio.loudness.true_peak": "PROFILE"})
+        self.assertEqual(decs["delivery.master"]["type"], "DELIVER"); self.assertEqual(decs["delivery.master"]["basis"]["evidence_classes"], ["requirement"])
+        self.assertTrue(all(x["type"] in EXECUTABLE_TYPES for x in d["decisions"] if any(x["id"] in s["decision_ids"] for s in d["plan"]["steps"])))
+        # a USER requirement changes the approval provenance to USER and waives CONFIRM (existing behaviour; recorded, not silent)
+        ir_u = svc.plan([self.src], "conference", user_requirements={"edit.trim_leading_silence": True})
+        du = {x["subject"]: x for x in ir_u.doc["decisions"]}
+        self.assertEqual((du["silence.leading"]["approval"], du["silence.leading"]["provenance"]), ("AUTO", "USER"))
+        self.assertTrue(any("CONFIRM waived" in n for n in du["silence.leading"]["basis"]["approval"]["notes"]))
+        ir_t = svc.plan([self.src], "generic", user_requirements={"silence.trailing.approval": "CONFIRM"})
+        dt = {x["subject"]: x for x in ir_t.doc["decisions"]}
+        self.assertEqual((dt["silence.trailing"]["approval"], dt["silence.trailing"]["basis"]["approval"]["provenance"], dt["silence.trailing"]["basis"]["approval"]["key"]), ("CONFIRM", "USER", "silence.trailing.approval"))
+        self.assertEqual((dt["silence.leading"]["approval"], dt["silence.leading"]["basis"]["approval"]["provenance"]), ("AUTO", "PROFILE"))
+        # an unknown policy value never becomes AUTO
+        ir_x = svc.plan([self.src], "generic", user_requirements={"silence.leading.approval": "whatever"})
+        lx = next(x for x in ir_x.doc["decisions"] if x["subject"] == "silence.leading")
+        self.assertEqual(lx["approval"], "CONFIRM"); self.assertTrue(any("safe default" in n for n in lx["basis"]["approval"]["notes"]))
+        self.assertEqual(ir_x.doc["plan"]["status"], "REVIEW")
+        # generic profile: AUTO from the profile (PROFILE), plan APPROVED as before
+        ir_g = svc.plan([self.src], "generic")
+        lg = next(x for x in ir_g.doc["decisions"] if x["subject"] == "silence.leading")
+        self.assertEqual((lg["approval"], lg["basis"]["approval"]["provenance"], ir_g.doc["plan"]["status"]), ("AUTO", "PROFILE", "APPROVED"))
+
+    # 24-27: confidence ≠ risk ≠ approval; conflicts → CONFIRM with reason; constraint vs request; BLOCK policy → nothing executes
+    def test_risk_approval_conflicts_and_block(self):
+        svc = self._service()
+        # risk / approval come from policy and the kind of change, never from confidence: the same lead trim is AUTO on generic and
+        # CONFIRM on conference with identical confidence; a 0.7-confidence removal candidate is MEDIUM / CONFIRM while a 0.5 keep is AUTO
+        lg = next(x for x in svc.plan([self.src], "generic").doc["decisions"] if x["subject"] == "silence.leading")
+        lc = next(x for x in svc.plan([self.src], "conference").doc["decisions"] if x["subject"] == "silence.leading")
+        self.assertEqual(lg["confidence"], lc["confidence"])
+        self.assertEqual((lg["risk"], lg["approval"], lc["risk"], lc["approval"]), ("LOW", "AUTO", "LOW", "CONFIRM"))
+        # request tries to lower the conference CONSTRAINT silence.internal.approval: recorded conflict, decision CONFIRM with the reason, candidate stays CONFIRM
+        svc2, ir2 = self._speech_plan("conference", user_requirements={"silence.internal.approval": "AUTO"})
+        d2 = ir2.doc
+        conflict = next(x for x in d2["decisions"] if x["subject"] == "policy.silence.internal.approval")
+        self.assertEqual((conflict["type"], conflict["approval"], conflict["risk"], conflict["basis"]["evidence_classes"]), ("KEEP", "CONFIRM", "MEDIUM", ["rule"]))
+        self.assertIn("never overridden silently", conflict["reason"])
+        self.assertEqual(conflict["basis"]["settings"][0]["hard"], True)
+        cand = [x for x in d2["decisions"] if x["subject"].startswith("silence.internal.")]
+        self.assertEqual([(c["type"], c["approval"], c["basis"]["approval"]["provenance"]) for c in cand], [("REMOVE", "CONFIRM", "PROFILE")])
+        # BLOCK policy: BLOCKED decision (status), plan BLOCKED, no execution even with approve all
+        svc3, ir3 = self._speech_plan("youtube", user_requirements={"silence.internal.approval": "BLOCK"})
+        c3 = next(x for x in ir3.doc["decisions"] if x["subject"].startswith("silence.internal."))
+        self.assertEqual((c3["approval"], c3["status"], ir3.doc["plan"]["status"]), ("BLOCK", "BLOCKED", "BLOCKED"))
+        p3 = str(Path(self.tmp) / "b.json"); save_ir(ir3, p3)
+        out = svc3.render(load_ir(p3), p3, approve=["all"])
+        self.assertEqual(out["status"], "BLOCKED"); self.assertFalse(out.get("execution"))
+        self.assertEqual(svc3.validate(load_ir(p3)).errors, [], "a BLOCKED plan is valid IR, it just never executes")
+        # policy AUTO on a candidate is floored to CONFIRM (never AUTO for a content-adjacent removal)
+        svc4, ir4 = self._speech_plan("youtube", user_requirements={"silence.internal.approval": "AUTO"})
+        c4 = next(x for x in ir4.doc["decisions"] if x["subject"].startswith("silence.internal."))
+        self.assertEqual(c4["approval"], "CONFIRM"); self.assertTrue(any("floor" in n for n in c4["basis"]["approval"]["notes"]))
+
+    # 28-29: PR #14 speech decisions unchanged through the engine; no loudness measurement → no loudness claim
+    def test_speech_decisions_unchanged_and_no_claim_without_measurement(self):
+        svc, ir = self._speech_plan()
+        d = ir.doc
+        by = {x["subject"]: x for x in d["decisions"]}
+        self.assertEqual((by["speech.continuity"]["type"], by["speech.continuity"]["decision"], by["speech.continuity"]["approval"], by["speech.continuity"]["risk"]), ("KEEP", "keep all 2 speech interval(s)", "AUTO", "LOW"))
+        cand = by["silence.internal.9.000-12.000"]
+        self.assertEqual((cand["type"], cand["decision"], cand["approval"], cand["risk"], cand["status"]), ("REMOVE", "remove 9.150-11.850s (candidate)", "CONFIRM", "MEDIUM", "PROPOSED"))
+        self.assertEqual({s["key"]: s["provenance"] for s in cand["basis"]["settings"]}, {"silence.internal.removable_min_seconds": "DEFAULT", "silence.margin_seconds": "DEFAULT", "silence.internal.approval": "PROFILE"})
+        self.assertEqual(cand["basis"]["intent"]["served"], "clean_and_deliver")
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup")
+        self.assertEqual(step["params"]["keep"], [[2.85, 9.15], [11.85, 13.85]])
+        self.assertEqual(d["plan"]["status"], "REVIEW")
+        # no loudness observation (analysis failed): no "within tolerance" decision without evidence; the warning records the failure
+        tmp_f = tempfile.mkdtemp()   # fresh workspace: no cached loudness observation from the plans above
+        svc_f = make_service(tmp_f, adapter=FakeAdapter(fail_tools={"ffmpeg-skill/loudness": 9}))
+        ir_f = svc_f.plan([fake_media(tmp_f)], "youtube")
+        self.assertFalse([x for x in ir_f.doc["decisions"] if x["subject"] == "audio.loudness"])
+        self.assertTrue(any("loudness analysis failed" in w for w in ir_f.doc["analysis"]["warnings"]))
+        self.assertEqual(svc_f.validate(ir_f).errors, [])
+        # an AI recommendation covered by a measured decision becomes extra evidence (class ai added), never changes approval / risk
+        prov = FakeAIProvider(intent="silence_cleanup")
+        svc_ai = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=prov)
+        ir_ai = svc_ai.plan([self.src], "youtube")
+        la = next(x for x in ir_ai.doc["decisions"] if x["subject"] == "silence.leading")
+        self.assertIn("ai", la["basis"]["evidence_classes"]); self.assertEqual((la["approval"], la["risk"]), ("AUTO", "LOW"))
+        review = [x for x in ir_ai.doc["decisions"] if x["type"] == "REVIEW"]
+        self.assertTrue(all(x["params"]["executable"] is False and x["approval"] != "AUTO" for x in review))
+
+    # 30-32: validator re-checks the invariants on a recorded IR; revision keeps history valid
+    def test_validator_enforces_engine_invariants(self):
+        from video_agent.agent.decision_engine import check_decisions
+        svc, ir = self._speech_plan()
+        d = ir.doc
+        self.assertEqual(check_decisions(d), [])
+        cand = next(x for x in d["decisions"] if x["subject"].startswith("silence.internal."))
+
+        def tampered(fn):
+            doc = json.loads(json.dumps(d))
+            fn(doc, next(x for x in doc["decisions"] if x["id"] == cand["id"]))
+            return check_decisions(doc)
+
+        self.assertTrue(any("has no evidence" in e for e in tampered(lambda doc, c: c.update(evidence=[]))))
+        self.assertTrue(any("unknown evidence" in e for e in tampered(lambda doc, c: c.update(evidence=["inf_ghost"]))))
+        self.assertTrue(any("only ('REMOVE', 'TRANSFORM', 'DELIVER') may be executed" in e for e in tampered(lambda doc, c: c.update(type="KEEP"))))
+        self.assertTrue(any("type 'CUT'" in e for e in tampered(lambda doc, c: c.update(type="CUT"))))
+        self.assertTrue(any("BLOCK ⇔ BLOCKED" in e for e in tampered(lambda doc, c: c.update(approval="BLOCK"))))
+        self.assertEqual(tampered(lambda doc, c: c.update(approval="BLOCK", status="BLOCKED")), [], "a BLOCKED citation is valid IR; the plan status keeps it from executing")
+        self.assertTrue(any("executable / credential" in e for e in tampered(lambda doc, c: c["params"].update(command="ffmpeg -i a b"))))
+        ai_inf = {"id": "inf_ai1", "kind": "ai_recommendation:silence_cleanup", "asset_id": cand["params"]["asset_id"], "statement": "x", "confidence": 0.9, "evidence": [], "data": {}, "provenance": "AI_GENERATED"}
+
+        def ai_only(doc, c):
+            doc["analysis"]["inferences"].append(ai_inf); c.update(evidence=["inf_ai1"])
+        errs = tampered(ai_only)
+        self.assertTrue(any("no measured fact or requirement" in e for e in errs) and any("AI-only evidence must be a REVIEW item" in e for e in errs), errs)
+        # the same errors surface through validate_ir (the IR is refused, nothing is repaired)
+        bad = json.loads(json.dumps(d)); next(x for x in bad["decisions"] if x["id"] == cand["id"])["evidence"] = []
+        pb = str(Path(self.tmp) / "bad.json"); Path(pb).write_text(json.dumps(bad), encoding="utf-8")
+        self.assertTrue(any("has no evidence" in e for e in validate_ir(load_ir(pb)).errors))
+        # reject → revise: the REJECTED decision is carried as history (its evidence lived in v1) and v2 stays valid; approvals / resume unchanged
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        svc.reject(load_ir(p), p, [cand["id"]], reason="keep the pause")
+        svc.revise(load_ir(p), p)
+        v2 = load_ir(p)
+        self.assertEqual(svc.validate(v2).errors, [])
+        hist = next(x for x in v2.doc["decisions"] if x["id"] == cand["id"])
+        self.assertEqual((hist["status"], hist["type"]), ("REJECTED", "REMOVE"))
+        self.assertTrue(all(x.get("type") and x.get("basis") for x in v2.doc["decisions"]))
+        svc.approve(load_ir(p), p, ["all"])
+        out = svc.render(load_ir(p), p); self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"]); self.assertTrue(out2["execution"]["reused"])
+
+    # 33-36: explain --decision: type / rationale / risk / approval / basis (policy, preference, constraint, intent, requirement) / evidence → context → event → observation → asset / plan step → IR
+    def test_explain_decision_chain_service_and_cli(self):
+        svc, ir = self._speech_plan("conference", user_requirements={"silence.internal.approval": "AUTO", "audio.loudness.target_lufs": -18})
+        d = ir.doc
+        cand = next(x for x in d["decisions"] if x["subject"].startswith("silence.internal."))
+        info = Service.explain_decision(d, cand["id"])[0]
+        self.assertEqual((info["decision"]["type"], info["decision"]["approval"], info["executable"]), ("REMOVE", "CONFIRM", True))
+        kinds = {b["kind"] for b in info["basis"]}
+        self.assertTrue({"constraint", "default", "approval", "intent", "risk"} <= kinds, kinds)
+        con = next(b for b in info["basis"] if b["kind"] == "constraint")
+        self.assertEqual((con["key"], con["value"], con["provenance"], con["hard"], con["rule_id"]), ("silence.internal.approval", "CONFIRM", "PROFILE", True, "conf.silence.internal.approval"))
+        ev_kinds = {r["kind"] for r in info["evidence"]}
+        self.assertTrue({"inference", "event", "observation", "asset", "context"} <= ev_kinds, ev_kinds)
+        self.assertTrue(any(r["kind"] == "observation" and r["detail"] == "transcript" for r in info["evidence"]))
+        self.assertTrue(any(r["kind"] == "event" and "SpeechEvent/speech" in r["detail"] for r in info["evidence"]))
+        self.assertEqual([s["skill"] for s in info["plan"]["steps"]], ["silence_cleanup"])
+        self.assertEqual(info["plan"]["operations"][0]["type"], "video.trim")
+        self.assertIn("no command", info["boundary"])
+        # a preference (conference target -16) overridden by the user: the requirement rows show USER; the loudness decision cites the preference rule via the requirement
+        loud = Service.explain_decision(d, "audio.loudness")[0]
+        self.assertEqual(next(b for b in loud["basis"] if b["kind"] == "requirement" and b["key"] == "audio.loudness.target_lufs")["provenance"], "USER")
+        self.assertEqual(next(b for b in loud["basis"] if b["kind"] == "policy")["key"], "audio.loudness.tolerance_lu")
+        # the constraint conflict decision: evidence are the two rules (constraint + attempted preference)
+        conf = Service.explain_decision(d, "policy.silence.internal.approval")[0]
+        self.assertEqual(sorted(r["kind"] for r in conf["evidence"]), ["constraint", "preference"]); self.assertFalse(conf["executable"])
+        keep = Service.explain_decision(d, "speech.continuity")[0]
+        self.assertEqual((keep["executable"], keep["plan"]["steps"], keep["plan"]["operations"]), (False, [], []))
+        with self.assertRaises(KeyError):
+            Service.explain_decision(d, "dec_nope")
+        # CLI text and JSON
+        import subprocess
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=self.tmp)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--decision", cand["id"]], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for frag in ("[REMOVE]", "basis:", "constraint", "silence.internal.approval", "approval", "intent", "evidence:", "SpeechEvent/speech", "transcript", "plan:", "step_trim_", "boundary"):
+            self.assertIn(frag, r.stdout, frag)
+        for bad in ("argv", "ffmpeg -", "subprocess", self.src):
+            self.assertNotIn(bad, r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "explain", p, "--decision", "speech.continuity"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        js = json.loads(r.stdout)[0]
+        self.assertEqual((js["decision"]["type"], js["executable"]), ("KEEP", False))
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--decision", "dec_nope"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 1); self.assertIn("no such decision", r.stderr)
+
+    # 37-40: boundaries — engine is tool / domain independent, decisions never carry paths or commands, determinism, plan hash unchanged by basis
+    def test_engine_boundaries_and_determinism(self):
+        import ast
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        text = (root / "agent" / "decision_engine.py").read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        mods = [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)] + [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
+        for m in mods:
+            for bad in ("subprocess", "tools", "execution", "providers", "ai_reasoning", "planner", "compiler", "speech", "context", "skills", "shutil", "pathlib", "socket", "http"):
+                self.assertNotIn(bad, m, mods)
+            self.assertNotEqual(m, "os", mods)
+        code = text.split('"""', 2)[2]
+        for bad in ("silence", "speech", "loudness", "ffmpeg", "transcript", "subprocess", "argv", "Operation(", "ProductionStep", "camera", "speaker", "open(", "Path("):
+            self.assertNotIn(bad, code, bad)
+        svc, ir = self._speech_plan()
+        d = ir.doc
+        from video_agent.media.analysis import leak_scan
+        self.assertEqual(leak_scan({"decisions": d["decisions"]}), [])
+        self.assertNotIn(self.src, json.dumps(d["decisions"]))
+        svc2, ir2 = self._speech_plan()
+        sig = lambda doc: sorted((x["subject"], x["type"], x["approval"], x["risk"], x["status"], json.dumps({k: v for k, v in x["basis"].items() if k != "requirements"}, sort_keys=True)) for x in doc["decisions"])  # noqa: E731
+        self.assertEqual(sig(d), sig(ir2.doc), "same evidence and policy → same decisions and basis")
+        ops = lambda doc: [{k: v for k, v in op.items() if k not in ("decision_ids", "asset")} for op in doc["video"]["operations"] + doc["audio"]["operations"]]  # noqa: E731
+        self.assertEqual(ops(d), ops(ir2.doc))
+        self.assertNotIn("basis", json.dumps(d["plan"]["steps"]) + json.dumps(d["video"]), "the basis stays on the decision; steps / operations carry ids only")
+        # a Decision without the engine (older / hand-made) is still a valid dataclass but the IR validator demands a type
+        self.assertEqual(Decision(subject="x", decision="y", reason="r", confidence=1.0, evidence=["e"], risk="LOW", approval="AUTO").type, "")
