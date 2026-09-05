@@ -1779,7 +1779,7 @@ Requirement edit.* (explicit --set) → Decision (TRANSFORM / BLOCK, policy vide
 ```
 audio.production=true (+ audio.gain / channels / fade_in / fade_out / concat / sample_rate; explicit requirements)
   + the existing silence decisions (→ audio.cut) and audio.loudness decision (→ NORMALIZE)
-  → Decision (TRANSFORM / KEEP / BLOCK; policy audio.<op>.approval, DEFAULT CONFIRM, explicit request waives)
+  → Decision (TRANSFORM / KEEP / BLOCK; policy audio.<op>.approval, DEFAULT CONFIRM, the operation's own explicit request waives — the switch never does, ADR-033)
   → ProductionStep (skill audio_<op>, tool audio-production/run only)
   → IR audio.operations[] (type, subject, input / inputs / output, allowlisted params, temporal scope, decision ids; concat: segments + timeline_duration)
   → compiler lower_audio_loudness / lower_audio_op (names only; wrong tool = CompileError)
@@ -1795,8 +1795,12 @@ audio.production=true (+ audio.gain / channels / fade_in / fade_out / concat / s
   `audio-production:<TYPE>` per operation from the doctor (supported → AVAILABLE, unsupported → MISSING, unknown → AVAILABLE only
   when this resolver measured the required filters / encoders itself, else UNKNOWN). UNKNOWN is never selectable; no fallback.
 - **Subjects:** an asset with audio, once `audio.production` is on, is delivered as audio (a video container's audio track is
-  extracted by the Skill — `audio.extract` decision, CONFIRM by policy). A video-only asset, a video preset profile, or
-  `edit.*` on the same request → BLOCK. Without the switch every existing path is byte-identical.
+  extracted by the Skill — `audio.extract` decision, CONFIRM by policy). `audio.production=true` only enables the path: it is
+  **not** sufficient to waive that CONFIRM (ADR-033). Only the dedicated explicit requirement `audio.extract=true` (USER) waives
+  it, or the usual explicit approval of the decision; every audio operation of the container cites the extraction decision, so
+  a pending or rejected extraction never executes and a revision after a rejection plans nothing for that asset on the audio
+  path. A video-only asset, a video preset profile, or `edit.*` on the same request → BLOCK. Without the switch every existing
+  path is byte-identical.
 - **Planned operations:** cut (from the silence decisions), normalize (from the loudness decision, same IR type, tolerance
   re-measured by the Skill), gain, mono / stereo / downmix (target vs probed channels: KEEP when it already holds), fade in /
   out, concat (`programme_audio`, crossfade). Not planned though executable: MIX, SILENCE_REMOVE, NOISE_REDUCTION, DYNAMICS,

@@ -8,9 +8,12 @@ Vocabulary and arithmetic only, no execution:
 
 - **Switch:** `audio.production` (explicit USER / PROFILE requirement) puts an asset on the audio production path: the asset's
   *audio* becomes the subject (a video container's audio track is extracted by the Skill; the picture is not delivered — a
-  CONFIRM decision says so). Without the switch nothing here is planned and the existing paths are byte-identical.
+  CONFIRM decision `audio.extract` says so). The switch only *enables* the path: it is not the confirmation of the extraction.
+  Only the dedicated explicit requirement `audio.extract=true` (USER) waives that CONFIRM, exactly as `audio.gain` waives
+  `audio.gain.approval` — the generic switch never does. Without the switch nothing here is planned and the existing paths are
+  byte-identical.
 - **Requirements** (`audio.<op>` keys, explicit only, range-checked here; invalid → EditRequirementError-like refusal):
-  `audio.gain` (dB), `audio.fade_in` / `audio.fade_out` (seconds), `audio.channels` (mono | stereo: a *target*; the decision
+  `audio.extract` (bool: the user confirms up front that a video container is delivered as audio only), `audio.gain` (dB), `audio.fade_in` / `audio.fade_out` (seconds), `audio.channels` (mono | stereo: a *target*; the decision
   compares it with the probed channel count and yields KEEP, MONO, STEREO, DOWNMIX or BLOCK), `audio.concat` (bool, order =
   input order) + `audio.concat.crossfade` (seconds), `audio.sample_rate` (only as NORMALIZE.sample_rate — the Skill has no
   standalone resample: without a normalisation decision it is refused as BLOCK).
@@ -53,7 +56,7 @@ SKILL_OF = {k: v["skill"] for k, v in OPERATIONS.items()}
 # the order the planner / compiler apply audio operations on one subject (after the per-asset cut and the concat)
 AUDIO_ORDER = ("audio.gain", "audio.mono", "audio.stereo", "audio.downmix", "audio.fade_in", "audio.fade_out", "audio.loudness")
 CHANNEL_SKILLS = ("audio_mono", "audio_stereo", "audio_downmix")
-REQUIREMENT_KEYS = ("audio.production", "audio.gain", "audio.fade_in", "audio.fade_out", "audio.channels", "audio.concat", "audio.concat.crossfade", "audio.sample_rate")
+REQUIREMENT_KEYS = ("audio.production", "audio.extract", "audio.gain", "audio.fade_in", "audio.fade_out", "audio.channels", "audio.concat", "audio.concat.crossfade", "audio.sample_rate")
 SAMPLE_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000)
 GAIN_RANGE = (-60.0, 60.0)
 FADE_RANGE = (0.001, 3600.0)
@@ -82,7 +85,7 @@ def audio_channels(technical: Dict[str, Any]) -> Optional[int]:
 
 def parse_audio_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
     """Requirement map → {"production": bool, "requirements": [Requirement], "gain", "fade_in", "fade_out", "channels", "concat",
-    "crossfade", "sample_rate"} (keys present only when asked). Values are range-checked; DEFAULT never switches anything on;
+    "crossfade", "sample_rate", "extract"} (keys present only when asked). Values are range-checked; DEFAULT never switches anything on;
     an `audio.<op>` without `audio.production` is an ambiguous request and is refused."""
     out: Dict[str, Any] = {"production": False, "requirements": []}
     sw = m.get(SWITCH)
@@ -110,6 +113,8 @@ def parse_audio_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
             out["channels"] = v.strip().lower()
         elif key == "audio.concat":
             out["concat"] = _bool(v, key)
+        elif key == "audio.extract":
+            out["extract"] = _bool(v, key)
         elif key == "audio.concat.crossfade":
             out["crossfade"] = float(_number(v, key, CROSSFADE_RANGE[0], CROSSFADE_RANGE[1]))
         elif key == "audio.sample_rate":

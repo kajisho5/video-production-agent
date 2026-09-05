@@ -39,7 +39,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  # editing operations (ADR-029): CONFIRM unless the profile / request says otherwise; an explicit USER requirement waives it
                  "video.concat": ("video.concat.approval", "CONFIRM"), "video.speed": ("video.speed.approval", "CONFIRM"), "video.resize": ("video.resize.approval", "CONFIRM"),
                  "video.fit": ("video.fit.approval", "CONFIRM"), "video.fill": ("video.fill.approval", "CONFIRM"), "video.overlay": ("video.overlay.approval", "CONFIRM"),
-                 # audio production path (ADR-030): CONFIRM by default (the picture of a video container is not delivered); explicit USER requirement waives it
+                 # audio production path (ADR-030): CONFIRM by default (the picture of a video container is not delivered); explicit USER requirement waives it.
+                 # audio.extract is waived only by its own explicit requirement `audio.extract=true` — never by the generic `audio.production` switch (ADR-033)
                  "audio.extract": ("audio.extract.approval", "CONFIRM"), "audio.gain": ("audio.gain.approval", "CONFIRM"), "audio.channels": ("audio.channels.approval", "CONFIRM"),
                  "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM")}
 
@@ -334,8 +335,13 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "sample_rate": audio["sample_rate"]}, requirements=audio["requirements"])
             for a in src:
                 if has_video(a.technical):
-                    eng.decide(subject="audio.extract", type="TRANSFORM", decision=f"deliver the audio track of {a.id} only", reason=f"audio production was asked for ({sw.source}); the picture is not delivered on this path",
-                               confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="MEDIUM", approval=approval_for("audio.extract", explicit=sw), provenance="USER",
+                    # the switch enables the path; it is not the confirmation of the extraction. Only the dedicated `audio.extract=true` requirement
+                    # is "the user asked for exactly this" (ADR-033) — the generic switch is never passed as `explicit`
+                    extract_req = m["audio.extract"] if audio.get("extract") else None
+                    eng.decide(subject="audio.extract", type="TRANSFORM", decision=f"deliver the audio track of {a.id} only",
+                               reason=f"audio production was asked for ({sw.source}); the picture is not delivered on this path"
+                               + (f"; the user confirmed the extraction up front (audio.extract from {extract_req.source})" if extract_req is not None else "; delivering audio only needs confirmation"),
+                               confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="MEDIUM", approval=approval_for("audio.extract", explicit=extract_req), provenance="USER",
                                params={"asset_id": a.id}, requirements=audio["requirements"], serves_intent=None)
             cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove")) for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
             if not planned_ops and subject not in normalised and not cut_planned and not audio_concat_ok and any(has_video(a.technical) for a in src):
