@@ -167,6 +167,44 @@ class RealMediaTests(unittest.TestCase):
         ir3 = Service(workspace=ws).plan([self.src], "youtube", strategy="CACHED_ONLY")
         self.assertEqual((ir3.doc["analysis"]["strategy"], ir3.doc["analysis"]["budget"]["calls"]), ("CACHED_ONLY", 0))
 
+    def test_temporal_events_and_sessions_on_real_media(self):
+        """Real media → analysis → observations → deterministic Observation → Event transformation → session → IR → CLI.
+        The 3 s lead-in silence becomes an AudioEvent(silence) with the silence observation as evidence."""
+        from video_agent.temporal import events_from_observation, sort_key
+        svc = Service(workspace=self.ws)
+        ir = svc.plan([self.src], "youtube")
+        d = ir.doc
+        events = d["timeline"]["events"]
+        sil_obs = next(o for o in d["analysis"]["observations"] if o["kind"] == "silence")
+        lead = [e for e in events if e["type"] == "AUDIO_SILENCE" and e["range"]["start"] == 0.0]
+        self.assertEqual(len(lead), 1)
+        self.assertAlmostEqual(lead[0]["range"]["end"], 3.0, delta=0.2)
+        self.assertEqual((lead[0]["event_type"], lead[0]["subtype"], lead[0]["provenance"], lead[0]["evidence"]), ("AudioEvent", "silence", "OBSERVED", [sil_obs["id"]]))
+        self.assertTrue(lead[0]["source"].endswith("@" + svc.registry.package("ffmpeg-skill").version))
+        self.assertEqual([e["id"] for e in events], [e["id"] for e in sorted(events, key=lambda e: (e["range"]["start"], e["range"]["end"] if e["range"]["end"] is not None else e["range"]["start"], e["type"], e["id"]))], "canonical order")
+        self.assertEqual(len(d["timeline"]["sessions"]), 1)
+        ses = d["timeline"]["sessions"][0]
+        self.assertEqual((ses["project_id"], ses["asset_ids"], ses["range"]["start"]), (d["project"]["id"], list(d["assets"]), 0.0))
+        self.assertAlmostEqual(ses["range"]["end"], 16.0, delta=0.2)
+        self.assertEqual(sorted(ses["event_ids"]), sorted(e["id"] for e in events))
+        self.assertTrue(svc.validate(ir).ok, svc.validate(ir).errors)
+        # regenerating from the recorded observation gives the same identities (idempotent across runs)
+        from video_agent.models import Asset, Observation
+        asset = Asset.from_dict(d["assets"][ses["asset_ids"][0]])
+        regen = events_from_observation(Observation.from_dict(sil_obs), asset)
+        self.assertTrue({e.id for e in regen} <= {e["id"] for e in events})
+        ir_path = str(Path(self.ws) / "temporal.json")
+        save_ir(ir, ir_path)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        for cmd in (["events"], ["sessions"], ["--json", "events"], ["--json", "sessions"], ["explain"]):
+            r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--workspace", self.ws] + cmd + [ir_path], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(r.stdout.strip())
+        self.assertIn("AudioEvent", subprocess.run([sys.executable, "-m", "video_agent.cli", "--workspace", self.ws, "events", ir_path], capture_output=True, text=True, env=env).stdout)
+        out = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+
     def test_resume_reuses_real_intermediates(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube", hash_sources=False)

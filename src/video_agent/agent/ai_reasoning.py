@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..media.analysis import safe_observation_summary
+from ..temporal.events import safe_event_summary
 from ..media.analyzer import AnalysisResult
 from ..models import Inference, now_iso
 from ..providers import AIProvider, AIProviderError, AIRequest, AIResponse
@@ -33,7 +34,7 @@ def build_request(analysis: AnalysisResult, skills: List[str], context: Optional
     inputs = {
         "assets": [{"id": a.id, "name": a.path.replace("\\", "/").split("/")[-1], "type": a.type, "technical": a.technical} for a in analysis.assets],
         "observations": [x for x in (safe_observation_summary(o.to_dict()) for o in analysis.observations) if x],   # real tool measurements only, scrubbed
-        "events": [{"id": e.id, "type": e.type, "timeline_id": e.timeline_id, "range": e.range, "metadata": e.metadata} for e in analysis.timeline.events],
+        "events": [x for x in (safe_event_summary(e.to_dict()) for e in analysis.timeline.events) if x],   # validated existing events, never AI_GENERATED ones
     }
     ctx = {"allowed_intents": sorted(skills), **(context or {})}
     return AIRequest(task_type="production_recommendation", inputs=inputs, schema=RESULT_SCHEMA, context=ctx)
@@ -41,7 +42,7 @@ def build_request(analysis: AnalysisResult, skills: List[str], context: Optional
 
 def to_inferences(response: AIResponse, analysis: AnalysisResult, skills: List[str]) -> Tuple[List[Inference], List[str]]:
     """Validate a provider response into Inferences. Returns (inferences, warnings about dropped items)."""
-    known_ids = {o.id for o in analysis.observations if getattr(o, "provenance", "OBSERVED") == "OBSERVED"} | {e.id for e in analysis.timeline.events}
+    known_ids = {o.id for o in analysis.observations if getattr(o, "provenance", "OBSERVED") == "OBSERVED"} | {e.id for e in analysis.timeline.events if getattr(e, "provenance", "") != "AI_GENERATED"}
     asset_ids = {a.id for a in analysis.assets}
     out: List[Inference] = []
     warnings: List[str] = []

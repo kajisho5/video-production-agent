@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..models import Decision, new_id, now_iso
+from ..temporal.events import event_id
 from .hashing import ir_hash as _ir_hash, plan_hash as _plan_hash
 from .migrations import CURRENT, migrate
 
@@ -80,8 +81,12 @@ class ProjectIR:
         self.doc["execution"].setdefault("reviews", {})[d["id"]] = rec
         if action == "APPROVED":
             self.doc["execution"].setdefault("approvals", {})[d["id"]] = {"by": who, "at": rec["at"]}
-        self.doc["timeline"]["events"].append({"id": new_id("evt"), "type": "USER_DECISION", "timeline_id": "master", "range": {"start": 0.0, "end": None},
-                                                "source": who, "kind": "USER", "confidence": None, "evidence": [d["id"]],
+        subtype = {"APPROVED": "approved", "REJECTED": "rejected", "REVISED": "revised"}.get(action, "approved")
+        rng = {"start": 0.0, "end": None}
+        self.doc["timeline"]["events"].append({"id": event_id(None, "USER_DECISION", subtype, rng, who, [d["id"], f"plan_v{self.version}", rec["at"]]),
+                                                "type": "USER_DECISION", "event_type": "UserDecisionEvent", "subtype": subtype, "timeline_id": "master", "range": rng,
+                                                "asset_id": None, "source": who, "kind": "USER", "provenance": "USER", "confidence": None, "evidence": [d["id"]],
+                                                "generator": "review@1.0", "created_at": rec["at"],
                                                 "metadata": {"decision": d["id"], "subject": d["subject"], "action": action, "reason": reason, "plan_version": self.version}})
 
     def approve(self, ids: List[str], who: str = "user", reason: str = "") -> List[str]:

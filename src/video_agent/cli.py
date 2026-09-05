@@ -289,6 +289,30 @@ def cmd_check(args, svc: Service) -> int:
     return 0 if out["check"].get("ok") else 1
 
 
+def cmd_events(args, svc: Service) -> int:
+    ir = load_ir(args.project)
+    events = ir.doc["timeline"].get("events") or []
+    if args.json:
+        _print(events, True)
+        return 0
+    for e in events:
+        r = e["range"]
+        end = "" if r.get("end") is None else f"-{r['end']:.3f}"
+        print(f"{e['id']}  {e.get('event_type', ''):16s} {e.get('subtype', ''):12s} {r['start']:8.3f}{end:<10s} {e.get('provenance') or e['kind']:12s} asset={e.get('asset_id') or '-'}  evidence={','.join(e.get('evidence') or [])}")
+    return 0
+
+
+def cmd_sessions(args, svc: Service) -> int:
+    ir = load_ir(args.project)
+    sessions = ir.doc["timeline"].get("sessions") or []
+    if args.json:
+        _print(sessions, True)
+        return 0
+    for x in sessions:
+        print(f"{x['id']}  {x['name']}  {x['range']['start']:.3f}-{x['range']['end']:.3f}  assets={','.join(x['asset_ids'])}  events={len(x['event_ids'])}  {x.get('provenance', '')}")
+    return 0
+
+
 def cmd_explain(args, svc: Service) -> int:
     ir = load_ir(args.project)
     decs = ir.doc["decisions"]
@@ -378,6 +402,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check", help="probe + platform compliance of an output file")
     p.add_argument("output"); p.add_argument("--platform", default="custom")
     p.set_defaults(fn=cmd_check)
+    p = sub.add_parser("events", help="temporal events recorded in a Project IR (canonical order)")
+    p.add_argument("project"); p.set_defaults(fn=cmd_events)
+    p = sub.add_parser("sessions", help="temporal sessions recorded in a Project IR")
+    p.add_argument("project"); p.set_defaults(fn=cmd_sessions)
     p = sub.add_parser("explain", help="why was this decided? show reason, evidence, alternatives")
     p.add_argument("project"); p.add_argument("--decision", help="decision id or subject")
     p.set_defaults(fn=cmd_explain)

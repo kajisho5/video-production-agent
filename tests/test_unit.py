@@ -1602,3 +1602,249 @@ class ObservationAnalysisTests(unittest.TestCase):
         # the only execution surface is ToolAdapter.measure (registry-selected tool ids)
         text = (root / "media/analyzer.py").read_text(encoding="utf-8")
         self.assertIn("self.adapter.measure(tool, args)", text)
+
+
+class TemporalEventSessionTests(unittest.TestCase):
+    """Temporal / Event / Session architecture (ADR-020): time as a first-class domain model, distinct from observations,
+    inferences and decisions."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _analysis(self, svc=None):
+        svc = svc or make_service(self.tmp)
+        return svc, svc.analyze([self.src], "youtube")[2]
+
+    # 1-3 TimePoint / TemporalRange
+    def test_time_point_and_range_validation(self):
+        from video_agent.models import TimePoint, TimeRange, TemporalRange
+        self.assertEqual(TimePoint(1.5).seconds, 1.5)
+        self.assertEqual(TimePoint(-1e-9).seconds, 0.0, "float noise below zero is clamped, real negatives are rejected")
+        for bad in (-1, "x", float("nan")):
+            with self.assertRaises(ValueError):
+                TimePoint(bad)
+        r = TimeRange(1.0, 2.5)
+        self.assertEqual((r.is_point, r.duration, r.stop), (False, 1.5, 2.5))
+        pt = TimeRange(3.0)
+        self.assertEqual((pt.is_point, pt.stop, pt.to_dict()), (True, 3.0, {"start": 3.0, "end": None}))
+        with self.assertRaises(ValueError):
+            TimeRange(2.0, 1.0)
+        with self.assertRaises(ValueError):
+            TimeRange(-0.5, 1.0)
+        self.assertIs(TemporalRange, TimeRange)
+        self.assertEqual(TimeRange(1.0, 1.0 - 1e-9).end, 1.0, "sub-epsilon inversion is float noise, normalised")
+        self.assertTrue(TimeRange(0, 5).within(5.0000001) and not TimeRange(0, 5.1).within(5.0) and TimeRange(0, 99).within(None))
+
+    # 15-17 relations, 14 ordering
+    def test_relations_and_ordering(self):
+        from video_agent.models import Event, TimeRange
+        from video_agent.temporal import adjacent, contains, overlaps, precedes, sort_events
+        a, b, c, d = TimeRange(0, 5), TimeRange(4, 8), TimeRange(5, 8), TimeRange(1, 2)
+        self.assertTrue(a.overlaps(b) and b.overlaps(a) and not a.overlaps(c) and a.contains(d) and not d.contains(a) and a.precedes(c) and not a.precedes(b) and a.adjacent(c))
+        self.assertTrue(TimeRange(2.0).overlaps(a) and a.overlaps(TimeRange(2.0)) and not TimeRange(6.0).overlaps(a))
+        mk = lambda t, s, e, i: Event(type=t, timeline_id="asset:a", range=TimeRange(s, e).to_dict(), source="ffmpeg-skill/silence@0.8.4", kind="OBSERVED", id=i)  # noqa: E731
+        e1, e2, e3, e4 = mk("AUDIO_SILENCE", 0, 5, "evt_b"), mk("AUDIO_ACTIVE", 4, 8, "evt_a"), mk("AUDIO_SILENCE", 0, 5, "evt_a"), mk("AUDIO_ACTIVE", 0, 5, "evt_z")
+        self.assertTrue(overlaps(e1, e2) and contains(e1, mk("AUDIO_ACTIVE", 1, 2, "evt_x")) and precedes(e1, mk("AUDIO_ACTIVE", 5, 6, "evt_y")) and adjacent(e1, mk("AUDIO_ACTIVE", 5, 6, "evt_y")))
+        order = [e.id + "/" + e.type for e in sort_events([e2, e4, e1, e3])]
+        self.assertEqual(order, ["evt_z/AUDIO_ACTIVE", "evt_a/AUDIO_SILENCE", "evt_b/AUDIO_SILENCE", "evt_a/AUDIO_ACTIVE"], "start, end, type, id — stable across runs")
+        self.assertEqual(order, [e.id + "/" + e.type for e in sort_events([e1, e2, e3, e4])])
+
+    # 4-6 event schema / types / subtypes; 7-12 validation
+    def test_event_schema_types_and_validation(self):
+        from video_agent.models import Event, TimeRange
+        from video_agent.temporal import EVENT_CODES, EVENT_TYPES, IMPLEMENTED_CODES, classify, validate_event
+        self.assertEqual(sorted(EVENT_TYPES), ["AudioEvent", "CameraEvent", "CaptionEvent", "IncidentEvent", "SceneEvent", "SlideEvent", "SpeakerEvent", "SpeechEvent", "UserDecisionEvent"])
+        self.assertEqual(IMPLEMENTED_CODES, ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "USER_DECISION"), "only codes with a real generator")
+        for code, (et, st) in EVENT_CODES.items():
+            self.assertIn(st, EVENT_TYPES[et])
+        assets = {"a": 16.0, "nodur": None}
+        ok = classify(Event(type="AUDIO_SILENCE", timeline_id="asset:a", range=TimeRange(0, 3).to_dict(), source="ffmpeg-skill/silence@0.8.4", kind="OBSERVED", evidence=["obs_1"], id="evt_1"))
+        self.assertEqual((ok.event_type, ok.subtype, ok.asset_id, ok.provenance), ("AudioEvent", "silence", "a", "OBSERVED"))
+        self.assertEqual(validate_event(ok, assets, ["obs_1"]), [])
+        base = dict(type="AUDIO_SILENCE", timeline_id="asset:a", range=TimeRange(0, 3).to_dict(), source="ffmpeg-skill/silence@0.8.4", kind="OBSERVED", evidence=["obs_1"], id="evt_1")
+        cases = {
+            "unknown type": {**base, "type": "TELEPATHY"},
+            "wrong subtype": {**base, "subtype": "freeze"},
+            "wrong domain": {**base, "event_type": "SlideEvent"},
+            "unknown asset": {**base, "timeline_id": "asset:zz"},
+            "beyond duration": {**base, "range": TimeRange(10, 17).to_dict()},
+            "bad id": {**base, "id": "obs_1"},
+            "missing evidence": {**base, "evidence": []},
+            "unknown evidence": {**base, "evidence": ["obs_nope"]},
+            "ai source as observed": {**base, "source": "ai:fake"},
+            "ai provenance as observed kind": {**base, "provenance": "AI_GENERATED"},
+            "inferred provenance as observed kind": {**base, "provenance": "INFERRED"},
+            "bad provenance": {**base, "provenance": "GUESSED"},
+            "bad kind": {**base, "kind": "MAYBE"},
+            "confidence out of range": {**base, "confidence": 1.5},
+            "credential leak": {**base, "metadata": {"api_key": "sk-abc"}},
+            "command leak": {**base, "metadata": {"note": "ffmpeg -i in out"}},
+            "argv leak": {**base, "metadata": {"argv": ["ffmpeg"]}},
+            "command as source": {**base, "source": "sh -c rm@1"},
+        }
+        for name, raw in cases.items():
+            self.assertTrue(validate_event(classify(Event(**raw)), assets, ["obs_1"]), f"{name} must be rejected")
+        with self.assertRaises(ValueError):
+            Event(**{**base, "range": {"start": 5, "end": 2}}).temporal_range()
+        nodur = classify(Event(**{**base, "timeline_id": "asset:nodur", "range": TimeRange(0, 9999).to_dict()}))
+        self.assertEqual(validate_event(nodur, assets, ["obs_1"]), [], "unknown duration: bounds are not checked and never guessed")
+        ai = classify(Event(type="SPEAKER", timeline_id="asset:a", range=TimeRange(1, 2).to_dict(), source="fake/model", kind="INFERRED", provenance="AI_GENERATED", evidence=["inf_1"], confidence=0.7, id="evt_ai"))
+        self.assertEqual(validate_event(ai, assets, ["inf_1"]), [], "an AI-generated event is representable, as INFERRED kind, never OBSERVED")
+
+    # 13, 24-27 transformation, identity, idempotency, rejection
+    def test_observation_to_event_transformation(self):
+        from video_agent.models import Observation
+        from video_agent.temporal import Timeline, events_from_observation
+        svc, analysis = self._analysis()
+        asset = analysis.assets[0]
+        sil = next(o for o in analysis.observations if o.kind == "silence")
+        loud = next(o for o in analysis.observations if o.kind == "loudness")
+        probe = next(o for o in analysis.observations if o.kind == "media_probe")
+        ev1 = events_from_observation(sil, asset)
+        ev2 = events_from_observation(sil, asset)
+        self.assertEqual([e.id for e in ev1], [e.id for e in ev2], "same observation → same event identity")
+        self.assertEqual({e.type for e in ev1}, {"AUDIO_SILENCE", "AUDIO_ACTIVE"})
+        self.assertTrue(all(e.evidence == [sil.id] and e.provenance == "OBSERVED" and e.kind == "OBSERVED" and e.asset_id == asset.id and e.generator.startswith("observation_to_event@") for e in ev1))
+        self.assertEqual(events_from_observation(probe, asset), [], "media_probe is container information, not an event")
+        le = events_from_observation(loud, asset)
+        self.assertEqual([(e.type, e.range["start"], e.range["end"]) for e in le], [("LOUDNESS_MEASURE", 0.0, asset.technical["duration"])])
+        # idempotent on the timeline
+        tl = Timeline(); tl.add_timeline(asset.id)
+        for e in ev1 + ev2:
+            tl.add(e)
+        self.assertEqual(len(tl.events), len(ev1))
+        # identity differs when the observation (evidence) or range differs, and never collides with other id spaces
+        other = Observation(kind="silence", asset_id=asset.id, source=sil.source, data=sil.data)
+        self.assertNotEqual([e.id for e in events_from_observation(other, asset)], [e.id for e in ev1])
+        self.assertTrue(all(e.id.startswith("evt_") and e.id != sil.id and e.id != sil.cache_key and e.id != sil.analysis_id for e in ev1))
+        # rejections: fake / AI observations, wrong asset
+        for bad in (Observation(kind="silence", asset_id=asset.id, source="ai:fake", data=sil.data),
+                    Observation(kind="silence", asset_id=asset.id, source=sil.source, data=sil.data, provenance="AI_GENERATED"),
+                    Observation(kind="silence", asset_id="other", source=sil.source, data=sil.data)):
+            with self.assertRaises(ValueError):
+                events_from_observation(bad, asset)
+        # the analyzer's timeline is exactly the transformation output (nothing else generated)
+        expected = {e.id for o in (sil, loud) for e in events_from_observation(o, asset)}
+        self.assertEqual({e.id for e in analysis.timeline.events}, expected)
+
+    # 18-23 session
+    def test_session_model_and_validation(self):
+        from video_agent.models import Event, TimeRange
+        from video_agent.temporal import Session, Timeline, session_for_asset, validate_session
+        svc, analysis = self._analysis()
+        asset = analysis.assets[0]
+        events = {e.id: e for e in analysis.timeline.events}
+        ses = session_for_asset("proj_x", asset, analysis.timeline.events)
+        self.assertEqual((ses.project_id, ses.range, sorted(ses.asset_ids)), ("proj_x", {"start": 0.0, "end": asset.technical["duration"]}, [asset.id]))
+        self.assertEqual(sorted(ses.event_ids), sorted(events))
+        self.assertEqual(validate_session(ses, "proj_x", {asset.id: asset.technical["duration"]}, events), [])
+        self.assertEqual(ses.id, session_for_asset("proj_x", asset, analysis.timeline.events).id, "deterministic session identity")
+        self.assertNotEqual(ses.id, session_for_asset("proj_y", asset, analysis.timeline.events).id)
+        durations = {asset.id: asset.technical["duration"]}
+        bad = [
+            ("wrong project", Session.from_dict({**ses.to_dict(), "project_id": "proj_other"}), "proj_x"),
+            ("point range", Session.from_dict({**ses.to_dict(), "range": {"start": 3.0, "end": 3.0}}), "proj_x"),
+            ("beyond asset", Session.from_dict({**ses.to_dict(), "range": {"start": 0.0, "end": 999.0}}), "proj_x"),
+            ("unknown asset", Session.from_dict({**ses.to_dict(), "asset_ids": ["zz"]}), "proj_x"),
+            ("unknown event", Session.from_dict({**ses.to_dict(), "event_ids": ["evt_nope"]}), "proj_x"),
+            ("no assets", Session.from_dict({**ses.to_dict(), "asset_ids": []}), "proj_x"),
+            ("bad provenance", Session.from_dict({**ses.to_dict(), "provenance": "AI_GENERATED"}), "proj_x"),
+        ]
+        for name, x, pid in bad:
+            self.assertTrue(validate_session(x, pid, durations, events), f"{name} must be rejected")
+        # child event outside the session range is an error, never clipped
+        narrow = Session.new("proj_x", "n", TimeRange(0.0, 1.0), [asset.id], analysis.timeline.events)
+        errs = validate_session(narrow, "proj_x", durations, events)
+        self.assertTrue(any("outside the session range" in e for e in errs))
+        self.assertEqual(narrow.range, {"start": 0.0, "end": 1.0})
+        # an asset with no duration yields no default session (nothing guessed)
+        from video_agent.models import Asset
+        self.assertIsNone(session_for_asset("proj_x", Asset(path="/x.mp4"), []))
+        # deterministic serialisation: same content → same JSON regardless of insertion order
+        tl1, tl2 = Timeline(), Timeline()
+        tl1.add_timeline(asset.id); tl2.add_timeline(asset.id)
+        for e in analysis.timeline.events:
+            tl1.add(e)
+        for e in reversed(analysis.timeline.events):
+            tl2.add(e)
+        tl1.add_session(ses); tl2.add_session(ses); tl2.add_session(ses)
+        self.assertEqual(json.dumps(tl1.to_dict(), sort_keys=True), json.dumps(tl2.to_dict(), sort_keys=True))
+        self.assertEqual(len(tl2.sessions), 1)
+
+    # project integration: IR carries events + sessions, validator checks them, revision keeps identity, plan hash untouched
+    def test_project_ir_events_sessions_validation_and_revision(self):
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "youtube")
+        tlc = ir.doc["timeline"]
+        self.assertEqual(len(tlc["sessions"]), 1)
+        self.assertEqual(tlc["sessions"][0]["project_id"], ir.doc["project"]["id"])
+        self.assertTrue(all(e["event_type"] and e["subtype"] and e["provenance"] == "OBSERVED" and e["asset_id"] for e in tlc["events"]))
+        self.assertTrue(svc.validate(ir).ok)
+        h = ir.plan_hash()
+        ir.doc["timeline"]["events"][0]["provenance"] = "AI_GENERATED"
+        rep = svc.validate(ir)
+        self.assertTrue(any("never OBSERVED" in e for e in rep.errors), rep.errors)
+        self.assertEqual(ir.plan_hash(), h, "the temporal layer is not plan content")
+        ir.doc["timeline"]["events"][0]["provenance"] = "OBSERVED"
+        ir.doc["timeline"]["events"][0]["range"] = {"start": 0.0, "end": 9999.0}
+        self.assertTrue(any("exceeds asset duration" in e for e in svc.validate(ir).errors))
+        # revision: user decision events are classified, sessions keep their id, observed events are not regenerated twice
+        ir = svc.plan([self.src], "youtube")
+        p = str(Path(self.tmp) / "t.json")
+        save_ir(ir, p)
+        d = next(x for x in ir.doc["decisions"] if x["subject"] == "silence.leading")["id"]
+        svc.reject(load_ir(p), p, [d], reason="r")
+        svc.revise(load_ir(p), p)
+        v2 = load_ir(p)
+        ud = [e for e in v2.doc["timeline"]["events"] if e["type"] == "USER_DECISION"]
+        self.assertEqual((ud[0]["event_type"], ud[0]["subtype"], ud[0]["provenance"], ud[0]["kind"]), ("UserDecisionEvent", "rejected", "USER", "USER"))
+        self.assertEqual(v2.doc["timeline"]["sessions"][0]["id"], ir.doc["timeline"]["sessions"][0]["id"])
+        obs_events = [e["id"] for e in v2.doc["timeline"]["events"] if e["kind"] == "OBSERVED"]
+        self.assertEqual(sorted(obs_events), sorted(e["id"] for e in ir.doc["timeline"]["events"] if e["kind"] == "OBSERVED"))
+        self.assertEqual(len(obs_events), len(set(obs_events)))
+        self.assertTrue(svc.validate(v2).ok, svc.validate(v2).errors)
+
+    # AI boundary: events reach the provider through the safe boundary; AI cannot create observed events
+    def test_ai_evidence_events_are_validated_existing_only(self):
+        from video_agent.agent.ai_reasoning import build_request, to_inferences
+        from video_agent.models import Event, TimeRange
+        from video_agent.providers import AIResponse
+        from video_agent.temporal import classify
+        svc, analysis = self._analysis()
+        real = {e.id for e in analysis.timeline.events}
+        aid = analysis.assets[0].id
+        smuggled = classify(Event(type="SPEAKER", timeline_id=f"asset:{aid}", range=TimeRange(1, 2).to_dict(), source="fake/model", kind="INFERRED", provenance="AI_GENERATED", id="evt_ai"))
+        analysis.timeline.add(smuggled)
+        analysis.timeline.events[0].metadata["cmd"] = "ffmpeg -y"
+        req = build_request(analysis, ["silence_cleanup"])
+        ids = {e["id"] for e in req.inputs["events"]}
+        self.assertEqual(ids, real, "AI_GENERATED events are not offered back as evidence")
+        self.assertTrue(all(e["provenance"] and e["evidence"] for e in req.inputs["events"]))
+        self.assertNotIn("ffmpeg -y", json.dumps(req.inputs))
+        resp = AIResponse(task_type="production_recommendation", provider="fake", model="m", confidence=0.9,
+                          result={"events": [{"type": "AUDIO_SILENCE", "kind": "OBSERVED"}],
+                                  "recommendations": [{"intent": "silence_cleanup", "asset_id": aid, "statement": "x", "confidence": 0.9, "evidence": ["evt_ai"]}]})
+        infs, _ = to_inferences(resp, analysis, ["silence_cleanup"])
+        self.assertEqual(infs, [], "an AI-generated event id is not evidence")
+        self.assertEqual({e.id for e in analysis.timeline.events}, real | {"evt_ai"}, "the response created no event")
+        # the full pipeline with the fake provider still validates
+        prov = FakeAIProvider(intent="silence_cleanup")
+        svc2 = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=prov)
+        ir = svc2.plan([self.src], "youtube")
+        self.assertTrue(svc2.validate(ir).ok)
+        self.assertTrue(all(e["kind"] == "OBSERVED" for e in ir.doc["timeline"]["events"]), "AI recommendations became inferences, never events")
+
+    # security: the temporal layer has no path to execution or AI
+    def test_temporal_layer_has_no_path_to_execution_or_ai(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        forbidden_imports = ("execution", "jobs", "providers", "agent", "subprocess", "shlex", "tools", "ffmpeg")
+        forbidden_calls = ("subprocess", "os.system", "os.popen", "exec(", "eval(", "compile_ir", "Executor(", "ToolRouter(", "__import__", ".complete(", ".measure(", ".run(")
+        for rel in ("temporal/events.py", "temporal/session.py", "temporal/timeline.py"):
+            for l in (root / rel).read_text(encoding="utf-8").splitlines():
+                code = l.split("#", 1)[0]
+                if code.startswith(("import ", "from ")) or "    from " in code:
+                    for f in forbidden_imports:
+                        self.assertNotIn(f, code, f"{rel} must not import {f}: {l}")
+                for f in forbidden_calls:
+                    self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
