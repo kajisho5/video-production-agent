@@ -17,6 +17,7 @@ from .execution import CompileError, Executor, compile_ir
 from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
+from .media.analysis import ANALYSIS_KINDS, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
 from .models import Artifact, Inference, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
 from .profiles import load_profile
@@ -99,24 +100,38 @@ class Service:
         return out
 
     # ---- lifecycle
-    def analyze(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None, hash_sources: bool = True):
+    def analyze(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None, hash_sources: bool = True,
+                strategy: Optional[str] = None, cache_policy: Optional[str] = None, use_cache: bool = True):
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter([str(Path(p).resolve().parent) for p in inputs])
         tools = self.tools_for(adapter)
         self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"], adapter)
-        # Phase 1 analyses whole files (silence + loudness over the full duration); a budgeted TARGETED strategy is Phase 2,
-        # so the recorded strategy says what actually happened rather than what the profile asked for.
-        analyzer = MediaAnalyzer(adapter, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), strategy="FULL_ANALYSIS", hash_sources=hash_sources, tools=tools)
-        analysis = analyzer.analyze(inputs)
+        req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy)
+        analyzer = MediaAnalyzer(adapter, tools=tools, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), hash_sources=hash_sources,
+                                 cache_dir=self.workspace if use_cache else None)
+        analysis = analyzer.run(req)
         return profile, rules, analysis
 
+    def analysis_request(self, inputs: List[str], rules, request_text: str, user_requirements, profile, hash_sources: bool = True,
+                         strategy: Optional[str] = None, cache_policy: Optional[str] = None) -> AnalysisRequest:
+        """What to observe is decided here (system / policy / requirements), never by an AI provider:
+        strategy from `analysis.strategy` (policy or `--set analysis.strategy=`), kinds from the requirements under TARGETED,
+        budget from `analysis.budget.*` (only enforceable items; others are refused), parameters from policy."""
+        strat = strategy or (user_requirements or {}).get("analysis.strategy") or rules.get("analysis.strategy") or "FULL"
+        strat = normalize_strategy(strat)
+        reqs = extract_requirements(Request(raw=request_text, args={"inputs": inputs, "profile": profile.name, "requirements": user_requirements or {}}), profile, rules)
+        kinds = targeted_kinds(reqs) if strat == "TARGETED" else list(ANALYSIS_KINDS)
+        return AnalysisRequest(inputs=list(inputs), kinds=kinds, strategy=strat, budget=AnalysisBudget.from_rules(rules),
+                               cache_policy=cache_policy or ("only" if strat == "CACHED_ONLY" else "use"),
+                               params={"threshold_db": float(rules.get("silence.threshold_db", -40)), "min_silence": 0.5}, hash_sources=hash_sources)
+
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
-             project_name: Optional[str] = None, hash_sources: bool = True) -> ProjectIR:
+             project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True) -> ProjectIR:
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
-        profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources)
+        profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         self._ai_calls = []
@@ -176,8 +191,8 @@ class Service:
         d["source"] = {"agent_version": __version__, "tool_versions": self.tool_versions(), "generator": "video-agent plan"}
         d["assets"] = {a.id: a.to_dict() for a in analysis.assets}
         d["analysis"] = {"observations": [o.to_dict() for o in analysis.observations], "inferences": [i.to_dict() for i in inferences], "strategy": analysis.strategy,
-                         "budget": {"max_processing_time": rules.get("analysis.budget.max_processing_time"), "requested_strategy": rules.get("analysis.strategy"), "enforced": False},
-                         "warnings": analysis.warnings, "tool_calls": analysis.tool_calls}
+                         "budget": {**(analysis.budget or {}), "requested_strategy": rules.get("analysis.strategy")},
+                         "warnings": analysis.warnings, "tool_calls": analysis.tool_calls, "analyses": analysis.analyses}
         d["intent"] = intent.to_dict()
         d["constraints"] = [r.to_dict() for r in rules.all_rules if r.hard]
         d["policy"] = rules.to_dict()
@@ -434,7 +449,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.")
 
 
 def _default_who() -> str:

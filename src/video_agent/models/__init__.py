@@ -83,6 +83,10 @@ class Observation(Model):
     data: Dict[str, Any]
     id: str = field(default_factory=lambda: new_id("obs"))
     observed_at: str = field(default_factory=now_iso)
+    analysis_id: str = ""      # AnalysisRequest that produced it (analysis provenance, ADR-019)
+    analyzer: str = ""         # "<analyzer id>@<version>"
+    cache_key: str = ""        # deterministic measurement identity (not the observation id)
+    provenance: str = "OBSERVED"   # always OBSERVED: AI output never becomes an observation
 
 
 @dataclass

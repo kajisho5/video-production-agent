@@ -19,7 +19,7 @@
     "analysis": {"type": "object", "required": ["observations", "inferences", "strategy"], "properties": {
       "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}},
       "inferences": {"type": "array", "items": {"$ref": "#/$defs/inference"}},
-      "strategy": {"enum": ["FULL_ANALYSIS", "COARSE_ANALYSIS", "TARGETED_ANALYSIS"]},
+      "strategy": {"enum": ["FULL_ANALYSIS", "COARSE_ANALYSIS", "TARGETED_ANALYSIS", "CACHED_ONLY"]},
       "budget": {"type": "object"}, "warnings": {"type": "array", "items": {"type": "string"}}, "tool_calls": {"type": "array"}}},
     "intent": {"type": "object", "required": ["primary", "confidence", "provenance"], "properties": {"primary": {"type": "string"}, "secondary": {"type": "array", "items": {"type": "string"}}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "provenance": {"type": "string"}, "reason": {"type": "string"}}},
     "constraints": {"type": "array", "items": {"$ref": "#/$defs/rule"}},

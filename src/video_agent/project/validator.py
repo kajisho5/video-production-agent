@@ -118,6 +118,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         src = str(o.get("source") or "")
         if "@" not in src or src.startswith("ai"):
             rep.errors.append(f"observation {o.get('id')} has no tool source ({src!r}); only tool measurements may be OBSERVED")
+        if o.get("provenance", "OBSERVED") != "OBSERVED":
+            rep.errors.append(f"observation {o.get('id')} has provenance {o.get('provenance')!r}; observations are always OBSERVED")
     for i in d["analysis"].get("inferences") or []:
         if str(i.get("kind", "")).startswith("ai_recommendation:") and i.get("provenance") != "AI_GENERATED":
             rep.errors.append(f"inference {i.get('id')} from an AI provider must carry provenance AI_GENERATED")

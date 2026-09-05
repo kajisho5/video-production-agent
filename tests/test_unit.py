@@ -126,7 +126,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(d["provenance"]["plan_hash"] and d["provenance"]["ir_hash"])
         self.assertEqual(d["revision"], {"feedback": [], "history": [], "approved_plan_version": None})
         kinds = {o["kind"] for o in d["analysis"]["observations"]}
-        self.assertEqual(kinds, {"probe", "silence", "loudness"})
+        self.assertEqual(kinds, {"media_probe", "silence", "loudness"})
         inf = {i["kind"] for i in d["analysis"]["inferences"]}
         self.assertIn("leading_silence_unwanted", inf)
         self.assertIn("trailing_silence_unwanted", inf)
@@ -345,10 +345,17 @@ class ExecutorTests(unittest.TestCase):
         self.src = fake_media(self.tmp)
 
     def test_analysis_strategy_is_honest(self):
+        """The recorded strategy is the one the request ran with, and the budget block reports real enforcement + usage."""
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "youtube")
-        self.assertEqual(ir.doc["analysis"]["strategy"], "FULL_ANALYSIS")
-        self.assertFalse(ir.doc["analysis"]["budget"]["enforced"])
+        self.assertEqual(ir.doc["analysis"]["strategy"], "TARGETED_ANALYSIS", "profile policy analysis.strategy=TARGETED is what ran")
+        self.assertEqual(ir.doc["analysis"]["analyses"][0]["request"]["strategy"], "TARGETED")
+        self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"], "default requirements need all three kinds")
+        self.assertTrue(ir.doc["analysis"]["budget"]["enforced"])
+        self.assertEqual(ir.doc["analysis"]["budget"]["calls"], 3)
+        self.assertIn("max_bytes_scanned", ir.doc["analysis"]["budget"]["unsupported"])
+        ir2 = make_service(self.tmp).plan([self.src], "youtube", strategy="FULL")
+        self.assertEqual(ir2.doc["analysis"]["strategy"], "FULL_ANALYSIS")
 
     def test_recovery_retries_once_then_blocks(self):
         ad = FakeAdapter(fail_tools={"ffmpeg-skill/cut": 1})
@@ -1332,3 +1339,266 @@ class AIProviderBoundaryTests(unittest.TestCase):
         self.assertEqual(ir.doc["provenance"]["ai_calls"], [])
         self.assertIsNone(ir.doc["provenance"]["ai_provider"])
         self.assertFalse([i for i in ir.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED"])
+
+
+class ObservationAnalysisTests(unittest.TestCase):
+    """Observation / Analysis architecture (ADR-019): AnalysisRequest → Analyzer → validated Observation → cache → evidence."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+
+    def _analyzer(self, adapter=None, cache=True, **kw):
+        svc = make_service(self.tmp, adapter=adapter)
+        from video_agent.media import MediaAnalyzer
+        return svc, MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=self.tmp if cache else None, **kw)
+
+    # 1-2 request / kind validation
+    def test_analysis_request_and_kind_validation(self):
+        from video_agent.media import AnalysisRequest, AnalysisError, ANALYSIS_KINDS
+        self.assertEqual(sorted(ANALYSIS_KINDS), ["loudness", "media_probe", "silence"], "only implemented kinds exist")
+        r = AnalysisRequest(inputs=[self.src], kinds=["silence"], strategy="FULL_ANALYSIS")
+        self.assertEqual((r.strategy, r.kinds, r.cache_policy), ("FULL", ["media_probe", "silence"], "use"))
+        self.assertEqual(AnalysisRequest(inputs=[self.src], strategy="CACHED_ONLY").cache_policy, "only")
+        for bad in ({"kinds": ["speaker_detection"]}, {"strategy": "GUESS"}, {"cache_policy": "maybe"}, {"inputs": []}):
+            with self.assertRaises(AnalysisError) as cm:
+                AnalysisRequest(**{"inputs": [self.src], **bad})
+            self.assertIn(cm.exception.kind, ("ANALYSIS_UNSUPPORTED", "ANALYSIS_INVALID_RESULT"))
+        self.assertEqual(r.analysis_id[:4], "ana_")
+
+    # 3 analyzer contract
+    def test_analyzer_contract(self):
+        from video_agent.media import Analyzer, MediaAnalyzer
+        svc, an = self._analyzer()
+        self.assertIsInstance(an, Analyzer)
+        self.assertEqual((an.id, an.version, an.identity), ("media", "1.0", "media@1.0"))
+        self.assertEqual(an.supported_kinds, ("media_probe", "silence", "loudness"))
+        with self.assertRaises(NotImplementedError):
+            Analyzer().analyze(None)
+        self.assertFalse(any(hasattr(Analyzer, m) for m in ("decide", "approve", "compile", "render", "complete")))
+
+    # 4-10 observation validation
+    def test_observation_validation(self):
+        from video_agent.media import AnalysisRequest, validate_observation
+        from video_agent.models import Observation
+        req = AnalysisRequest(inputs=[self.src], kinds=["silence"])
+        ok = Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={"silences": []}, analysis_id=req.analysis_id)
+        self.assertEqual(validate_observation(ok, req, ["a1"], "silence"), [])
+        cases = {
+            "wrong asset": Observation(kind="silence", asset_id="zz", source="ffmpeg-skill/silence@0.8.4", data={}, analysis_id=req.analysis_id),
+            "wrong kind": Observation(kind="loudness", asset_id="a1", source="ffmpeg-skill/loudness@0.8.4", data={}, analysis_id=req.analysis_id),
+            "fake source": Observation(kind="silence", asset_id="a1", source="ai:fake", data={}, analysis_id=req.analysis_id),
+            "no version": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence", data={}, analysis_id=req.analysis_id),
+            "missing field": Observation(kind="", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={}, analysis_id=req.analysis_id),
+            "other analysis": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={}, analysis_id="ana_other"),
+            "ai provenance": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={}, analysis_id=req.analysis_id, provenance="AI_GENERATED"),
+            "secret leak": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={"api_key": "sk-abc"}, analysis_id=req.analysis_id),
+            "command leak": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={"note": "ffmpeg -i in.mp4 out.mp4"}, analysis_id=req.analysis_id),
+            "argv leak": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data={"argv": ["x"]}, analysis_id=req.analysis_id),
+            "malformed data": Observation(kind="silence", asset_id="a1", source="ffmpeg-skill/silence@0.8.4", data="not a dict", analysis_id=req.analysis_id),
+        }
+        for name, obs in cases.items():
+            self.assertTrue(validate_observation(obs, req, ["a1"], "silence"), f"{name} must be rejected")
+        self.assertEqual(validate_observation({"kind": "silence"}, req, ["a1"]), ["result is not an Observation"])
+
+    # 11-13 strategies
+    def test_full_targeted_cached_only(self):
+        from video_agent.media import AnalysisRequest, AnalysisError
+        svc, an = self._analyzer()
+        full = an.run(AnalysisRequest(inputs=[self.src], strategy="FULL"))
+        self.assertEqual(sorted(o.kind for o in full.observations), ["loudness", "media_probe", "silence"])
+        self.assertEqual((full.strategy, an.measure_calls), ("FULL_ANALYSIS", 3))
+        svc2, an2 = self._analyzer(cache=False)
+        tgt = an2.run(AnalysisRequest(inputs=[self.src], strategy="TARGETED", kinds=["silence"]))
+        self.assertEqual(sorted(o.kind for o in tgt.observations), ["media_probe", "silence"])
+        self.assertEqual((tgt.strategy, an2.measure_calls), ("TARGETED_ANALYSIS", 2))
+        # TARGETED kinds come from requirements, not from anyone else
+        ir = make_service(self.tmp).plan([self.src], "youtube", user_requirements={"audio.normalize": False})
+        self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["media_probe", "silence"])
+        # CACHED_ONLY: served from cache after FULL, no tool call; fails explicitly when nothing is cached
+        _, an3 = self._analyzer()
+        cached = an3.run(AnalysisRequest(inputs=[self.src], strategy="CACHED_ONLY"))
+        self.assertEqual((an3.measure_calls, cached.strategy, len(cached.observations)), (0, "CACHED_ONLY", 3))
+        self.assertTrue(all(r["cache_hit"] for r in cached.analyses[0]["rows"]))
+        _, an4 = self._analyzer(cache=False)
+        with self.assertRaises(AnalysisError) as cm:
+            an4.run(AnalysisRequest(inputs=[self.src], strategy="CACHED_ONLY"))
+        self.assertEqual(cm.exception.kind, "ANALYZER_UNAVAILABLE")
+        self.assertEqual(an4.measure_calls, 0, "CACHED_ONLY never runs the analyzer")
+
+    # 14-18, 22 cache
+    def test_cache_hit_miss_invalidation_and_determinism(self):
+        from video_agent.media import AnalysisRequest
+        from video_agent.media.analysis import cache_key
+        k = cache_key("fp1", "silence", "media@1.0", "ffmpeg-skill/silence@0.8.4", {"threshold_db": -40.0})
+        self.assertEqual(k, cache_key("fp1", "silence", "media@1.0", "ffmpeg-skill/silence@0.8.4", {"threshold_db": -40.0}), "deterministic")
+        self.assertNotEqual(k, cache_key("fp2", "silence", "media@1.0", "ffmpeg-skill/silence@0.8.4", {"threshold_db": -40.0}), "asset content")
+        self.assertNotEqual(k, cache_key("fp1", "silence", "media@1.1", "ffmpeg-skill/silence@0.8.4", {"threshold_db": -40.0}), "analyzer version")
+        self.assertNotEqual(k, cache_key("fp1", "silence", "media@1.0", "ffmpeg-skill/silence@0.8.5", {"threshold_db": -40.0}), "tool version")
+        self.assertNotEqual(k, cache_key("fp1", "silence", "media@1.0", "ffmpeg-skill/silence@0.8.4", {"threshold_db": -30.0}), "parameters")
+        svc, an = self._analyzer()
+        r1 = an.run(AnalysisRequest(inputs=[self.src]))
+        self.assertEqual((an.measure_calls, an.cache.hits, an.cache.misses), (3, 0, 3), "first run: miss + analyzer")
+        _, an2 = self._analyzer()
+        r2 = an2.run(AnalysisRequest(inputs=[self.src]))
+        self.assertEqual((an2.measure_calls, an2.cache.hits), (0, 3), "second run: hit, analyzer not executed")
+        self.assertEqual([o.id for o in r1.observations], [o.id for o in r2.observations], "cached observations keep their identity")
+        self.assertNotEqual(r1.analyses[0]["analysis_id"], r2.analyses[0]["analysis_id"], "observation id and cache key are not the analysis id")
+        self.assertEqual(r2.analyses[0]["rows"][0]["produced_by"]["analyzer"], "media@1.0")
+        # parameter change -> miss
+        _, an3 = self._analyzer()
+        an3.run(AnalysisRequest(inputs=[self.src], params={"threshold_db": -30.0}))
+        self.assertEqual(an3.measure_calls, 1, "only the silence measurement (threshold parameter) re-ran")
+        # analyzer version change -> miss
+        _, an4 = self._analyzer()
+        an4.version = "9.9"
+        an4.run(AnalysisRequest(inputs=[self.src]))
+        self.assertEqual(an4.measure_calls, 3)
+        # asset content change -> miss (fingerprint = sha256, or size:mtime with --no-hash)
+        Path(self.src).write_bytes(b"\x01" * 65)
+        _, an5 = self._analyzer()
+        an5.run(AnalysisRequest(inputs=[self.src]))
+        self.assertEqual(an5.measure_calls, 3)
+        _, an6 = self._analyzer()
+        an6.run(AnalysisRequest(inputs=[self.src], hash_sources=False))
+        self.assertEqual(an6.measure_calls, 3, "no-hash fingerprint is a different key than the sha256 one")
+        # bypass policy neither reads nor writes
+        _, an7 = self._analyzer()
+        an7.run(AnalysisRequest(inputs=[self.src], cache_policy="bypass"))
+        self.assertEqual((an7.measure_calls, an7.cache.hits), (3, 0))
+        # corrupt cache record -> ANALYSIS_CACHE_INVALID is recorded and the analyzer re-measures
+        _, an8 = self._analyzer()
+        an8.run(AnalysisRequest(inputs=[self.src]))
+        for f in (Path(self.tmp) / "cache" / "observations").glob("*.json"):
+            f.write_text("{broken")
+        _, an9 = self._analyzer()
+        r9 = an9.run(AnalysisRequest(inputs=[self.src]))
+        self.assertEqual(an9.measure_calls, 3)
+        self.assertTrue(all("ANALYSIS_CACHE_INVALID" in r.get("warning", "") for r in r9.analyses[0]["rows"]))
+
+    # 19 budget
+    def test_analysis_budget_is_enforced_and_separate_from_ai_budget(self):
+        from video_agent.media import AnalysisRequest, AnalysisBudget, AnalysisError
+        _, an = self._analyzer(cache=False)
+        r = an.run(AnalysisRequest(inputs=[self.src], budget=AnalysisBudget(max_analysis_calls=1)))
+        self.assertEqual(an.measure_calls, 1, "the second measurement is not made")
+        rows = {x["kind"]: x for x in r.analyses[0]["rows"]}
+        self.assertEqual(rows["silence"]["status"], "FAILED")
+        self.assertEqual(rows["silence"]["error"]["kind"], "ANALYSIS_BUDGET_EXCEEDED")
+        self.assertEqual([o.kind for o in r.observations], ["media_probe"], "no fabricated observation")
+        self.assertEqual(r.analyses[0]["status"], "FAILED")
+        self.assertTrue(any("ANALYSIS_BUDGET_EXCEEDED" in w for w in r.warnings))
+        _, an2 = self._analyzer(cache=False)
+        with self.assertRaises(AnalysisError) as cm:   # no time budget left: nothing runs; the probe cannot be skipped, so the failure is explicit
+            an2.run(AnalysisRequest(inputs=[self.src], budget=AnalysisBudget(max_total_seconds=0.0)))
+        self.assertEqual((cm.exception.kind, an2.measure_calls), ("ANALYSIS_BUDGET_EXCEEDED", 0))
+        # unsupported budget keys are refused, not silently ignored
+        from video_agent.policy.rules import Rule, resolve_rules
+        rules = resolve_rules([Rule(id="t", kind="POLICY", scope="test", key="analysis.budget.max_bytes_scanned", value=10)])
+        with self.assertRaises(AnalysisError) as cm:
+            AnalysisBudget.from_rules(rules)
+        self.assertEqual(cm.exception.kind, "ANALYSIS_UNSUPPORTED")
+        rules = resolve_rules([Rule(id="t", kind="POLICY", scope="test", key="analysis.budget.max_processing_time", value=600)])
+        self.assertEqual(AnalysisBudget.from_rules(rules).max_total_seconds, 600.0, "legacy key is now enforced as wall-clock seconds")
+        # AI call budget is a different mechanism: an exhausted analysis budget does not touch ai_calls, and vice versa
+        prov = FakeAIProvider(intent="silence_cleanup")
+        svc = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=prov)
+        ir = svc.plan([self.src], "youtube")
+        self.assertEqual(len(ir.doc["provenance"]["ai_calls"]), 1)
+        self.assertEqual(ir.doc["analysis"]["budget"]["calls"], 3)
+        self.assertNotIn("ai", json.dumps(ir.doc["analysis"]["budget"]))
+
+    # 20-21 unsupported / analyzer failure
+    def test_unsupported_and_analyzer_failure(self):
+        from video_agent.media import AnalysisRequest, AnalysisError
+        with self.assertRaises(AnalysisError) as cm:
+            AnalysisRequest(inputs=[self.src], kinds=["scene_detection"])
+        self.assertEqual(cm.exception.kind, "ANALYSIS_UNSUPPORTED")
+        _, an = self._analyzer(adapter=FakeAdapter(fail_tools={"ffmpeg-skill/loudness": 9}), cache=False)
+        r = an.run(AnalysisRequest(inputs=[self.src]))
+        rows = {x["kind"]: x for x in r.analyses[0]["rows"]}
+        self.assertEqual(rows["loudness"]["status"], "FAILED")
+        self.assertEqual(rows["loudness"]["error"]["kind"], "ANALYZER_UNAVAILABLE")
+        self.assertEqual(sorted(o.kind for o in r.observations), ["media_probe", "silence"], "partial results are not stored as loudness observations")
+        self.assertNotIn("INCIDENT", json.dumps(r.to_dict()).upper().replace("INCIDENTS", ""))
+        # the plan still works deterministically on the remaining evidence
+        svc = make_service(self.tmp, adapter=FakeAdapter(fail_tools={"ffmpeg-skill/loudness": 9}))
+        ir = svc.plan([self.src], "youtube")
+        self.assertTrue(any("loudness analysis failed" in w for w in ir.doc["analysis"]["warnings"]))
+        self.assertTrue([st for st in ir.doc["plan"]["steps"] if st["skill"] == "silence_cleanup"])
+        # a probe failure cannot be worked around: explicit analysis error, no asset
+        _, an2 = self._analyzer(adapter=FakeAdapter(fail_tools={"ffmpeg-skill/probe": 9}), cache=False)
+        with self.assertRaises(AnalysisError):
+            an2.run(AnalysisRequest(inputs=[self.src]))
+
+    # analysis provenance
+    def test_analysis_provenance_is_tracked_and_separate_from_ai_calls(self):
+        prov = FakeAIProvider(intent="silence_cleanup")
+        svc = Service(workspace=self.tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=prov)
+        ir = svc.plan([self.src], "youtube")
+        an = ir.doc["analysis"]["analyses"][0]
+        for k in ("analysis_id", "request", "analyzer", "started_at", "completed_at", "status", "rows", "budget", "cache"):
+            self.assertIn(k, an)
+        for o in ir.doc["analysis"]["observations"]:
+            self.assertEqual((o["analysis_id"], o["analyzer"], o["provenance"]), (an["analysis_id"], "media@1.0", "OBSERVED"))
+            self.assertTrue(o["cache_key"])
+            self.assertTrue(o["source"].endswith("@0.8.4-fake"))
+        self.assertNotIn("ai", json.dumps(an))
+        self.assertNotIn("analysis_id", json.dumps(ir.doc["provenance"]["ai_calls"]))
+        self.assertTrue(svc.validate(ir).ok)
+        # revision reuses recorded observations and analyses; the analyzer is not re-run
+        p = str(Path(self.tmp) / "r.json")
+        save_ir(ir, p)
+        n = len(svc.adapter([]).adapters[0].calls)
+        svc.reject(load_ir(p), p, ["all"], reason="t")
+        svc.revise(load_ir(p), p)
+        self.assertEqual(len(svc.adapter([]).adapters[0].calls), n)
+        v2 = load_ir(p)
+        self.assertEqual(v2.doc["analysis"]["analyses"][0]["analysis_id"], an["analysis_id"])
+
+    # 23-24 AI evidence boundary
+    def test_ai_evidence_only_real_scrubbed_observations(self):
+        from video_agent.agent.ai_reasoning import build_request, to_inferences
+        from video_agent.media.analysis import safe_observation_summary
+        from video_agent.models import Observation
+        from video_agent.providers import AIResponse
+        svc = make_service(self.tmp)
+        analysis = svc.analyze([self.src], "youtube")[2]
+        real_ids = {o.id for o in analysis.observations}
+        # a non-tool observation smuggled into the analysis is not offered as evidence
+        analysis.observations.append(Observation(kind="media_probe", asset_id=analysis.assets[0].id, source="ai:fake", data={"duration": 999}))
+        analysis.observations.append(Observation(kind="loudness", asset_id=analysis.assets[0].id, source="ffmpeg-skill/loudness@0.8.4-fake", data={"lufs": -5}, provenance="AI_GENERATED"))
+        analysis.observations[0].data["api_key"] = "sk-LEAK"
+        analysis.observations[0].data["note"] = "ffmpeg -i x y"
+        req = build_request(analysis, ["silence_cleanup"])
+        ids = {o["id"] for o in req.inputs["observations"]}
+        self.assertEqual(ids, real_ids)
+        self.assertNotIn("sk-LEAK", json.dumps(req.inputs))
+        self.assertNotIn("api_key", json.dumps(req.inputs))
+        self.assertNotIn("ffmpeg -i", json.dumps(req.inputs))
+        self.assertIsNone(safe_observation_summary({"id": "x", "kind": "media_probe", "source": "ai:fake", "data": {}}))
+        # the AI cannot reference the smuggled ids either, and cannot create observations
+        n = len(analysis.observations)
+        resp = AIResponse(task_type="production_recommendation", provider="fake", model="m", confidence=0.9,
+                          result={"observations": [{"kind": "media_probe", "data": {"duration": 1}}],
+                                  "recommendations": [{"intent": "silence_cleanup", "asset_id": analysis.assets[0].id, "statement": "x", "confidence": 0.9, "evidence": [analysis.observations[-1].id]}]})
+        infs, warns = to_inferences(resp, analysis, ["silence_cleanup"])
+        self.assertEqual(infs, [])
+        self.assertEqual(len(analysis.observations), n)
+
+    # security: the analysis layer stays on the deterministic tool boundary
+    def test_analysis_layer_has_no_path_to_execution_or_ai(self):
+        root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
+        forbidden_imports = ("execution", "jobs", "providers", "agent", "subprocess", "shlex", "ffmpeg_skill")
+        forbidden_calls = ("subprocess", "os.system", "os.popen", "exec(", "eval(", "compile_ir", "Executor(", "ToolRouter(", "__import__", ".complete(", ".run(op")
+        for rel in ("media/analysis.py", "media/analyzer.py"):
+            for l in (root / rel).read_text(encoding="utf-8").splitlines():
+                code = l.split("#", 1)[0]
+                if code.startswith(("import ", "from ")):
+                    for f in forbidden_imports:
+                        self.assertNotIn(f, code, f"{rel} must not import {f}: {l}")
+                for f in forbidden_calls:
+                    self.assertNotIn(f, code, f"{rel} must not call {f}: {l}")
+        # the only execution surface is ToolAdapter.measure (registry-selected tool ids)
+        text = (root / "media/analyzer.py").read_text(encoding="utf-8")
+        self.assertIn("self.adapter.measure(tool, args)", text)

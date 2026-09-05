@@ -96,3 +96,25 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 実装しなかったもの: 実 provider（OpenAI / Anthropic / Gemini / local）、AI による requirements 抽出の呼び出し（task type のみ予約）、CoT の保存、AI による Tool ID 指定。
 
 テスト: unit 77/77（AIProviderBoundaryTests 11 件）、integration 12/12（FakeAIProvider → 実メディア production、AI の command が実行されないことを provenance の command で確認）、evals 6/6。
+
+## 9. PR #8 — Observation / Analysis Architecture（2026-09-04 追記）
+
+調査: Observation は `media/analyzer.py` の `MediaAnalyzer.analyze(paths)` だけが生成し、kind は probe / silence / loudness の固定手順。`analysis.strategy`（generic は TARGETED）は無視され常に FULL、`analysis.budget.max_processing_time` は記録のみ（`enforced: false`）。再分析の再利用機構は無し。AI evidence は `build_request` が observation を無加工で渡していた。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G23 AnalysisKind / AnalysisRequest が無い | 分析対象・戦略・予算が引数に散在 | `media/analysis.py`: `ANALYSIS_KINDS`（media_probe / silence / loudness のみ）、`AnalysisRequest`（kinds / strategy / budget / cache_policy / params / hash）、`targeted_kinds`（requirements から決定） |
+| G24 Analyzer contract が無い | `MediaAnalyzer` は単なるクラス | `Analyzer`（id / version / supported_kinds / analyze）。`MediaAnalyzer = media@1.0`。tool 呼び出しは `ToolAdapter.measure` のみ |
+| G25 strategy が偽装 | TARGETED 指定でも FULL 実行、記録は "FULL_ANALYSIS" | FULL / TARGETED / CACHED_ONLY を実装。IR には実行した戦略を記録（schema enum に CACHED_ONLY を追加） |
+| G26 budget が偽装 | 値だけ記録、強制なし | `AnalysisBudget`（max_analysis_calls / max_total_seconds）を各 tool call 前に強制。未対応キーは `ANALYSIS_UNSUPPORTED` で拒否。`enforced: true` と実使用量を記録 |
+| G27 Observation validation が無い | tool 結果をそのまま Observation 化 | `validate_observation`（asset / kind / source `<pkg>/<tool>@<ver>` / analysis_id / provenance OBSERVED / 構造 / credential・command 漏洩）。不正結果は保存しない |
+| G28 cache が無い | 同じ asset を毎回再計測 | `ObservationCache`（workspace/cache/observations）。key = fingerprint + kind + analyzer@ver + tool@ver + params。hit で analyzer 未実行、version / params / content 変更で miss、破損は `ANALYSIS_CACHE_INVALID` として再計測 |
+| G29 analysis provenance が無い | `tool_calls` のみ | `analysis.analyses[]`（analysis_id / request / analyzer / 時刻 / 行ごとの tool・cache_key・cache_hit・status・error / budget 使用量 / cache 統計）。Observation に analysis_id / analyzer / cache_key / provenance |
+| G30 AI evidence が無加工 | observation data をそのまま provider へ | `safe_observation_summary`: tool 由来かつ OBSERVED の observation のみ、credential / command 様の値を除去。`to_inferences` も OBSERVED の id しか evidence と認めない |
+| G31 分析失敗の domain が無い | 失敗は warning 文字列のみ | `AnalysisError`（6 kind）。AIProviderError / engine incident とは別。行ごとに記録し、plan は残る evidence で決定論的に継続 |
+
+変更なし: AI Provider / `agent/ai_reasoning.py` の責務（evidence の scrub 呼び出しを追加したのみ）、SkillRegistry / ToolRouter / Adapter / ffmpeg-skill、IR schema（strategy enum の追加値のみ）、revision / resume（revision は記録済み observation を再利用し analyzer を再実行しない。cache は resume 状態とは独立）。
+
+やっていないこと: conference 固有の分析（speaker / slide / sync / multicam / caption）、scene_detection / frame_integrity 等の未実装 kind の宣言、doctor への analyzer 表示、bytes / duration 予算。
+
+テスト: unit 87/87（ObservationAnalysisTests 10 件で指示の 24 項目を網羅）、integration 13/13（実メディアで 1 回目計測 3 call → 2 回目 cache hit 0 call、CACHED_ONLY、AI 推薦 → render → QA）、evals 6/6。

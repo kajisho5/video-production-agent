@@ -136,6 +136,37 @@ class RealMediaTests(unittest.TestCase):
         for text in (Path(ir_path).read_text(), json.dumps(prov_doc)):
             self.assertNotIn(prov.api_key, text)
 
+    def test_observation_cache_skips_the_analyzer_on_the_second_run(self):
+        """Real media: first plan measures (probe / silence / loudness), second plan in the same workspace is served from the
+        observation cache with zero measurement calls, and the evidence (observation ids, decisions, plan hash) is identical.
+        Then the full chain with an AI recommendation runs on the cached evidence."""
+        ws = str(Path(self.tmp) / "ws_cache")
+        svc = Service(workspace=ws)
+        ir1 = svc.plan([self.src], "youtube")
+        a1 = ir1.doc["analysis"]["analyses"][0]
+        self.assertEqual((a1["budget"]["calls"], a1["cache"]["hits"], a1["cache"]["misses"]), (3, 0, 3))
+        self.assertTrue(all(o["source"].endswith("@" + svc.registry.package("ffmpeg-skill").version) for o in ir1.doc["analysis"]["observations"]))
+        svc2 = Service(workspace=ws, provider=FakeAIProvider(intent="silence_cleanup"))
+        ir2 = svc2.plan([self.src], "youtube")
+        a2 = ir2.doc["analysis"]["analyses"][0]
+        self.assertEqual((a2["budget"]["calls"], a2["cache"]["hits"]), (0, 3), "second run: analyzer not executed")
+        self.assertEqual([o["id"] for o in ir1.doc["analysis"]["observations"]], [o["id"] for o in ir2.doc["analysis"]["observations"]])
+        same = lambda ir: ([(o["kind"], o["data"]) for o in ir.doc["analysis"]["observations"]], [(d["subject"], d["decision"]) for d in ir.doc["decisions"]])  # noqa: E731
+        self.assertEqual(same(ir1), same(ir2), "identical evidence and decisions from cached observations (asset ids differ per plan by design)")
+        self.assertNotEqual(a1["analysis_id"], a2["analysis_id"])
+        ai = [i for i in ir2.doc["analysis"]["inferences"] if i["provenance"] == "AI_GENERATED"]
+        self.assertEqual(len(ai), 1)
+        self.assertTrue(set(ai[0]["evidence"]) <= {o["id"] for o in ir2.doc["analysis"]["observations"]} | {e["id"] for e in ir2.doc["timeline"]["events"]})
+        ir_path = str(Path(ws) / "cached.json")
+        save_ir(ir2, ir_path)
+        self.assertTrue(svc2.validate(ir2).ok)
+        out = svc2.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        self.assertEqual(out["qa"]["status"], "PASS")
+        # CACHED_ONLY is honoured on real media too
+        ir3 = Service(workspace=ws).plan([self.src], "youtube", strategy="CACHED_ONLY")
+        self.assertEqual((ir3.doc["analysis"]["strategy"], ir3.doc["analysis"]["budget"]["calls"]), ("CACHED_ONLY", 0))
+
     def test_resume_reuses_real_intermediates(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube", hash_sources=False)

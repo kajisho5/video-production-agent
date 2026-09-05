@@ -66,7 +66,7 @@ def cmd_skills(args, svc: Service) -> int:
 
 
 def cmd_analyze(args, svc: Service) -> int:
-    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash)
+    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache)
     doc = analysis.to_dict()
     if args.json:
         _print(doc, True)
@@ -84,11 +84,20 @@ def cmd_analyze(args, svc: Service) -> int:
         print(f"  {e.kind:8s} {e.type:16s} {r['start']:8.3f}-{(r['end'] if r['end'] is not None else r['start']):8.3f}  {json.dumps(e.metadata, default=str)[:80]}")
     for w in analysis.warnings:
         print("  warning:", w)
+    for an in analysis.analyses:
+        rows = an["rows"]
+        hits = sum(1 for r in rows if r.get("cache_hit"))
+        print(f"  analysis {an['analysis_id']} {an['request']['strategy']} by {an['analyzer']}: {len(rows)} measurement(s), {hits} from cache, "
+              f"{an['budget']['calls']} tool call(s) in {an['budget']['seconds']}s, status {an['status']}")
+        for r in rows:
+            if r["status"] != "OK":
+                print(f"    {r['kind']:12s} {r['status']:8s} {(r.get('error') or {}).get('kind', r.get('reason', ''))}")
     return 0
 
 
 def cmd_plan(args, svc: Service) -> int:
-    ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash)
+    ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
+                  strategy=args.strategy, use_cache=not args.no_cache)
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
         out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")
@@ -333,6 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_skills)
     p = sub.add_parser("analyze", help="probe media and list observed events")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources (faster on huge files)")
+    p.add_argument("--strategy", choices=["FULL", "TARGETED", "CACHED_ONLY"], help="analysis strategy (default: profile policy analysis.strategy, else FULL)")
+    p.add_argument("--no-cache", action="store_true", help="do not read or write the observation cache")
     p.set_defaults(fn=cmd_analyze)
     p = sub.add_parser("plan", help="analyze, decide and write a Project IR")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--request", help="free-text request (only unambiguous phrases are used)")
@@ -340,6 +351,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name"); p.add_argument("-o", "--output", help="where to write project.json (default: <workspace>/plans/<name>.project.json)")
     p.add_argument("--allow-source-dir", action="store_true", help="write project.json next to the source (default keeps source directories untouched)")
     p.add_argument("--no-hash", action="store_true")
+    p.add_argument("--strategy", choices=["FULL", "TARGETED", "CACHED_ONLY"], help="analysis strategy (default: profile policy analysis.strategy, else FULL)")
+    p.add_argument("--no-cache", action="store_true", help="do not read or write the observation cache")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("validate", help="validate a Project IR (schema, semantics, capabilities)")
     p.add_argument("project"); p.add_argument("--no-paths", action="store_true", help="do not require asset paths to exist")
