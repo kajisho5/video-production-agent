@@ -30,6 +30,7 @@ from .subtitles import BURN_SKILL, GENERATE_SKILL, parse_subtitle_requirements, 
 APPROVAL_KEYS = {"subtitle.generate": ("subtitle.generate.approval", "CONFIRM"), "subtitle.burn_in": ("subtitle.burn_in.approval", "CONFIRM"),
                  "thumbnail.render": ("thumbnail.render.approval", "CONFIRM"), "qc.check": ("qc.check.approval", "AUTO"),
                  "color.strip_dovi": ("color.strip_dovi.approval", "CONFIRM"), "color.hdr_to_sdr": ("color.hdr_to_sdr.approval", "CONFIRM"),
+                 "color.primary_correction": ("color.primary_correction.approval", "CONFIRM"),
                  "color.lut": ("color.lut.approval", "CONFIRM"), "color.retag": ("color.retag.approval", "CONFIRM"),
                  "graphics.title": ("graphics.title.approval", "CONFIRM"), "graphics.lower_third": ("graphics.lower_third.approval", "CONFIRM"),
                  "graphics.text_overlay": ("graphics.text_overlay.approval", "CONFIRM"), "graphics.image_overlay": ("graphics.image_overlay.approval", "CONFIRM")}

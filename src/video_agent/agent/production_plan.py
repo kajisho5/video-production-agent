@@ -31,6 +31,7 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "audio_concat": ("asset", "inputs", "crossfade"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)
                    "color_strip_dovi": ("asset",), "color_hdr_to_sdr": ("asset",), "color_lut": ("asset", "lut", "lut_strength"), "color_retag": ("asset", "target"),
+                   "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint"),
                    "motion_graphics": ("asset", "elements"), "subtitle_generation": ("asset", "format", "language", "cues"), "subtitle_burn_in": ("asset",),
                    "thumbnail_frame": ("asset", "at", "format"), "thumbnail_render": ("asset", "at", "format", "text"), "qc_check": ("asset", "target", "kind", "artifact")}
 

@@ -233,6 +233,7 @@ def default_registry() -> SkillRegistry:
     for name, typ, desc, inputs, risk in (
         ("color_strip_dovi", "STRIP_DOVI", "Strip Dolby Vision side data", {"asset": "video"}, "LOW"),
         ("color_hdr_to_sdr", "HDR_TO_SDR", "Tone-map an HDR source to SDR BT.709", {"asset": "video"}, "MEDIUM"),
+        ("color_primary_correction", "PRIMARY_CORRECTION", "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint)", {"asset": "video"}, "MEDIUM"),
         ("color_lut", "LUT_APPLY", "Apply a 3D .cube LUT", {"asset": "video", "lut": "cube"}, "MEDIUM"),
         ("color_retag", "RETAG", "Re-tag the colour metadata (bt709 / bt2020-pq / bt2020-hlg / bt601)", {"asset": "video", "target": "str"}, "LOW"),
     ):

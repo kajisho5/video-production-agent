@@ -5,7 +5,11 @@ Everything here is vocabulary and arithmetic, no execution:
 
 - **Colour** (`color.*`): `color.target` (bt709 | bt2020-pq | bt2020-hlg | bt601 → RETAG), `color.sdr` (true → HDR_TO_SDR; the
   decision compares it with the probe: an SDR source is KEEP, never tone-mapped by guessing), `color.lut` (a .cube file →
-  LUT_APPLY; `color.lut.strength` 0..1), `color.strip_dovi` (true → STRIP_DOVI). Fixed order: strip_dovi → hdr_to_sdr → lut → retag.
+  LUT_APPLY; `color.lut.strength` 0..1), `color.strip_dovi` (true → STRIP_DOVI), `color.exposure` / `color.contrast` /
+  `color.saturation` / `color.temperature` / `color.tint` (→ PRIMARY_CORRECTION; five independent, optional, range-checked
+  values — none of them is a creative "look" chosen by this agent, only numbers the caller supplied). Fixed order:
+  strip_dovi → hdr_to_sdr → primary_correction → lut → retag (technical correction runs on the tone-mapped picture, before
+  a creative LUT; color-grading-skill's own ADR-15 documents this as guidance, not something either side enforces).
 - **Motion graphics** (`motion.*`): one element per type — `motion.title` (+ `.subtitle`, `.start`, `.end`), `motion.lower_third`
   (the name; + `.title`, `.start`, `.end`), `motion.text` (+ `.position`, `.start`, `.end`, `.fade`), `motion.image` (a PNG / JPEG
   path; + `.position`, `.start`, `.end`, `.fade`, `.scale_percent`). Start / end default from policy settings recorded on the
@@ -29,16 +33,24 @@ from .editing import IMAGE_EXTENSIONS, NAMED_POSITIONS, EditRequirementError, _b
 
 # ---- colour
 COLOR_TOOL = "color-grading/run"
-COLOR_ORDER = ("color.strip_dovi", "color.hdr_to_sdr", "color.lut", "color.retag")
+COLOR_ORDER = ("color.strip_dovi", "color.hdr_to_sdr", "color.primary_correction", "color.lut", "color.retag")
 COLOR_OPERATIONS: Dict[str, Dict[str, Any]] = {
     "color.strip_dovi": {"skill": "color_strip_dovi", "type": "STRIP_DOVI", "params": (), "risk": "LOW"},
     "color.hdr_to_sdr": {"skill": "color_hdr_to_sdr", "type": "HDR_TO_SDR", "params": (), "risk": "MEDIUM"},
+    "color.primary_correction": {"skill": "color_primary_correction", "type": "PRIMARY_CORRECTION",
+                                  "params": ("exposure", "contrast", "saturation", "temperature", "tint"), "risk": "MEDIUM"},
     "color.lut":        {"skill": "color_lut",        "type": "LUT_APPLY",  "params": ("lut_strength",), "risk": "MEDIUM"},
     "color.retag":      {"skill": "color_retag",      "type": "RETAG",      "params": ("target",), "risk": "LOW"},
 }
 COLOR_SKILL_OF = {k: v["skill"] for k, v in COLOR_OPERATIONS.items()}
 COLOR_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
-COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi")
+COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi",
+              "color.exposure", "color.contrast", "color.saturation", "color.temperature", "color.tint")
+# PRIMARY_CORRECTION's own safe ranges (color-grading-skill's guaranteed subset, docs/ffmpeg-skill.md there): key -> (lo, hi)
+COLOR_CORRECTION_RANGES: Dict[str, Tuple[float, float]] = {
+    "color.exposure": (-3.0, 3.0), "color.contrast": (0.0, 2.0), "color.saturation": (0.0, 2.0),
+    "color.temperature": (2000.0, 12000.0), "color.tint": (-1.0, 1.0),
+}
 
 # ---- motion graphics
 GRAPHICS_TOOL = "motion-graphics/run"
@@ -114,6 +126,16 @@ def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, A
         else:
             p["target"] = _token(r.value, key, re.compile("^(" + "|".join(COLOR_TARGETS) + ")$"), "one of " + ", ".join(COLOR_TARGETS))
         out[op] = {"params": p, "requirements": reqs}
+    # color.exposure / color.contrast / color.saturation / color.temperature / color.tint: five independent, optional
+    # parameters (no single "main" key the way color.lut/color.target have) -- any one of them, explicitly set, asks
+    # for PRIMARY_CORRECTION; unset ones are left for the Skill's own defaults (unchanged), never guessed here.
+    active = [k for k in COLOR_CORRECTION_RANGES if k in m and m[k].provenance != "DEFAULT"]
+    if active:
+        p = {}
+        for k in active:
+            lo, hi = COLOR_CORRECTION_RANGES[k]
+            p[k.split(".", 1)[1]] = float(_number(m[k].value, k, lo, hi))
+        out["color.primary_correction"] = {"params": p, "requirements": [m[k] for k in active]}
     return out
 
 

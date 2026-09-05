@@ -39,7 +39,7 @@ CONTRACT_SCHEMA = "color-grading/contract@1"
 REQUEST_SCHEMA = "color-grading/request@1"
 RESPONSE_SCHEMA = "color-grading/response@1"
 DOCTOR_SCHEMA = "color-grading/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+SUPPORTED_SKILL_VERSIONS = ("0.2.",)      # 0.2.x: the contract this adapter was verified against (adds PRIMARY_CORRECTION)
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["color-grading", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
@@ -49,7 +49,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "execution", "ffmpeg_skill", "request", "response", "provenance",
               "schema_versions", "errors", "lut", "color_space", "hdr_sdr")
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "changes_duration", "changes_resolution", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

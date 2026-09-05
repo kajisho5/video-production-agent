@@ -1792,6 +1792,7 @@
      "enum": [
       "color.strip_dovi",
       "color.hdr_to_sdr",
+      "color.primary_correction",
       "color.lut",
       "color.retag"
      ]
@@ -1820,6 +1821,31 @@
       "bt2020-hlg",
       "bt601"
      ]
+    },
+    "exposure": {
+     "type": "number",
+     "minimum": -3.0,
+     "maximum": 3.0
+    },
+    "contrast": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 2.0
+    },
+    "saturation": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 2.0
+    },
+    "temperature": {
+     "type": "number",
+     "minimum": 2000.0,
+     "maximum": 12000.0
+    },
+    "tint": {
+     "type": "number",
+     "minimum": -1.0,
+     "maximum": 1.0
     },
     "temporal_scope": {
      "type": "object",

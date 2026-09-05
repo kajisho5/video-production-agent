@@ -40,7 +40,7 @@
   ],
   "source": "ffmpeg-skill/probe (ffprobe); OBSERVED, never inferred"
  },
- "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging and Dolby Vision RPU removal, executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or look to apply.",
+ "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU removal, and typed primary colour correction (exposure/contrast/saturation/white balance), executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or look to apply, nor which correction values to use.",
  "deterministic": true,
  "errors": {
   "codes": [
@@ -122,11 +122,17 @@
     "lut",
     "retag",
     "strip_dovi",
+    "correct",
     "tonemap",
     "peak",
     "desat",
     "lut_strength",
     "force",
+    "exposure",
+    "contrast",
+    "saturation",
+    "temperature",
+    "tint",
     "crf",
     "preset",
     "json"
@@ -141,7 +147,7 @@
   ],
   "version_window": {
    "max_exclusive": "1.0.0",
-   "min": "0.9.1"
+   "min": "0.9.2"
   }
  },
  "geometry": {
@@ -195,7 +201,8 @@
   "automatic LUT selection",
   "image understanding",
   "scene/face detection",
-  "primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves)",
+  "shot matching",
+  "gamma/lift/gain/levels/curves colour correction",
   "container/format conversion (ffmpeg-skill/export)",
   "arbitrary ffmpeg filters",
   "shell execution",
@@ -383,6 +390,93 @@
    ],
    "tool": "ffmpeg-skill/color",
    "type": "STRIP_DOVI"
+  },
+  {
+   "changes_duration": false,
+   "changes_resolution": false,
+   "description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) (ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2); each parameter is one option of one real ffmpeg filter (exposure / eq / colortemperature / colorbalance), range-checked by ffmpeg-skill itself -- never a filter string",
+   "deterministic": "content_equivalent",
+   "inputs": 1,
+   "parameters": {
+    "contrast": {
+     "default": 1.0,
+     "description": "contrast; 1 is unchanged, 0 is flat grey, 2 is double contrast",
+     "max": 2.0,
+     "min": 0.0,
+     "required": false,
+     "type": "number"
+    },
+    "crf": {
+     "default": 18,
+     "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file",
+     "max": 51,
+     "min": 0,
+     "required": false,
+     "type": "integer"
+    },
+    "exposure": {
+     "default": 0.0,
+     "description": "exposure correction in stops; 0 is unchanged",
+     "max": 3.0,
+     "min": -3.0,
+     "required": false,
+     "type": "number"
+    },
+    "preset": {
+     "default": "medium",
+     "description": "x264 encoding speed/efficiency preset",
+     "enum": [
+      "ultrafast",
+      "superfast",
+      "veryfast",
+      "faster",
+      "fast",
+      "medium",
+      "slow",
+      "slower",
+      "veryslow",
+      "placebo"
+     ],
+     "required": false,
+     "type": "string"
+    },
+    "saturation": {
+     "default": 1.0,
+     "description": "saturation; 1 is unchanged, 0 is grayscale, 2 is double saturation",
+     "max": 2.0,
+     "min": 0.0,
+     "required": false,
+     "type": "number"
+    },
+    "temperature": {
+     "default": 6500.0,
+     "description": "white-balance temperature in Kelvin; 6500 is unchanged",
+     "max": 12000.0,
+     "min": 2000.0,
+     "required": false,
+     "type": "number"
+    },
+    "tint": {
+     "default": 0.0,
+     "description": "green(-1)/magenta(+1) tint; 0 is unchanged",
+     "max": 1.0,
+     "min": -1.0,
+     "required": false,
+     "type": "number"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:exposure",
+    "filter:eq",
+    "filter:colorbalance",
+    "filter:colortemperature",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/color",
+   "type": "PRIMARY_CORRECTION"
   }
  ],
  "output_formats": {
@@ -466,7 +560,7 @@
       "input": "source|op:<id>",
       "op_id": "id",
       "parameters": {},
-      "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI"
+      "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION"
      }
     ],
     "outputs": [
@@ -541,6 +635,7 @@
    "operations": [
     "HDR_TO_SDR",
     "LUT_APPLY",
+    "PRIMARY_CORRECTION",
     "RETAG",
     "STRIP_DOVI"
    ],
@@ -556,38 +651,13 @@
    },
    "tool_id": "color-grading/run",
    "verification": "every artifact is probed (video stream, duration, resolution, colour tags measured and checked against the requested operation, sha256); HDR_TO_SDR checks the output is no longer tagged HDR, RETAG checks the exact tag triple, STRIP_DOVI checks the Dolby Vision side data is gone",
-   "version": "0.1.0",
+   "version": "0.2.0",
    "writes_media": true
   }
  ],
  "unsupported_operations": [
   {
-   "reason": "ffmpeg-skill exposes no typed exposure filter (no eq gain/brightness control) in its public contract",
-   "status": "not_implemented",
-   "type": "EXPOSURE"
-  },
-  {
-   "reason": "ffmpeg-skill exposes no typed contrast filter (no eq contrast control) in its public contract",
-   "status": "not_implemented",
-   "type": "CONTRAST"
-  },
-  {
-   "reason": "ffmpeg-skill exposes no typed saturation filter (no eq saturation control) in its public contract",
-   "status": "not_implemented",
-   "type": "SATURATION"
-  },
-  {
-   "reason": "ffmpeg-skill exposes no typed colour-temperature filter (no colortemperature wrapper) in its public contract",
-   "status": "not_implemented",
-   "type": "TEMPERATURE"
-  },
-  {
-   "reason": "ffmpeg-skill exposes no typed tint / colour-balance filter (no colorbalance wrapper) in its public contract",
-   "status": "not_implemented",
-   "type": "TINT"
-  },
-  {
-   "reason": "ffmpeg-skill exposes no typed white-balance filter in its public contract",
+   "reason": "no single white-balance operation or flag exists; use PRIMARY_CORRECTION's temperature and tint parameters",
    "status": "not_implemented",
    "type": "WHITE_BALANCE"
   },
@@ -617,7 +687,7 @@
    "type": "CURVES"
   }
  ],
- "version": "0.1.0",
+ "version": "0.2.0",
  "x264": {
   "crf_range": [
    0,
