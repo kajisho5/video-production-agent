@@ -40,7 +40,7 @@ from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from .tools.media_analysis import PACKAGE as MEDIA_ANALYSIS_PACKAGE, MediaAnalysisAdapter, locate_media_analysis
 from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, TranscriptionAdapter, locate_transcription
-from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, locate_video_editing
+from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, lift_observation, locate_video_editing
 from .tools.base import ToolError
 
 
@@ -99,7 +99,7 @@ class Service:
             try:
                 # outputs land inside the agent workspace (each operation in its own directory), inputs come from the allowed roots or the workspace
                 roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
-                router.register(VideoEditingAdapter(ve, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None))
+                router.register(VideoEditingAdapter(ve, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None, path_policy=policy))
             except ToolError:
                 pass   # same rule: an incompatible video-editing-skill is reported by doctor and never used
         return self._sync_packages(router)
@@ -480,6 +480,7 @@ class Service:
             if qa.status == "FAIL":
                 out["status"] = "REVIEW"
         prov = build_provenance(ir.doc, ops, result.results, paths, result.recovery, out.get("qa", {}), who=who)
+        prov["skill_observations"] = self._skill_observations(ops, result.results)
         prov["resume"] = resume_note
         prov["skipped"] = result.skipped
         prov["reused"] = result.reused
@@ -496,6 +497,22 @@ class Service:
         store.save(job)
         out["job"] = job.to_dict()
         out["report"] = str(job.dir / "report.md")
+        return out
+
+    @staticmethod
+    def _skill_observations(ops, results) -> List[Dict[str, Any]]:
+        """OBSERVED measurements an editing Skill reported for the outputs it delivered (ADR-028): agent Observation records in
+        provenance, keyed by the operation and its output artifact id; never fed back into the IR's analysis."""
+        out: List[Dict[str, Any]] = []
+        outputs = {o.id: (o.outputs[0] if o.outputs else o.id) for o in ops}
+        for r in results:
+            if not r.ok or not str(r.tool).startswith("video-editing/"):
+                continue
+            obs = lift_observation(r, outputs.get(r.op_id))
+            if obs is not None:
+                d = obs.to_dict()
+                d["operation"] = r.op_id
+                out.append(d)
         return out
 
     # ---- artifacts (ADR-022): registration after QA, delivery promotion, archive

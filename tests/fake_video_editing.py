@@ -219,7 +219,9 @@ def main() -> int:
     if MODE == "nonzero_ok":
         pass
     # ---- write the output (bytes derived from the request so identical requests give identical hashes)
-    payload = b"FAKEVE" + json.dumps({"op": op_id, "src": sorted(hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sources.values())}, sort_keys=True).encode()
+    dur = round(sum(float(r["end"]) - float(r["start"]) for r in params["keep"]), 3) if op["type"] == "CUT" else (round(float(params["end"]) - float(params["start"]), 3) if op["type"] == "TRIM" else 2.0)
+    # "fake" first: the same self-describing format tests/fake_adapter.py writes, so the fake ffmpeg-skill adapter can probe the output
+    payload = json.dumps({"fake": True, "duration": dur, "lufs": -16.0, "op": op_id, "src": sorted(hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sources.values())}, sort_keys=True).encode()
     reused = MODE == "reused" and os.path.isfile(out_path)
     if MODE != "output_missing":
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -227,10 +229,10 @@ def main() -> int:
     digest = hashlib.sha256(payload).hexdigest()
     if MODE == "hash_mismatch":
         digest = "0" * 64
-    probe = {"file": out_path, "duration": 2.0, "size_bytes": len(payload), "video": {"codec": "h264", "width": 640, "height": 360, "fps": 30.0}, "audio": {"codec": "aac"}}
+    probe = {"file": out_path, "duration": dur, "size_bytes": len(payload), "video": {"codec": "h264", "width": 640, "height": 360, "fps": 30.0}, "audio": {"codec": "aac"}}
     observation = None if MODE == "no_observation" else {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.9.0-fake", "data": probe}
-    timeline = {"duration_known": True, "duration": {"seconds": "2.000000", "rational": "2/1"},
-                "tracks": [{"id": "V1", "kind": "video", "segments": [{"source": inputs[0], "source_range": {"start": {"seconds": "0.000000"}, "end": {"seconds": "2.000000"}}, "speed": "1/1"}]}]}
+    timeline = {"duration_known": True, "duration": {"seconds": f"{dur:.6f}", "rational": f"{int(round(dur * 1000))}/1000"},
+                "tracks": [{"id": "V1", "kind": "video", "segments": [{"source": inputs[0], "source_range": {"start": {"seconds": "0.000000"}, "end": {"seconds": f"{dur:.6f}"}}, "speed": "1/1"}]}]}
     record = {"operation": op["id"], "operation_id": op_id, "type": op["type"], "capability": OPS[op["type"]]["capability"], "status": "reused" if reused else "completed",
               "skill": "video-editing", "skill_version": CONTRACT["version"], "tool": tool, "tool_versions": {"ffmpeg-skill": "0.9.0-fake", "ffmpeg": "fake", "ffprobe": "fake"},
               "idempotency_key": "k" * 64, "parameters": params, "inputs": [{"ref": i, "kind": "source", "sha256": hashlib.sha256(Path(sources[i]).read_bytes()).hexdigest()} for i in inputs],

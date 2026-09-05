@@ -3842,7 +3842,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         r = ad.run(Operation(tool="video-editing/crop", args={"input": "a", "output": "a_trim"}, inputs=["a"], outputs=["a_trim"]), paths)
         self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST"); self.assertIn("unsupported tool", r.data["error"]["message"])
         r = ad.run(self._op(zoom=2), paths)
-        self.assertFalse(r.ok); self.assertIn("does not declare parameter", r.data["error"]["message"])
+        self.assertFalse(r.ok); self.assertIn("does not take argument", r.data["error"]["message"])
         self.assertFalse(os.path.exists(out))
         with self.assertRaises(ToolError):
             ad.measure("video-editing/cut", {})
@@ -3853,7 +3853,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         ad = self._adapter()
         paths, out = self._paths()
         want = {"tool_error": ("TOOL_ERROR", 10, True, "UNKNOWN", "RETRY"), "tool_error_final": ("TOOL_ERROR", 10, False, "SKILL_ERROR", "BLOCK"),
-                "validation_error": ("VALIDATION_ERROR", 12, False, "SKILL_ERROR", "BLOCK"), "cancelled": ("CANCELLED", 130, True, "TIMEOUT", "RETRY"),
+                "validation_error": ("VALIDATION_ERROR", 12, False, "SKILL_ERROR", "BLOCK"), "cancelled": ("CANCELLED", 130, True, "INTERRUPTED", "BLOCK"),
                 "timeout": ("CANCELLED", 130, True, "TIMEOUT", "RETRY"), "internal_error": ("INTERNAL_ERROR", 1, False, "SKILL_ERROR", "BLOCK"),
                 "output_missing": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"), "hash_mismatch": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"),
                 "no_observation": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"), "malformed": ("INVALID_RESULT", 9, False, "SKILL_ERROR", "BLOCK"),
@@ -3876,9 +3876,9 @@ class VideoEditingAdapterTests(unittest.TestCase):
         # request-level refusals the Skill reports with its own codes (traversal / unsupported type / bad range) are non-retryable blocks
         os.environ.pop("FAKE_VE_MODE")
         r = ad.run(self._op(keep=[[5.0, 3.0]]), paths)
-        self.assertEqual((r.data["error"]["code"], classify_error(r)), ("INVALID_TIME_RANGE", "INVALID_ARGS"))
+        self.assertEqual((r.data["error"]["code"], classify_error(r)), ("INVALID_REQUEST", "INVALID_ARGS"), "meaning is checked by the lowering before the Skill sees it")
         r = ad.run(self._op(keep=[[0.0, 40.0]]), paths)
-        self.assertEqual((r.data["error"]["code"], r.data["error"]["retryable"]), ("INVALID_TIME_RANGE", False))
+        self.assertEqual((r.data["error"]["code"], r.data["error"]["retryable"], classify_error(r)), ("INVALID_TIME_RANGE", False, "INVALID_ARGS"), "beyond the duration: the Skill's own verdict")
         # timeout / hang: the agent's process boundary kills the tree and reports a retryable CANCELLED(timeout)
         os.environ["FAKE_VE_MODE"] = "hang"
         r = ad.run(self._op(), paths, timeout=1)

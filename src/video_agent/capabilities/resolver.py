@@ -144,6 +144,8 @@ class CapabilityResolver:
                 detail = f"{ad.version} at {ve.describe()} (doctor {'ok' if doc.get('ok') else doc.get('summary', 'not ready')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
                 caps["video-editing"] = Capability("video-editing", "AVAILABLE" if ok else "MISSING", detail,
                                                    {"version": ad.version, "root": ve.describe(), "contract": ad.contract.get("schema"), "tools": sorted(ad.tools),
+                                                    "operations": ad.lowering.supported_types(), "contract_only": ad.lowering.contract_only(),
+                                                    "unsupported": [u.get("type") for u in ad.contract.get("unsupported") or []],
                                                     "engine": dict(ad.contract.get("engine") or {}), "doctor_ok": bool(doc.get("ok")), "problems": list(doc.get("problems") or []),
                                                     "doctor": {c.get("check"): c.get("status") for c in doc.get("checks") or [] if isinstance(c, dict)}, "drift": drift})
             except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used

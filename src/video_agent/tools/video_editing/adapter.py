@@ -30,11 +30,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ...models import Operation, ToolResult
+from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
-from ..ffmpeg_skill.adapter import run_process_group
+from ..ffmpeg_skill.adapter import PathPolicy, run_process_group
 from .locate import VideoEditingSkill, locate_video_editing
+from .lowering import ARGS, OPERATION_ID, OUTPUT_ID, Lowering, op_type
 
 SKILL_ID = "video-editing"
 PREFIX = SKILL_ID + "/"
@@ -286,7 +287,7 @@ class VideoEditingAdapter(ToolAdapter):
     name = SKILL_ID
 
     def __init__(self, skill: Optional[VideoEditingSkill] = None, workspace: Optional[str] = None, allowed_inputs: Optional[List[str]] = None,
-                 contract: Optional[Dict[str, Any]] = None, timeout: float = 3600.0, ffmpeg_skill_dir: Optional[str] = None):
+                 contract: Optional[Dict[str, Any]] = None, timeout: float = 3600.0, ffmpeg_skill_dir: Optional[str] = None, path_policy: Optional[PathPolicy] = None):
         self.skill = skill or locate_video_editing()
         if not self.skill:
             raise ToolError("video-editing-skill not found (set VIDEO_AGENT_VIDEO_EDITING_DIR or install the `video-editing` command)")
@@ -294,6 +295,7 @@ class VideoEditingAdapter(ToolAdapter):
         self.allowed_inputs = [os.path.realpath(os.path.abspath(p)) for p in (allowed_inputs or [])]
         self.default_timeout = float(timeout)
         self.ffmpeg_skill_dir = str(Path(ffmpeg_skill_dir).resolve()) if ffmpeg_skill_dir else None   # engine location from agent config, never from a request
+        self.policy = path_policy            # the agent's own PathPolicy (Service passes it); applied before the adapter's root checks
         self.calls = 0
         self.contract = contract or self._fetch_contract()
         errs = check_contract(self.contract)
@@ -302,6 +304,7 @@ class VideoEditingAdapter(ToolAdapter):
         self.version = str(self.contract["version"])
         self.tools: Dict[str, Dict[str, Any]] = {t["tool_id"]: t for t in self.contract["tools"]}
         self.retryable: Dict[str, bool] = dict(self.contract["errors"]["retryable_default"])
+        self.lowering = Lowering(self.contract, self.workspace)
 
     # ---- process boundary (argv list only; the request travels on stdin)
     def _invoke(self, argv: List[str], stdin: Optional[str] = None, timeout: Optional[float] = None) -> "tuple[int, str, str]":
@@ -351,15 +354,26 @@ class VideoEditingAdapter(ToolAdapter):
 
     def describe(self) -> Dict[str, Any]:
         return {"name": self.name, "version": self.version, "root": self.skill.describe(), "schemas": dict(self.contract.get("schemas") or {}),
-                "tools": sorted(self.tools), "engine": dict(self.contract.get("engine") or {}), "workspace": self.workspace, "allowed_inputs": list(self.allowed_inputs)}
+                "tools": sorted(self.tools), "operations": self.lowering.supported_types(), "contract_only": self.lowering.contract_only(),
+                "engine": dict(self.contract.get("engine") or {}), "workspace": self.workspace, "allowed_inputs": list(self.allowed_inputs)}
 
     def package(self) -> SkillPackage:
         return package_from_contract(self.contract)
 
     def supports(self, tool: str) -> bool:
-        return tool in self.tools
+        """Declared by the installed contract AND lowered by this adapter: a contract that grew a type this adapter cannot lower
+        never becomes executable by accident (see Lowering.contract_only)."""
+        return tool in self.tools and op_type(tool) in ARGS
 
     # ---- path boundary (the agent's PathPolicy roots; the Skill enforces the same roots again and never widens them)
+    @staticmethod
+    def _check_raw(raw: Any, what: str) -> None:
+        """Checks on the path as the agent spelled it, before any resolution: a '..' component is refused as traversal."""
+        if not isinstance(raw, str) or not raw.strip() or "\x00" in raw or "\n" in raw:
+            raise ToolError(f"video-editing: {what} must be a non-empty single-line path")
+        if any(part == ".." for part in raw.replace("\\", "/").split("/")):
+            raise ToolError(f"video-editing: {what} path contains '..' (traversal)")
+
     def _check_input(self, raw: Any, what: str) -> str:
         if not isinstance(raw, str) or not raw.strip() or "\x00" in raw or "\n" in raw:
             raise ToolError(f"video-editing: {what} must be a non-empty single-line path")
@@ -386,76 +400,45 @@ class VideoEditingAdapter(ToolAdapter):
         if os.path.splitext(resolved)[1].lower() not in OUTPUT_EXTENSIONS:
             raise ToolError(f"video-editing: output extension must be one of {OUTPUT_EXTENSIONS}")
         for i in inputs:
-            if os.path.normcase(i) == os.path.normcase(resolved):
+            if os.path.normcase(os.path.realpath(i)) == os.path.normcase(resolved):
                 raise ToolError("video-editing: output would overwrite an input")
-        return resolved
+        return absolute
 
-    # ---- request construction (typed Operation → EditRequest; nothing else crosses the boundary)
-    def build_request(self, tool: str, args: Dict[str, Any], paths: Dict[str, str]) -> Dict[str, Any]:
-        """Returns {"request": EditRequest, "workspace": <op dir>, "allowed_inputs": [...], "output": <resolved output path>}."""
-        if not self.supports(tool):
+    # ---- request construction (typed Operation → EditRequest through the per-type lowering; nothing else crosses the boundary)
+    def build_request(self, tool: str, args: Dict[str, Any], paths: Dict[str, str], op_id: str = "op", timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Returns {"request": EditRequest, "workspace": <op dir>, "allowed_inputs": [...], "output": <agent output path>, "inputs": [...]}.
+        The output path is reported exactly as the agent's paths map spells it (absolute, not canonicalised) so ToolResult.output
+        equals what the executor / QA / artifact registry key on; containment is checked on the canonical form."""
+        if tool not in self.tools:
             raise ToolError(f"video-editing: unsupported tool {tool} (contract tools: {sorted(self.tools)})")
-        spec = self.tools[tool]
-        for k in args:
-            if not isinstance(k, str) or k.lower() in FORBIDDEN_ARG_KEYS:
-                raise ToolError(f"video-editing: refusing argument {k!r} (commands, argv, filters, executables, environment, paths policy and credentials never cross the Skill boundary)")
-        declared = set((spec.get("parameters") or {}).keys())
-        unknown = sorted(k for k in args if k not in REFERENCE_KEYS and k not in declared)
-        if unknown:
-            raise ToolError(f"video-editing: {tool} does not declare parameter(s) {unknown} (declared: {sorted(declared)})")
-        # inputs (references → resolved paths → sources)
-        if spec.get("inputs") == ["inputs"]:
-            refs = args.get("inputs")
-            if not isinstance(refs, list) or len(refs) < 2:
-                raise ToolError(f"video-editing: {tool} needs an 'inputs' list of at least two references")
-        else:
-            if "input" not in args or "inputs" in args:
-                raise ToolError(f"video-editing: {tool} takes exactly one 'input'")
-            refs = [args["input"]]
-        sources: List[Dict[str, Any]] = []
-        input_paths: List[str] = []
-        src_ids: List[str] = []
-        for i, ref in enumerate(refs):
-            if not isinstance(ref, str):
-                raise ToolError("video-editing: input references must be strings")
-            path = self._check_input(paths.get(ref, ref), f"input {ref!r}")
-            sid = f"src{i + 1}"
-            sources.append({"id": sid, "path": path, "kind": "video"})
-            input_paths.append(path)
-            src_ids.append(sid)
-        params: Dict[str, Any] = {}
-        for k, v in args.items():
-            if k in REFERENCE_KEYS or v is None:
-                continue
-            if k == "keep":
-                params[k] = _ranges(v, "keep")
-            else:
-                params[k] = _clean_scalar(v, k)
-        if "image" in args:
-            if "image" not in declared:
-                raise ToolError(f"video-editing: {tool} takes no image")
-            ipath = self._check_input(paths.get(args["image"], args["image"]), "image")
-            sources.append({"id": "img1", "path": ipath, "kind": "image"})
-            input_paths.append(ipath)
-            params["image"] = "img1"
+        if not self.supports(tool):
+            raise ToolError(f"video-editing: tool {tool} is declared by the contract but has no lowering in this adapter (contract drift: review the adapter)")
         out_ref = args.get("output")
-        if not isinstance(out_ref, str):
+        if not isinstance(out_ref, str) or not out_ref:
             raise ToolError("video-editing: an output reference is required (this Skill's tools always write media)")
-        out_path = self._check_output(paths.get(out_ref, out_ref), input_paths)
-        op: Dict[str, Any] = {"id": "op1", "type": str(spec["operation_type"]), "params": params}
-        if spec.get("inputs") == ["inputs"]:
-            op["inputs"] = src_ids
-        else:
-            op["input"] = src_ids[0]
-        ws = os.path.dirname(out_path)   # the operation's own directory (created by the executor inside the agent workspace)
-        request = {"schema": REQUEST_SCHEMA, "project": {"id": "agent", "sources": sources, "operations": [op],
-                                                          "outputs": [{"id": "out1", "operation": "op1", "path": os.path.basename(out_path)}]},
-                   "options": {"timeout_seconds": max(1, min(86400, int(self.default_timeout))), "overwrite": True, "reuse": True}}
+        for key in ("input", "image"):
+            if isinstance(args.get(key), str):
+                self._check_raw(paths.get(args[key], args[key]), key)
+        for ref in (args.get("inputs") if isinstance(args.get("inputs"), list) else []):
+            if isinstance(ref, str):
+                self._check_raw(paths.get(ref, ref), "input")
+        self._check_raw(paths.get(out_ref, out_ref), "output")
+        out_abs = os.path.abspath(paths.get(out_ref, out_ref))
+        ws = os.path.dirname(out_abs)   # the operation's own directory (created by the executor inside the agent workspace)
+        req, _, in_paths = self.lowering.build_request(tool, args, paths, op_id=op_id, timeout=timeout, workspace=ws)
+        for p in in_paths:
+            self._check_input(p, "input")
+        self._check_output(out_abs, in_paths)
+        if self.policy is not None:
+            for p in in_paths:
+                self.policy.check_input(p)
+            self.policy.check_output(out_abs, in_paths)
+        req["options"]["timeout_seconds"] = max(1, min(86400, int(timeout or self.default_timeout)))
         roots = [r for r in list(self.allowed_inputs) + ([self.workspace] if self.workspace else []) if os.path.isdir(r)]
-        return {"request": request, "workspace": ws, "allowed_inputs": roots, "output": out_path}
+        return {"request": req, "workspace": ws, "allowed_inputs": roots, "output": out_abs, "inputs": in_paths}
 
     def preview(self, op: Operation, paths: Dict[str, str]) -> List[str]:
-        b = self.build_request(op.tool, op.args, paths)
+        b = self.build_request(op.tool, op.args, paths, op_id=op.id)
         argv = ["run", "-", "--json", "--workspace", b["workspace"]] + [x for r in b["allowed_inputs"] for x in ("--allowed-input", r)] + self._engine_argv()
         return [" ".join(list(self.skill.command) + argv) + "  <<< " + json.dumps(b["request"], sort_keys=True, ensure_ascii=False)]
 
@@ -463,13 +446,11 @@ class VideoEditingAdapter(ToolAdapter):
     def run(self, op: Operation, paths: Dict[str, str], timeout: Optional[float] = None, dry_run: bool = False, attempt: int = 1) -> ToolResult:
         t0 = time.time()
         try:
-            b = self.build_request(op.tool, op.args, paths)
+            b = self.build_request(op.tool, op.args, paths, op_id=op.id, timeout=timeout)
         except ToolError as e:
             return self._fail(op, attempt, dry_run, t0, 2, "INVALID_REQUEST", str(e), retryable=False)
         os.makedirs(b["workspace"], exist_ok=True)
         req, out_path = b["request"], b["output"]
-        if timeout:
-            req["options"]["timeout_seconds"] = max(1, min(86400, int(timeout)))
         argv = ["plan" if dry_run else "run", "-", "--json", "--workspace", b["workspace"]] + [x for r in b["allowed_inputs"] for x in ("--allowed-input", r)] + self._engine_argv()
         if dry_run:
             argv.append("--no-preview")
@@ -528,12 +509,12 @@ class VideoEditingAdapter(ToolAdapter):
         ex = doc.get("execution")
         if not isinstance(ex, dict) or not isinstance(ex.get("operations"), list) or not isinstance(ex.get("outputs"), list):
             return errs + ["response carries no execution.operations / execution.outputs"]
-        outs = [o for o in ex["outputs"] if isinstance(o, dict) and o.get("id") == "out1"]
+        outs = [o for o in ex["outputs"] if isinstance(o, dict) and o.get("id") == OUTPUT_ID]
         if len(outs) != 1:
-            return errs + ["execution.outputs does not report out1 exactly once"]
+            return errs + [f"execution.outputs does not report {OUTPUT_ID} exactly once"]
         o = outs[0]
         if o.get("delivered") is not True:
-            errs.append("output out1 not delivered")
+            errs.append(f"output {OUTPUT_ID} not delivered")
         if os.path.normcase(os.path.realpath(str(o.get("path") or ""))) != os.path.normcase(os.path.realpath(out_path)):
             errs.append(f"output path {o.get('path')!r} is not the requested output")
         if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
@@ -547,9 +528,9 @@ class VideoEditingAdapter(ToolAdapter):
         obs = o.get("observation")
         if not isinstance(obs, dict) or obs.get("provenance") != "OBSERVED" or not str(obs.get("source", "")).startswith(ENGINE_ID + "/"):
             errs.append("output observation is not an OBSERVED ffmpeg-skill measurement")
-        recs = [r for r in ex["operations"] if isinstance(r, dict) and r.get("operation") == "op1"]
+        recs = [r for r in ex["operations"] if isinstance(r, dict) and r.get("operation") == OPERATION_ID]
         if len(recs) != 1:
-            errs.append("execution.operations does not report op1 exactly once")
+            errs.append(f"execution.operations does not report {OPERATION_ID} exactly once")
         else:
             rec = recs[0]
             if rec.get("status") not in ("completed", "reused") or rec.get("skill") != SKILL_ID or str(rec.get("skill_version")) != self.version:
@@ -571,8 +552,8 @@ class VideoEditingAdapter(ToolAdapter):
             data["commands"] = [c for s in plan.get("steps") or [] for c in ((s.get("preview") or {}).get("commands") or [])]
             return data
         ex = doc["execution"]
-        o = next(x for x in ex["outputs"] if x.get("id") == "out1")
-        rec = next(x for x in ex["operations"] if x.get("operation") == "op1")
+        o = next(x for x in ex["outputs"] if x.get("id") == OUTPUT_ID)
+        rec = next(x for x in ex["operations"] if x.get("operation") == OPERATION_ID)
         data["operation_id"] = rec.get("operation_id")
         data["operation"] = {k: rec.get(k) for k in ("operation_id", "type", "capability", "status", "skill", "skill_version", "tool", "tool_versions", "idempotency_key",
                                                       "parameters", "inputs", "output", "started_at", "finished_at", "seconds", "provenance")}
@@ -609,3 +590,18 @@ def _scrub(details: Any) -> Dict[str, Any]:
     if not isinstance(details, dict):
         return {}
     return {k: v for k, v in details.items() if isinstance(k, str) and k.lower() not in FORBIDDEN_ARG_KEYS and isinstance(v, (str, int, float, bool, list, dict, type(None)))}
+
+
+def lift_observation(result: ToolResult, asset_id: Optional[str] = None) -> Optional[Observation]:
+    """The Skill's OBSERVED probe of a delivered output as an agent Observation (ported from PR #19): provenance kept (skill,
+    version, tool, engine source, output hash as fingerprint). None when the result carries no observation (failure, dry run).
+    Recorded as provenance only; never fed back into the IR's analysis."""
+    obs = (result.data or {}).get("observation")
+    if not isinstance(obs, dict) or obs.get("provenance") != "OBSERVED" or not isinstance(obs.get("data"), dict):
+        return None
+    sk = (result.data or {}).get("skill") or {}
+    art = (result.data or {}).get("artifact") or {}
+    return Observation(kind=str(obs.get("kind") or "media.probe"), asset_id=asset_id or result.op_id, source=str(obs.get("source")), data=dict(obs["data"]),
+                       analyzer=str(obs.get("source")), provenance="OBSERVED", skill=SKILL_ID, skill_version=str(sk.get("version") or ""), tool=result.tool,
+                       fingerprint=str(art.get("sha256") or ""), parameters={"output": result.output, "operation_id": art.get("operation_id")})
+

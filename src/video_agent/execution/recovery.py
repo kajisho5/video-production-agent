@@ -15,6 +15,7 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},
     "UNKNOWN":        {"action": "RETRY_SAME", "hint": "retry once with identical arguments"},
     "SKILL_ERROR":    {"action": "BLOCK", "hint": "the Skill refused or could not validate its output (not retryable as reported by the Skill); see the error code"},
+    "INTERRUPTED":    {"action": "BLOCK", "hint": "the Skill was cancelled (interrupt, not a timeout); re-run the job"},
 }
 
 
@@ -25,6 +26,8 @@ def _skill_class(r: ToolResult) -> Optional[str]:
     if not isinstance(err, dict) or not err.get("recovery_class"):
         return None
     cls = str(err["recovery_class"])
+    if cls == "TIMEOUT" and (err.get("details") or {}).get("reason") not in (None, "timeout"):
+        return "INTERRUPTED"   # a CANCELLED that was not a timeout (signal): a longer timeout would not help
     if cls not in RECOVERY_TABLE:
         return "SKILL_ERROR"
     if RECOVERY_TABLE[cls]["action"] != "BLOCK" and err.get("retryable") is False:

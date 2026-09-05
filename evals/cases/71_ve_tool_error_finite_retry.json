@@ -1,0 +1,32 @@
+{
+ "name": "ve_tool_error_finite_retry",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "video_editing": {
+  "prefer": true,
+  "run_mode": "tool_error"
+ },
+ "expect": {
+  "selected_tool": "video-editing/cut",
+  "render": {
+   "execution_status": "FAILED",
+   "cut_ok": false,
+   "recovery_classes": [
+    "UNKNOWN",
+    "UNKNOWN"
+   ]
+  }
+ }
+}

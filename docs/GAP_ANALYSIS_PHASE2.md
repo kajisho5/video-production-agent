@@ -285,6 +285,7 @@ main（287b685）も `(0, 9, 0)` のままで同じ理由で赤になるが、ma
 | G81 tool 契約の capability が選択で検査されない | SkillSpec の capability のみ | `SkillRegistry.tool_missing_capabilities`（package capabilities + resolver が解決する ToolSpec.required_capabilities） |
 | G82 Skill の retryable 判定が recovery に届かない | stderr 文字列分類のみ | `recovery._skill_class`: data.error.recovery_class / retryable を優先、SKILL_ERROR（BLOCK）を追加 |
 | G83 Skill の実行事実が provenance に無い | commands のみ | provenance operations[].skill_result（skill / operation_id / artifact sha256 / timeline / observation） |
+| G84 PR #18 / #19 の重複 | 同一機能の adapter が 2 本 | PR #18 を canonical にし、#19 の typed lowering / PathPolicy 適用 / output path 表記 / INTERRUPTED / lift_observation / capability evidence を取り込み、#19 を close |
 
 CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）を clone している。main へマージされたら tests.yml の `--branch` を外すこと（main は README のみ）。
 
