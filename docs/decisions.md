@@ -134,3 +134,11 @@
 - Decision: 削除候補は `silence.internal.<start>-<end>`（区間付き subject。PlanDiff / revise の suppression が subject@asset キーのため）、approval は policy（CONFIRM）を下限 CONFIRM で適用し AUTO にはしない。conflict と重なる lead / tail trim は CONFIRM に上げる。`speech.continuity` は operation を持たない事実裏付けの decision。
 - Plan: 候補は既存 `silence_cleanup` step の removed 区間として keep の補集合になり、step は候補の承認まで PROPOSED（plan REVIEW）。Compiler / Tool 境界は変更なし。
 - 実メディア（ja_short ×2 + 3 s 無音）では Whisper の segment が無音側に伸びるため conflict が記録され候補は出ない（安全側）。単語タイムスタンプでの境界精緻化は次 PR 候補。silencedetect end > duration は本 PR で扱わない。
+
+## ADR-026 ProductionContext は Event から決定的に導出する参照中心の中間表現であり、Observation / Event / Decision のいずれでもない
+- 事実: Event は単一観測の時間的出来事、Session は人/システムが与えるグルーピングで、「ある時間範囲に複数種別の Event が同時にどう成立しているか」を表す層は無かった。PR #14 の speech inference は SPEECH / AUDIO_SILENCE を直接 timeline から読んでいた。
+- 決定: `context/`（model / builder / inference）を追加。ProductionContext = timeline + scope + tracks（type/subtype ごとの event 参照）+ observation / inference / asset 参照、provenance DERIVED、id は内容の hash。境界は Event 自身の start / end のみで、補正・merge・解決はしない。UserDecisionEvent は状況ではない。
+- 汎用 inference（source_activity / source_inactivity / transition / conflict）は決定的・ドメイン非依存で、evidence は既存 Event、`data.context_ids` で状況を参照する。conflict は排他ペア表（AUDIO_SILENCE × SPEECH）で記録のみ。AUDIO_SILENCE × AUDIO_ACTIVE は silence tool の keep 区間が margin を含む設計のため排他にしない。loudness のような全体計測は活動を意味しない。
+- Decision / Plan は変更しない（汎用 inference は「何が起きているか」まで。「どうするか」は policy / preference / constraint を持つ decision 層）。Context / Inference → step / tool / command の経路は無い（静的テスト）。
+- IR: `analysis.contexts`（schema 追加）、validator が参照整合と id 整合を検査、revise は新しい contexts を持ち越す。explain に --context を追加。
+- 将来 AI は既存 reasoning boundary 経由で AI_GENERATED inference を生成できるのみ。tool / command / approval / path には届かない。

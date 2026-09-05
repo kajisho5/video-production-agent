@@ -1,0 +1,49 @@
+{
+ "name": "cx_generic_inference_evidence",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    3.5,
+    8.8,
+    "a"
+   ],
+   [
+    12.3,
+    13.5,
+    "b"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "context": {
+   "inferences": {
+    "source_activity": 3,
+    "source_inactivity": 3,
+    "transition": 10,
+    "conflict": 0
+   }
+  }
+ }
+}

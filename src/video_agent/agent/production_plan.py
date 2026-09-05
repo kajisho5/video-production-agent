@@ -221,6 +221,8 @@ def explain_step(doc: Dict[str, Any], step_id: str) -> Dict[str, Any]:
         if eid in infs:
             i = infs[eid]
             row = {"level": depth, "kind": "inference", "id": eid, "detail": i.get("statement"), "provenance": i.get("provenance"), "confidence": i.get("confidence")}
+            if (i.get("data") or {}).get("context_ids"):
+                row["contexts"] = list(i["data"]["context_ids"])   # the situations this inference was derived from (explain --context)
             if i.get("provenance") == "AI_GENERATED":
                 row["ai"] = {"provider": i["data"].get("provider"), "model": i["data"].get("model"), "response_hash": i["data"].get("response_hash"),
                              "call": next((c for c in ai_calls if c.get("response_hash") == i["data"].get("response_hash")), None)}

@@ -1,0 +1,47 @@
+{
+ "name": "cx_conflict_recorded_not_resolved",
+ "profile": "youtube",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    9.0,
+    12.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "transcription": {
+  "mode": "ok",
+  "segments": [
+   [
+    1.0,
+    8.8,
+    "a"
+   ],
+   [
+    12.3,
+    13.5,
+    "b"
+   ]
+  ],
+  "params": {
+   "language": "ja"
+  }
+ },
+ "expect": {
+  "context": {
+   "inferences": {
+    "conflict": 1
+   },
+   "conflict_untouched": true
+  }
+ }
+}

@@ -68,7 +68,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             if did not in ids:
                 rep.errors.append(f"operation {op['type']} cites unknown decision {did}")
     # inferences must cite evidence that exists
-    obs_ids = {o["id"] for o in d["analysis"]["observations"]} | {e["id"] for e in d["timeline"]["events"]} | {i["id"] for i in d["analysis"]["inferences"]}
+    obs_ids = {o["id"] for o in d["analysis"]["observations"]} | {e["id"] for e in d["timeline"]["events"]} | {i["id"] for i in d["analysis"]["inferences"]} \
+        | {c["id"] for c in d["analysis"].get("contexts") or []}
     for inf in d["analysis"]["inferences"]:
         for ev in inf["evidence"]:
             if ev not in obs_ids:
@@ -146,6 +147,15 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"observation {o.get('id')} has no tool source ({src!r}); only tool measurements may be OBSERVED")
         if o.get("provenance", "OBSERVED") != "OBSERVED":
             rep.errors.append(f"observation {o.get('id')} has provenance {o.get('provenance')!r}; observations are always OBSERVED")
+    # production contexts: derived situations whose references all exist and whose ids match their content
+    from ..context import ProductionContext, validate_context
+    ev_index = {e["id"]: e for e in d["timeline"].get("events") or []}
+    for raw in d["analysis"].get("contexts") or []:
+        try:
+            rep.errors += validate_context(ProductionContext.from_dict(raw), ev_index, durations, {o["id"] for o in d["analysis"].get("observations") or []},
+                                           {i["id"] for i in d["analysis"].get("inferences") or []})
+        except (KeyError, TypeError, ValueError) as ex:
+            rep.errors.append(f"context {raw.get('id')}: malformed: {ex}")
     for i in d["analysis"].get("inferences") or []:
         if str(i.get("kind", "")).startswith("ai_recommendation:") and i.get("provenance") != "AI_GENERATED":
             rep.errors.append(f"inference {i.get('id')} from an AI provider must carry provenance AI_GENERATED")

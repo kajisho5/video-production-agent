@@ -32,6 +32,8 @@ video-agent skills                                      # Skill package（ffmpeg
 video-agent transcribe input.mp4 --language ja --offline   # transcription-skill で認識 → transcript Observation + SpeechEvent（認識まで。話者・字幕・編集は判断しない）
 video-agent plan input.mp4 --profile youtube --kind transcript --language ja   # transcript / SPEECH → speech inference → 発話間の長い無音を削除候補（CONFIRM）として plan に載せる
 video-agent explain <ir.json> --step step_trim_<asset>   # decision → inference → SpeechEvent / silence event → observation の証拠 chain
+video-agent context <ir.json> --at 10                    # その時刻の Production Context（同時に成立している Event 種別と参照）
+video-agent explain <ir.json> --context <ctx_id>         # context → tracks → events → observations、それに乗る inference / decision
 video-agent explain <ir.json> --observation <obs_id | tr_id>   # observation → skill → tool → engine → model → transcript → asset → events
 video-agent analyze input.mp4
 video-agent plan input.mp4 --profile youtube            # → <workspace>/plans/input.youtube.project.json

@@ -177,6 +177,67 @@ def run_case(case: dict) -> dict:
                 failures.append("a failed recognition still produced a transcript observation or SpeechEvents")
             os.environ.pop("FAKE_TS_MODE", None)
             return {"case": case["name"], "ok": not failures, "failures": failures}
+        cx = exp.get("context")
+        if cx:
+            # PR #15: situations from events, generic inference, provenance; never a decision / step / command by themselves
+            from video_agent.context import build_contexts, contexts_at
+            ir = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+            d = ir.doc
+            ctxs = d["analysis"]["contexts"]
+            if "min_contexts" in cx and len(ctxs) < cx["min_contexts"]:
+                failures.append(f"contexts {len(ctxs)} < {cx['min_contexts']}")
+            for at, sig in (cx.get("at") or {}).items():
+                got = [c for c in Service.contexts_of(d) if c.scope["start"] - 1e-6 <= float(at) < c.scope["end"] - 1e-6]
+                if len(got) != 1 or got[0].signature != sig:
+                    failures.append(f"situation at {at}: {[g.signature for g in got]} != {sig}")
+            if any(c["provenance"] != "DERIVED" for c in ctxs):
+                failures.append("a context is not DERIVED")
+            infs = d["analysis"]["inferences"]
+            kinds_count = {}
+            for i in infs:
+                kinds_count[i["kind"]] = kinds_count.get(i["kind"], 0) + 1
+            for k, n in (cx.get("inferences") or {}).items():
+                if kinds_count.get(k, 0) != n:
+                    failures.append(f"inference {k}: {kinds_count.get(k, 0)} != {n}")
+            ev_ids = {e["id"] for e in d["timeline"]["events"]}
+            for i in infs:
+                if i["kind"] in ("source_activity", "source_inactivity", "transition", "conflict"):
+                    if not i["evidence"] or not set(i["evidence"]) <= ev_ids or i["provenance"] != "INFERRED" or i["data"].get("generator") != "context_inference@1.0":
+                        failures.append(f"generic inference {i['id']} lacks event evidence / provenance / generator")
+            generic_ids = {i["id"] for i in infs if i["kind"] in ("source_activity", "source_inactivity", "transition")}
+            if any(set(x["evidence"]) & generic_ids for x in d["decisions"]):
+                failures.append("a decision rests directly on a situation inference")
+            blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"], "delivery": d["delivery"]})
+            if any(k in blob for k in ("ctx_", "SPEECH", "transition", "argv", "command")):
+                failures.append("context / event material reached the plan or operations")
+            if cx.get("conflict_untouched"):
+                conf = [i for i in infs if i.kind == "conflict"] if False else [i for i in infs if i["kind"] == "conflict"]
+                if not conf:
+                    failures.append("expected a conflict")
+                for c in conf:
+                    for eid in c["evidence"]:
+                        e = next(x for x in d["timeline"]["events"] if x["id"] == eid)
+                        if e["provenance"] != "OBSERVED":
+                            failures.append("a conflicting event was rewritten")
+            if not svc.validate(ir).ok:
+                failures.append(f"IR invalid: {svc.validate(ir).errors}")
+            if cx.get("explain"):
+                target = next((c for c in ctxs if c["scope"]["start"] == cx["explain"]), None)
+                if not target:
+                    failures.append("explain target context missing")
+                else:
+                    kinds_seen = {r["kind"] for r in Service.explain_context(d, target["id"])["chain"]}
+                    for k in ("context", "track", "event", "observation"):
+                        if k not in kinds_seen:
+                            failures.append(f"explain --context lacks {k}")
+            if cx.get("deterministic"):
+                ir2 = svc.plan([str(src)], case.get("profile", "generic"), kinds=kinds, params=params)
+                sig = lambda doc: [(c["scope"]["start"], c["scope"]["end"], sorted(t["event_type"] + "/" + t["subtype"] for t in c["tracks"])) for c in doc["analysis"]["contexts"]]  # noqa: E731
+                if sig(d) != sig(ir2.doc):
+                    failures.append("contexts differ between two plans of the same media")
+            for k in ("FAKE_TS_MODE", "FAKE_TS_CACHE", "FAKE_TS_SEGMENTS"):
+                os.environ.pop(k, None)
+            return {"case": case["name"], "ok": not failures, "failures": failures}
         sp_exp = exp.get("speech")
         if sp_exp:
             # PR #14: SpeechEvent → Inference → Decision → ProductionPlan → IR, reviewable and traceable; never AUTO for a removal

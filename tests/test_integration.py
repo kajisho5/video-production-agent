@@ -762,7 +762,7 @@ class SpeechToPlanRealTests(unittest.TestCase):
         if cls.ready:
             cls.src = str(src_dir / "two_takes.wav")
             subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fixture), "-i", str(fixture), "-filter_complex",
-                            "[0:a]apad=pad_dur=3[a0];[a0][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "pcm_s16le", cls.src], check=True)
+                            "[0:a]apad=pad_dur=3[a0];[a0][1:a]concat=n=2:v=0:a=1[a1];[a1]apad=pad_dur=3[a]", "-map", "[a]", "-c:a", "pcm_s16le", cls.src], check=True)   # trailing pad: the engine's segment end may overshoot the last word by up to ~1 s
             ad = TranscriptionAdapter(workspace=str(Path(cls.tmp) / "ws" / "cache" / "transcription"), allowed_inputs=[str(src_dir)], offline=True)
             rows = {c.get("check"): c for c in ad.doctor().get("checks") or []}
             eng = next((e for e in ad.engine_status() if e.get("id") == "faster_whisper"), {})
@@ -838,3 +838,94 @@ class SpeechToPlanRealTests(unittest.TestCase):
         self.assertIn("keep all 2 speech interval(s)", r.stdout)
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "validate", ir_path], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill() and locate_transcription(), "needs ffmpeg, ffmpeg-skill and transcription-skill")
+class ProductionContextRealTests(unittest.TestCase):
+    """PR #15 on real media: Transcript → SpeechEvent + measured silence → ProductionContexts → generic inference → explain.
+    Uses the same two-take fixture as SpeechToPlanRealTests; recognition runs only when the engine and its model are local."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.transcription import TranscriptionAdapter
+        cls.tmp = tempfile.mkdtemp(prefix="va_cx_")
+        src_dir = Path(cls.tmp) / "src"
+        src_dir.mkdir()
+        fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
+        cls.ready = fixture.is_file()
+        if cls.ready:
+            cls.src = str(src_dir / "two_takes.wav")
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fixture), "-i", str(fixture), "-filter_complex",
+                            "[0:a]apad=pad_dur=3[a0];[a0][1:a]concat=n=2:v=0:a=1[a1];[a1]apad=pad_dur=3[a]", "-map", "[a]", "-c:a", "pcm_s16le", cls.src], check=True)   # trailing pad: the engine's segment end may overshoot the last word by up to ~1 s
+            ad = TranscriptionAdapter(workspace=str(Path(cls.tmp) / "ws" / "cache" / "transcription"), allowed_inputs=[str(src_dir)], offline=True)
+            rows = {c.get("check"): c for c in ad.doctor().get("checks") or []}
+            eng = next((e for e in ad.engine_status() if e.get("id") == "faster_whisper"), {})
+            cls.ready = bool(eng.get("available")) and (rows.get(f"model:faster_whisper:{eng.get('default_model') or 'base'}") or {}).get("status") == "AVAILABLE"
+
+    def test_contexts_and_generic_inference_on_real_media(self):
+        if not self.ready:
+            self.skipTest("needs the transcription-skill fixture, faster-whisper and a local default model")
+        from video_agent.context import contexts_at
+        ws = str(Path(self.tmp) / "ws")
+        svc = Service(workspace=ws, offline=True)
+        ir = svc.plan([self.src], "youtube", kinds=["transcript"], params={"language": "ja"})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [], svc.validate(ir).errors)
+        ctxs = Service.contexts_of(d)
+        self.assertTrue(ctxs)
+        dur = list(d["assets"].values())[0]["technical"]["duration"]
+        self.assertEqual((ctxs[0].scope["start"], ctxs[-1].scope["end"]), (0.0, dur))
+        events = {e["id"]: e for e in d["timeline"]["events"]}
+        points = {p for e in events.values() if e.get("event_type") != "UserDecisionEvent" for p in (e["range"]["start"], e["range"].get("end")) if p is not None} | {0.0, dur}
+        self.assertTrue(all(c.scope["start"] in points and c.scope["end"] in points for c in ctxs), "situation boundaries are the measured events' own timestamps")
+        # the situation while the first take is spoken: speech recognised, audio active, no measured silence
+        sp = sorted([e for e in events.values() if e["type"] == "SPEECH"], key=lambda e: e["range"]["start"])
+        self.assertEqual(len(sp), 2)
+        mid = (sp[0]["range"]["start"] + min(sp[0]["range"]["end"], 8.4)) / 2
+        at = contexts_at(ctxs, mid)
+        self.assertEqual(len(at), 1)
+        self.assertIn("SpeechEvent/speech", at[0].signature)
+        self.assertIn(sp[0]["id"], at[0].event_ids)
+        transcript = next(o for o in d["analysis"]["observations"] if o["kind"] == "transcript")
+        self.assertIn(transcript["id"], at[0].observation_ids)
+        infs = d["analysis"]["inferences"]
+        by = {}
+        for i in infs:
+            by.setdefault(i["kind"], []).append(i)
+        act = {(i["data"]["event_type"], i["data"]["subtype"]): i for i in by["source_activity"]}
+        self.assertEqual(act[("SpeechEvent", "speech")]["data"]["intervals"], [[e["range"]["start"], e["range"]["end"]] for e in sp], "activity intervals are the recognised segments, untouched")
+        self.assertIn(("AudioEvent", "silence"), act)
+        self.assertTrue(by.get("transition"))
+        self.assertTrue(all(set(i["evidence"]) <= set(events) for k in ("source_activity", "source_inactivity", "transition", "conflict") for i in by.get(k, [])))
+        # on this recording Whisper's segments reach into the measured pause: the generic layer records the conflict, PR #14's domain layer too; neither corrects anything
+        conflicts = by.get("conflict", [])
+        sil = [e for e in events.values() if e["type"] == "AUDIO_SILENCE"]
+        for c in conflicts:
+            self.assertEqual(c["data"]["codes"], ["AUDIO_SILENCE", "SPEECH"])
+            for eid in c["evidence"]:
+                self.assertEqual(events[eid]["provenance"], "OBSERVED")
+        if conflicts:
+            self.assertTrue(by.get("speech_silence_conflict"), "the domain layer sees the same disagreement")
+        self.assertTrue(all(e["range"]["end"] > e["range"]["start"] for e in sil))
+        # explain: context → track → event → observation (transcript / silence) and the decisions resting on it
+        pause_ctx = next((c for c in ctxs if "AudioEvent/silence" in c.signature and c.scope["start"] > 1.0), None)
+        self.assertIsNotNone(pause_ctx)
+        info = Service.explain_context(d, pause_ctx.id)
+        kinds = {r["kind"] for r in info["chain"]}
+        self.assertTrue({"context", "track", "event", "observation"} <= kinds, kinds)
+        self.assertTrue(any(r["kind"] == "observation" and r["detail"] == "silence" for r in info["chain"]))
+        info_o = Service.explain_observation(d, transcript["id"])
+        self.assertTrue(any(r["kind"] == "context" for r in info_o["chain"]), "transcript → SpeechEvent → context is traceable")
+        blob = json.dumps({"plan": d["plan"], "video": d["video"], "audio": d["audio"]})
+        for bad in ("ctx_", "SPEECH", "transition", "argv"):
+            self.assertNotIn(bad, blob)
+        # CLI
+        ir_path = str(Path(ws) / "p.json")
+        save_ir(ir, ir_path)
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=ws)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "context", ir_path, "--at", str(mid)], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SpeechEvent/speech", r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", ir_path, "--context", pause_ctx.id], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("observation", r.stdout)
