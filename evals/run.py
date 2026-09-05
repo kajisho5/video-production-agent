@@ -242,7 +242,7 @@ def run_case(case: dict) -> dict:
             if want.get("recovery_classes") is not None and [r_["class"] for r_ in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
                 failures.append(f"recovery {[r_['class'] for r_ in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
             if (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(svc.workspace) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(svc.workspace) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 for e in prov["operations"]:
                     blob = json.dumps(e["args"]).lower()
                     if any(k in blob for k in ('"argv"', '"command"', '"filter"', '"executable"', '"shell"', "ffmpeg -")):
@@ -358,7 +358,7 @@ def run_case(case: dict) -> dict:
             if any(o.tool.startswith("ffmpeg-skill/") and o.tool.split("/")[1] in ("cut", "loudness", "audio") and (o.args or {}).get("output") for o in fake_engine.calls):
                 failures.append("the reference engine processed audio although the audio path was selected (fallback)")   # QA measurements (no output) are the engine's business
             if (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 for e in prov["operations"]:
                     if e["tool"] == "audio-production/run":
                         blob = json.dumps(e["args"]).lower()
@@ -443,7 +443,7 @@ def run_case(case: dict) -> dict:
                 if not item or abs(float(item["observed"]) - float(want["duration"])) > 0.01:
                     failures.append(f"delivered duration {item and item['observed']} != {want['duration']}")
             if (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 for e in prov["operations"]:
                     if e["tool"].startswith("video-editing/"):
                         blob = json.dumps(e["args"]).lower()
@@ -510,7 +510,7 @@ def run_case(case: dict) -> dict:
             if any(o.tool == "ffmpeg-skill/cut" for o in fake_engine.calls):
                 failures.append("the reference cut ran although video-editing was the selected tool (fallback)")
             if cut is not None and (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
                 if trim["skill_package"] != "video-editing" or not (trim.get("skill_result") or {}).get("artifact"):
                     failures.append("provenance lacks the Skill's package / result facts")
