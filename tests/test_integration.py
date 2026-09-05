@@ -16,6 +16,7 @@ from video_agent.project import load_ir, save_ir
 from video_agent.service import Service
 from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+from video_agent.tools.media_analysis import locate_media_analysis
 
 TONE = "0.5*sin(2*PI*440*t)*between(t\\,3\\,14)*gt(sin(2*PI*0.7*t)\\,-0.6)"
 
@@ -493,3 +494,109 @@ class NoAudioSourceTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "analyze", src, "--no-hash"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("no audio", r.stdout, "analyze must still print the asset line for video-only sources")
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill() and locate_media_analysis(), "needs ffmpeg, ffmpeg-skill and media-analysis-skill")
+class MediaAnalysisRealTests(unittest.TestCase):
+    """External observation Skill (media-analysis-skill, ADR-023) on real media through the JSON process boundary:
+    contract discovery, every measurement kind, Observation lifting with provenance, Skill-owned cache, events, and a
+    full plan → render → QA where the measurement Skill (not the media engine) supplies probe / silence / loudness."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_ma_")
+        cls.src = str(Path(cls.tmp) / "src" / "talk.mp4")
+        Path(cls.src).parent.mkdir(parents=True)
+        make_media(cls.src)
+
+    def _service(self, ws: str, prefer_media_analysis: bool = True, **kw) -> Service:
+        svc = Service(workspace=ws, **kw)
+        if prefer_media_analysis:   # measurement from the observation Skill; ffmpeg-skill stays the engine for processing
+            for name, tool in (("media_probe", "media-analysis/probe"), ("silence_analysis", "media-analysis/silence"), ("loudness_analysis", "media-analysis/loudness")):
+                svc.registry.get(name).tools = [tool]
+        return svc
+
+    def test_capability_and_contract_come_from_the_installed_skill(self):
+        svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
+        cap = svc.caps.resolve()["media-analysis"]
+        self.assertEqual(cap.status, "AVAILABLE", cap.evidence)
+        self.assertEqual((cap.evidence["version"], cap.evidence["contract"], cap.evidence["execution"]), ("0.1.0", "media-analysis/contract@1", "local_subprocess"))
+        self.assertEqual(len(cap.evidence["tools"]), 9)
+        rows = {r["skill_id"]: r for r in svc.packages()}
+        self.assertTrue(rows["media-analysis"]["available"] and rows["ffmpeg-skill"]["available"])
+        tools = svc.tools_for()
+        self.assertEqual(tools["media_probe"], "ffmpeg-skill/probe", "the Reference Skill stays the first candidate when both are installed")
+        for skill, tool in (("stream_layout_analysis", "media-analysis/streams"), ("video_format_analysis", "media-analysis/video"), ("audio_format_analysis", "media-analysis/audio"),
+                            ("duration_analysis", "media-analysis/timing"), ("integrity_analysis", "media-analysis/integrity"), ("scene_analysis", "media-analysis/scenes"), ("timing_analysis", "media-analysis/timing")):
+            self.assertEqual(tools[skill], tool)
+        # a missing installation is a MISSING capability with the reason, never an import error or a fallback
+        svc2 = Service(workspace=str(Path(self.tmp) / "ws_cap2"), media_analysis_dir="/nonexistent")
+        self.assertEqual(svc2.caps.resolve()["media-analysis"].status, "AVAILABLE" if locate_media_analysis("/nonexistent") else "MISSING")
+
+    def test_all_kinds_lifted_with_provenance_and_skill_cache(self):
+        ws = str(Path(self.tmp) / "ws_all")
+        svc = self._service(ws)
+        extra = ["stream_layout", "video_format", "audio_format", "duration", "integrity", "scene_detection", "timing"]
+        profile, rules, an = svc.analyze([self.src], "youtube", kinds=extra)
+        obs = {o.kind: o for o in an.observations}
+        self.assertEqual(sorted(obs), sorted(["media_probe", "silence", "loudness"] + extra))
+        for o in obs.values():
+            self.assertEqual((o.provenance, o.skill, o.skill_version), ("OBSERVED", "media-analysis", "0.1.0"), o.kind)
+            self.assertTrue(o.tool.startswith("media-analysis/") and o.source == f"{o.tool}@0.1.0" and o.external_id.startswith("obs_"), o.kind)
+            self.assertEqual(len(o.fingerprint), 64)
+            self.assertEqual(o.cache.get("status"), "miss", o.kind)
+        self.assertEqual(obs["duration"].tool, obs["timing"].tool, "one Skill tool serves two kinds; the kind stays on the observation")
+        self.assertEqual(len({o.fingerprint for o in obs.values()}), 1, "shared asset identity: one content fingerprint for every observation")
+        # facts as measured: the Skill's own keys are kept, consumers read through one vocabulary
+        from video_agent.media.analysis import loudness_facts
+        self.assertIn("integrated_lufs", obs["loudness"].data)
+        lf = loudness_facts(obs["loudness"].data)
+        self.assertFalse(lf["silent"]); self.assertLess(lf["lufs"], -5); self.assertLessEqual(lf["true_peak"], 0.0)
+        self.assertAlmostEqual(obs["silence"].data["segments"][0]["end"], 3.0, delta=0.2)
+        self.assertEqual(an.assets[0].technical["duration"] and round(an.assets[0].technical["duration"]), 16)
+        self.assertEqual(an.assets[0].technical["video"]["width"], 1280)
+        ev = {e.type for e in an.timeline.events}
+        self.assertTrue({"AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE"} <= ev, ev)
+        sil = next(e for e in an.timeline.events if e.type == "AUDIO_SILENCE")
+        self.assertEqual((sil.range["start"], sil.evidence, sil.provenance), (0.0, [obs["silence"].id], "OBSERVED"))
+        rows = {r["kind"]: r for r in an.analyses[0]["rows"]}
+        self.assertTrue(all(r["cache_owner"] == "media-analysis" for r in rows.values()))
+        self.assertEqual((an.analyses[0]["cache"]["hits"], an.analyses[0]["cache"]["misses"]), (0, 0), "the agent's own cache is not used for Skill-owned measurements")
+        # second run in the same workspace: the Skill's cache answers (status hit), provenance keeps saying so
+        _, _, an2 = self._service(ws).analyze([self.src], "youtube", kinds=extra)
+        self.assertTrue(all(o.cache.get("status") == "hit" for o in an2.observations), [(o.kind, o.cache) for o in an2.observations])
+        self.assertEqual([(o.kind, o.data) for o in an.observations], [(o.kind, o.data) for o in an2.observations], "identical facts from the Skill cache")
+        self.assertTrue(all(r["cache_hit"] for r in an2.analyses[0]["rows"]))
+
+    def test_plan_render_qa_with_measurement_from_the_skill(self):
+        ws = str(Path(self.tmp) / "ws_render")
+        svc = self._service(ws)
+        ir = svc.plan([self.src], "youtube")
+        d = ir.doc
+        self.assertTrue(all(o["skill"] == "media-analysis" for o in d["analysis"]["observations"]))
+        self.assertEqual([s["skill"] for s in d["plan"]["steps"]][:1], ["silence_cleanup"])
+        self.assertTrue(all(s["tool"].startswith("ffmpeg-skill/") for s in d["plan"]["steps"]), "processing steps stay on the media engine")
+        self.assertNotIn("media-analysis", json.dumps(d["plan"]), "no observation tool ever becomes a plan step")
+        self.assertAlmostEqual(d["video"]["operations"][0]["keep"][0][0], 3.0, delta=0.2)
+        inf = next(i for i in d["analysis"]["inferences"] if i["kind"] == "loudness_off_target")
+        self.assertAlmostEqual(inf["data"]["lufs"], -11.0, delta=1.0, msg="the inference reads the Skill's loudness vocabulary (integrated_lufs)")
+        self.assertEqual(len(d["audio"]["operations"]), 1)
+        ir_path = str(Path(ws) / "p.json")
+        save_ir(ir, ir_path)
+        self.assertTrue(svc.validate(ir).ok, svc.validate(ir).errors)
+        out = svc.render(load_ir(ir_path), ir_path, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
+        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        ms = out["qa"]["measurements"]
+        self.assertTrue(any(m["tool"] == "media-analysis/probe" and m["args"]["kind"] == "media_probe" for m in ms))
+        self.assertTrue(any(m["tool"] == "media-analysis/loudness" and m["args"]["kind"] == "loudness" for m in ms))
+        self.assertTrue(all("command" not in m["args"] and "argv" not in m["args"] for m in ms))
+        self.assertTrue(any(i["name"] == "loudness" and i["status"] == "PASS" for i in out["qa"]["items"]))
+        # doctor / CLI round trip through the located Skill
+        env = dict(os.environ, VIDEO_AGENT_WORKSPACE=ws)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "analyze", self.src, "--no-hash", "--kind", "duration", "--kind", "integrity"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("integrity", r.stdout); self.assertIn("media-analysis", r.stdout)
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "doctor"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["media-analysis"]["status"], "AVAILABLE")

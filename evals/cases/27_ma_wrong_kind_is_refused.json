@@ -1,0 +1,10 @@
+{
+ "name": "ma_wrong_kind_is_refused",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "wrong_kind"
+ },
+ "expect": {
+  "analysis_error": "ANALYSIS_INVALID_RESULT"
+ }
+}

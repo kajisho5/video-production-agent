@@ -163,18 +163,21 @@ class FfmpegSkillAdapter(ToolAdapter):
 CHILD_ENV = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}  # ffmpeg-skill prints UTF-8 JSON; Windows consoles default to cp932 etc.
 
 
-def run_process_group(cmd: List[str], timeout: Optional[float]) -> "tuple[int, str, str]":
+def run_process_group(cmd: List[str], timeout: Optional[float], stdin: Optional[str] = None) -> "tuple[int, str, str]":
     """Run cmd in its own process group so a timeout or an interrupt kills the script AND the ffmpeg it spawned.
-    Returns (exit_code, stdout, stderr); exit 124 means timeout, 130 means interrupted."""
+    `stdin` (a JSON document for stdin-driven Skills) is written once and closed. Returns (exit_code, stdout, stderr);
+    exit 124 means timeout, 130 means interrupted."""
     env = dict(os.environ, **CHILD_ENV)
     kw: Dict[str, Any] = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
+    if stdin is not None:
+        kw["stdin"] = subprocess.PIPE
     if os.name == "nt":
         kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         kw["start_new_session"] = True
     proc = subprocess.Popen(cmd, **kw)
     try:
-        out_b, err_b = proc.communicate(timeout=timeout)
+        out_b, err_b = proc.communicate(input=stdin.encode("utf-8") if stdin is not None else None, timeout=timeout)
         return proc.returncode, _dec(out_b), _dec(err_b)
     except subprocess.TimeoutExpired:
         kill_tree(proc)

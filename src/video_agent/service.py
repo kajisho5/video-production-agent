@@ -20,7 +20,7 @@ from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
 from .temporal import session_for_asset
-from .media.analysis import ANALYSIS_KINDS, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
+from .media.analysis import ANALYSIS_KINDS, CORE_KINDS, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
 from .models import Artifact, Inference, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
 from .profiles import load_profile
@@ -36,27 +36,31 @@ from .tools.ffmpeg_skill import FfmpegSkillAdapter
 from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
 from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+from .tools.media_analysis import PACKAGE as MEDIA_ANALYSIS_PACKAGE, MediaAnalysisAdapter, locate_media_analysis
+from .tools.base import ToolError
 
 
 class Service:
     def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
-                 provider: Optional[AIProvider] = None):
+                 provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
-        self.caps = caps or CapabilityResolver(self.skill_dir)
+        self.media_analysis_dir = media_analysis_dir or os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR")
+        self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir)
         self._adapter = adapter
         self.registry = default_registry()
         self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
         self._ai_calls: List[Dict[str, Any]] = []     # provenance.ai_calls for the project being planned
         # Reference Skill package: implemented in this codebase (tools/ffmpeg_skill) whether or not a checkout is installed.
         self.registry.register_package(FFMPEG_SKILL_PACKAGE)
+        self.registry.register_package(MEDIA_ANALYSIS_PACKAGE)   # external observation Skill: adapter exists here; availability needs an installation
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
     # ---- adapters / tools
     def adapter(self, allowed_inputs: Optional[List[str]] = None) -> ToolRouter:
-        """The tool router with every adapter available in this environment. Today that is ffmpeg-skill only; a second
-        skill package would be registered here (and nowhere else)."""
+        """The tool router with every adapter available in this environment: ffmpeg-skill (media engine) and, when
+        installed, media-analysis-skill (observation Skill). Adapters are registered here and nowhere else."""
         if self._adapter is not None:
             return self._sync_packages(self._adapter if isinstance(self._adapter, ToolRouter) else ToolRouter([self._adapter]))
         skill = locate_ffmpeg_skill(self.skill_dir)
@@ -64,6 +68,14 @@ class Service:
         router = ToolRouter()
         if skill:
             router.register(FfmpegSkillAdapter(skill, policy))
+        ma = locate_media_analysis(self.media_analysis_dir)
+        if ma:
+            try:
+                # same boundary as the engine's PathPolicy: inputs from the allowed roots or the workspace (intermediates / artifacts under QA)
+                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else []
+                router.register(MediaAnalysisAdapter(ma, workspace=self.workspace, allowed_inputs=roots, cache_dir=str(Path(self.workspace) / "cache" / "media-analysis")))
+            except ToolError:
+                pass   # incompatible / broken installation: doctor reports it; the tool stays unavailable rather than half-usable
         return self._sync_packages(router)
 
     def _sync_packages(self, router: ToolRouter) -> ToolRouter:
@@ -104,27 +116,29 @@ class Service:
 
     # ---- lifecycle
     def analyze(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None, hash_sources: bool = True,
-                strategy: Optional[str] = None, cache_policy: Optional[str] = None, use_cache: bool = True):
+                strategy: Optional[str] = None, cache_policy: Optional[str] = None, use_cache: bool = True, kinds: Optional[List[str]] = None):
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter([str(Path(p).resolve().parent) for p in inputs])
         tools = self.tools_for(adapter)
         self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"], adapter)
-        req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy)
+        req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy, kinds=kinds)
         analyzer = MediaAnalyzer(adapter, tools=tools, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), hash_sources=hash_sources,
                                  cache_dir=self.workspace if use_cache else None)
         analysis = analyzer.run(req)
         return profile, rules, analysis
 
     def analysis_request(self, inputs: List[str], rules, request_text: str, user_requirements, profile, hash_sources: bool = True,
-                         strategy: Optional[str] = None, cache_policy: Optional[str] = None) -> AnalysisRequest:
+                         strategy: Optional[str] = None, cache_policy: Optional[str] = None, kinds: Optional[List[str]] = None) -> AnalysisRequest:
         """What to observe is decided here (system / policy / requirements), never by an AI provider:
         strategy from `analysis.strategy` (policy or `--set analysis.strategy=`), kinds from the requirements under TARGETED,
         budget from `analysis.budget.*` (only enforceable items; others are refused), parameters from policy."""
         strat = strategy or (user_requirements or {}).get("analysis.strategy") or rules.get("analysis.strategy") or "FULL"
         strat = normalize_strategy(strat)
         reqs = extract_requirements(Request(raw=request_text, args={"inputs": inputs, "profile": profile.name, "requirements": user_requirements or {}}), profile, rules)
-        kinds = targeted_kinds(reqs) if strat == "TARGETED" else list(ANALYSIS_KINDS)
+        base = targeted_kinds(reqs) if strat == "TARGETED" else list(CORE_KINDS)
+        extra = [k for k in (kinds or []) if k not in base]   # explicitly requested measurements (system / user), never chosen by an AI
+        kinds = base + extra
         return AnalysisRequest(inputs=list(inputs), kinds=kinds, strategy=strat, budget=AnalysisBudget.from_rules(rules),
                                cache_policy=cache_policy or ("only" if strat == "CACHED_ONLY" else "use"),
                                params={"threshold_db": float(rules.get("silence.threshold_db", -40)), "min_silence": 0.5}, hash_sources=hash_sources)

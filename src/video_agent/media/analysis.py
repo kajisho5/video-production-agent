@@ -30,7 +30,16 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     "media_probe": {"skill": "media_probe", "needs_audio": False, "params": ()},
     "silence": {"skill": "silence_analysis", "needs_audio": True, "params": ("threshold_db", "min_silence")},
     "loudness": {"skill": "loudness_analysis", "needs_audio": True, "params": ()},
+    # measurements only an external observation Skill provides (media-analysis-skill); parameters are the Skill's own
+    "stream_layout": {"skill": "stream_layout_analysis", "needs_audio": False, "params": ()},
+    "video_format": {"skill": "video_format_analysis", "needs_audio": False, "params": ("stream",)},
+    "audio_format": {"skill": "audio_format_analysis", "needs_audio": True, "params": ("stream",)},
+    "duration": {"skill": "duration_analysis", "needs_audio": False, "params": ()},
+    "integrity": {"skill": "integrity_analysis", "needs_audio": False, "params": ("max_error_lines",)},
+    "scene_detection": {"skill": "scene_analysis", "needs_audio": False, "params": ("threshold", "min_scene_duration")},
+    "timing": {"skill": "timing_analysis", "needs_audio": False, "params": ("gap_factor", "av_mismatch_tolerance")},
 }
+CORE_KINDS = ("media_probe", "silence", "loudness")   # what FULL runs by default; other kinds are requested explicitly
 STRATEGIES = ("FULL", "TARGETED", "CACHED_ONLY")
 # names recorded in the Project IR (schema enum) ↔ request strategy
 IR_STRATEGY = {"FULL": "FULL_ANALYSIS", "TARGETED": "TARGETED_ANALYSIS", "CACHED_ONLY": "CACHED_ONLY"}
@@ -97,7 +106,7 @@ class AnalysisBudget:
 @dataclass
 class AnalysisRequest:
     inputs: List[str]                                   # media paths (assets are identified by the analyzer's probe)
-    kinds: List[str] = field(default_factory=lambda: list(ANALYSIS_KINDS))
+    kinds: List[str] = field(default_factory=lambda: list(CORE_KINDS))
     strategy: str = "FULL"
     budget: AnalysisBudget = field(default_factory=AnalysisBudget)
     cache_policy: str = "use"                           # use | bypass | only
@@ -125,6 +134,39 @@ class AnalysisRequest:
     def to_dict(self) -> Dict[str, Any]:
         return {"analysis_id": self.analysis_id, "inputs": [Path(p).name for p in self.inputs], "kinds": list(self.kinds), "strategy": self.strategy,
                 "budget": self.budget.to_dict(), "cache_policy": self.cache_policy, "params": dict(self.params), "hash_sources": self.hash_sources}
+
+
+def _num(v: Any) -> Optional[float]:
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def loudness_facts(data: Dict[str, Any]) -> Dict[str, Any]:
+    """One vocabulary for a loudness fact whichever measurement tool produced it. The Observation keeps the tool's own
+    keys (facts as measured); consumers (inference, QA) read through this view.
+      agent shape       : silent / lufs / true_peak / lra
+      loudnorm-style raw : silent / input_i / input_tp / input_lra
+      media-analysis    : integrated_lufs / true_peak_dbtp / loudness_range_lu / unmeasurable / integrated_below_absolute_gate
+    `silent` is True only when the tool measured no programme level (a `silent` flag, or an integrated loudness that is
+    unmeasurable or below the BS.1770 absolute gate)."""
+    d = data or {}
+    lufs = _num(d.get("lufs", d.get("input_i", d.get("integrated_lufs"))))
+    tp = _num(d.get("true_peak", d.get("input_tp", d.get("true_peak_dbtp"))))
+    lra = _num(d.get("lra", d.get("input_lra", d.get("loudness_range_lu", d.get("loudness_range")))))
+    silent = bool(d.get("silent")) or ("integrated_lufs" in d and (lufs is None or bool(d.get("integrated_below_absolute_gate"))))
+    return {"silent": silent, "lufs": None if silent else lufs, "true_peak": tp, "lra": lra}
+
+
+def probe_facts(probe: Dict[str, Any]) -> Dict[str, Any]:
+    """Asset technical facts from a probe observation, whichever measurement tool produced it: the agent's own keys
+    (format / duration / size_bytes / bitrate / video / audio) or a container-based layout (container{duration, size, bitrate, format})."""
+    if isinstance(probe.get("container"), dict):
+        c = probe["container"]
+        return {"format": c.get("format"), "duration": c.get("duration"), "size_bytes": c.get("size"), "bitrate": c.get("bitrate"),
+                "video": probe.get("video"), "audio": probe.get("audio"), "subtitle_streams": probe.get("subtitle_streams", 0)}
+    return {k: probe.get(k) for k in ("format", "duration", "size_bytes", "bitrate", "video", "audio", "subtitle_streams")}
 
 
 def targeted_kinds(requirements: Iterable[Any]) -> List[str]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
+from ..media.analysis import loudness_facts
 from ..media.analyzer import AnalysisResult
 from ..models import Inference
 from ..policy.rules import RuleSet
@@ -38,11 +39,12 @@ def infer(analysis: AnalysisResult, rules: RuleSet, target_lufs: float = None, t
         for obs in analysis.observations:
             if obs.asset_id != asset.id or obs.kind != "loudness":
                 continue
-            if obs.data.get("silent"):
+            lf = loudness_facts(obs.data)   # tool vocabulary (ffmpeg-skill / media-analysis) → one view; the fact itself is untouched
+            if lf["silent"]:
                 out.append(Inference(kind="audio_silent", asset_id=asset.id, confidence=0.95, statement="integrated loudness is -inf: the track carries no programme audio",
                                      evidence=[obs.id], data={}))
-            elif target_lufs is not None and obs.data.get("lufs") is not None:
-                lufs = obs.data["lufs"]
+            elif target_lufs is not None and lf["lufs"] is not None:
+                lufs = lf["lufs"]
                 if lufs <= -40:
                     out.append(Inference(kind="ambience_not_programme", asset_id=asset.id, confidence=0.7,
                                          statement=f"{lufs:.1f} LUFS is room tone / near-silence level; normalising would raise noise, not content",
@@ -50,5 +52,5 @@ def infer(analysis: AnalysisResult, rules: RuleSet, target_lufs: float = None, t
                 elif abs(lufs - target_lufs) > tolerance_lu:
                     out.append(Inference(kind="loudness_off_target", asset_id=asset.id, confidence=0.95,
                                          statement=f"measured {lufs:.1f} LUFS vs target {target_lufs:g} (tolerance ±{tolerance_lu:g} LU)",
-                                         evidence=[obs.id], data={"lufs": lufs, "target": target_lufs, "true_peak": obs.data.get("true_peak")}))
+                                         evidence=[obs.id], data={"lufs": lufs, "target": target_lufs, "true_peak": lf["true_peak"]}))
     return out

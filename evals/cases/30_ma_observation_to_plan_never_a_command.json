@@ -1,0 +1,39 @@
+{
+ "name": "ma_observation_to_plan_never_a_command",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "ok"
+ },
+ "expect": {
+  "intent": "clean_and_deliver",
+  "decisions": {
+   "silence.leading": {
+    "approval": "AUTO",
+    "provenance": "INFERRED"
+   },
+   "audio.loudness": {
+    "decision_startswith": "normalize to -14"
+   }
+  },
+  "plan": {
+   "video_ops": 1,
+   "audio_ops": 1
+  },
+  "production_plan": {
+   "steps": [
+    "silence_cleanup",
+    "loudness_normalization",
+    "delivery_export",
+    "delivery_check"
+   ],
+   "tools_from_registry": true,
+   "must_not_contain": [
+    "media-analysis",
+    "ffprobe -",
+    "argv",
+    "run - --json"
+   ],
+   "validate": true
+  }
+ }
+}

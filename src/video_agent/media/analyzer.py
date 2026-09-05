@@ -13,7 +13,7 @@ from ..models import Asset, Observation, now_iso
 from ..temporal import Timeline
 from ..temporal.events import events_from_observation
 from ..tools.base import ToolAdapter, ToolError
-from .analysis import (ANALYSIS_KINDS, IR_STRATEGY, LEGACY_STRATEGY, AnalysisError, AnalysisRequest, Analyzer, BudgetMeter, ObservationCache,
+from .analysis import (probe_facts, ANALYSIS_KINDS, CORE_KINDS, IR_STRATEGY, LEGACY_STRATEGY, AnalysisError, AnalysisRequest, Analyzer, BudgetMeter, ObservationCache,
                        cache_key, validate_observation)
 
 STRATEGIES = ("FULL_ANALYSIS", "COARSE_ANALYSIS", "TARGETED_ANALYSIS", "CACHED_ONLY")   # names recorded in the IR
@@ -62,7 +62,7 @@ class MediaAnalyzer(Analyzer):
     version = "1.0"
     supported_kinds = tuple(ANALYSIS_KINDS)
     required_capabilities = ()   # capabilities come from the measurement skills in the registry (media_probe / silence_analysis / loudness_analysis)
-    SKILLS = tuple(spec["skill"] for spec in ANALYSIS_KINDS.values())
+    SKILLS = tuple(ANALYSIS_KINDS[k]["skill"] for k in CORE_KINDS)   # required; other kinds need their tool in the map when requested
 
     def __init__(self, adapter: ToolAdapter, tools: Dict[str, str], silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",
                  hash_sources: bool = True, cache_dir: Optional[str] = None):
@@ -83,6 +83,8 @@ class MediaAnalyzer(Analyzer):
         self.measure_calls = 0   # tool calls actually made (cache hits excluded); the budget counts these
 
     def _tool(self, skill: str) -> str:
+        if skill not in self.tools:
+            raise ToolError(f"no tool selected for skill {skill} (SkillRegistry.resolve_tools did not select one in this environment)")
         return self.tools[skill]
 
     def _source(self, skill: str) -> str:
@@ -123,7 +125,7 @@ class MediaAnalyzer(Analyzer):
             if o is None:
                 raise AnalysisError(row["error"]["kind"] if row.get("error") else "ANALYZER_UNAVAILABLE", f"probe failed for {p}: {(row.get('error') or {}).get('message', '')}")
             probe = o.data
-            asset.technical = {k: probe.get(k) for k in ("format", "duration", "size_bytes", "bitrate", "video", "audio", "subtitle_streams")}
+            asset.technical = _technical(probe)
             asset.technical["file"] = {"size": st.st_size, "mtime": st.st_mtime}  # fingerprint fallback when hashing is skipped
             asset.classification = _classify(probe)
             asset.type = asset.classification["type"]
@@ -135,10 +137,17 @@ class MediaAnalyzer(Analyzer):
                 if ANALYSIS_KINDS[kind]["needs_audio"] and not has_audio:
                     rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no audio stream"})
                     continue
+                if ANALYSIS_KINDS[kind]["skill"] not in self.tools:
+                    rows.append({"asset_id": asset.id, "kind": kind, "status": "FAILED", "error": {"kind": "ANALYZER_UNAVAILABLE", "message": f"no tool selected for skill {ANALYSIS_KINDS[kind]['skill']} in this environment"}})
+                    warnings.append(f"{kind} analysis unavailable for {p}: no tool selected for skill {ANALYSIS_KINDS[kind]['skill']}")
+                    continue
+                kp = req.kind_params(kind) if kind not in ("silence",) else params
                 if kind == "silence":
-                    args, kp = {"input": asset.path, "list": True, "threshold": params["threshold_db"], "min_silence": params["min_silence"]}, params
-                else:
+                    args = {"input": asset.path, "list": True, "threshold": params["threshold_db"], "min_silence": params["min_silence"]}
+                elif kind == "loudness":
                     args, kp = {"input": asset.path, "measure_only": True}, {}
+                else:
+                    args = {"input": asset.path}
                 o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
                 rows.append(row)
                 if o is None:
@@ -164,7 +173,13 @@ class MediaAnalyzer(Analyzer):
         source = self._source(skill)
         key = cache_key(fp, kind, self.identity, source, kparams)
         row: Dict[str, Any] = {"asset_id": asset.id, "kind": kind, "tool": source, "cache_key": key, "cache_hit": False, "status": "OK"}
-        if req.cache_policy in ("use", "only"):
+        shaped = self.adapter.measurement_args(tool, kind, asset.path, asset.id, kparams, req.analysis_id, req.cache_policy) if hasattr(self.adapter, "measurement_args") else None
+        skill_cache = bool(getattr(self.adapter, "owns_cache_for", lambda t: False)(tool)) if hasattr(self.adapter, "owns_cache_for") else bool(getattr(self.adapter, "owns_cache", False))
+        if shaped is not None:
+            args = shaped
+        if skill_cache:
+            row["cache_owner"] = tool.split("/", 1)[0]   # the Skill caches; the agent records its status below
+        if req.cache_policy in ("use", "only") and not skill_cache:
             try:
                 rec = self.cache.get(key)
             except AnalysisError as e:
@@ -181,7 +196,7 @@ class MediaAnalyzer(Analyzer):
                 row["cache_hit"] = True
                 row["produced_by"] = rec.get("produced_by")
                 return o, row
-        if req.cache_policy == "only":
+        if req.cache_policy == "only" and not skill_cache:
             row.update({"status": "FAILED", "error": {"kind": "ANALYZER_UNAVAILABLE", "message": "CACHED_ONLY: no cached observation for this measurement"}})
             return None, row
         try:
@@ -194,17 +209,41 @@ class MediaAnalyzer(Analyzer):
         r = self.adapter.measure(tool, args)
         calls.append({"tool": r.tool, "ok": r.ok, "seconds": r.seconds, "kind": kind, "analysis_id": req.analysis_id})
         if not r.ok:
-            row.update({"status": "FAILED", "error": {"kind": "ANALYZER_TIMEOUT" if "timeout" in (r.stderr_tail or "").lower() else "ANALYZER_UNAVAILABLE", "message": (r.stderr_tail or "")[:200]}})
+            ext = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+            ekind = (ext or {}).get("code") if ext else None
+            mapped = {"ANALYZER_TIMEOUT": "ANALYZER_TIMEOUT", "BUDGET_EXCEEDED": "ANALYSIS_BUDGET_EXCEEDED", "CACHE_INVALID": "ANALYSIS_CACHE_INVALID", "CACHE_MISS": "ANALYZER_UNAVAILABLE",
+                      "INVALID_RESULT": "ANALYSIS_INVALID_RESULT", "VERIFICATION_FAILED": "ANALYSIS_INVALID_RESULT", "INVALID_INPUT": "ANALYSIS_UNSUPPORTED"}.get(ekind or "", None)
+            row.update({"status": "FAILED", "error": {"kind": mapped or ("ANALYZER_TIMEOUT" if r.exit_code == 124 or "timeout" in (r.stderr_tail or "").lower() else "ANALYZER_UNAVAILABLE"),
+                                                       "message": ((ext or {}).get("message") or r.stderr_tail or "")[:200], "skill_error": ekind}})
             return None, row
-        data = self._shape(kind, r.data, kparams)
-        o = Observation(kind=kind, asset_id=asset.id, source=source, data=data, analysis_id=req.analysis_id, analyzer=self.identity, cache_key=key)
+        ext_obs = (r.data or {}).get("observation") if isinstance(r.data, dict) else None
+        if isinstance(ext_obs, dict) and isinstance(ext_obs.get("analysis"), dict):
+            o = self._lift(ext_obs, r.data, kind, asset, req, source, key)
+            row["cache"] = (r.data or {}).get("cache")
+            row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
+            row["skill_analysis_id"] = ext_obs.get("analysis_id")
+        else:
+            data = self._shape(kind, r.data, kparams)
+            o = Observation(kind=kind, asset_id=asset.id, source=source, data=data, analysis_id=req.analysis_id, analyzer=self.identity, cache_key=key,
+                            skill=tool.split("/", 1)[0], tool=tool, fingerprint=fp, parameters=dict(kparams))
         errs = validate_observation(o, req, asset_ids, kind)
         if errs:
             row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": "; ".join(errs)}})
             return None, row
-        if req.cache_policy != "bypass":
+        if req.cache_policy != "bypass" and not skill_cache:
             self.cache.put(key, o, {"analyzer": self.identity, "tool": source, "params": kparams, "at": o.observed_at})
         return o, row
+
+    @staticmethod
+    def _lift(ext: Dict[str, Any], data: Dict[str, Any], kind: str, asset: Asset, req: AnalysisRequest, source: str, key: str) -> Observation:
+        """Lift an external Skill observation into the agent's Observation without simplifying its provenance: the Skill's
+        id / version / tool / observation id / fingerprint / effective parameters / cache status travel with the fact."""
+        an = ext.get("analysis") or {}
+        sk = data.get("skill") or {}
+        return Observation(kind=kind, asset_id=asset.id, source=str(ext.get("source") or source), data=dict(ext.get("data") or {}), observed_at=str(ext.get("observed_at") or now_iso()),
+                           analysis_id=req.analysis_id, analyzer=f"{an.get('analyzer', source.split('@')[0])}@{an.get('analyzer_version', '')}", cache_key=key, provenance="OBSERVED",
+                           skill=str(sk.get("id") or source.split("/", 1)[0]), skill_version=str(sk.get("version") or ""), tool=source.split("@", 1)[0], external_id=str(ext.get("id") or ""),
+                           fingerprint=str((ext.get("asset") or {}).get("fingerprint") or ""), parameters=dict(an.get("parameters") or {}), cache=dict(data.get("cache") or {}))
 
     @staticmethod
     def _shape(kind: str, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,9 +268,15 @@ class MediaAnalyzer(Analyzer):
             tl.add(e)
 
 
+def _technical(probe: Dict[str, Any]) -> Dict[str, Any]:
+    return probe_facts(probe)
+
+
 def _classify(probe: Dict[str, Any]) -> Dict[str, Any]:
     """Cheap, evidence-backed classification. Conference roles (camera_a, slides...) come in Phase 2."""
     v, a = probe.get("video"), probe.get("audio")
+    if isinstance(probe.get("container"), dict):
+        v, a = probe.get("video"), probe.get("audio")
     if v and not a:
         return {"type": "CAMERA", "confidence": 0.5, "evidence": ["video stream, no audio stream"]}
     if v:

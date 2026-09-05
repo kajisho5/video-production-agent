@@ -1,0 +1,10 @@
+{
+ "name": "ma_version_mismatch_refused",
+ "profile": "youtube",
+ "media_analysis": {
+  "mode": "wrong_version"
+ },
+ "expect": {
+  "contract_refused": "skill version"
+ }
+}

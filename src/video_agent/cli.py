@@ -66,7 +66,7 @@ def cmd_skills(args, svc: Service) -> int:
 
 
 def cmd_analyze(args, svc: Service) -> int:
-    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache)
+    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds)
     doc = analysis.to_dict()
     if args.json:
         _print(doc, True)
@@ -79,6 +79,9 @@ def cmd_analyze(args, svc: Service) -> int:
         line += (" VFR?" if v.get("variable_frame_rate_suspected") else "") + (f" [{v.get('hdr_format')}]" if v.get("hdr") else "")
         line += f", audio {au.get('codec')} {au.get('channels')}ch" if au else ", no audio"
         print(line)
+    for o in analysis.observations:
+        ext = f"  skill {o.skill}@{o.skill_version}  ext {o.external_id}  cache {o.cache.get('status')}" if o.skill_version else ""
+        print(f"  observation {o.id}  {o.kind:15s} {o.source}{ext}")
     for e in analysis.timeline.query():
         r = e.range
         print(f"  {e.kind:8s} {e.type:16s} {r['start']:8.3f}-{(r['end'] if r['end'] is not None else r['start']):8.3f}  {json.dumps(e.metadata, default=str)[:80]}")
@@ -484,6 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources (faster on huge files)")
     p.add_argument("--strategy", choices=["FULL", "TARGETED", "CACHED_ONLY"], help="analysis strategy (default: profile policy analysis.strategy, else FULL)")
     p.add_argument("--no-cache", action="store_true", help="do not read or write the observation cache")
+    p.add_argument("--kind", action="append", dest="kinds", help="analysis kind(s) to run in addition to the core kinds (e.g. duration, integrity, scene_detection)")
     p.set_defaults(fn=cmd_analyze)
     p = sub.add_parser("plan", help="analyze, decide and write a Project IR")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--request", help="free-text request (only unambiguous phrases are used)")

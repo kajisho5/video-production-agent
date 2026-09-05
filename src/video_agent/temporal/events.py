@@ -85,11 +85,23 @@ def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
         return classify(e)
 
     if obs.kind == "silence":
-        for se in obs.data.get("silences") or []:
-            end = se[1] if se[1] is not None else dur
-            out.append(mk("AUDIO_SILENCE", TimeRange(se[0], end), {"threshold_db": obs.data.get("threshold_db"), "runs_to_end": se[1] is None}))
-        for ke in obs.data.get("keep") or []:
-            out.append(mk("AUDIO_ACTIVE", TimeRange(ke[0], ke[1]), {}))
+        if isinstance(obs.data.get("segments"), list):   # measurement Skill layout: classified segments
+            for seg in obs.data["segments"]:
+                end = seg.get("end") if seg.get("end") is not None else dur
+                out.append(mk("AUDIO_SILENCE", TimeRange(seg["start"], end), {"threshold_db": obs.data.get("threshold_db"), "runs_to_end": bool(seg.get("runs_to_end")), "position": seg.get("type")}))
+            prev = 0.0
+            for seg in sorted(obs.data["segments"], key=lambda x: x["start"]):
+                if seg["start"] > prev:
+                    out.append(mk("AUDIO_ACTIVE", TimeRange(prev, seg["start"]), {}))
+                prev = max(prev, seg.get("end") if seg.get("end") is not None else (dur or prev))
+            if dur is not None and prev < dur:
+                out.append(mk("AUDIO_ACTIVE", TimeRange(prev, dur), {}))
+        else:
+            for se in obs.data.get("silences") or []:
+                end = se[1] if se[1] is not None else dur
+                out.append(mk("AUDIO_SILENCE", TimeRange(se[0], end), {"threshold_db": obs.data.get("threshold_db"), "runs_to_end": se[1] is None}))
+            for ke in obs.data.get("keep") or []:
+                out.append(mk("AUDIO_ACTIVE", TimeRange(ke[0], ke[1]), {}))
     elif obs.kind == "loudness":
         if dur is not None:   # the integrated measurement covers the whole programme; without a duration there is no range to place it on
             out.append(mk("LOUDNESS_MEASURE", TimeRange(0.0, dur), dict(obs.data)))

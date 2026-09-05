@@ -87,6 +87,14 @@ class Observation(Model):
     analyzer: str = ""         # "<analyzer id>@<version>"
     cache_key: str = ""        # deterministic measurement identity (not the observation id)
     provenance: str = "OBSERVED"   # always OBSERVED: AI output never becomes an observation
+    # ---- external Skill provenance (ADR-023): identity of the measurement as the Skill reported it, never simplified
+    skill: str = ""                # producing Skill package id, e.g. "media-analysis"
+    skill_version: str = ""
+    tool: str = ""                 # tool id, e.g. "media-analysis/silence"
+    external_id: str = ""          # the Skill's own observation id
+    fingerprint: str = ""          # asset content fingerprint as the Skill measured it
+    parameters: Dict[str, Any] = field(default_factory=dict)   # effective parameters recorded by the Skill
+    cache: Dict[str, Any] = field(default_factory=dict)        # the Skill's cache status for this measurement (owned by the Skill)
 
 
 @dataclass

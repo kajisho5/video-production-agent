@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
 
 ENCODERS = ["libx264", "libx265", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv"]
 DECODERS = ["h264", "hevc", "av1", "prores", "vp9"]
@@ -40,7 +41,8 @@ def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
 
 
 class CapabilityResolver:
-    def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None):
+    def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None, media_analysis_dir: Optional[str] = None):
+        self.media_analysis_dir = media_analysis_dir
         self.env = dict(os.environ if env is None else env)
         self.skill_dir = ffmpeg_skill_dir
         self._cache: Optional[Dict[str, Capability]] = None
@@ -88,6 +90,20 @@ class CapabilityResolver:
             caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "AVAILABLE", f"{skill.version} at {skill.root}", {"root": str(skill.root), "version": skill.version, "scripts": skill.scripts})
         else:
             caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "MISSING", "set VIDEO_AGENT_FFMPEG_SKILL_DIR or install with `npx ffmpeg-skill`")
+        # media-analysis-skill (external observation Skill): located checkout / console script + its own doctor
+        ma = locate_media_analysis(self.media_analysis_dir, self.env)
+        if ma:
+            try:
+                ad = MediaAnalysisAdapter(ma, timeout=30.0)
+                doc = ad.doctor()
+                st = "AVAILABLE" if doc.get("status") == "ok" else ("DEGRADED" if doc.get("status") == "degraded" else "MISSING")
+                caps["media-analysis"] = Capability("media-analysis", st, f"{ad.version} at {ma.describe()} (doctor {doc.get('status')})",
+                                                    {"version": ad.version, "root": ma.describe(), "contract": ad.contract.get("schema"), "tools": sorted(ad.tools), "kinds": sorted(ad.kind_to_tool),
+                                                     "execution": ad.contract.get("execution", {}).get("mode"), "doctor": doc.get("status"), "unavailable_tools": doc.get("unavailable_tools") or []})
+            except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used
+                caps["media-analysis"] = Capability("media-analysis", "MISSING", f"found at {ma.describe()} but unusable: {str(e)[:160]}")
+        else:
+            caps["media-analysis"] = Capability("media-analysis", "MISSING", "set VIDEO_AGENT_MEDIA_ANALYSIS_DIR to a media-analysis-skill checkout or install `media-analysis`")
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

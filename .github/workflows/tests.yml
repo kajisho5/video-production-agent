@@ -26,6 +26,9 @@ jobs:
         with: {python-version: "3.11"}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
       - run: pip install -e .
       - run: python -m unittest -v tests/test_integration.py
-        env: {VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"}
+        env:
+          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
+          VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
