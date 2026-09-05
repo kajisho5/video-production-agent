@@ -92,6 +92,17 @@ class AdapterTests(unittest.TestCase):
             (root / "scripts" / f"{s}.py").write_text("print('{}')")
         self.skill = FfmpegSkill(root, "0.8.4", ["probe", "cut", "loudness", "export", "check"])
 
+    def test_ffmpeg_skill_version_range_is_explicit(self):
+        """The supported ffmpeg-skill range is a declared contract (PR #13 / PR #17): 0.8.4 ≤ v < 0.10. 0.9.x is accepted
+        (contract / doctor added, `--json` gained "status", no media behaviour changed); 0.10 is unverified and rejected;
+        anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit."""
+        from video_agent.tools.ffmpeg_skill.locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
+        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (0, 10, 0)))
+        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12"):
+            self.assertTrue(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
+        for v in ("0.8.3", "0.7.9", "0.10.0", "0.11.2", "1.0.0", "unknown", "", "0.9.x"):
+            self.assertFalse(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
+
     def test_argv_typed_and_catalog_enforced(self):
         a = FfmpegSkillAdapter(self.skill)
         argv = a.build_argv("ffmpeg-skill/loudness", {"input": "/x/in.mp4", "lufs": -14, "tp": -1.0, "measure_only": True, "output": "/w/o.mp4"}, {})
