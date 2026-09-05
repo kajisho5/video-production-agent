@@ -1,0 +1,94 @@
+{
+ "name": "pipe_full_multi_skill_pipeline",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "a.mp4"
+   },
+   {
+    "name": "b.mp4"
+   }
+  ]
+ },
+ "requirements": {
+  "edit.concat": true,
+  "subtitle": true,
+  "subtitle.burn_in": true,
+  "thumbnail": true,
+  "thumbnail.text": "Talk",
+  "color.target": "bt709",
+  "motion.title": "Opening",
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "REVIEW",
+  "steps": [
+   "silence_cleanup",
+   "silence_cleanup",
+   "video_concat",
+   "color_retag",
+   "motion_graphics",
+   "subtitle_generation",
+   "subtitle_burn_in",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check",
+   "thumbnail_render",
+   "qc_check",
+   "qc_check"
+  ],
+  "packages": [
+   "color-grading",
+   "ffmpeg-skill",
+   "motion-graphics",
+   "qc",
+   "subtitle",
+   "thumbnail",
+   "video-editing"
+  ],
+  "captions_ops": [
+   "captions.generate",
+   "captions.burn"
+  ],
+  "graphics_ops": [
+   "graphics.render",
+   "graphics.thumbnail"
+  ],
+  "color_ops": [
+   "color.retag"
+  ],
+  "cues": [
+   [
+    0.0,
+    0.35
+   ],
+   [
+    1.15,
+    5.55
+   ],
+   [
+    11.0,
+    11.35
+   ],
+   [
+    12.15,
+    16.55
+   ]
+  ],
+  "qc_enabled": true,
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "status": "COMPLETED",
+   "qa_status": "PASS",
+   "artifacts": {
+    "YOUTUBE": "approved",
+    "CAPTIONS": "approved",
+    "THUMBNAIL": "candidate"
+   },
+   "resume": true
+  }
+ }
+}

@@ -1,0 +1,708 @@
+{
+ "cache": {
+  "policies": [
+   "use",
+   "bypass",
+   "only"
+  ],
+  "statuses": [
+   "hit",
+   "miss",
+   "invalid",
+   "disabled"
+  ]
+ },
+ "capabilities": {
+  "optional": [
+   "ffmpeg",
+   "filter:blackdetect",
+   "filter:freezedetect",
+   "filter:ebur128",
+   "filter:astats",
+   "filter:silencedetect"
+  ],
+  "required": [
+   "ffprobe"
+  ]
+ },
+ "checks": [
+  "video.stream_present",
+  "video.decodes_without_errors",
+  "video.resolution_matches_expected",
+  "video.frame_rate_matches_expected",
+  "video.codec_matches_expected",
+  "video.pixel_format_matches_expected",
+  "video.aspect_ratio_matches_expected",
+  "video.black_frames_within_tolerance",
+  "video.freeze_frames_within_tolerance",
+  "audio.stream_present_matches_expected",
+  "audio.decodes_without_errors",
+  "audio.no_clipping",
+  "audio.sample_rate_matches_expected",
+  "audio.channels_match_expected",
+  "audio.channel_layout_matches_expected",
+  "audio.leading_silence_within_tolerance",
+  "audio.trailing_silence_within_tolerance",
+  "audio.internal_silence_within_tolerance",
+  "audio.integrated_loudness_within_tolerance",
+  "audio.true_peak_within_tolerance",
+  "audio.loudness_range_within_tolerance",
+  "audio.channel_balance_within_tolerance",
+  "subtitle.presence_matches_expected",
+  "subtitle.timestamps_valid",
+  "subtitle.no_empty_cues",
+  "subtitle.no_duplicate_ids",
+  "subtitle.no_control_characters",
+  "subtitle.no_overlapping_cues",
+  "subtitle.line_length_within_limit",
+  "subtitle.cue_duration_within_limit",
+  "subtitle.gaps_within_limit",
+  "subtitle.duration_matches_video",
+  "subtitle.coverage_within_limit",
+  "delivery.file_size_within_limit",
+  "delivery.extension_matches_expected",
+  "delivery.container_matches_expected"
+ ],
+ "contract_version": "1",
+ "description": "Deterministic media quality control / validation. Measures and checks video, audio, subtitle and delivery artifacts against caller-supplied rules; never decides whether media may ship.",
+ "deterministic": true,
+ "errors": {
+  "codes": [
+   "CANCELLED",
+   "DEPENDENCY_ERROR",
+   "INTERNAL_ERROR",
+   "INVALID_INPUT",
+   "INVALID_REQUEST",
+   "INVALID_TIME_RANGE",
+   "MISSING_INPUT",
+   "OUTPUT_ERROR",
+   "PATH_NOT_ALLOWED",
+   "TOOL_ERROR",
+   "UNSUPPORTED_FORMAT",
+   "UNSUPPORTED_OPERATION",
+   "VALIDATION_ERROR"
+  ],
+  "exit_codes": {
+   "CANCELLED": 13,
+   "DEPENDENCY_ERROR": 9,
+   "INTERNAL_ERROR": 14,
+   "INVALID_INPUT": 3,
+   "INVALID_REQUEST": 2,
+   "INVALID_TIME_RANGE": 8,
+   "MISSING_INPUT": 7,
+   "OUTPUT_ERROR": 10,
+   "PATH_NOT_ALLOWED": 4,
+   "TOOL_ERROR": 12,
+   "UNSUPPORTED_FORMAT": 6,
+   "UNSUPPORTED_OPERATION": 5,
+   "VALIDATION_ERROR": 11
+  },
+  "success_exit_code": 0
+ },
+ "execution": {
+  "arbitrary_executables": false,
+  "arbitrary_filters": false,
+  "canonical_invocation": [
+   "qc",
+   "run",
+   "-",
+   "--json"
+  ],
+  "executable_resolution": "PATH lookup only; not configurable through the request",
+  "executables": [
+   "ffprobe",
+   "ffmpeg"
+  ],
+  "input_mutation": false,
+  "mode": "local_subprocess",
+  "network": false,
+  "shell": false,
+  "stderr": "diagnostics only; never part of the contract",
+  "stdin": "request document JSON when the run argument is '-'",
+  "stdout": "exactly one response document when --json is given"
+ },
+ "findings": [
+  {
+   "category": "video",
+   "code": "VIDEO_STREAM_MISSING",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_DECODE_ERROR",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_RESOLUTION_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_FPS_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_CODEC_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_PIXEL_FORMAT_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_ASPECT_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_BLACK_FRAMES_EXCEEDED",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_FREEZE_EXCEEDED",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_STREAM_MISSING",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_STREAM_UNEXPECTED",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_DECODE_ERROR",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_CLIPPING_DETECTED",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_SAMPLE_RATE_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_CHANNELS_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_CHANNEL_LAYOUT_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_LEADING_SILENCE_EXCEEDED",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_TRAILING_SILENCE_EXCEEDED",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_INTERNAL_SILENCE_EXCEEDED",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_LOUDNESS_OUT_OF_RANGE",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_TRUE_PEAK_EXCEEDED",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_LOUDNESS_RANGE_EXCEEDED",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_CHANNEL_IMBALANCE",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "audio",
+   "code": "AUDIO_CHANNEL_MISSING",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_MISSING",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_INVALID_TIMESTAMP",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_EMPTY_CUE",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_DUPLICATE_ID",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_CONTROL_CHARACTER",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_OVERLAPPING_CUES",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_LINE_TOO_LONG",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_CUE_TOO_LONG",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_GAP_EXCEEDED",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_DURATION_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_COVERAGE_LOW",
+   "default_severity": "WARN"
+  },
+  {
+   "category": "delivery",
+   "code": "DELIVERY_FILE_TOO_SMALL",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery",
+   "code": "DELIVERY_EXTENSION_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery",
+   "code": "DELIVERY_CONTAINER_MISMATCH",
+   "default_severity": "FAIL"
+  }
+ ],
+ "formats": {
+  "subtitle_formats": [
+   "srt",
+   "vtt",
+   "ass",
+   "ssa"
+  ],
+  "video_containers": [
+   "any container ffprobe/ffmpeg on this host can demux (detected by doctor, not assumed)"
+  ]
+ },
+ "identity": {
+  "canonical_json": true,
+  "components": [
+   "asset_fingerprint(sha256 of content)",
+   "kind",
+   "operation",
+   "effective_parameters",
+   "rules",
+   "ffmpeg_version",
+   "ffprobe_version"
+  ],
+  "excludes": [
+   "timestamps",
+   "machine-local paths",
+   "request_id"
+  ]
+ },
+ "inputs": {
+  "input": "media or subtitle file path (one primary artifact per request)",
+  "reference_video": "companion video file path, for duration comparison (kind=subtitle only)",
+  "subtitle": "companion subtitle file path (kind=delivery only)"
+ },
+ "kinds": [
+  "video",
+  "audio",
+  "subtitle",
+  "delivery"
+ ],
+ "measurements": {
+  "audio": [
+   "audio.stream_present",
+   "audio.stream_count",
+   "audio.codec",
+   "audio.sample_rate",
+   "audio.channels",
+   "audio.channel_layout",
+   "audio.duration_sec",
+   "audio.peak_level_dbfs",
+   "audio.rms_level_dbfs",
+   "audio.clipping_detected",
+   "audio.per_channel_levels",
+   "audio.integrated_loudness_lufs",
+   "audio.loudness_range_lu",
+   "audio.true_peak_dbfs",
+   "audio.silence_segments",
+   "audio.leading_silence_sec",
+   "audio.trailing_silence_sec",
+   "audio.internal_silence_segments",
+   "audio.decode_error_count",
+   "audio.decode_errors"
+  ],
+  "delivery": [
+   "delivery.extension",
+   "container.format_name",
+   "container.duration_sec",
+   "container.size_bytes",
+   "container.bit_rate",
+   "video.stream_present",
+   "video.stream_count",
+   "video.codec",
+   "video.width",
+   "video.height",
+   "video.aspect_ratio",
+   "video.frame_rate",
+   "video.frame_count",
+   "video.pixel_format",
+   "video.color_range",
+   "video.color_space",
+   "video.color_transfer",
+   "video.color_primaries",
+   "video.field_order",
+   "video.black_segments",
+   "video.freeze_segments",
+   "video.decoded_frame_count",
+   "video.decode_error_count",
+   "video.decode_errors",
+   "video.frame_count_delta",
+   "audio.stream_present",
+   "audio.stream_count",
+   "audio.codec",
+   "audio.sample_rate",
+   "audio.channels",
+   "audio.channel_layout",
+   "audio.duration_sec",
+   "audio.peak_level_dbfs",
+   "audio.rms_level_dbfs",
+   "audio.clipping_detected",
+   "audio.per_channel_levels",
+   "audio.integrated_loudness_lufs",
+   "audio.loudness_range_lu",
+   "audio.true_peak_dbfs",
+   "audio.silence_segments",
+   "audio.leading_silence_sec",
+   "audio.trailing_silence_sec",
+   "audio.internal_silence_segments",
+   "audio.decode_error_count",
+   "audio.decode_errors",
+   "subtitle.exists",
+   "subtitle.format",
+   "subtitle.cue_count",
+   "subtitle.invalid_timestamps",
+   "subtitle.overlapping_cues",
+   "subtitle.empty_cues",
+   "subtitle.duplicate_ids",
+   "subtitle.invalid_control_characters",
+   "subtitle.duration_sec",
+   "subtitle.coverage_ratio",
+   "subtitle.duration_delta_sec",
+   "subtitle.cue_density_per_min",
+   "subtitle.excessive_line_length",
+   "subtitle.excessive_cue_duration",
+   "subtitle.gaps"
+  ],
+  "subtitle": [
+   "subtitle.exists",
+   "subtitle.format",
+   "subtitle.cue_count",
+   "subtitle.invalid_timestamps",
+   "subtitle.overlapping_cues",
+   "subtitle.empty_cues",
+   "subtitle.duplicate_ids",
+   "subtitle.invalid_control_characters",
+   "subtitle.duration_sec",
+   "subtitle.coverage_ratio",
+   "subtitle.duration_delta_sec",
+   "subtitle.cue_density_per_min",
+   "subtitle.excessive_line_length",
+   "subtitle.excessive_cue_duration",
+   "subtitle.gaps"
+  ],
+  "video": [
+   "container.format_name",
+   "container.duration_sec",
+   "container.size_bytes",
+   "container.bit_rate",
+   "video.stream_present",
+   "video.stream_count",
+   "video.codec",
+   "video.width",
+   "video.height",
+   "video.aspect_ratio",
+   "video.frame_rate",
+   "video.frame_count",
+   "video.pixel_format",
+   "video.color_range",
+   "video.color_space",
+   "video.color_transfer",
+   "video.color_primaries",
+   "video.field_order",
+   "video.black_segments",
+   "video.freeze_segments",
+   "video.decoded_frame_count",
+   "video.decode_error_count",
+   "video.decode_errors",
+   "video.frame_count_delta"
+  ]
+ },
+ "name": "qc",
+ "not_provided": [
+  "production decisions (publish/re-render/block)",
+  "automatic editing or repair",
+  "automatic re-render",
+  "AI/LLM-based judgment of measured facts",
+  "transcription, diarization, speaker recognition",
+  "semantic or scene understanding",
+  "subtitle generation, rewriting, or translation",
+  "arbitrary ffmpeg filter graphs or arbitrary shell execution"
+ ],
+ "operations": [
+  "inspect",
+  "check",
+  "validate"
+ ],
+ "outputs": [
+  "report"
+ ],
+ "package": "qc-skill",
+ "parameters": [
+  "black_min_duration_sec",
+  "black_pixel_threshold",
+  "clipping_threshold_dbfs",
+  "freeze_min_duration_sec",
+  "freeze_noise_db",
+  "max_cue_duration_sec",
+  "max_gap_sec",
+  "max_line_length",
+  "silence_min_duration_sec",
+  "silence_threshold_db"
+ ],
+ "provenance": "OBSERVED",
+ "role": "observation / validation",
+ "rules": {
+  "audio": {
+   "expected_channel_layout": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "expected_channels": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "expected_sample_rate": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "integrated_loudness_target_lufs": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "integrated_loudness_tolerance_lu": {
+    "default": 1.0,
+    "type": "float"
+   },
+   "max_channel_level_diff_db": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_decode_errors": {
+    "default": 0,
+    "type": "int"
+   },
+   "max_internal_silence_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_leading_silence_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_loudness_range_lu": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_trailing_silence_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_true_peak_dbfs": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "require_audio_stream": {
+    "default": null,
+    "type": "Optional[bool]"
+   }
+  },
+  "delivery": {
+   "audio": {
+    "default": null,
+    "nested_rule": "audio",
+    "type": "Optional[AudioRule]"
+   },
+   "expected_container": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "expected_extension": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "min_size_bytes": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "require_audio": {
+    "default": null,
+    "type": "Optional[bool]"
+   },
+   "require_subtitle": {
+    "default": null,
+    "type": "Optional[bool]"
+   },
+   "require_video": {
+    "default": null,
+    "type": "Optional[bool]"
+   },
+   "subtitle": {
+    "default": null,
+    "nested_rule": "subtitle",
+    "type": "Optional[SubtitleRule]"
+   },
+   "video": {
+    "default": null,
+    "nested_rule": "video",
+    "type": "Optional[VideoRule]"
+   }
+  },
+  "subtitle": {
+   "allow_duplicate_ids": {
+    "default": false,
+    "type": "bool"
+   },
+   "allow_overlapping_cues": {
+    "default": false,
+    "type": "bool"
+   },
+   "max_cue_duration_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_duration_delta_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_gap_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_line_length": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "min_coverage_ratio": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "require_subtitle": {
+    "default": null,
+    "type": "Optional[bool]"
+   }
+  },
+  "video": {
+   "expected_aspect_ratio": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "expected_codec": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "expected_frame_rate": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "expected_height": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "expected_pixel_format": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "expected_width": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "frame_rate_tolerance": {
+    "default": 0.05,
+    "type": "float"
+   },
+   "max_decode_errors": {
+    "default": 0,
+    "type": "int"
+   },
+   "max_single_black_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_single_freeze_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_total_black_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_total_freeze_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   }
+  }
+ },
+ "schema": "qc/contract@1",
+ "skill_id": "qc",
+ "statuses": [
+  "PASS",
+  "WARN",
+  "FAIL",
+  "UNKNOWN"
+ ],
+ "version": "0.1.0"
+}

@@ -73,3 +73,13 @@ Operation.args は adapter のカタログ型（`tools/ffmpeg_skill/catalog.py`�
 | `revision.approved_plan_version` | 承認済みの plan 版。`plan.version` と一致しない v≥2 は render 不可 |
 
 `plan_hash` から `schema_version` を除外した（同じ内容は migration 前後で同じハッシュ）。詳細は `docs/revision.md`。
+
+## schema 1.2 追記: finishing section と QC gate（Phase 3、ADR-031 / ADR-032）
+
+- `captions.operations[]`: `captions.generate`（asset / output / format srt|vtt / language / cues[{id,start,end,text}] / sources（transcript observation id）/ timeline_map{speed, inputs{asset: {keep, offset}}} / constraints? / temporal_scope / decision_ids）と `captions.burn`（asset / input / sidecar / output）。cue は delivered timeline 上（trim → concat offset → speed で写像済み）。speaker は存在しない。
+- `graphics.operations[]`: `graphics.render`（asset / input / output / elements[{id,type,start,end,parameters,animation?}] / image?）と `graphics.thumbnail`（asset / input / output / timestamp / format png|jpeg / width? / height? / text? / font_id? / font_size? / color? / position?）。
+- `color.operations[]`: `color.strip_dovi` / `color.hdr_to_sdr` / `color.lut`（lut / lut_strength?）/ `color.retag`（target）。順序固定。
+- `qa.qc`: `{enabled, decision_ids, subjects{subject: {kind, targets}}, sidecars{logical: {kind subtitle, reference, subject}}}`。存在するときだけ書かれ、plan_hash に含まれる。
+- section が空（`{}`）なら plan_hash は Phase 2 と同一（finishing 要求の無い plan は byte 単位で不変）。
+- validator: `check_finishing_operations`（参照・順序・1 subject 1 render / sidecar / burn / thumbnail・LUT / image が allowed_inputs 内・element / cue / timestamp が timeline 内・burn の input は中間物・cue の source は transcript observation）、`check_plan_dependencies`（step の input は asset か depends_on 推移閉包の output）、step 存在と capability（`subtitle` `thumbnail` `color-grading` `motion-graphics` `qc`、UNKNOWN は AVAILABLE ではない）。
+- compiler の順序: trim → audio.cut → concat → edits → color → graphics → captions.generate → captions.burn → loudness → export → check → thumbnail → qc（qc は kind qa、出力無し、idempotency key 無し）。

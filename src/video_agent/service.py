@@ -44,6 +44,14 @@ from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, Transcription
 from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, lift_observation, locate_video_editing
 from .tools.audio_production import PACKAGE as AUDIO_PRODUCTION_PACKAGE, AudioProductionAdapter, locate_audio_production
 from .tools.audio_production import lift_measurement as lift_audio_measurement, lift_observation as lift_audio_observation
+from .tools.color_grading import PACKAGE as COLOR_GRADING_PACKAGE, ColorGradingAdapter, lift_observation as lift_color_observation, locate_color_grading
+from .tools.motion_graphics import PACKAGE as MOTION_GRAPHICS_PACKAGE, MotionGraphicsAdapter, lift_observation as lift_graphics_observation, locate_motion_graphics
+from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_report, locate_qc
+from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
+from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
+from .agent.finishing import parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
+from .agent.subtitles import parse_subtitle_requirements
+from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, stage_for
 from .agent.audio import parse_audio_requirements
 from .tools.base import ToolError
 
@@ -51,16 +59,24 @@ from .tools.base import ToolError
 class Service:
     def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
                  provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None, transcription_dir: Optional[str] = None, offline: bool = False,
-                 video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None):
+                 video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None, subtitle_dir: Optional[str] = None, thumbnail_dir: Optional[str] = None,
+                 color_grading_dir: Optional[str] = None, motion_graphics_dir: Optional[str] = None, qc_dir: Optional[str] = None):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
         self.media_analysis_dir = media_analysis_dir or os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR")
         self.transcription_dir = transcription_dir or os.environ.get("VIDEO_AGENT_TRANSCRIPTION_DIR")
         self.video_editing_dir = video_editing_dir or os.environ.get("VIDEO_AGENT_VIDEO_EDITING_DIR")
         self.audio_production_dir = audio_production_dir or os.environ.get("VIDEO_AGENT_AUDIO_PRODUCTION_DIR")
+        # Phase 3 finishing Skills (ADR-031 / ADR-032): the same rule — a checkout named by an environment variable, never imported
+        self.subtitle_dir = subtitle_dir or os.environ.get("VIDEO_AGENT_SUBTITLE_DIR")
+        self.thumbnail_dir = thumbnail_dir or os.environ.get("VIDEO_AGENT_THUMBNAIL_DIR")
+        self.color_grading_dir = color_grading_dir or os.environ.get("VIDEO_AGENT_COLOR_GRADING_DIR")
+        self.motion_graphics_dir = motion_graphics_dir or os.environ.get("VIDEO_AGENT_MOTION_GRAPHICS_DIR")
+        self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
-                                               video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir)
+                                               video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
+                                               thumbnail_dir=self.thumbnail_dir, color_grading_dir=self.color_grading_dir, motion_graphics_dir=self.motion_graphics_dir, qc_dir=self.qc_dir)
         self._adapter = adapter
         self.registry = default_registry()
         self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
@@ -71,6 +87,8 @@ class Service:
         self.registry.register_package(TRANSCRIPTION_PACKAGE)    # external recognition Skill (transcription-skill): same rule
         self.registry.register_package(VIDEO_EDITING_PACKAGE)    # external editing Skill (video-editing-skill, ADR-028): same rule
         self.registry.register_package(AUDIO_PRODUCTION_PACKAGE)  # external audio production Skill (audio-production-skill, ADR-030): same rule
+        for pkg in (SUBTITLE_PACKAGE, THUMBNAIL_PACKAGE, COLOR_GRADING_PACKAGE, MOTION_GRAPHICS_PACKAGE, QC_PACKAGE):   # Phase 3 finishing Skills (ADR-031 / ADR-032): same rule
+            self.registry.register_package(pkg)
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -115,6 +133,19 @@ class Service:
                 router.register(AudioProductionAdapter(ap, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None, path_policy=policy))
             except ToolError:
                 pass   # same rule: an incompatible audio-production-skill is reported by doctor and never used
+        # Phase 3 finishing Skills (ADR-031 / ADR-032): outputs inside the agent workspace, inputs from the allowed roots or the workspace
+        roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
+        engine = str(skill.root) if skill else None
+        for located, make in ((locate_subtitle(self.subtitle_dir), lambda sk: SubtitleAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+                              (locate_thumbnail(self.thumbnail_dir), lambda sk: ThumbnailAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+                              (locate_color_grading(self.color_grading_dir), lambda sk: ColorGradingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+                              (locate_motion_graphics(self.motion_graphics_dir), lambda sk: MotionGraphicsAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+                              (locate_qc(self.qc_dir), lambda sk: QcAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy))):
+            if located:
+                try:
+                    router.register(make(located))
+                except ToolError:
+                    pass   # same rule: an incompatible installation is reported by doctor and never used
         return self._sync_packages(router)
 
     def _sync_packages(self, router: ToolRouter) -> ToolRouter:
@@ -193,6 +224,8 @@ class Service:
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         _check_edit_requirements(user_requirements or {})
+        if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
+            kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
@@ -230,7 +263,7 @@ class Service:
         precision = rm.get("edit.precision")
         plan = build_plan(decisions, analysis, tools=tools, version=plan_version, frame_accurate=bool(precision and precision.value == "frame"), project_id=project_id,
                           constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences,
-                          audio_production=bool(parse_audio_requirements(rm)["production"]))
+                          audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
 
     def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
@@ -274,10 +307,19 @@ class Service:
         d["timeline"] = analysis.timeline.to_dict()
         d["video"] = {"operations": plan["video_ops"]}
         d["audio"] = {"operations": plan["audio_ops"]}
+        # finishing sections (ADR-031) and the QC gate (ADR-032): written only when planned, so an unchanged request keeps its plan hash
+        d["captions"] = {"operations": plan["captions_ops"]} if plan.get("captions_ops") else {}
+        d["graphics"] = {"operations": plan["graphics_ops"]} if plan.get("graphics_ops") else {}
+        d["color"] = {"operations": plan["color_ops"]} if plan.get("color_ops") else {}
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
-        # allowed input roots: the media inputs' directories and, for an overlay, the image's directory (both named by the user)
+        if (plan.get("qc") or {}).get("enabled"):
+            d["qa"]["qc"] = plan["qc"]
+        else:
+            d["qa"].pop("qc", None)
+        # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") == "video.overlay" and op.get("image")]
+        images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op["image"] for op in plan.get("graphics_ops") or [] if op.get("image")]
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
@@ -481,9 +523,10 @@ class Service:
         else:
             job.transition("QA")
             checks = {op.args["input"]: r for op in ops if op.skill == "delivery_check" for r in result.results if r.op_id == op.id}
+            qc_results = {op.args["input"]: r for op in ops if op.skill == "qc_check" for r in result.results if r.op_id == op.id}   # the QC gate's reports, per artifact (ADR-032)
             qa_tools = self.tools_for(adapter)
             self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter)
-            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools)
+            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results)
             out["qa"] = qa.to_dict()
             try:
                 artifacts = self._register_artifacts(ir, ir_path, job, ops, paths, qa)
@@ -523,6 +566,7 @@ class Service:
         provenance, keyed by the operation and its output artifact id; never fed back into the IR's analysis."""
         out: List[Dict[str, Any]] = []
         outputs = {o.id: (o.outputs[0] if o.outputs else o.id) for o in ops}
+        ops_by_id = {o.id: o for o in ops}
         for r in results:
             if not r.ok:
                 continue
@@ -531,6 +575,17 @@ class Service:
                 lifted = [lift_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("audio-production/"):
                 lifted = [lift_audio_observation(r, outputs.get(r.op_id)), lift_audio_measurement(r, outputs.get(r.op_id))]   # probe + the NORMALIZE re-measurement
+            elif str(r.tool).startswith("color-grading/"):
+                lifted = [lift_color_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("motion-graphics/"):
+                lifted = [lift_graphics_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("subtitle/"):
+                lifted = [lift_subtitle_result(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("thumbnail/"):
+                lifted = [lift_thumbnail_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("qc/"):
+                qop = ops_by_id.get(r.op_id)
+                lifted = [lift_qc_report(r, (str(qop.args.get("input")) if qop is not None and qop.args.get("input") else None) or r.op_id)]
             for obs in lifted:
                 if obs is not None:
                     d = obs.to_dict()
@@ -550,12 +605,22 @@ class Service:
         st = self.artifact_store()
         out: List[Artifact] = []
         planned = {o["logical"]: o for o in d["plan"].get("outputs") or []}
+        qc_enabled = bool(((d.get("qa") or {}).get("qc") or {}).get("enabled"))
+        warn_promotion = str(next((x["params"].get("warn_promotion") for x in d["decisions"] if x["subject"] == "qc.check" and x["status"] != "REJECTED"), WARN_PROMOTION_DEFAULT) or WARN_PROMOTION_DEFAULT).upper()
+        rows: List[Dict[str, Any]] = []   # (logical, type, sources, format) of every planned output the execution produced: deliverables, sidecars, thumbnails
         for subject in delivery_subjects(d):   # each asset, or the concat programme made of several sources (ADR-029)
             asset_id = subject["id"]
             for t in d["delivery"]["targets"]:
                 logical = f"{asset_id}_delivery_{t['id']}"
                 if logical not in paths or not t.get("preset"):
                     continue
+                rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"]})
+            for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail
+                if o.get("role") in ("CAPTIONS", "THUMBNAIL") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
+                    rows.append({"logical": o["logical"], "type": o["role"], "sources": list(subject["sources"]), "format": o.get("format") or "", "target": o["role"].lower()})
+        for row in rows:
+            logical, t = row["logical"], {"id": row["target"], "preset": row["format"], "artifact_type": row["type"]}
+            if True:
                 path = paths[logical]
                 chk = st.integrity(path)
                 if not chk["ok"]:
@@ -563,23 +628,28 @@ class Service:
                 items = [i for i in qa.items if i.artifact == logical]
                 statuses = {i.status for i in items}
                 art_qa = "FAIL" if "FAIL" in statuses else ("WARN" if "WARN" in statuses else ("PASS" if items else "UNKNOWN"))
-                exp = next((o for o in ops if o.skill == "delivery_export" and logical in o.outputs), None)
+                qc_item = next((i for i in items if i.layer == "qc" and i.name == "verdict"), None)
+                qc_verdict: Optional[str] = None
+                if qc_enabled and row["type"] != "THUMBNAIL":   # the gate covers deliverables and sidecars; a thumbnail is checked by the agent only
+                    qc_verdict = str(qc_item.observed) if qc_item is not None and str(qc_item.observed) in ("PASS", "WARN", "FAIL") else "FAIL"   # no admitted report → never promoted on silence
+                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "thumbnail_frame", "thumbnail_render") and logical in o.outputs), None)
                 chain = [o for o in ops if logical in o.outputs or logical in o.inputs]
                 step = next((s for s in d["plan"].get("steps") or [] if logical in (s.get("outputs") or [])), None)
                 probe = next((m for m in qa.measurements if str(m.get("tool", "")).endswith("/probe") and (m.get("args") or {}).get("inputs") == [path]), None)
                 media = {"measured_by": probe.get("tool")} if probe else {}
                 media.update({i.name: i.observed for i in items if i.layer in ("video", "audio") and i.kind != "judgement"})   # QA facts (codec / stream / duration …)
-                a = Artifact(path=path, type=t.get("artifact_type", "MASTER"), hash=chk["sha256"], source=list(subject["sources"]), generation=1,
+                a = Artifact(path=path, type=row["type"], hash=chk["sha256"], source=list(row["sources"]), generation=1,
                              tool=exp.tool if exp else "", tool_version=tool_version_of(d["source"]["tool_versions"], exp.tool) if exp else "",
-                             qa_status=art_qa, stage="candidate" if art_qa in ("PASS", "WARN") else "working",
+                             qa_status=art_qa, stage=stage_for(art_qa, qc_verdict, warn_promotion),
                              id=artifact_id(d["project"]["id"], d["plan"].get("id", ""), logical, chk["sha256"]),
                              logical_name=logical, project_id=d["project"]["id"], plan_id=d["plan"].get("id", ""), plan_version=ir.version, job_id=job.id, jobs=[job.id],
-                             format=planned.get(logical, {}).get("format") or t.get("preset") or "", size=chk["size"], media=media,
-                             name=delivery_name(d["delivery"].get("naming") or "", {"project": d["project"]["name"], "target": t["id"], "version": f"v{ir.version}", "format": t.get("preset") or "", "date": str(d["project"].get("created_at", ""))[:10]}, Path(path).suffix.lstrip(".")),
+                             format=row["format"], size=chk["size"], media=media,
+                             name=delivery_name(d["delivery"].get("naming") or "", {"project": d["project"]["name"], "target": t["id"], "version": f"v{ir.version}", "format": row["format"], "date": str(d["project"].get("created_at", ""))[:10]}, Path(path).suffix.lstrip(".")),
                              operations=[o.id for o in chain], step_id=step["id"] if step else None,
                              decision_ids=sorted({x for o in chain for x in o.decision_ids}),
                              qa={"status": art_qa, "pass": sum(1 for i in items if i.status == "PASS"), "warn": sum(1 for i in items if i.status == "WARN"),
-                                 "fail": sum(1 for i in items if i.status == "FAIL"), "items": [i.to_dict() for i in items]},
+                                 "fail": sum(1 for i in items if i.status == "FAIL"), "items": [i.to_dict() for i in items],
+                                 **({"qc": qc_verdict, "qc_warn_promotion": warn_promotion} if qc_enabled else {})},
                              provenance={"ir_path": ir_path, "plan_hash": ir.plan_hash(), "ir_hash": d["provenance"].get("ir_hash"), "provenance_path": str(job.dir / "provenance.json"),
                                          "planned": planned.get(logical)})
                 out.append(st.register(a))
@@ -789,26 +859,106 @@ class Service:
                         chain["step"] = None
         return chain
 
-    def check(self, path: str, platform: str = "custom") -> Dict[str, Any]:
+    def check(self, path: str, platform: str = "custom", qc: bool = False) -> Dict[str, Any]:
+        """probe + platform compliance of a file; with `qc` also the qc-skill report (kind delivery for a video file, audio otherwise),
+        admitted only when its fingerprint is the file's sha256 as this agent computes it (ADR-032)."""
         adapter = self.adapter([str(Path(path).resolve().parent)])
         tools = self.tools_for(adapter)
         self.require_tools(tools, ["media_probe", "delivery_check"], adapter)
         pr = adapter.measure(tools["media_probe"], {"inputs": [str(Path(path).resolve())]})
         ck = adapter.measure(tools["delivery_check"], {"input": str(Path(path).resolve()), "platform": platform})
-        return {"probe": pr.data if pr.ok else {"error": pr.stderr_tail}, "check": ck.data if ck.data else {"error": ck.stderr_tail}}
+        out: Dict[str, Any] = {"probe": pr.data if pr.ok else {"error": pr.stderr_tail}, "check": ck.data if ck.data else {"error": ck.stderr_tail}}
+        if qc:
+            from .agent.qc import admit
+            from .tools.skill_process import sha256_file
+            self.require_tools(tools, ["qc_check"], adapter)
+            facts = pr.data.get("observation", {}).get("data", pr.data) if pr.ok and isinstance(pr.data, dict) else {}
+            kind = "delivery" if (facts or {}).get("video") else "audio"
+            rules = {"delivery": {"require_video": True}} if kind == "delivery" else {"audio": {"require_audio_stream": True}}
+            r = adapter.measure(tools["qc_check"], {"input": str(Path(path).resolve()), "kind": kind, "rules": rules, "cache_policy": "bypass"})
+            problems = admit(r.data, sha256_file(str(Path(path).resolve())), kind) if r.ok else [f"{(r.data.get('error') or {}).get('code')}: {(r.data.get('error') or {}).get('message')}"]
+            out["qc"] = {"admitted": not problems, "problems": problems, "verdict": r.data.get("verdict") if r.ok and not problems else None,
+                         "checks": r.data.get("checks") if r.ok else [], "findings": r.data.get("findings") if r.ok else [], "report_id": r.data.get("report_id") if r.ok else None}
+        return out
+
+    @staticmethod
+    def explain_pipeline(doc: Dict[str, Any], job: Optional[Dict[str, Any]] = None, provenance: Optional[Dict[str, Any]] = None, artifacts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """The whole causal chain of a project, level by level (ADR-031): Request → Requirements → Observations → Events → Inferences →
+        Decisions → ProductionPlan steps → IR operations → Skill → Capability → Tool → Execution (the job's operations) → QA → Artifacts.
+        Every row carries the ids it rests on, so any link can be followed with the specific `explain --decision / --step / --artifact`."""
+        req = doc.get("request") or {}
+        rows: List[Dict[str, Any]] = [{"level": "request", "id": "request", "detail": (req.get("raw") or "")[:200], "args": {k: v for k, v in (req.get("args") or {}).items() if k != "inputs"},
+                                       "inputs": [Path(p).name for p in (req.get("args") or {}).get("inputs") or []]}]
+        for r in doc.get("requirements") or []:
+            rows.append({"level": "requirement", "id": r["id"], "detail": f"{r['key']} = {json.dumps(r.get('value'), default=str)[:80]}", "provenance": r.get("provenance"), "source": r.get("source")})
+        for o in (doc.get("analysis") or {}).get("observations") or []:
+            rows.append({"level": "observation", "id": o["id"], "detail": f"{o.get('kind')} on {o.get('asset_id')}", "source": o.get("source"), "skill": o.get("skill"), "tool": o.get("tool"), "provenance": o.get("provenance")})
+        for e in (doc.get("timeline") or {}).get("events") or []:
+            rows.append({"level": "event", "id": e["id"], "detail": f"{e.get('type')} {e.get('range', {}).get('start')}–{e.get('range', {}).get('end')} on {e.get('timeline_id')}", "evidence": list(e.get("evidence") or []), "provenance": e.get("provenance") or e.get("kind")})
+        for i in (doc.get("analysis") or {}).get("inferences") or []:
+            rows.append({"level": "inference", "id": i["id"], "detail": i.get("statement"), "evidence": list(i.get("evidence") or []), "provenance": i.get("provenance"), "confidence": i.get("confidence")})
+        for x in doc.get("decisions") or []:
+            rows.append({"level": "decision", "id": x["id"], "detail": f"{x['subject']}: {x['decision']}", "type": x.get("type"), "approval": x.get("approval"), "status": x.get("status"),
+                         "evidence": list(x.get("evidence") or []), "provenance": x.get("provenance")})
+        steps = (doc.get("plan") or {}).get("steps") or []
+        for s in steps:
+            rows.append({"level": "step", "id": s["id"], "detail": f"{s['skill']} → {s.get('tool') or '-'}", "skill": s["skill"], "tool": s.get("tool"), "package": (s.get("tool") or "").split("/", 1)[0] or None,
+                         "decisions": list(s.get("decision_ids") or []), "depends_on": list(s.get("depends_on") or []), "inputs": list(s.get("inputs") or []), "outputs": list(s.get("outputs") or []), "status": s.get("status")})
+        for sec in ("video", "audio", "color", "graphics", "captions"):
+            for op in (doc.get(sec) or {}).get("operations") or []:
+                rows.append({"level": "operation", "id": f"{sec}.{op.get('type')}@{op.get('asset')}", "detail": f"{op.get('type')} on {op.get('asset')}", "section": sec, "decisions": list(op.get("decision_ids") or []),
+                             "input": op.get("input") or op.get("inputs"), "output": op.get("output")})
+        for t in (doc.get("delivery") or {}).get("targets") or []:
+            rows.append({"level": "operation", "id": f"delivery.{t['id']}", "detail": f"deliver {t['id']} ({t.get('preset') or 'source'} / {t.get('platform')})", "section": "delivery", "decisions": list(t.get("decision_ids") or [])})
+        qc = (doc.get("qa") or {}).get("qc") or {}
+        if qc.get("enabled"):
+            rows.append({"level": "operation", "id": "qa.qc", "detail": f"QC gate on {', '.join(sorted(qc.get('subjects') or {}))} (+ {len(qc.get('sidecars') or {})} sidecar(s))", "section": "qa", "decisions": list(qc.get("decision_ids") or [])})
+        for s in steps:   # Skill → Capability → Tool: what the step needs and what package executes it (from the registry vocabulary recorded in the plan)
+            rows.append({"level": "skill", "id": s["skill"], "detail": f"registry skill {s['skill']} selected {s.get('tool') or 'no tool'}", "step": s["id"], "tool": s.get("tool")})
+        versions = (doc.get("source") or {}).get("tool_versions") or {}
+        for pkg in sorted({(s.get("tool") or "").split("/", 1)[0] for s in steps if s.get("tool")}):
+            rows.append({"level": "capability", "id": pkg, "detail": f"package {pkg} {versions.get(pkg, '?')}", "version": versions.get(pkg)})
+        for tool in sorted({s.get("tool") for s in steps if s.get("tool")}):
+            rows.append({"level": "tool", "id": str(tool), "detail": f"tool {tool} ({str(tool).split('/', 1)[0]} {versions.get(str(tool).split('/', 1)[0], '?')})"})
+        for e in (provenance or {}).get("operations") or []:
+            res = e.get("result") or {}
+            rows.append({"level": "execution", "id": e.get("idempotency_key") or e.get("what"), "detail": f"{e.get('what')} {'ok' if res.get('ok') else 'FAILED' if res else 'not run'} ({res.get('seconds', 0)} s, {res.get('attempts', 0)} attempt(s))",
+                         "skill": e.get("skill"), "tool": e.get("tool"), "tool_version": e.get("tool_version"), "decisions": list(e.get("decision") or []), "inputs": e.get("input"), "outputs": e.get("output"),
+                         "skill_result": {k: v for k, v in (e.get("skill_result") or {}).items() if k in ("status", "operation_id", "artifact")}})
+        for i in ((provenance or {}).get("qa") or {}).get("items") or []:
+            rows.append({"level": "qa", "id": f"{i.get('layer')}.{i.get('name')}@{i.get('artifact')}", "detail": f"{i.get('status')} observed {json.dumps(i.get('observed'), default=str)[:60]} expected {json.dumps(i.get('expected'), default=str)[:60]}", "artifact": i.get("artifact"), "status": i.get("status")})
+        for a in artifacts or []:
+            rows.append({"level": "artifact", "id": a.get("id"), "detail": f"{a.get('logical_name')} {a.get('type')} sha256 {(a.get('hash') or '')[:16]} qa {a.get('qa_status')} stage {a.get('stage')}", "step": a.get("step_id"),
+                         "decisions": list(a.get("decision_ids") or []), "qc": (a.get("qa") or {}).get("qc"), "stage": a.get("stage")})
+        levels = ["request", "requirement", "observation", "event", "inference", "decision", "step", "operation", "skill", "capability", "tool", "execution", "qa", "artifact"]
+        return {"levels": levels, "rows": rows, "counts": {lv: sum(1 for r in rows if r["level"] == lv) for lv in levels}, "job": (job or {}).get("id"),
+                "boundary": "request → requirements → observations → events → inferences → decisions → plan steps → IR operations → skill → capability → tool → execution → QA → artifacts; "
+                            "no level generates a command: tools are named by the registry, arguments by the compiler, commands by the Skills"}
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc")
 
 
 def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     """Explicit `edit.*` requirements are range-checked before any analysis runs (an invalid value is a planning error, not a
     guess and not something a later stage corrects)."""
     from .models import Requirement
-    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith(("edit.", "audio."))]
-    parse_edit_requirements(requirement_map(reqs))
-    parse_audio_requirements(requirement_map(reqs))
+    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith(("edit.", "audio.", "subtitle", "thumbnail", "color.", "motion.", "qc"))]
+    rm = requirement_map(reqs)
+    parse_edit_requirements(rm)
+    parse_audio_requirements(rm)
+    parse_subtitle_requirements(rm)
+    parse_color_requirements(rm)
+    parse_motion_requirements(rm)
+    parse_thumbnail_requirements(rm)
+    qc_requested(rm)
+
+
+def _subtitles_requested(user_requirements: Dict[str, Any]) -> bool:
+    from .models import Requirement
+    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith("subtitle")]
+    return bool(parse_subtitle_requirements(requirement_map(reqs))["enabled"])
 
 
 def _default_who() -> str:
@@ -822,7 +972,7 @@ def _default_who() -> str:
 def _request_rules(user_requirements: Dict[str, Any]) -> List[Rule]:
     out = []
     for k, v in user_requirements.items():
-        if k.startswith(("audio.", "silence.", "delivery.", "edit.")):
+        if k.startswith(("audio.", "silence.", "delivery.", "edit.", "subtitle", "thumbnail", "color.", "motion.", "qc")):
             out.append(Rule(f"request.{k}", "PREFERENCE", "REQUEST", k, v, "request"))
     return out
 

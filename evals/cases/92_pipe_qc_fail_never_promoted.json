@@ -1,0 +1,24 @@
+{
+ "name": "pipe_qc_fail_never_promoted",
+ "profile": "youtube",
+ "pipeline": {
+  "modes": {
+   "FAKE_QC_MODE": "verdict_fail"
+  }
+ },
+ "requirements": {
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "qc_enabled": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "status": "REVIEW",
+   "qa_status": "FAIL",
+   "artifacts": {
+    "YOUTUBE": "working"
+   }
+  }
+ }
+}

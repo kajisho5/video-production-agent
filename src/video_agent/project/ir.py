@@ -67,9 +67,19 @@ class ProjectIR:
         """Operations / delivery targets that still cite a REJECTED decision (must be revised away before rendering)."""
         rej = {d["id"] for d in self.rejected()}
         out = []
-        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.doc["delivery"]["targets"]:
+        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.doc["delivery"]["targets"]:
             if any(x in rej for x in op.get("decision_ids") or []):
                 out.append(op)
+        return out
+
+    def finishing_operations(self) -> List[Dict[str, Any]]:
+        """The IR operations of the finishing sections (captions / graphics / color, ADR-031) and the QC gate record (qa.qc)."""
+        out: List[Dict[str, Any]] = []
+        for sec in ("captions", "graphics", "color"):
+            out += list((self.doc.get(sec) or {}).get("operations") or [])
+        qc = (self.doc.get("qa") or {}).get("qc") or {}
+        if qc.get("enabled"):
+            out.append({"type": "qa.qc", "decision_ids": list(qc.get("decision_ids") or [])})
         return out
 
     def needs_reapproval(self) -> bool:

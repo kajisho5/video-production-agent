@@ -151,6 +151,115 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    pipe = case.get("pipeline")
+    if pipe is not None:
+        # ADR-031 / ADR-032: the integrated pipeline on the fake engine + fake Skills (tests/pipeline_harness.py): requirements → decisions → plan →
+        # IR finishing sections → compiler → the fake Skills → QA with the QC gate → artifact stages; refusals and BLOCKs; determinism; explain chain
+        import os
+        import re
+        from pipeline_harness import PipelineCaps, clear_modes, fake_media, pipeline_service
+        from video_agent.project import load_ir, save_ir
+        clear_modes()
+        ptmp = tempfile.mkdtemp()
+        inputs = [fake_media(ptmp, spec.get("name", f"in{n}.mp4"), duration=spec.get("duration", 16.0), video=spec.get("video", True), channels=spec.get("channels", 2), hdr=spec.get("hdr", False))
+                  for n, spec in enumerate(pipe.get("inputs") or [{}])]
+        for k, v in (pipe.get("modes") or {}).items():
+            os.environ[k] = v
+        caps = PipelineCaps(missing=pipe.get("missing_capabilities") or (), unknown=pipe.get("unknown_capabilities") or ())
+        svc = pipeline_service(ptmp, caps=caps, transcription=pipe.get("transcription", True), silences=fake.get("silences", [[0.0, 3.0], [13.7, None]]), lufs=fake.get("lufs", -11.0))
+        try:
+            ir = svc.plan(inputs, case.get("profile", "youtube"), user_requirements=case.get("requirements"), params={"language": "ja"})
+        except (ValueError, RuntimeError) as e:
+            clear_modes()
+            if exp.get("plan_error") and exp["plan_error"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"plan refused: {e!s:.200}"]}
+        if exp.get("plan_error"):
+            clear_modes()
+            return {"case": case["name"], "ok": False, "failures": ["an invalid request was planned"]}
+        d = ir.doc
+        skills = [s_["skill"] for s_ in d["plan"]["steps"]]
+        if "steps" in exp and skills != exp["steps"]:
+            failures.append(f"plan steps {skills} != {exp['steps']}")
+        if "packages" in exp and sorted({(s_.get("tool") or "").split("/")[0] for s_ in d["plan"]["steps"] if s_.get("tool")}) != sorted(exp["packages"]):
+            failures.append(f"packages {sorted({(s_.get('tool') or '').split('/')[0] for s_ in d['plan']['steps'] if s_.get('tool')})} != {exp['packages']}")
+        for sec in ("captions", "graphics", "color"):
+            if f"{sec}_ops" in exp and [op["type"] for op in (d.get(sec) or {}).get("operations") or []] != exp[f"{sec}_ops"]:
+                failures.append(f"{sec} operations {[op['type'] for op in (d.get(sec) or {}).get('operations') or []]} != {exp[f'{sec}_ops']}")
+        if "cues" in exp:
+            gen = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["type"] == "captions.generate"), None)
+            got = [[c["start"], c["end"]] for c in (gen or {}).get("cues") or []]
+            if got != exp["cues"]:
+                failures.append(f"cues {got} != {exp['cues']}")
+        if "qc_enabled" in exp and bool((d["qa"].get("qc") or {}).get("enabled")) != exp["qc_enabled"]:
+            failures.append(f"qc gate {bool((d['qa'].get('qc') or {}).get('enabled'))} != {exp['qc_enabled']}")
+        if "blocked" in exp and bool(ir.blocked()) != exp["blocked"]:
+            failures.append(f"blocked {bool(ir.blocked())} != {exp['blocked']} ({[b['subject'] for b in ir.blocked()]})")
+        if exp.get("blocked_subjects") and sorted({b["subject"] for b in ir.blocked()}) != sorted(exp["blocked_subjects"]):
+            failures.append(f"blocked subjects {sorted({b['subject'] for b in ir.blocked()})} != {exp['blocked_subjects']}")
+        subjects = {x["subject"]: x for x in d["decisions"]}
+        for subj, want in (exp.get("decisions") or {}).items():
+            got = subjects.get(subj)
+            if got is None:
+                failures.append(f"missing decision {subj}")
+                continue
+            for k, v in want.items():
+                if got.get(k) != v:
+                    failures.append(f"decision {subj}.{k} {got.get(k)!r} != {v!r}")
+        if "plan_status" in exp and d["plan"]["status"] != exp["plan_status"]:
+            failures.append(f"plan status {d['plan']['status']} != {exp['plan_status']}")
+        rep = svc.validate(ir)
+        if not rep.ok and not exp.get("blocked"):
+            failures.append(f"IR invalid: {rep.errors}")
+        failures += _engine_checks(d, subjects, case.get("engine"))
+        if exp.get("deterministic"):
+            ir2 = pipeline_service(ptmp, caps=caps, transcription=pipe.get("transcription", True), silences=fake.get("silences", [[0.0, 3.0], [13.7, None]]), lufs=fake.get("lufs", -11.0)) \
+                .plan(inputs, case.get("profile", "youtube"), user_requirements=case.get("requirements"), params={"language": "ja"})
+
+            def norm(doc):
+                s_ = json.dumps({k: doc[k] for k in ("video", "audio", "captions", "graphics", "color", "delivery", "qa")})
+                for i, aid in enumerate(doc["assets"]):
+                    s_ = s_.replace(aid, f"A{i}")
+                return json.dumps(json.loads(re.sub(r"(dec|obs|inf|evt)_[0-9a-f]{10}", r"\1", s_)), sort_keys=True)
+            if norm(d) != norm(ir2.doc):
+                failures.append("the same request planned different operations twice")
+        if exp.get("render"):
+            ir_path = str(Path(ptmp) / "pipe.json"); save_ir(ir, ir_path)
+            rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
+            want = exp["render"]
+            if want.get("status") and rr.get("status") != want["status"]:
+                failures.append(f"render status {rr.get('status')} != {want['status']}")
+            if want.get("execution_status") and (rr.get("execution") or {}).get("status") != want["execution_status"]:
+                failures.append(f"execution status {(rr.get('execution') or {}).get('status')} != {want['execution_status']}")
+            if want.get("qa_status") and (rr.get("qa") or {}).get("status") != want["qa_status"]:
+                failures.append(f"qa {(rr.get('qa') or {}).get('status')} != {want['qa_status']}")
+            if want.get("tools") is not None and [r_["tool"] for r_ in (rr.get("execution") or {}).get("results") or []] != want["tools"]:
+                failures.append(f"executed tools {[r_['tool'] for r_ in (rr.get('execution') or {}).get('results') or []]} != {want['tools']}")
+            if want.get("artifacts") is not None and {a["type"]: a["stage"] for a in rr.get("artifacts") or []} != want["artifacts"]:
+                failures.append(f"artifacts {({a['type']: a['stage'] for a in rr.get('artifacts') or []})} != {want['artifacts']}")
+            if want.get("failed_tool") and not any(not r_["ok"] and r_["tool"] == want["failed_tool"] for r_ in (rr.get("execution") or {}).get("results") or []):
+                failures.append(f"no failure on {want['failed_tool']}")
+            if want.get("recovery_classes") is not None and [r_["class"] for r_ in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
+                failures.append(f"recovery {[r_['class'] for r_ in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
+            if (rr.get("execution") or {}).get("status") == "COMPLETED":
+                prov = json.loads((Path(svc.workspace) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+                for e in prov["operations"]:
+                    blob = json.dumps(e["args"]).lower()
+                    if any(k in blob for k in ('"argv"', '"command"', '"filter"', '"executable"', '"shell"', "ffmpeg -")):
+                        failures.append("provenance args carry command material")
+                    if not e.get("decision"):
+                        failures.append(f"provenance of {e['skill']} lacks its decision")
+                info = Service.explain_pipeline(d, provenance=prov, artifacts=rr.get("artifacts") or [])
+                missing_levels = [lv for lv in info["levels"] if info["counts"][lv] == 0]
+                if missing_levels:
+                    failures.append(f"explain --pipeline lacks levels {missing_levels}")
+                if want.get("resume"):
+                    rr2 = svc.render(load_ir(ir_path), ir_path, resume=rr["job"]["id"])
+                    n_transform = len([o for o in (rr.get("execution") or {}).get("results") or [] if o["ok"] and o.get("output")])
+                    if (rr2.get("execution") or {}).get("status") != "COMPLETED" or len(rr2["execution"]["skipped"]) != n_transform:
+                        failures.append(f"resume reused {len((rr2.get('execution') or {}).get('skipped') or [])} of {n_transform} transforms")
+        clear_modes()
+        return {"case": case["name"], "ok": not failures, "failures": failures}
     ap = case.get("audio_production")
     if ap:
         # ADR-030: the audio production path (audio.production + audio.* requirements → decisions → plan → IR audio operations → compiler →
@@ -249,7 +358,7 @@ def run_case(case: dict) -> dict:
             if any(o.tool.startswith("ffmpeg-skill/") and o.tool.split("/")[1] in ("cut", "loudness", "audio") and (o.args or {}).get("output") for o in fake_engine.calls):
                 failures.append("the reference engine processed audio although the audio path was selected (fallback)")   # QA measurements (no output) are the engine's business
             if (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 for e in prov["operations"]:
                     if e["tool"] == "audio-production/run":
                         blob = json.dumps(e["args"]).lower()
@@ -334,7 +443,7 @@ def run_case(case: dict) -> dict:
                 if not item or abs(float(item["observed"]) - float(want["duration"])) > 0.01:
                     failures.append(f"delivered duration {item and item['observed']} != {want['duration']}")
             if (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 for e in prov["operations"]:
                     if e["tool"].startswith("video-editing/"):
                         blob = json.dumps(e["args"]).lower()
@@ -401,7 +510,7 @@ def run_case(case: dict) -> dict:
             if any(o.tool == "ffmpeg-skill/cut" for o in fake_engine.calls):
                 failures.append("the reference cut ran although video-editing was the selected tool (fallback)")
             if cut is not None and (rr.get("execution") or {}).get("status") == "COMPLETED":
-                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
                 trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
                 if trim["skill_package"] != "video-editing" or not (trim.get("skill_result") or {}).get("artifact"):
                     failures.append("provenance lacks the Skill's package / result facts")

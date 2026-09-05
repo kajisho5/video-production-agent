@@ -3,9 +3,11 @@ incidents for FAILs. Rendering success is not production success."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Any, Dict, List, Optional
 
 from ..agent.editing import delivery_subjects
+from ..agent.qc import admit
 from ..media.analysis import loudness_facts, probe_facts
 from ..models import Incident, ToolResult
 from ..tools.base import ToolAdapter, ToolError
@@ -46,8 +48,10 @@ REQUIRED_SKILLS = ("media_probe", "loudness_analysis", "delivery_check")   # vis
 
 
 def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], tools: Dict[str, str], sheet_dir: Optional[str] = None,
-           check_by_artifact: Optional[Dict[str, ToolResult]] = None) -> QAReport:
+           check_by_artifact: Optional[Dict[str, ToolResult]] = None, qc_by_artifact: Optional[Dict[str, ToolResult]] = None) -> QAReport:
     """check_by_artifact maps artifact id -> the check ToolResult the executor already produced, so QA does not measure twice.
+    qc_by_artifact maps artifact id -> the qc/check ToolResult of the QC gate (ADR-032): admitted only when its fingerprint is the
+    sha256 QA computes itself; its verdict is an additional gate beside the agent's own checks, never a replacement.
     tools: skill → tool id map selected by SkillRegistry for this environment. QA has no default engine; a missing
     measurement skill is an explicit error, never a silent fallback."""
     if tools is None:
@@ -57,6 +61,36 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
         raise ToolError("no tool selected for skill(s): " + ", ".join(missing) + " (SkillRegistry.resolve_tools must provide them)")
     rep = QAReport()
     check_by_artifact = check_by_artifact or {}
+    qc_by_artifact = qc_by_artifact or {}
+    qc_enabled = bool(((ir_doc.get("qa") or {}).get("qc") or {}).get("enabled"))
+
+    def qc_items(art: str, path: str, expected_kind: str) -> None:
+        """The QC gate's verdict for an artifact as QA items (layer qc): admission first (fingerprint == QA's own sha256 of the file,
+        the kind QA asked for, OBSERVED), then the verdict and every failing / warning check by name."""
+        if not qc_enabled:
+            return
+        r = qc_by_artifact.get(art)
+        if r is None:
+            rep.items.append(QAItem("qc", "verdict", "FAIL", "no report", "an admitted qc report", kind="judgement", artifact=art, fix_hint="the QC gate was planned but no report exists for this artifact"))
+            return
+        digest = _sha256(path)
+        data = r.data if isinstance(r.data, dict) else {}
+        if not r.ok:
+            err = (data.get("error") or {})
+            rep.items.append(QAItem("qc", "verdict", "FAIL", f"{err.get('code')}: {err.get('message')}", "an admitted qc report", kind="judgement", artifact=art))
+            return
+        problems = admit(data, digest, expected_kind)
+        if problems:
+            rep.items.append(QAItem("qc", "verdict", "FAIL", "; ".join(problems), "an admitted qc report", kind="judgement", artifact=art, fix_hint="the report does not describe this file as QA measured it"))
+            return
+        verdict = str(data.get("verdict"))
+        rep.items.append(QAItem("qc", "verdict", "PASS" if verdict == "PASS" else ("WARN" if verdict == "WARN" else "FAIL"), verdict, "PASS", kind="judgement", artifact=art,
+                                fix_hint="" if verdict == "PASS" else "see the qc findings"))
+        for c in data.get("checks") or []:
+            if c.get("status") in ("WARN", "FAIL"):
+                rep.items.append(QAItem("qc", str(c.get("check_id")), str(c["status"]), ", ".join(str(x) for x in c.get("finding_codes") or []) or c["status"], "PASS", kind="judgement", artifact=art))
+        if verdict == "FAIL":
+            rep.incidents.append(Incident(type="DELIVERY_SPEC_FAILURE", severity="HIGH", evidence=[art], possible_cause="qc-skill reports a failing check", recommended_action="review the qc findings; the artifact is not deliverable"))
 
     def measure(tool: str, args: Dict[str, Any], kind: Optional[str] = None, artifact: Optional[str] = None) -> ToolResult:
         """One measurement through the adapter boundary. A measurement Skill that shapes its own request (media-analysis:
@@ -115,8 +149,11 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 rep.items.append(QAItem("video", "video_stream", "PASS" if v else "FAIL", v.get("codec"), "present", artifact=art))
                 sv = (asset.get("technical") or {}).get("video") or {}
                 if v and sv:
-                    if sv.get("hdr") and not v.get("hdr") and not t.get("preset"):
+                    tone_mapped = any(op.get("asset") == asset_id and op.get("type") == "color.hdr_to_sdr" for op in (ir_doc.get("color") or {}).get("operations") or [])
+                    if sv.get("hdr") and not v.get("hdr") and not t.get("preset") and not tone_mapped:
                         rep.items.append(QAItem("video", "hdr_preserved", "WARN", v.get("hdr_format"), sv.get("hdr_format"), artifact=art, fix_hint="colour flattened; decide HDR vs SDR explicitly"))
+                    elif sv.get("hdr") and tone_mapped:
+                        rep.items.append(QAItem("video", "sdr", "PASS" if not v.get("hdr") else "FAIL", v.get("hdr_format") or "SDR", "SDR (colour decision)", kind="judgement", artifact=art))
                     if v.get("variable_frame_rate_suspected"):
                         rep.items.append(QAItem("video", "cfr", "WARN", "VFR suspected", "constant frame rate", artifact=art))
                     fps_src, fps_out = sv.get("fps") or 0, v.get("fps") or 0
@@ -160,6 +197,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                                                           possible_cause=f"{row['check']}={row['value']} vs {row['expected']}", recommended_action=row.get("fix", "")))
                 else:
                     rep.items.append(QAItem("delivery", "check", "WARN", "no result", "check.py output", artifact=art))
+            qc_items(art, path, "audio" if subject.get("audio_only") else "delivery")
             if sheet_dir and v:
                 sheet = f"{sheet_dir}/{art}_sheet.png"
                 if not tools.get("visual_inspection"):
@@ -168,7 +206,62 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 if lk.ok:
                     rep.sheets.append(sheet)
                     rep.items.append(QAItem("visual", "contact_sheet", "PASS", sheet, "generated for human review", artifact=art))
+        # finishing outputs of the subject (ADR-031): the subtitle sidecar (cue count as planned, well-formed) and the thumbnail (a non-empty image of the planned format)
+        for o in (ir_doc.get("plan") or {}).get("outputs") or []:
+            if (o.get("expected") or {}).get("source") != asset_id or o.get("role") not in ("CAPTIONS", "THUMBNAIL"):
+                continue
+            art = o["logical"]
+            path = paths.get(art)
+            if not path or not os.path.isfile(path):
+                rep.items.append(QAItem("delivery", "exists", "FAIL", "missing", o["role"].lower() + " file", artifact=art))
+                continue
+            size = os.path.getsize(path)
+            if o["role"] == "CAPTIONS":
+                text = _read_text(path)
+                n = _cue_count(text, o.get("format") or "")
+                want = int((o.get("expected") or {}).get("cues") or 0)
+                rep.items.append(QAItem("delivery", "cues", "PASS" if n == want else "FAIL", n, want, kind="judgement", artifact=art, fix_hint="" if n == want else "the sidecar does not carry the planned cues"))
+                rep.items.append(QAItem("delivery", "format", "PASS" if _looks_like(text, o.get("format") or "") else "FAIL", o.get("format"), "well-formed " + str(o.get("format")), artifact=art))
+                qc_items(art, path, "subtitle")
+            else:
+                ok = size > 0 and _image_magic(path, o.get("format") or "")
+                rep.items.append(QAItem("delivery", "image", "PASS" if ok else "FAIL", f"{size} bytes", f"non-empty {o.get('format')}", artifact=art))
     return rep
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _read_text(path: str) -> str:
+    try:
+        return open(path, "r", encoding="utf-8-sig", errors="replace").read()
+    except OSError:
+        return ""
+
+
+def _cue_count(text: str, fmt: str) -> int:
+    import re
+    return len(re.findall(r"^\s*\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}", text, flags=re.M))
+
+
+def _looks_like(text: str, fmt: str) -> bool:
+    if fmt == "vtt":
+        return text.lstrip().startswith("WEBVTT")
+    return bool(text.strip()) and "-->" in text and not text.lstrip().startswith("WEBVTT")
+
+
+def _image_magic(path: str, fmt: str) -> bool:
+    try:
+        head = open(path, "rb").read(8)
+    except OSError:
+        return False
+    return head.startswith(b"\x89PNG") if fmt == "png" else head[:2] == b"\xff\xd8"
 
 
 def _incident_type(check: str) -> str:

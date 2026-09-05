@@ -1,0 +1,23 @@
+{
+ "name": "pipe_capability_unknown_blocks_graphics",
+ "profile": "youtube",
+ "pipeline": {
+  "unknown_capabilities": [
+   "motion-graphics:title"
+  ]
+ },
+ "requirements": {
+  "motion.title": "Opening",
+  "thumbnail": true
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "capability.motion_graphics:title"
+  ],
+  "plan_status": "BLOCKED",
+  "graphics_ops": [
+   "graphics.thumbnail"
+  ]
+ }
+}

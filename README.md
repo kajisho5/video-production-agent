@@ -61,6 +61,20 @@ Policy / Preference / Constraint（`policy/rules.py`）: **Policy** は運用上
 
 監査結果と既知の制限: `docs/AUDIT_PHASE1.md`、最終レビューと Phase 2 開始条件: `docs/PHASE1_FINAL_REVIEW.md`。
 
+## 統合パイプライン（Phase 3、ADR-031 / ADR-032）
+
+subtitle / thumbnail / color-grading / motion-graphics / qc の各 Skill は checkout を環境変数で指す（`VIDEO_AGENT_SUBTITLE_DIR` `VIDEO_AGENT_THUMBNAIL_DIR` `VIDEO_AGENT_COLOR_GRADING_DIR` `VIDEO_AGENT_MOTION_GRAPHICS_DIR` `VIDEO_AGENT_QC_DIR`。thumbnail-skill は `pip install Pillow`）。要求は明示 `--set` のみ。例（講演 3 本をまとめて、無音を整理し、字幕を付け、YouTube 用を作って QC まで）:
+
+```
+video-agent plan talk1.mp4 talk2.mp4 talk3.mp4 --profile youtube --kind transcript --language ja \
+  --set edit.concat=true --set subtitle=true --set subtitle.burn_in=true --set thumbnail=true --set qc=true
+video-agent render <project.json> --approve all
+video-agent explain <project.json> --pipeline
+video-agent check <artifact.mp4> --platform youtube --qc
+```
+
+生成される ProductionPlan（依存関係付き）: trim ×3 → concat → captions.generate（transcript の cue を delivered timeline に写像）→ captions.burn → loudness → export → check → thumbnail → qc ×2（deliverable と sidecar）。QC PASS → artifact は `approved`（READY）、WARN → candidate（policy `qc.warn.promotion`、既定 CONFIRM）、FAIL → `working`（final 昇格不可）。「話者が変わったらカメラを切り替える」は未実装（docs/GAP_ANALYSIS_PHASE2.md §22）。
+
 ## テスト
 
 ```bash

@@ -1,0 +1,31 @@
+{
+ "name": "pipe_audio_path_and_finishing_conflict",
+ "profile": "generic",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "v.wav",
+    "video": false
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.gain": -3,
+  "thumbnail": true
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "audio.production",
+   "capability.audio_cut",
+   "capability.audio_gain"
+  ],
+  "plan_status": "BLOCKED",
+  "decisions": {
+   "audio.production": {
+    "type": "BLOCK"
+   }
+  }
+ }
+}

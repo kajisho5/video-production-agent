@@ -1,0 +1,65 @@
+{
+ "name": "pipe_subtitle_only_from_transcript",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "subtitle": "vtt",
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "steps": [
+   "silence_cleanup",
+   "subtitle_generation",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check",
+   "qc_check",
+   "qc_check"
+  ],
+  "captions_ops": [
+   "captions.generate"
+  ],
+  "cues": [
+   [
+    0.0,
+    0.35
+   ],
+   [
+    1.15,
+    5.55
+   ]
+  ],
+  "decisions": {
+   "subtitle.generate": {
+    "type": "TRANSFORM",
+    "approval": "AUTO",
+    "provenance": "USER"
+   }
+  },
+  "render": {
+   "execution_status": "COMPLETED",
+   "artifacts": {
+    "YOUTUBE": "approved",
+    "CAPTIONS": "approved"
+   }
+  }
+ },
+ "engine": {
+  "basis": {
+   "subtitle.generate": {
+    "approval_key": "subtitle.generate.approval",
+    "evidence_classes": [
+     "event",
+     "observation",
+     "requirement"
+    ]
+   }
+  },
+  "explain": "subtitle.generate",
+  "explain_kinds": [
+   "observation",
+   "requirement"
+  ]
+ }
+}

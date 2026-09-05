@@ -16,6 +16,11 @@ from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
 from ..tools.transcription import TranscriptionAdapter, locate_transcription
 from ..tools.video_editing import VideoEditingAdapter, locate_video_editing
 from ..tools.audio_production import AudioProductionAdapter, locate_audio_production
+from ..tools.color_grading import ColorGradingAdapter, locate_color_grading
+from ..tools.motion_graphics import MotionGraphicsAdapter, locate_motion_graphics
+from ..tools.qc import QcAdapter, locate_qc
+from ..tools.subtitle import SubtitleAdapter, locate_subtitle
+from ..tools.thumbnail import ThumbnailAdapter, locate_thumbnail
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -24,7 +29,10 @@ FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tone
            "blackdetect": ["blackdetect"], "freezedetect": ["freezedetect"], "astats": ["astats"], "xfade": ["xfade"], "acrossfade": ["acrossfade"],
            # core audio filters audio-production-skill's operations need; ffmpeg-skill's doctor does not probe them, this resolver measures `ffmpeg -filters` itself
            "volume": ["volume"], "afade": ["afade"], "amix": ["amix"], "pan": ["pan"], "aformat": ["aformat"], "afftdn": ["afftdn"],
-           "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"]}
+           "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"],
+           # filters the Phase 3 finishing Skills' operations need (ADR-031): motion-graphics elements, LUTs, subtitle burn-in, qc measurements
+           "subtitles": ["subtitles"], "drawtext": ["drawtext"], "drawbox": ["drawbox"], "overlay": ["overlay"], "color": ["color"], "scale": ["scale"],
+           "colorchannelmixer": ["colorchannelmixer"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"]}
 AI_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
@@ -49,7 +57,10 @@ def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
 
 class CapabilityResolver:
     def __init__(self, ffmpeg_skill_dir: Optional[str] = None, env: Optional[Dict[str, str]] = None, media_analysis_dir: Optional[str] = None,
-                 transcription_dir: Optional[str] = None, offline: bool = False, video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None):
+                 transcription_dir: Optional[str] = None, offline: bool = False, video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None,
+                 subtitle_dir: Optional[str] = None, thumbnail_dir: Optional[str] = None, color_grading_dir: Optional[str] = None, motion_graphics_dir: Optional[str] = None,
+                 qc_dir: Optional[str] = None):
+        self.subtitle_dir, self.thumbnail_dir, self.color_grading_dir, self.motion_graphics_dir, self.qc_dir = subtitle_dir, thumbnail_dir, color_grading_dir, motion_graphics_dir, qc_dir
         self.media_analysis_dir = media_analysis_dir
         self.transcription_dir = transcription_dir
         self.video_editing_dir = video_editing_dir
@@ -197,6 +208,22 @@ class CapabilityResolver:
                 caps["audio-production"] = Capability("audio-production", "MISSING", f"found at {ap.describe()} but unusable: {str(e)[:160]}")
         else:
             caps["audio-production"] = Capability("audio-production", "MISSING", "set VIDEO_AGENT_AUDIO_PRODUCTION_DIR to an audio-production-skill checkout or install `audio-production`")
+        # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): the same rule for every package — located checkout / console script, contract
+        # checked and compared with the pinned one, the Skill's own doctor; the package capability is AVAILABLE only when the doctor is
+        # ok / degraded (subtitle: healthy) and there is no drift. Per-operation / per-element capabilities follow the doctor's verdict:
+        # supported → AVAILABLE, unsupported / unavailable → MISSING, unknown → AVAILABLE only when this resolver measured every
+        # filter / encoder the operation needs itself, else UNKNOWN (never selectable).
+        self._finishing_skill(caps, "subtitle", locate_subtitle(self.subtitle_dir, self.env), lambda sk: SubtitleAdapter(sk, workspace=None, ffmpeg_skill_dir=str(skill.root) if skill else None, timeout=120.0),
+                              "VIDEO_AGENT_SUBTITLE_DIR", "subtitle-skill", "subtitle-skill", per_item=None)
+        self._finishing_skill(caps, "thumbnail", locate_thumbnail(self.thumbnail_dir, self.env), lambda sk: ThumbnailAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None, timeout=120.0),
+                              "VIDEO_AGENT_THUMBNAIL_DIR", "thumbnail-skill", "thumbnail", per_item=None)
+        self._finishing_skill(caps, "color-grading", locate_color_grading(self.color_grading_dir, self.env), lambda sk: ColorGradingAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None, timeout=180.0),
+                              "VIDEO_AGENT_COLOR_GRADING_DIR", "color-grading-skill", "color-grading",
+                              per_item=lambda ad, doc: (ad.operation_status(doc), {o["type"]: o for o in ad.contract.get("operations") or []}))
+        self._finishing_skill(caps, "motion-graphics", locate_motion_graphics(self.motion_graphics_dir, self.env), lambda sk: MotionGraphicsAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None, timeout=180.0),
+                              "VIDEO_AGENT_MOTION_GRAPHICS_DIR", "motion-graphics-skill", "motion-graphics",
+                              per_item=lambda ad, doc: (ad.element_status(doc), {e["type"]: e for e in ad.contract.get("element_types") or []}))
+        self._finishing_skill(caps, "qc", locate_qc(self.qc_dir, self.env), lambda sk: QcAdapter(sk, timeout=180.0), "VIDEO_AGENT_QC_DIR", "qc-skill", "qc", per_item=None)
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:
@@ -212,6 +239,40 @@ class CapabilityResolver:
                                          f"VIDEO_AGENT_AI_PROVIDER={configured} (deterministic pipeline; AI recommendations are proposals only)", {"provider": configured})
         self._cache = caps
         return caps
+
+    def _finishing_skill(self, caps: Dict[str, Capability], cap: str, located: Any, make: Any, env_var: str, repo_name: str, console: str, per_item: Any) -> None:
+        """One Phase 3 package → its capability (+ per-operation / per-element capabilities `<cap>:<TYPE>` when the doctor reports them)."""
+        if not located:
+            caps[cap] = Capability(cap, "MISSING", f"set {env_var} to a {repo_name} checkout or install `{console}`")
+            return
+        try:
+            ad = make(located)
+            doc = ad.doctor()
+            drift = ad.drift()
+            ok = doc.get("status") in ("ok", "degraded") and not drift
+            detail = f"{ad.version} at {located.describe()} (doctor {doc.get('status')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
+            evidence: Dict[str, Any] = {"version": ad.version, "root": located.describe(), "contract": ad.contract.get("schema") or ad.contract.get("contract_version"),
+                                        "tools": sorted(ad.tools), "doctor": doc.get("status"), "problems": list(doc.get("problems") or []), "warnings": list(doc.get("warnings") or []), "drift": drift}
+            if per_item is not None:
+                statuses, specs = per_item(ad, doc)
+                per: Dict[str, str] = {}
+                for typ, st in statuses.items():
+                    need = [c for c in (specs.get(typ) or {}).get("required_capabilities") or [] if c.startswith(("filter:", "encoder:"))]
+                    if not ok or st in ("unsupported", "unavailable", "missing"):
+                        status = "MISSING"
+                    elif st == "supported":
+                        status = "AVAILABLE"
+                    elif need and all(caps.get(c) is not None and caps[c].status == "AVAILABLE" for c in need):
+                        status = "AVAILABLE"   # the Skill could not tell; this resolver measured the filters / encoders itself
+                    else:
+                        status = "UNKNOWN"
+                    per[typ] = status
+                    caps[f"{cap}:{typ}"] = Capability(f"{cap}:{typ}", status, f"doctor {st}" + ("" if st != "unknown" else f"; resolver checked {need}"),
+                                                      {"doctor": st, "required_capabilities": list((specs.get(typ) or {}).get("required_capabilities") or []), "tool": (specs.get(typ) or {}).get("tool")})
+                evidence["operations"] = per
+            caps[cap] = Capability(cap, "AVAILABLE" if ok else "MISSING", detail, evidence)
+        except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used
+            caps[cap] = Capability(cap, "MISSING", f"found at {located.describe()} but unusable: {str(e)[:160]}")
 
     def status(self, name: str) -> str:
         return self.resolve().get(name, Capability(name, "UNKNOWN")).status

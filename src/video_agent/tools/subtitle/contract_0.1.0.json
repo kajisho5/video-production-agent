@@ -1,0 +1,120 @@
+{
+ "capabilities": {
+  "formats": [
+   "srt",
+   "vtt"
+  ],
+  "path_policy": true,
+  "provenance": true,
+  "render_formats": [
+   "srt"
+  ],
+  "reuse": true
+ },
+ "contract_version": "1.0.0",
+ "deterministic": true,
+ "errors": {
+  "codes": [
+   "CANCELLED",
+   "DEPENDENCY_ERROR",
+   "INTERNAL_ERROR",
+   "INVALID_INPUT",
+   "INVALID_REQUEST",
+   "INVALID_TIME_RANGE",
+   "MISSING_INPUT",
+   "OUTPUT_ERROR",
+   "PATH_NOT_ALLOWED",
+   "TOOL_ERROR",
+   "UNSUPPORTED_FORMAT",
+   "UNSUPPORTED_OPERATION",
+   "VALIDATION_ERROR"
+  ],
+  "non_retryable": [
+   "CANCELLED",
+   "INVALID_INPUT",
+   "INVALID_REQUEST",
+   "INVALID_TIME_RANGE",
+   "MISSING_INPUT",
+   "PATH_NOT_ALLOWED",
+   "UNSUPPORTED_FORMAT",
+   "UNSUPPORTED_OPERATION",
+   "VALIDATION_ERROR"
+  ]
+ },
+ "operations": {
+  "generate": {
+   "description": "Validate a typed subtitle document and produce a subtitle file (no video I/O).",
+   "formats": [
+    "srt",
+    "vtt"
+   ],
+   "inputs": [
+    "subtitle",
+    "format",
+    "output_path",
+    "constraints?"
+   ],
+   "outputs": [
+    "output",
+    "sha256",
+    "size",
+    "timeline",
+    "observation"
+   ]
+  },
+  "render": {
+   "delegates_to": {
+    "skill_id": "ffmpeg-skill",
+    "tool": "caption"
+   },
+   "description": "Burn a subtitle document into a video by delegating to ffmpeg-skill's `caption` tool (scripts/caption.py). format must be 'srt': ffmpeg-skill's caption tool burns SRT or ASS, never WebVTT.",
+   "formats": [
+    "srt"
+   ],
+   "inputs": [
+    "video_input",
+    "subtitle",
+    "format",
+    "output_path",
+    "constraints?"
+   ],
+   "outputs": [
+    "output",
+    "sha256",
+    "size",
+    "timeline",
+    "observation",
+    "engine"
+   ]
+  }
+ },
+ "out_of_scope": [
+  "speech_recognition",
+  "transcription",
+  "speaker_diarization",
+  "ai_editing_decisions",
+  "semantic_editing",
+  "production_decision",
+  "arbitrary_ffmpeg_execution"
+ ],
+ "parameters": {
+  "constraints": [
+   "max_chars_per_line",
+   "max_lines",
+   "min_duration",
+   "max_duration",
+   "reading_speed_cps"
+  ],
+  "style": [
+   "align",
+   "position",
+   "line",
+   "size",
+   "bold",
+   "italic",
+   "color"
+  ]
+ },
+ "skill_id": "subtitle-skill",
+ "version": "0.1.0"
+}

@@ -17,6 +17,9 @@ jobs:
         with: {python-version: "${{ matrix.python }}"}
       - run: pip install -e .
       - run: python -m unittest -v tests/test_unit.py
+      # Phase 3 (ADR-031 / ADR-032): the five finishing-Skill adapters against their fake processes, and the integrated pipeline on the fake engine + fake Skills
+      - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
+      - run: python -m unittest -v tests/test_pipeline.py
       - run: python evals/run.py
   integration:
     runs-on: ubuntu-latest
@@ -28,11 +31,17 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
       - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
       - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
-      # video-editing-skill (ADR-028): its PR #1 branch until it is merged to main (main holds only a README today); no install needed, the checkout is run as `python -m video_editing_skill.cli`
-      - run: git clone --depth 1 --branch claude/video-editing-skill-sd9vgt https://github.com/kajisho5/video-editing-skill ../video-editing-skill
+      # video-editing-skill (ADR-028): main (PR #1 merged); no install needed, the checkout is run as `python -m video_editing_skill.cli`
+      - run: git clone --depth 1 https://github.com/kajisho5/video-editing-skill ../video-editing-skill
       # audio-production-skill (ADR-030): main (PR #1 merged); run as `python -m audio_production.cli` from the checkout, no install
       - run: git clone --depth 1 https://github.com/kajisho5/audio-production-skill ../audio-production-skill
-      - run: pip install -e .
+      # Phase 3 finishing Skills (ADR-031 / ADR-032): main (PR #1 merged in each); run from the checkouts, no install. thumbnail-skill renders with Pillow.
+      - run: git clone --depth 1 https://github.com/kajisho5/subtitle-skill ../subtitle-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/thumbnail-skill ../thumbnail-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/color-grading-skill ../color-grading-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/motion-graphics-skill ../motion-graphics-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill
+      - run: pip install -e . Pillow
       - run: python -m unittest -v tests/test_integration.py
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
@@ -40,3 +49,8 @@ jobs:
           VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
           VIDEO_AGENT_VIDEO_EDITING_DIR: "${{ github.workspace }}/../video-editing-skill"
           VIDEO_AGENT_AUDIO_PRODUCTION_DIR: "${{ github.workspace }}/../audio-production-skill"
+          VIDEO_AGENT_SUBTITLE_DIR: "${{ github.workspace }}/../subtitle-skill"
+          VIDEO_AGENT_THUMBNAIL_DIR: "${{ github.workspace }}/../thumbnail-skill"
+          VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
+          VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
+          VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"

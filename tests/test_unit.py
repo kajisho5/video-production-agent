@@ -818,11 +818,12 @@ class SkillToolBoundaryTests(unittest.TestCase):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
         self.assertEqual(rows["multi_source_sync"]["status"], "NOT_IMPLEMENTED")
-        self.assertEqual(rows["caption_generation"]["status"], "NOT_IMPLEMENTED")
+        self.assertNotIn("caption_generation", rows, "replaced by subtitle_generation / subtitle_burn_in (ADR-031)")
+        self.assertEqual(rows["subtitle_burn_in"]["status"], "UNAVAILABLE", "implemented, no subtitle-skill installed here")
         self.assertEqual(rows["silence_cleanup"]["status"], "AVAILABLE")
         self.assertEqual(rows["silence_cleanup"]["tool"], "ffmpeg-skill/cut")
         self.assertNotIn("multi_source_sync", svc.tools_for())
-        self.assertNotIn("caption_generation", svc.tools_for())
+        self.assertNotIn("subtitle_burn_in", svc.tools_for())
 
     def test_plan_steps_name_registry_selected_tools_and_compiler_uses_them(self):
         svc = make_service(self.tmp)
@@ -1016,12 +1017,12 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["audio-production", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"],
-                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18) and the audio production Skill (ADR-030)")
+        self.assertEqual(list(pkgs), ["audio-production", "color-grading", "ffmpeg-skill", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"],
+                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18), the audio production Skill (ADR-030) and the five finishing Skills (ADR-031 / ADR-032)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
-        self.assertEqual(sorted(rows), ["audio-production", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertEqual(sorted(rows), ["audio-production", "color-grading", "ffmpeg-skill", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
         self.assertTrue(rows["video-editing"]["implemented"] and not rows["video-editing"]["available"], "adapter exists; no installation in unit tests")
         self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
         self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
@@ -1060,10 +1061,12 @@ class EcosystemContractTests(unittest.TestCase):
     def test_future_skills_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
-        for name in ("multi_source_sync", "caption_generation", "semantic_deletion"):
+        for name in ("multi_source_sync", "semantic_deletion"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
+        self.assertNotIn("caption_generation", rows, "the former caption_generation declaration (ffmpeg-skill/caption) is replaced by subtitle_generation / subtitle_burn_in (ADR-031)")
+        self.assertEqual((rows["subtitle_generation"]["implemented"], rows["subtitle_generation"]["status"]), (True, "UNAVAILABLE"), "implemented; no installation in unit tests")
         src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
-        future = ("subtitle-skill", "motion-graphics-skill", "color-grading-skill", "thumbnail-skill", "qc-skill")   # media-analysis-skill (PR #12), transcription-skill (PR #13), video-editing-skill (PR #18) and audio-production-skill (ADR-030) are integrated
+        future: tuple = ()   # every Skill of the ecosystem is integrated (media-analysis PR #12, transcription PR #13, video-editing PR #18, audio-production ADR-030, subtitle / thumbnail / color-grading / motion-graphics / qc ADR-031 / ADR-032)
         hits = [f"{py.relative_to(src)}: {n}" for py in src.rglob("*.py") for n in future if n in py.read_text(encoding="utf-8")]
         self.assertEqual(hits, [], "future skill packages must not appear in production code")
 
@@ -1098,7 +1101,7 @@ class EcosystemContractTests(unittest.TestCase):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
         # the only "core" change a new package needs: a production skill cites its tool as a candidate
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "fake-skill", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "fake-skill", "ffmpeg-skill", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube")
         self.assertTrue(svc.validate(ir).ok)
@@ -1121,7 +1124,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "ffmpeg-skill", "media-analysis", "transcription", "video-editing"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "color-grading", "ffmpeg-skill", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):
@@ -2795,7 +2798,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.2.0", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
-        self.assertEqual(sk["caption_generation"]["status"], "NOT_IMPLEMENTED", "captions / burn-in stay unimplemented")
+        self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
         no_cap = self._service(extra=())
         self.assertNotIn("speech_transcription", no_cap.tools_for(), "without the capability the tool is never a candidate")
         self.assertIn("required capability missing: transcription", svc.registry.select_tool("speech_transcription", FakeCaps().resolve(), lambda t: True)[1])

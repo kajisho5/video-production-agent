@@ -1,0 +1,34 @@
+{
+ "name": "pipe_hdr_to_sdr_on_sdr_is_keep",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "color.sdr": true,
+  "color.target": "bt709"
+ },
+ "expect": {
+  "blocked": false,
+  "color_ops": [
+   "color.retag"
+  ],
+  "decisions": {
+   "color.hdr_to_sdr": {
+    "type": "KEEP",
+    "provenance": "OBSERVED"
+   },
+   "color.retag": {
+    "type": "TRANSFORM"
+   }
+  },
+  "render": {
+   "execution_status": "COMPLETED",
+   "tools": [
+    "ffmpeg-skill/cut",
+    "color-grading/run",
+    "ffmpeg-skill/loudness",
+    "ffmpeg-skill/export",
+    "ffmpeg-skill/check"
+   ]
+  }
+ }
+}

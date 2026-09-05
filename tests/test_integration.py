@@ -1364,3 +1364,288 @@ class AudioProductionRealTests(unittest.TestCase):
         out = str(Path(self.tmp) / "D" / "x" / "o.wav"); os.makedirs(os.path.dirname(out), exist_ok=True)
         r = ad.run(Operation(tool="audio-production/run", args={"operation": "CUT", "input": "m", "remove": [[10.0, 20.0]], "output": "o"}, inputs=["m"], outputs=["o"], id="op_r"), {"m": self.mono, "o": out})
         self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_TIME_RANGE"); self.assertFalse(r.data["error"]["retryable"]); self.assertFalse(os.path.exists(out))
+
+
+class IntegratedPipelineRealTests(unittest.TestCase):
+    """ADR-031 / ADR-032 on the real Skills (ffmpeg-skill 0.9.x, video-editing-skill, subtitle-skill, thumbnail-skill, color-grading-skill,
+    motion-graphics-skill, qc-skill, transcription-skill with a local faster-whisper model): the ten scenarios of the Phase 3
+    specification on real media — analysis → decisions → ProductionPlan → IR finishing sections → compiler → the Skills → QA with
+    the QC gate → artifacts / provenance → resume / revision / drift / tamper / determinism. Each test skips with the reason when a
+    checkout it needs is not installed (VIDEO_AGENT_*_DIR)."""
+
+    NEEDS = {"video-editing": "VIDEO_AGENT_VIDEO_EDITING_DIR", "subtitle": "VIDEO_AGENT_SUBTITLE_DIR", "thumbnail": "VIDEO_AGENT_THUMBNAIL_DIR",
+             "color-grading": "VIDEO_AGENT_COLOR_GRADING_DIR", "motion-graphics": "VIDEO_AGENT_MOTION_GRAPHICS_DIR", "qc": "VIDEO_AGENT_QC_DIR"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_p3_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.a, cls.b, cls.png = str(src / "a.mp4"), str(src / "b.mp4"), str(src / "logo.png")
+        cls.speech = str(src / "ja_talk.mp4")
+        cls.ready = shutil.which("ffmpeg") and locate_ffmpeg_skill()
+        if cls.ready:
+            make_media(cls.a); make_media(cls.b)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=160x90:d=1", "-frames:v", "1", cls.png], check=True)
+            ts = locate_transcription()
+            fixture = Path(ts.root or "") / "tests" / "fixtures" / "ja_short.wav" if ts else None
+            if fixture and fixture.is_file():
+                # recognisable Japanese speech (the recognition Skill's own 9.6 s fixture) under a test picture; the picture stops with the audio
+                # 1 s of silence, the 9.6 s of speech, silence to 11.5 s and a quiet tone to the end, under a 12 s picture: a leading trim exists,
+                # a recognised segment may end a few ms after the speech (the recogniser rounds) and the container contains it, and the audio does
+                # not end in silence (an explicit silence end past the container duration is the known silencedetect behaviour this suite does not paper over)
+                fc = "[1:a]adelay=1000|1000,apad=whole_dur=11.5[sp];sine=frequency=440:duration=0.5:sample_rate=48000,volume=0.1,aformat=channel_layouts=stereo[t];[sp][t]concat=n=2:v=0:a=1[a]"
+                subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-i", str(fixture), "-filter_complex", fc,
+                                "-map", "0:v", "-map", "[a]", "-t", "12", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", cls.speech], check=True)
+            else:
+                cls.speech = None
+        cls.caps = Service(workspace=str(Path(cls.tmp) / "caps")).caps.resolve() if cls.ready else {}
+
+    def _need(self, *skills):
+        if not self.ready:
+            self.skipTest("needs ffmpeg and an ffmpeg-skill checkout")
+        for sk in skills:
+            if self.caps.get(sk) is None or self.caps[sk].status != "AVAILABLE":
+                self.skipTest(f"needs {sk} ({self.NEEDS.get(sk, sk)}): {getattr(self.caps.get(sk), 'detail', 'not resolved')[:120]}")
+
+    def _speech(self):
+        if not self.speech:
+            self.skipTest("needs transcription-skill's ja_short.wav fixture")
+        cap = self.caps.get("transcription")
+        if cap is None or cap.status != "AVAILABLE":
+            self.skipTest(f"needs transcription-skill with a local faster-whisper model: {getattr(cap, 'detail', '')[:120]}")
+        return self.speech
+
+    def _svc(self, name):
+        return Service(workspace=str(Path(self.tmp) / name), offline=True)
+
+    def _plan(self, svc, inputs, reqs, profile="youtube", name="p"):
+        ir = svc.plan(inputs, profile, user_requirements=reqs, params={"language": "ja", "offline": True})
+        rep = svc.validate(ir)
+        self.assertEqual(rep.errors, [], rep.errors)
+        p = str(Path(svc.workspace) / f"{name}.json"); save_ir(ir, p)
+        return ir, p
+
+    def _render(self, svc, p, **kw):
+        out = svc.render(load_ir(p), p, approve=["all"], **kw)
+        self.assertEqual(out["execution"]["status"], "COMPLETED", json.dumps(out["execution"].get("recovery"))[:800] + json.dumps([r for r in out["execution"]["results"] if not r["ok"]])[:800])
+        return out
+
+    def _gate_coherent(self, out, art):
+        """The QC gate agrees with the agent's own QA of the same deliverable: a FAIL on either side keeps the artifact `working`, PASS on
+        both makes it READY (`approved`), anything else stays a candidate; the admitted report is about the delivered bytes."""
+        agent_fail = any(i["status"] == "FAIL" and i["layer"] != "qc" and i["artifact"] == art["logical_name"] for i in out["qa"]["items"])
+        qc = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") in ("delivery", "audio"))
+        self.assertTrue(qc["ok"] and qc["data"]["admitted"]); self.assertEqual(qc["data"]["fingerprint"], art["hash"])
+        self.assertEqual(art["qa"]["qc"], qc["data"]["verdict"])
+        if agent_fail or qc["data"]["verdict"] == "FAIL":
+            self.assertEqual((art["stage"], art["qa_status"]), ("working", "FAIL"))
+        elif qc["data"]["verdict"] == "PASS":
+            self.assertEqual(art["stage"], "approved")
+        else:
+            self.assertEqual(art["stage"], "candidate")
+
+    def _probe(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height,color_primaries", "-of", "json", path], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        v = next((s for s in doc["streams"] if s.get("codec_type") == "video"), {})
+        return float(doc["format"]["duration"]), (v.get("width"), v.get("height")), any(s.get("codec_type") == "audio" for s in doc["streams"]), v.get("color_primaries")
+
+    # ---- Scenario 1: trim → concat → audio (loudness) → export → QC
+    def test_s1_trim_concat_audio_export_qc(self):
+        self._need("video-editing", "qc")
+        svc = self._svc("s1")
+        ir, p = self._plan(svc, [self.a, self.b], {"edit.concat": True, "qc": True}, name="s1")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["silence_cleanup", "silence_cleanup", "video_concat", "loudness_normalization", "delivery_export", "delivery_check", "qc_check"])
+        out = self._render(svc, p)
+        qc = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check")
+        self.assertTrue(qc["ok"] and qc["data"]["admitted"]); self.assertIn(qc["data"]["verdict"], ("PASS", "WARN"), qc["data"].get("findings"))
+        art = out["artifacts"][0]
+        dur, size, has_audio, _ = self._probe(art["path"])
+        self.assertAlmostEqual(dur, 22.0, delta=0.6, msg="two 11 s trims joined"); self.assertTrue(has_audio)
+        self.assertEqual(qc["data"]["fingerprint"], art["hash"], "the admitted report is about the delivered bytes")
+        self.assertEqual(art["qa"]["qc"], qc["data"]["verdict"]); self.assertEqual(art["stage"], "approved" if qc["data"]["verdict"] == "PASS" else "candidate")
+
+    # ---- Scenario 2: video → transcription → subtitle → QC (real recognition, real sidecar, real burn-in)
+    def test_s2_transcription_subtitle_qc(self):
+        self._need("subtitle", "qc")
+        speech = self._speech()
+        svc = self._svc("s2")
+        ir, p = self._plan(svc, [speech], {"subtitle": True, "subtitle.burn_in": True, "qc": True}, name="s2")
+        d = ir.doc
+        gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
+        self.assertGreater(len(gen["cues"]), 0, "the recognition produced segments"); self.assertEqual(gen["language"], "ja")
+        tr = next(o for o in d["analysis"]["observations"] if o["kind"] == "transcript")
+        self.assertEqual(tr["provenance"], "OBSERVED"); self.assertTrue(all(s.get("speaker_id") is None for s in tr["data"]["segments"]))
+        keep = gen["timeline_map"]["inputs"][list(d["assets"])[0]]["keep"]
+        self.assertTrue(all(c["end"] <= sum(e - s for s, e in keep) + 0.05 for c in gen["cues"]), "every cue lies on the trimmed timeline")
+        out = self._render(svc, p)
+        res = {r["tool"]: r for r in out["execution"]["results"]}
+        side = Path(res["subtitle/generate"]["output"]).read_text(encoding="utf-8")
+        self.assertIn("-->", side); self.assertEqual(side.count("-->"), len(gen["cues"]))
+        self.assertEqual(res["subtitle/render"]["data"]["engine"]["id"], "ffmpeg-skill")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        items = {(i["layer"], i["name"], i["artifact"]): i for i in out["qa"]["items"]}
+        self.assertEqual(items[("delivery", "cues", arts["CAPTIONS"]["logical_name"])]["status"], "PASS")
+        self.assertIn(arts["CAPTIONS"]["qa"]["qc"], ("PASS", "WARN")); self.assertEqual(arts["CAPTIONS"]["stage"], "approved" if arts["CAPTIONS"]["qa"]["qc"] == "PASS" else "candidate")
+        self._gate_coherent(out, arts["YOUTUBE"])
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        self.assertIn("subtitle.file", [o["kind"] for o in prov["skill_observations"]]); self.assertIn("qc.report", [o["kind"] for o in prov["skill_observations"]])
+
+    # ---- Scenario 3: video → color grading (RETAG) → thumbnail (with caption) → QC
+    def test_s3_color_thumbnail_qc(self):
+        self._need("color-grading", "thumbnail", "qc")
+        svc = self._svc("s3")
+        ir, p = self._plan(svc, [self.a], {"color.target": "bt709", "thumbnail": True, "thumbnail.text": "Talk", "thumbnail.at": 2.0, "qc": True}, name="s3")
+        out = self._render(svc, p)
+        res = {r["tool"]: r for r in out["execution"]["results"]}
+        self.assertEqual(res["color-grading/run"]["data"]["artifact"]["color_primaries"], "bt709")
+        th = res["thumbnail/render"]
+        self.assertTrue(th["output"].endswith(".png") and os.path.getsize(th["output"]) > 0)
+        self.assertEqual((th["data"]["artifact"]["width"], th["data"]["artifact"]["height"]), (1280, 720), "the canvas is the picture size")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        self.assertEqual((arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["stage"]), ("PASS", "candidate"))
+        _, _, _, prim = self._probe(arts["YOUTUBE"]["path"])
+        self.assertEqual(prim, "bt709")
+
+    # ---- Scenario 4: video → motion graphics (text + logo) → subtitle burn-in → QC
+    def test_s4_motion_subtitle_burn_qc(self):
+        self._need("motion-graphics", "subtitle", "qc")
+        speech = self._speech()
+        svc = self._svc("s4")
+        ir, p = self._plan(svc, [speech], {"motion.text": "LIVE", "motion.text.fade": 0.3, "motion.image": self.png, "subtitle": True, "subtitle.burn_in": True, "qc": True}, name="s4")
+        g = ir.doc["graphics"]["operations"][0]
+        self.assertEqual([e["type"] for e in g["elements"]], ["text_overlay", "image_overlay"])
+        self.assertIn(str(Path(self.png).parent), ir.doc["execution"]["allowed_inputs"])
+        out = self._render(svc, p)
+        res = {r["tool"]: r for r in out["execution"]["results"]}
+        self.assertEqual({o["type"] for o in res["motion-graphics/run"]["data"]["operations"]}, {"text_overlay", "image_overlay"})
+        self.assertEqual(res["subtitle/render"]["data"]["engine"]["id"], "ffmpeg-skill")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        dur, _, _, _ = self._probe(arts["YOUTUBE"]["path"])
+        self.assertGreater(dur, 5.0)
+        self._gate_coherent(out, arts["YOUTUBE"])
+
+    # ---- Scenario 5: the whole pipeline on two inputs
+    def test_s5_multi_skill_pipeline(self):
+        self._need("video-editing", "subtitle", "thumbnail", "color-grading", "motion-graphics", "qc")
+        speech = self._speech()
+        speech2 = str(Path(self.tmp) / "src" / "ja_talk2.mp4"); shutil.copy(speech, speech2)   # two talks: every source of the programme needs a transcript (a tone-only input is refused)
+        svc = self._svc("s5")
+        ir, p = self._plan(svc, [speech, speech2], {"edit.concat": True, "subtitle": True, "subtitle.burn_in": True, "thumbnail": True, "color.target": "bt709", "motion.title": "Opening", "qc": True}, name="s5")
+        d = ir.doc
+        trims = [s["skill"] for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"]
+        self.assertEqual([s["skill"] for s in d["plan"]["steps"]], trims + ["video_concat", "color_retag", "motion_graphics", "subtitle_generation", "subtitle_burn_in",
+                                                                            "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check", "qc_check"])
+        self.assertEqual(len({s["tool"].split("/")[0] for s in d["plan"]["steps"]}), 7)
+        gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
+        cat = next(op for op in d["video"]["operations"] if op["type"] == "video.concat")
+        ids = list(d["assets"])
+        self.assertEqual([gen["timeline_map"]["inputs"][i]["offset"] for i in ids], [seg["timeline_range"][0] for seg in cat["segments"]], "each talk's cues start where its segment lands on the programme")
+        self.assertGreater(gen["timeline_map"]["inputs"][ids[1]]["offset"], 9.0); self.assertTrue(all(c["start"] >= 0 for c in gen["cues"]))
+        out = self._render(svc, p)
+        self.assertEqual({a["type"] for a in out["artifacts"]}, {"YOUTUBE", "CAPTIONS", "THUMBNAIL"})
+        self._gate_coherent(out, next(a for a in out["artifacts"] if a["type"] == "YOUTUBE"))
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted({e["skill_package"] for e in prov["operations"]}), ["color-grading", "ffmpeg-skill", "motion-graphics", "qc", "subtitle", "thumbnail", "video-editing"])
+        info = Service.explain_pipeline(d, provenance=prov, artifacts=out["artifacts"])
+        self.assertTrue(all(info["counts"][lv] > 0 for lv in info["levels"]), info["counts"])
+
+    # ---- Scenario 6: a failure in the middle → resume
+    def test_s6_failure_then_resume(self):
+        self._need("color-grading", "motion-graphics", "qc")
+        svc = self._svc("s6")
+        logo = str(Path(self.tmp) / "src" / "logo6.png"); shutil.copy(self.png, logo)
+        ir, p = self._plan(svc, [self.a], {"color.target": "bt709", "motion.image": logo, "qc": True}, name="s6")
+        os.remove(logo)   # the graphics input disappears before execution: the Skill refuses, nothing after it runs
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertIn(out["execution"]["status"], ("FAILED", "BLOCKED"))
+        failed = next(r for r in out["execution"]["results"] if not r["ok"])
+        self.assertEqual(failed["tool"], "motion-graphics/run"); self.assertEqual([r["tool"] for r in out["execution"]["results"] if r["ok"]], ["ffmpeg-skill/cut", "color-grading/run"])
+        shutil.copy(self.png, logo)
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED", out2["execution"].get("recovery"))
+        self.assertEqual(len(out2["execution"]["skipped"]), 2, "the trim and the colour operation are reused")
+        self.assertEqual(out2["execution"]["results"][0]["tool"], "motion-graphics/run")
+
+    # ---- Scenario 7: plan revision → approval → execution
+    def test_s7_revision_approval_execution(self):
+        self._need("color-grading", "thumbnail", "qc")
+        svc = self._svc("s7")
+        ir, p = self._plan(svc, [self.a], {"color.target": "bt709", "thumbnail": True, "qc": True}, name="s7")
+        th = next(x for x in ir.doc["decisions"] if x["subject"] == "thumbnail.render")
+        svc.reject(load_ir(p), p, [th["id"]], reason="no thumbnail")
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "BLOCKED")
+        svc.revise(load_ir(p), p, feedback="drop the thumbnail")
+        ir2 = load_ir(p)
+        self.assertEqual(ir2.version, 2); self.assertNotIn("thumbnail_frame", [s["skill"] for s in ir2.doc["plan"]["steps"]])
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "WAITING_FOR_APPROVAL")
+        svc.approve(load_ir(p), p, ["all"])
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["execution"]["status"], "COMPLETED"); self.assertEqual({a["type"] for a in out["artifacts"]}, {"YOUTUBE"})
+
+    # ---- Scenario 8: capability drift → BLOCK (a checkout whose contract changed is MISSING, never used)
+    def test_s8_capability_drift_blocks(self):
+        self._need("color-grading")
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.tools.color_grading import locate_color_grading
+        root = Path(locate_color_grading().root or "")
+        if not root.is_dir():
+            self.skipTest("needs a color-grading-skill checkout (not a console script)")
+        drifted = Path(self.tmp) / "drifted-color-grading"
+        shutil.copytree(root / "src", drifted / "src")
+        cp = drifted / "src" / "color_grading" / "contract.py"
+        text = cp.read_text(encoding="utf-8")
+        marker = '"max_operations": MAX_OPERATIONS,'
+        self.assertIn(marker, text)
+        cp.write_text(text.replace(marker, '"max_operations": MAX_OPERATIONS + 1,', 1), encoding="utf-8")   # a different request contract: drift, never silently kept
+        caps = CapabilityResolver(str(locate_ffmpeg_skill().root), color_grading_dir=str(drifted)).resolve()
+        self.assertEqual(caps["color-grading"].status, "MISSING", caps["color-grading"].detail)
+        self.assertTrue(caps["color-grading"].evidence.get("drift") or "unusable" in caps["color-grading"].detail)
+        svc = Service(workspace=str(Path(self.tmp) / "s8"), color_grading_dir=str(drifted))
+        ir = svc.plan([self.a], "youtube", user_requirements={"color.target": "bt709"})
+        dec = {x["subject"]: x for x in ir.doc["decisions"]}
+        self.assertEqual(dec["capability.color_retag"]["approval"], "BLOCK"); self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        p = str(Path(svc.workspace) / "s8.json"); save_ir(ir, p)
+        self.assertIn(svc.render(load_ir(p), p, approve=["all"])["status"], ("BLOCKED", "FAILED"))
+
+    # ---- Scenario 9: hash mismatch → reuse forbidden
+    def test_s9_hash_mismatch_forbids_reuse(self):
+        self._need("color-grading", "qc")
+        svc = self._svc("s9")
+        ir, p = self._plan(svc, [self.a], {"color.target": "bt709", "qc": True}, name="s9")
+        out = self._render(svc, p)
+        art = out["artifacts"][0]
+        with open(art["path"], "ab") as fh:
+            fh.write(b"tampered")
+        self.assertFalse(svc.artifact(art["id"])["integrity"]["ok"])
+        from video_agent.artifacts import ArtifactError
+        with self.assertRaises(ArtifactError):
+            svc.promote_artifact(art["id"], "final")
+        job_dir = Path(svc.workspace) / "jobs" / out["job"]["id"]
+        inter = next(x for x in job_dir.rglob("*_retag.mp4"))
+        with open(inter, "ab") as fh:
+            fh.write(b"x")
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED")
+        self.assertIn("color-grading/run", [r["tool"] for r in out2["execution"]["results"]], "the tampered intermediate is produced again, never reused")
+        self.assertNotEqual(out2["artifacts"][0]["hash"], art["hash"] + "x", "a fresh, verified artifact")
+        qc = next(r for r in out2["execution"]["results"] if r["tool"] == "qc/check")
+        self.assertEqual(qc["data"]["fingerprint"], out2["artifacts"][0]["hash"])
+
+    # ---- Scenario 10: same input, same plan → deterministic, idempotent
+    def test_s10_determinism_and_idempotency(self):
+        self._need("color-grading", "motion-graphics", "qc")
+        reqs = {"color.target": "bt709", "motion.title": "Opening", "qc": True}
+        svc = self._svc("s10")
+        ir1, p1 = self._plan(svc, [self.a], reqs, name="s10a")
+        ir2, p2 = self._plan(svc, [self.a], reqs, name="s10b")
+        strip = lambda doc: json.dumps({k: doc[k] for k in ("video", "color", "graphics", "delivery")}, sort_keys=True).replace(list(doc["assets"])[0], "A")  # noqa: E731
+        import re as _re
+        self.assertEqual(_re.sub(r"dec_[0-9a-f]{10}", "dec", strip(ir1.doc)), _re.sub(r"dec_[0-9a-f]{10}", "dec", strip(ir2.doc)))
+        out = self._render(svc, p1)
+        out2 = svc.render(load_ir(p1), p1, resume="last")
+        self.assertEqual(out2["execution"]["status"], "COMPLETED")
+        transforms = [r for r in out["execution"]["results"] if r["ok"] and r["output"]]
+        self.assertEqual(len(out2["execution"]["skipped"]), len(transforms), "every transform is reused; the checks and the QC gate run again")
+        self.assertEqual(out2["artifacts"][0]["hash"], out["artifacts"][0]["hash"])
+        self.assertEqual(out2["artifacts"][0]["id"], out["artifacts"][0]["id"], "the same bytes are the same artifact")
