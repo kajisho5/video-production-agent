@@ -1,0 +1,50 @@
+{
+ "name": "ap_ir_to_execution_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.channels": "mono",
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "CUT",
+    "MONO",
+    "NORMALIZE"
+   ],
+   "qa_status": "PASS",
+   "duration": 11.0,
+   "skill_observations": [
+    "media.probe",
+    "media.probe",
+    "media.probe",
+    "loudness"
+   ]
+  }
+ }
+}

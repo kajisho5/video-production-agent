@@ -1211,3 +1211,156 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self._run("fill", {"edit.concat": True, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.5, "edit.speed": 2, "edit.resize": 640, "edit.fill": "1:1",
                            "edit.overlay": self.png, "edit.overlay.position": {"x": 10, "y": 10}, "edit.overlay.opacity": 0.6},
                   ["video.concat", "video.speed", "video.resize", "video.fill", "video.overlay"], (640, 640))
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class AudioProductionRealTests(unittest.TestCase):
+    """ADR-030 on the real audio-production-skill (main, 0.1.0) and ffmpeg-skill 0.9.x: contract / doctor / drift against the pinned
+    contract, the capability verdicts, and the vertical slice on real media — analysis (probe / silence / loudness) → decisions →
+    ProductionPlan → IR audio operations → compiler → audio-production-skill → execution → the Skill's OBSERVED probe and loudness
+    re-measurement → QA on the audio deliverable → artifact / provenance → resume. Cases: (A) audio-only stereo WAV with silence:
+    cut → gain → mono → fade out; (B) a video+audio container: the audio track is delivered (cut → fade in), no picture; (C) two
+    audio inputs: cut → concat with crossfade → mono → normalise (re-measured); (D) refusals. Runs only with a checkout installed."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.audio_production import locate_audio_production
+        cls.ap = locate_audio_production()
+        cls.tmp = tempfile.mkdtemp(prefix="va_ap_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.wav, cls.mono, cls.mp4 = str(src / "a.wav"), str(src / "b.wav"), str(src / "v.mp4")
+        if cls.ap:
+            gated = "0.1*sin(2*PI*1000*t)*between(t\\,3\\,13)"
+            ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+            subprocess.run(ff + ["-f", "lavfi", "-i", f"aevalsrc='{gated}|{gated}':s=48000:c=stereo", "-t", "16", "-c:a", "pcm_s16le", cls.wav], check=True)
+            subprocess.run(ff + ["-f", "lavfi", "-i", "aevalsrc='0.2*sin(2*PI*440*t)':s=48000:c=mono", "-t", "5", "-c:a", "pcm_s16le", cls.mono], check=True)
+            make_media(cls.mp4)
+
+    def _probe(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,channels,sample_rate", "-of", "json", path], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        a = next((s for s in doc["streams"] if s.get("codec_type") == "audio"), {})
+        return float(doc["format"]["duration"]), int(a.get("channels") or 0), int(a.get("sample_rate") or 0), any(s.get("codec_type") == "video" for s in doc["streams"])
+
+    def _run(self, name, inputs, reqs, expect_skills, expect_ops):
+        ws = str(Path(self.tmp) / name)
+        svc = Service(workspace=ws)
+        ir = svc.plan(inputs, "generic", user_requirements=reqs)
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"]); self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual([s["skill"] for s in d["plan"]["steps"]], expect_skills)
+        self.assertTrue(all(s["tool"] == "audio-production/run" for s in d["plan"]["steps"]))
+        self.assertEqual(d["video"]["operations"], [])
+        p = str(Path(self.tmp) / f"{name}.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"]); self.assertIn(out["status"], ("COMPLETED", "REVIEW"))
+        res = [r for r in out["execution"]["results"] if r["tool"] == "audio-production/run"]
+        self.assertEqual([r["data"]["operation_type"] for r in res], expect_ops)
+        import hashlib
+        for r in res:
+            self.assertTrue(r["ok"] and os.path.isfile(r["output"]) and r["output"].endswith(".wav"), r)
+            self.assertEqual(r["data"]["artifact"]["sha256"], hashlib.sha256(Path(r["output"]).read_bytes()).hexdigest())
+            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertTrue(r["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+            self.assertTrue(r["data"]["operation"]["tool"].startswith("ffmpeg-skill/")); self.assertEqual(r["data"]["provenance"]["skill"], "audio-production")
+            self.assertFalse(any(k in json.dumps(r["data"]["operation"]["parameters"]).lower() for k in ("argv", "command", "filter", "shell")))
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertEqual(items["duration"]["status"], "PASS", items["duration"]); self.assertEqual(items["audio_only"]["status"], "PASS")
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        rows = [e for e in prov["operations"] if e["tool"] == "audio-production/run"]
+        self.assertEqual([e["skill"] for e in rows], expect_skills)
+        for e in rows:
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.1.0" and e["skill_package"] == "audio-production")
+        dec = {x["id"]: x for x in d["decisions"]}
+        self.assertTrue(all(dec[i]["type"] in ("TRANSFORM", "REMOVE") for e in rows for i in e["decision"]))
+        return svc, p, out, res, prov
+
+    def test_contract_doctor_capabilities_and_drift(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout (VIDEO_AGENT_AUDIO_PRODUCTION_DIR)")
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.tools.audio_production import AudioProductionAdapter, contract_drift, pinned_contract
+        ad = AudioProductionAdapter(self.ap, workspace=self.tmp, allowed_inputs=[str(Path(self.wav).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.version, pinned_contract()["version"])
+        self.assertEqual(contract_drift(ad.contract), [], "the installed audio-production-skill contract drifted from the pinned one: re-verify the adapter")
+        doc = ad.doctor()
+        self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
+        self.assertEqual(doc["checks"]["ffmpeg_skill"]["status"], "ok", doc["checks"]["ffmpeg_skill"])
+        ops = ad.operation_status(doc)
+        self.assertEqual(ops["NORMALIZE"], "supported"); self.assertEqual(ops["CUT"], "supported")
+        self.assertNotRegex(json.dumps(doc).replace("secrets_shown", ""), r"(?i)(api[_-]?key|token|secret|password)")
+        caps = CapabilityResolver(str(locate_ffmpeg_skill().root), audio_production_dir=str(self.ap.root) if self.ap.root else None).resolve()
+        self.assertEqual(caps["audio-production"].status, "AVAILABLE", caps["audio-production"].detail)
+        self.assertEqual(caps["audio-production"].evidence["drift"], []); self.assertEqual(caps["audio-production"].evidence["engine"]["id"], "ffmpeg-skill")
+        for t in ("CUT", "NORMALIZE", "CONCAT", "GAIN", "MONO", "FADE_IN"):
+            self.assertEqual(caps[f"audio-production:{t}"].status, "AVAILABLE", (t, caps[f"audio-production:{t}"].detail))
+        svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
+        pk = {r["skill_id"]: r for r in svc.packages()}["audio-production"]
+        self.assertTrue(pk["implemented"] and pk["available"], pk["reason"]); self.assertEqual(pk["version"], ad.version)
+        tools = svc.tools_for()
+        self.assertEqual({tools.get(s) for s in ("audio_cut", "audio_normalize", "audio_gain", "audio_mono", "audio_stereo", "audio_downmix", "audio_fade_in", "audio_fade_out", "audio_concat")}, {"audio-production/run"})
+        self.assertEqual(tools.get("silence_cleanup"), "ffmpeg-skill/cut", "the reference paths are untouched")
+        self.assertEqual(tools.get("loudness_normalization"), "ffmpeg-skill/loudness")
+
+    def test_audio_only_cut_gain_mono_fade_end_to_end(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc, p, out, res, prov = self._run("A", [self.wav], {"audio.production": True, "audio.gain": -3, "audio.channels": "mono", "audio.fade_out": 1.0},
+                                           ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out"], ["CUT", "GAIN", "MONO", "FADE_OUT"])
+        dur, ch, sr, has_v = self._probe(res[-1]["output"])
+        self.assertAlmostEqual(dur, 10.3, delta=0.1, msg="16 s source minus the leading / trailing silence (with margins) = 10.3 s"); self.assertEqual((ch, sr, has_v), (1, 48000, False))
+        self.assertEqual(self._probe(res[0]["output"])[1], 2, "the cut keeps the stereo layout; MONO changes it")
+        aid = list(svc.validate(load_ir(p)).errors or []) and None or list(load_ir(p).doc["assets"])[0]
+        self.assertEqual(out["paths"][f"{aid}_delivery_main"], res[-1]["output"], "generic profile: the last audio intermediate is the deliverable")
+        self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 4)
+        # resume reuses every completed audio operation (no Skill call)
+        out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
+        self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(all(r["op_id"] in out2["execution"]["skipped"] for r in res))
+
+    def test_video_container_delivers_audio_only(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc, p, out, res, prov = self._run("B", [self.mp4], {"audio.production": True, "audio.fade_in": 0.5}, ["audio_cut", "audio_fade_in"], ["CUT", "FADE_IN"])
+        dur, ch, sr, has_v = self._probe(res[-1]["output"])
+        self.assertFalse(has_v, "the picture is not delivered on the audio path"); self.assertAlmostEqual(dur, 11.0, delta=0.2)
+        dec = {x["subject"]: x for x in load_ir(p).doc["decisions"]}
+        self.assertEqual(dec["audio.extract"]["type"], "TRANSFORM"); self.assertEqual(dec["audio.extract"]["basis"]["approval"]["key"], "audio.extract.approval")
+
+    def test_two_inputs_concat_mono_normalize_end_to_end(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc, p, out, res, prov = self._run("C", [self.wav, self.mono], {"audio.production": True, "audio.concat": True, "audio.concat.crossfade": 0.5, "audio.channels": "mono",
+                                                                       "audio.normalize": True, "audio.loudness.target_lufs": -16},
+                                           ["audio_cut", "audio_concat", "audio_mono", "audio_normalize"], ["CUT", "CONCAT", "MONO", "NORMALIZE"])
+        d = load_ir(p).doc
+        cat = next(op for op in d["audio"]["operations"] if op["type"] == "audio.concat")
+        self.assertAlmostEqual(cat["timeline_duration"], 10.3 + 5.0 - 0.5, places=2); self.assertEqual([s["input"] for s in cat["segments"]], list(d["assets"]))
+        dur, ch, sr, has_v = self._probe(res[-1]["output"])
+        self.assertAlmostEqual(dur, 14.8, delta=0.15); self.assertEqual((ch, has_v), (1, False))
+        norm = res[-1]["data"]
+        self.assertAlmostEqual(norm["measurement"]["data"]["integrated_lufs"], -16.0, delta=2.0, msg="the Skill re-measured its NORMALIZE output within the tolerance the decision carried")
+        self.assertEqual(norm["operation"]["parameters"]["tolerance_lufs"], 2.0)
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertEqual(items["loudness"]["status"], "PASS", items["loudness"]); self.assertIn("-16", items["loudness"]["expected"])
+        self.assertEqual(prov["skill_observations"][-1]["kind"], "loudness"); self.assertEqual(prov["skill_observations"][-1]["source"].split("@")[0], "ffmpeg-skill/loudness")
+        art = out["artifacts"] or []
+        self.assertEqual(art, [], "generic profile registers no preset artifact; the deliverable is the last intermediate")
+        self.assertTrue(out["paths"]["programme_audio_delivery_main"].endswith("programme_audio_loudnorm.wav"))
+
+    def test_refusals_on_real_skill(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc = Service(workspace=str(Path(self.tmp) / "D"))
+        for reqs, subjects in (({"audio.production": True, "edit.speed": 2}, {"audio.production"}), ({"audio.production": True, "audio.sample_rate": 44100}, {"audio.sample_rate"})):
+            ir = svc.plan([self.mono], "generic", user_requirements=reqs)
+            self.assertTrue(subjects <= {x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"}, reqs); self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+            pth = str(Path(self.tmp) / "d.json"); save_ir(ir, pth)
+            self.assertEqual(svc.render(load_ir(pth), pth, approve=["all"])["status"], "BLOCKED")
+        with self.assertRaises(ValueError):
+            svc.plan([self.mono], "generic", user_requirements={"audio.production": True, "audio.gain": 90})
+        # the Skill's own refusal through the boundary: a CUT beyond the media is INVALID_TIME_RANGE (not retried)
+        from video_agent.models import Operation
+        from video_agent.tools.audio_production import AudioProductionAdapter
+        ad = AudioProductionAdapter(self.ap, workspace=str(Path(self.tmp) / "D"), allowed_inputs=[str(Path(self.mono).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        out = str(Path(self.tmp) / "D" / "x" / "o.wav"); os.makedirs(os.path.dirname(out), exist_ok=True)
+        r = ad.run(Operation(tool="audio-production/run", args={"operation": "CUT", "input": "m", "remove": [[10.0, 20.0]], "output": "o"}, inputs=["m"], outputs=["o"], id="op_r"), {"m": self.mono, "o": out})
+        self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_TIME_RANGE"); self.assertFalse(r.data["error"]["retryable"]); self.assertFalse(os.path.exists(out))

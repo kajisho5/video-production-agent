@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
+from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, SKILL_OF as AUDIO_SKILL_OF
 from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF
 from ..agent.production_plan import validate_plan
 from ..models import Event
@@ -30,8 +31,102 @@ class ValidationReport:
 
 
 def produced_subjects(d: Dict[str, Any]) -> set:
-    """Logical subjects an operation produced (the concat programme) that later operations may reference."""
-    return {op.get("output") for op in d["video"]["operations"] if op.get("type") == "video.concat" and op.get("output")}
+    """Logical subjects an operation produced (the video / audio concat programmes) that later operations may reference."""
+    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "audio.concat") and op.get("output")}
+
+
+def check_audio_operations(d: Dict[str, Any]) -> List[str]:
+    """Per-type rules of the audio operations on the audio production path (ADR-030): explicit type, allowlisted parameters, an
+    audio stream on the subject, one cut per subject before anything else, one concat at most, the fixed order, references that
+    exist, ranges inside the source, the loudness operation carrying its references only on the audio path. Never a guess."""
+    errs: List[str] = []
+    assets = d["assets"]
+    aops = d["audio"]["operations"]
+    known: set = set(assets)
+    seen_rank: Dict[str, int] = {}
+    concat_seen = False
+    on_audio_path: set = set()
+    for op in aops:
+        t = op.get("type")
+        subj = op.get("asset")
+        if t == "audio.loudness":
+            if ("input" in op) != ("output" in op):
+                errs.append("audio.loudness: input and output references go together (audio path) or are both absent (reference engine path)")
+            if "input" not in op and any(k in op for k in ("tolerance_lu", "sample_rate")):
+                errs.append("audio.loudness: tolerance_lu / sample_rate exist only on the audio production path")
+            if "input" in op:
+                on_audio_path.add(subj)
+                if subj not in known:
+                    errs.append(f"audio.loudness references {subj!r} before it exists")
+                rank = AUDIO_ORDER.index("audio.loudness")
+                if seen_rank.get(subj, -1) >= rank:
+                    errs.append(f"audio.loudness on {subj} is out of the fixed audio order {AUDIO_ORDER}")
+                seen_rank[subj] = rank
+            continue
+        if t not in AUDIO_OPERATIONS:
+            errs.append(f"unknown audio operation type {t!r}")
+            continue
+        spec = AUDIO_OPERATIONS[t]
+        extra = sorted(k for k in op if k not in ("type", "asset", "input", "inputs", "output", "segments", "timeline_duration", "temporal_scope", "decision_ids") and k not in spec["params"])
+        if extra:
+            errs.append(f"{t}: parameters {extra} are not in the operation's vocabulary")
+        on_audio_path.add(subj)
+        if t == "audio.cut":
+            if subj not in assets:
+                errs.append(f"audio.cut on {subj!r}: only a source asset is cut")
+            elif subj in seen_rank:
+                errs.append(f"audio.cut on {subj} must come before every other audio operation")
+            seen_rank[subj] = -1
+            dur = (assets.get(subj) or {}).get("technical", {}).get("duration") or 0.0
+            rs = op.get("remove") or []
+            last = -1.0
+            for r in rs:
+                if r[1] <= r[0] or r[0] < last:
+                    errs.append(f"audio.cut remove range {r} is empty, unsorted or overlapping")
+                if dur and r[1] > float(dur) + 0.01:
+                    errs.append(f"audio.cut remove range {r} exceeds asset duration {float(dur):.3f}")
+                last = r[1]
+            if dur and sum(e - s for s, e in rs) >= float(dur) - 0.01:
+                errs.append(f"audio.cut on {subj} would remove everything")
+        elif t == "audio.concat":
+            if concat_seen:
+                errs.append("more than one audio.concat (one audio programme per plan)")
+            concat_seen = True
+            ins = op.get("inputs") or []
+            if len(ins) < 2 or len(set(ins)) != len(ins):
+                errs.append("audio.concat needs two or more distinct inputs")
+            for i in ins:
+                if i not in assets:
+                    errs.append(f"audio.concat input {i!r} is not an asset")
+            if op.get("output") != subj or subj in assets:
+                errs.append("audio.concat: output must equal the operation's subject and not collide with an asset id")
+            segs = op.get("segments") or []
+            if segs and {s_.get("input") for s_ in segs} != set(ins):
+                errs.append("audio.concat segments do not cover exactly the inputs")
+            known.add(subj)
+            seen_rank[subj] = -1
+            continue
+        else:
+            if subj not in known:
+                errs.append(f"{t} references {subj!r} before it exists (the audio programme exists only after audio.concat)")
+            rank = AUDIO_ORDER.index(t)
+            if seen_rank.get(subj, -1) >= rank:
+                errs.append(f"{t} on {subj} is out of the fixed audio order {AUDIO_ORDER}")
+            seen_rank[subj] = rank
+            if op.get("input") is None:
+                errs.append(f"{t} on {subj}: input reference missing")
+            if t in ("audio.fade_in", "audio.fade_out") and not (isinstance(op.get("duration"), (int, float)) and 0 < float(op["duration"]) <= 3600):
+                errs.append(f"{t}: duration {op.get('duration')!r} must be within 0..3600 s")
+            if t == "audio.gain" and not (isinstance(op.get("gain_db"), (int, float)) and -60 <= float(op["gain_db"]) <= 60 and float(op["gain_db"]) != 0):
+                errs.append(f"audio.gain: gain_db {op.get('gain_db')!r} must be within -60..60 and not 0")
+    for subj in on_audio_path:
+        if subj in assets and not ((assets[subj].get("technical") or {}).get("audio")):
+            errs.append(f"audio operations on {subj}: no audio stream")
+    # an asset on the audio path is never also edited as video (its deliverable is audio)
+    for op in d["video"]["operations"]:
+        if op.get("asset") in on_audio_path:
+            errs.append(f"{op.get('type')} on {op.get('asset')}: the asset is on the audio production path (audio deliverable), video operations conflict")
+    return errs
 
 
 def check_video_operations(d: Dict[str, Any]) -> List[str]:
@@ -171,6 +266,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
     # semantic: operations reference known assets (or the concat programme once it exists) and decisions, ranges inside durations
     rep.errors += check_video_operations(d)
+    rep.errors += check_audio_operations(d)
     for op in d["video"]["operations"] + d["audio"]["operations"]:
         if op["asset"] not in assets and op["asset"] not in produced_subjects(d):
             rep.errors.append(f"operation {op['type']} references unknown asset {op['asset']}")
@@ -229,8 +325,12 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in d["audio"]["operations"]:
-        if op["type"] == "audio.loudness" and ("loudness_normalization", op["asset"]) not in step_keys:
+        if op["type"] == "audio.loudness" and (("audio_normalize" if "input" in op else "loudness_normalization"), op["asset"]) not in step_keys:
             rep.errors.append(f"audio.loudness on {op['asset']} has no plan step")
+        if op["type"] in AUDIO_SKILL_OF and op["type"] != "audio.loudness" and op["type"] not in ("audio.mono", "audio.stereo", "audio.downmix") and (AUDIO_SKILL_OF[op["type"]], op["asset"]) not in step_keys:
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] in ("audio.mono", "audio.stereo", "audio.downmix") and (AUDIO_SKILL_OF[op["type"]], op["asset"]) not in step_keys:
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
             rep.errors.append(f"delivery target {t['id']} has no export step")
@@ -299,6 +399,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("encoder:libx264")
         if any(op["type"] in SKILL_OF for op in d["video"]["operations"]):
             needed.add("video-editing")   # the editing operations exist only in video-editing-skill (ADR-029): UNKNOWN is not AVAILABLE
+        if any(op["type"] in AUDIO_OPERATIONS and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]):
+            needed.add("audio-production")   # the audio production path exists only in audio-production-skill (ADR-030)
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if any(t.get("preset") == "prores" for t in d["delivery"]["targets"]):

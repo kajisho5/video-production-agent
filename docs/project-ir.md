@@ -20,7 +20,7 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 | `plan` | version, steps[{skill, tool, decision_ids, params}], summary[] (人間向け) | Planner |
 | `timeline` | timelines{id: offset, drift_ratio}, events[] | MediaAnalyzer, approve() |
 | `video.operations[]` | `video.trim {asset, keep[[s,e]], accurate, decision_ids}`、`video.concat {asset: programme, inputs[], output, segments[{input, track, source_range, timeline_range}], timeline_duration, transition?, width?, height?, fps?, mode?, pad_color?, temporal_scope, decision_ids}`、`video.speed {asset, input, output, factor}`、`video.resize {asset, input, output, width, fps?}`、`video.fit {asset, input, output, aspect, width?, pad_color?, fps?}`、`video.fill {asset, input, output, aspect, width?, fps?}`、`video.overlay {asset, input, output, image, position?, margin?, scale?, opacity?, start?, end?, fade?}`（ADR-029。順序固定、語彙外 key は schema / validator が拒否） | Planner |
-| `audio.operations[]` | `audio.loudness {asset, target_lufs, true_peak, decision_ids}` | Planner |
+| `audio.operations[]` | `audio.loudness {asset, target_lufs, true_peak, decision_ids}`（audio path では `input, output, tolerance_lu?, sample_rate?` を持つ）、`audio.cut {asset, input, output, remove[[s,e]]}`、`audio.concat {asset: programme_audio, inputs[], output, crossfade, segments[], timeline_duration}`、`audio.gain {gain_db}`、`audio.mono` / `audio.stereo` / `audio.downmix`、`audio.fade_in` / `audio.fade_out {duration}`（ADR-030。固定順、語彙外 key は schema / validator が拒否） | Planner |
 | `captions` / `graphics` / `color` | 予約（Phase 3+） | — |
 | `delivery.targets[]` | id, preset(ffmpeg-skill export preset 名), platform(check.py platform 名), artifact_type | Profile |
 | `qa` | required layers, thresholds | Profile / defaults |
@@ -37,7 +37,7 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 
 ## コンパイル
 
-`execution/compiler.py` が asset ごとに trim → (speed → resize → fit | fill → overlay) → loudness → export → check の順で Operation を生成する。concat があれば全 asset の trim の後に concat（出力 `programme`）を置き、以降の操作は programme に対して生成する（ADR-029）。
+`execution/compiler.py` が asset ごとに trim → (speed → resize → fit | fill → overlay) → loudness → export → check の順で Operation を生成する。audio path（ADR-030）の asset は cut → (concat → programme_audio) → gain → channels → fade_in → fade_out → normalize の順で、すべて `audio-production/run` に lowering される（出力は WAV）。concat があれば全 asset の trim の後に concat（出力 `programme`）を置き、以降の操作は programme に対して生成する（ADR-029）。
 中間ファイルは `<workspace>/jobs/<job_id>/ops/NN_<stage>/`、納品物は `artifacts/`。
 Operation.args は adapter のカタログ型（`tools/ffmpeg_skill/catalog.py`）で検証され、ffmpeg のオプションはどこにも現れない。
 

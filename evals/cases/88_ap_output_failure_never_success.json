@@ -1,0 +1,39 @@
+{
+ "name": "ap_output_failure_never_success",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   }
+  ],
+  "run_mode": "validation_error"
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "render": {
+   "execution_status": "FAILED",
+   "recovery_classes": [
+    "SKILL_ERROR"
+   ]
+  }
+ }
+}

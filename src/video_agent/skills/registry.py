@@ -185,6 +185,21 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/fill"]))
     r.register(SkillSpec("video_overlay", "1.0", "Composite a PNG / JPEG image over the picture", {"asset": "video", "image": "png|jpg"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/overlay"]))
+    # audio production operations only audio-production-skill provides (ADR-030): the audio path of an asset (explicit `audio.production`);
+    # each skill needs the Skill's own per-operation capability (from its doctor) besides the package capability
+    for name, typ, desc, inputs, risk in (
+        ("audio_cut", "CUT", "Remove explicit source ranges from the audio (silence decisions)", {"asset": "audio", "remove": "ranges"}, "LOW"),
+        ("audio_normalize", "NORMALIZE", "Two-pass EBU R128 normalisation of the audio (target / true peak from policy)", {"asset": "audio", "target_lufs": "float"}, "LOW"),
+        ("audio_gain", "GAIN", "Fixed gain in dB", {"asset": "audio", "gain_db": "float"}, "LOW"),
+        ("audio_mono", "MONO", "Stereo → mono down-mix", {"asset": "audio"}, "MEDIUM"),
+        ("audio_stereo", "STEREO", "Mono → stereo (duplicated)", {"asset": "audio"}, "LOW"),
+        ("audio_downmix", "DOWNMIX", "5.1 / 7.1 → stereo down-mix", {"asset": "audio"}, "MEDIUM"),
+        ("audio_fade_in", "FADE_IN", "Linear fade in", {"asset": "audio", "duration": "float"}, "LOW"),
+        ("audio_fade_out", "FADE_OUT", "Linear fade out", {"asset": "audio", "duration": "float"}, "LOW"),
+        ("audio_concat", "CONCAT", "Join two or more audio subjects in order (optional crossfade)", {"assets": "audio[]"}, "MEDIUM"),
+    ):
+        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production", f"audio-production:{typ}"],
+                             risk, True, "CONFIRM", ["audio-production/run"]))
     r.register(SkillSpec("visual_inspection", "1.0", "Contact sheet for human/AI review", {"artifact": "video"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/look"]))
     # measurement skills only media-analysis-skill provides (external observation Skill; tool ids from its contract)

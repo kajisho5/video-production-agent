@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, TOOL as AUDIO_TOOL
 from ..agent.editing import EDIT_ORDER, OPERATIONS, PROGRAMME
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
@@ -76,6 +77,38 @@ def lower_video_edit(tool: str, op: Dict[str, Any], current: str, out_id: str, e
     return args
 
 
+def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
+    """IR `audio.loudness` → the typed arguments of the tool the plan selected: the reference loudness tool takes {input, lufs,
+    tp, output}; audio-production/run (ADR-030) takes the contract's NORMALIZE parameters (target_lufs, true_peak_db, the
+    tolerance the Skill re-measures against, an optional output sample rate). The compiler never chooses the engine."""
+    if tool == AUDIO_TOOL:
+        args: Dict[str, Any] = {"operation": "NORMALIZE", "input": current, "target_lufs": float(op["target_lufs"]), "true_peak_db": float(op["true_peak"]), "output": out_id}
+        if op.get("tolerance_lu") is not None:
+            args["tolerance_lufs"] = float(op["tolerance_lu"])
+        if op.get("sample_rate") is not None:
+            args["sample_rate"] = int(op["sample_rate"])
+        return args
+    return {"input": current, "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
+
+
+def lower_audio_op(tool: str, op: Dict[str, Any], current: Any, out_id: str) -> Dict[str, Any]:
+    """IR audio operation (audio.cut / concat / gain / mono / stereo / downmix / fade_in / fade_out) → audio-production/run
+    arguments: the contract's operation type plus the allowlisted parameters copied by name (remove ranges as [[s, e], …])."""
+    spec = AUDIO_OPERATIONS[op["type"]]
+    if tool != AUDIO_TOOL:
+        raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {AUDIO_TOOL}")
+    args: Dict[str, Any] = {"operation": spec["type"]}
+    if op["type"] == "audio.concat":
+        args["inputs"] = list(current if isinstance(current, list) else [current])
+    else:
+        args["input"] = current
+    for k in spec["params"]:
+        if op.get(k) is not None:
+            args[k] = op[k]
+    args["output"] = out_id
+    return args
+
+
 def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
     """(skill, asset-or-target key) → tool id, from plan.steps. The compiler never chooses tools itself."""
     out: Dict[Tuple[str, str], str] = {}
@@ -114,6 +147,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         return o
 
     concat = next((op for op in d["video"]["operations"] if op["type"] == "video.concat"), None)
+    audio_concat = next((op for op in d["audio"]["operations"] if op["type"] == "audio.concat"), None)
     state: Dict[str, Dict[str, Any]] = {}   # subject → {"current", "gen", "stem", "fp"}
 
     def edits(subject: str) -> None:
@@ -147,9 +181,26 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 continue
             st["gen"] += 1
             out_id = f"{subject}_loudnorm"
-            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_loudness" / f"{st['stem']}_loudnorm.mp4")
-            args = {"input": st["current"], "lufs": op["target_lufs"], "tp": op["true_peak"], "output": out_id}
-            add(tool_for("loudness_normalization", subject), args, [st["current"]], [out_id], list(op.get("decision_ids") or []), st["fp"], skill="loudness_normalization")
+            skill = "audio_normalize" if "input" in op else "loudness_normalization"
+            tool = tool_for(skill, subject)
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_loudness" / f"{st['stem']}_loudnorm.{'wav' if tool == AUDIO_TOOL else 'mp4'}")
+            args = lower_audio_loudness(tool, op, st["current"], out_id)
+            add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            st["current"] = out_id
+
+    def audio_edits(subject: str) -> None:
+        """Audio production operations on a subject (gain → channels → fades), chained in IR order; audio-production outputs are WAV."""
+        st = state[subject]
+        for op in d["audio"]["operations"]:
+            if op["asset"] != subject or op["type"] not in AUDIO_ORDER or op["type"] == "audio.loudness":
+                continue
+            name = op["type"].split(".", 1)[1]
+            st["gen"] += 1
+            out_id = f"{subject}_{name}"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_{name}" / f"{st['stem']}_{name}.wav")
+            skill = AUDIO_OPERATIONS[op["type"]]["skill"]
+            tool = tool_for(skill, subject)
+            add(tool, lower_audio_op(tool, op, st["current"], out_id), [st["current"]], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
             st["current"] = out_id
 
     def delivery(subject: str) -> None:
@@ -183,10 +234,36 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             args = lower_video_trim(tool, op, st["current"], out_id)
             add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill="silence_cleanup")
             st["current"] = out_id
-        if concat is None:
+        cut = next((op for op in d["audio"]["operations"] if op["type"] == "audio.cut" and op["asset"] == asset_id), None)
+        if cut is not None:   # audio production path (ADR-030): the silence decisions as one audio.cut; audio outputs are WAV
+            st["gen"] += 1
+            out_id = f"{asset_id}_cut"
+            paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_cut" / f"{stem}_cut.wav")
+            tool = tool_for("audio_cut", asset_id)
+            add(tool, lower_audio_op(tool, cut, st["current"], out_id), [st["current"]], [out_id], list(cut.get("decision_ids") or []), fp, skill="audio_cut")
+            st["current"] = out_id
+        on_audio = cut is not None or any(op["asset"] == asset_id and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]) \
+            or asset_id in (audio_concat.get("inputs") or [] if audio_concat else [])
+        if on_audio:
+            if audio_concat is None:
+                audio_edits(asset_id)
+                loudness(asset_id)
+                delivery(asset_id)
+        elif concat is None:
             edits(asset_id)
             loudness(asset_id)
             delivery(asset_id)
+    if audio_concat is not None:
+        subject = audio_concat.get("output") or PROGRAMME_AUDIO
+        inputs = [state[a]["current"] for a in audio_concat["inputs"]]
+        fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) for a in audio_concat["inputs"]])[:16]
+        state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
+        paths[subject] = str(job / "ops" / f"{subject}_01_concat" / f"{subject}.wav")
+        tool = tool_for("audio_concat", subject)
+        add(tool, lower_audio_op(tool, audio_concat, inputs, subject), inputs, [subject], list(audio_concat.get("decision_ids") or []), fp, skill="audio_concat")
+        audio_edits(subject)
+        loudness(subject)
+        delivery(subject)
     if concat is not None:
         # the multi-source timeline: every (trimmed) input in the decided order → one programme; the chain continues on it
         subject = concat.get("output") or PROGRAMME

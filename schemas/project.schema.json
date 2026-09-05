@@ -1195,13 +1195,35 @@
     "type",
     "asset"
    ],
+   "additionalProperties": false,
    "properties": {
     "type": {
      "enum": [
-      "audio.loudness"
+      "audio.loudness",
+      "audio.cut",
+      "audio.concat",
+      "audio.gain",
+      "audio.mono",
+      "audio.stereo",
+      "audio.downmix",
+      "audio.fade_in",
+      "audio.fade_out"
      ]
     },
     "asset": {
+     "type": "string"
+    },
+    "input": {
+     "type": "string"
+    },
+    "inputs": {
+     "type": "array",
+     "minItems": 2,
+     "items": {
+      "type": "string"
+     }
+    },
+    "output": {
      "type": "string"
     },
     "target_lufs": {
@@ -1213,6 +1235,112 @@
      "type": "number",
      "maximum": 0,
      "minimum": -20
+    },
+    "tolerance_lu": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 10
+    },
+    "sample_rate": {
+     "type": "integer",
+     "enum": [
+      8000,
+      11025,
+      16000,
+      22050,
+      24000,
+      32000,
+      44100,
+      48000,
+      88200,
+      96000
+     ]
+    },
+    "remove": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+       "type": "number",
+       "minimum": 0
+      }
+     }
+    },
+    "crossfade": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 30
+    },
+    "gain_db": {
+     "type": "number",
+     "minimum": -60,
+     "maximum": 60
+    },
+    "duration": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "maximum": 3600
+    },
+    "segments": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "input",
+       "source_range",
+       "timeline_range"
+      ],
+      "properties": {
+       "input": {
+        "type": "string"
+       },
+       "track": {
+        "type": "string"
+       },
+       "source_range": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+         "type": "number",
+         "minimum": 0
+        }
+       },
+       "timeline_range": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+         "type": "number",
+         "minimum": 0
+        }
+       }
+      }
+     }
+    },
+    "timeline_duration": {
+     "type": "number",
+     "minimum": 0
+    },
+    "temporal_scope": {
+     "type": "object",
+     "required": [
+      "start",
+      "end"
+     ],
+     "properties": {
+      "start": {
+       "type": "number",
+       "minimum": 0
+      },
+      "end": {
+       "type": "number",
+       "minimum": 0
+      }
+     }
     },
     "decision_ids": {
      "type": "array"

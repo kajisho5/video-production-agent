@@ -305,3 +305,21 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 四段階の区別: Skill supports = 8 operation（contract）/ adapter supports = 同 8（Lowering.ARGS）/ Planner can generate = video.trim + 6 operation（video.concat / speed / resize / fit / fill / overlay）/ E2E verified（実メディア）= trim → concat（plain・fade transition）→ speed → resize → fit・fill → overlay。
 
 未対応・別 PR 候補: `video.<op>.approval` を request から設定（REQUIREMENT_PREFIXES に "video." 無し）、asset の一部だけを concat する指定（現状は全 video asset）、concat の並び替え（入力順のみ）、overlay の時間範囲と programme 長の整合検査（Skill 側の検証に委ねている）、audio-only 入力との混在時の concat（BLOCK）、CROP / FREEZE / REVERSE（Skill が未対応）。silencedetect end > duration は別 PR。
+
+## 21. PR #21 — audio-production-skill vertical slice（ADR-030、2026-09-05 追記）
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G90 audio-production-skill の adapter が無い | 音声処理は ffmpeg-skill/loudness と /cut のみ | `tools/audio_production/`（locate / lowering / adapter / pinned contract）、契約検査・drift・doctor・response 検証・error mapping・lift_observation / lift_measurement |
+| G91 audio operation の Plan / IR 語彙が無い | `audio.loudness` のみ | `agent/audio.py`（requirement 検証、channel_operation、cut_ranges、concat segments、audio_subjects）、IR `audio.cut / concat / gain / mono / stereo / downmix / fade_in / fade_out`、`audio.loudness` に参照と tolerance / sample_rate |
+| G92 measurement ≠ decision ≠ execution の loudness 接続 | 測定 → decision → ffmpeg-skill/loudness | 同じ decision / IR type を audio path では NORMALIZE（tolerance_lufs 再測定）に lowering、再測定を provenance の Observation として記録 |
+| G93 audio-only / video+audio / video-only の区別 | asset 種別による経路の分岐無し | audio path は audio を持つ asset のみ、video container は `audio.extract`（CONFIRM）、video-only は BLOCK、edit.* との同時要求は BLOCK、validator が audio path の asset への video operation を conflict として拒否 |
+| G94 per-operation capability | package capability のみ | `audio-production:<TYPE>`（doctor supported / unsupported / unknown を resolver の測定で補完、UNKNOWN は選択不可） |
+| G95 CI に audio-production-skill が無い | — | tests.yml が main を clone、`VIDEO_AGENT_AUDIO_PRODUCTION_DIR` |
+| G96 ローカル ffmpeg-skill が 0.9.0 | audio-production-skill は 0.9.1 以上を要求 | ローカル clone を origin/main（0.9.1、2abd89c）へ更新。agent の対応範囲（< 0.10）内。CI は HEAD を clone しており run #37 以降は 0.9.1 で green |
+
+四段階: Skill supports 14 / adapter supports 14 / Planner generates 9 / E2E verified 3 ケース（A 音声のみ、B video container、C 2 入力 concat + normalize）。
+
+未検証（accepted limitation）: Windows / macOS での実 audio-production-skill E2E（CI の integration job は ubuntu のみ。Windows / macOS では fake process による unit / evals のみ）、wav 以外の出力 format（mp3 / m4a / flac …）、5.1 / 7.1 入力の DOWNMIX（fake のみ）。
+
+未対応・別 PR 候補: MIX（複数入力のレベル指定 requirement）、NOISE_REDUCTION / DYNAMICS（根拠となる measurement が無い）、`audio.<op>.approval` の request 指定、video+audio asset で video と audio の両方を納品する二経路、QC Skill との接続（qc-skill は PR #1 未マージ）、mp3 / m4a 等の audio delivery format（現状 wav のみ）。

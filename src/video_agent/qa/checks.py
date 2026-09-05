@@ -94,7 +94,16 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 continue
             p = probe_facts(facts(pr))
             v, a = p.get("video") or {}, p.get("audio") or {}
-            if "video" in required:
+            if "video" in required and subject.get("audio_only"):
+                got = p.get("duration") or 0.0   # an audio deliverable: duration is checked, the picture facts are not expected
+                ok = abs(got - kept) <= dur_tol
+                rep.items.append(QAItem("video", "duration", "PASS" if ok else "FAIL", round(got, 3), f"{kept:.3f} ± {dur_tol}", kind="judgement", artifact=art,
+                                        fix_hint="" if ok else "the audio cut landed differently from the planned ranges"))
+                if not ok:
+                    rep.incidents.append(Incident(type="DURATION_MISMATCH", severity="MEDIUM", start=min(got, kept), end=max(got, kept), evidence=[art],
+                                                  possible_cause="output duration differs from the planned kept duration", recommended_action="review the cut decision"))
+                rep.items.append(QAItem("video", "audio_only", "PASS" if not v else "FAIL", v.get("codec") if v else "none", "no video stream (audio deliverable)", artifact=art))
+            elif "video" in required:
                 got = p.get("duration") or 0.0
                 ok = abs(got - kept) <= dur_tol
                 rep.items.append(QAItem("video", "duration", "PASS" if ok else "FAIL", round(got, 3), f"{kept:.3f} ± {dur_tol}", kind="judgement", artifact=art,

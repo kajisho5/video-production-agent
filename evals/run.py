@@ -151,6 +151,115 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    ap = case.get("audio_production")
+    if ap:
+        # ADR-030: the audio production path (audio.production + audio.* requirements → decisions → plan → IR audio operations → compiler →
+        # the fake audio-production process); requirement refusals, decision BLOCKs (conflict / no audio / impossible layout / resample /
+        # preset), capability BLOCK (missing / UNKNOWN), contract drift BLOCK, execution failures never a success, provenance chain
+        import os
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.audio_production import AudioProductionAdapter, AudioProductionSkill, ContractError
+        from video_agent.project import load_ir, save_ir
+        os.environ.pop("FAKE_AP_MODE", None)
+        inputs = []
+        for n, spec in enumerate(ap.get("inputs") or [{"channels": 2}]):
+            f = src.parent / (f"in{n}." + ("mp4" if spec.get("video") else "wav"))
+            f.write_bytes(json.dumps({"fake": True, "duration": spec.get("duration", 16.0), "lufs": -11.0, "video": bool(spec.get("video", False)), "channels": spec.get("channels", 2)}).encode())
+            inputs.append(str(f))
+        if ap.get("contract_mode"):
+            os.environ["FAKE_AP_MODE"] = ap["contract_mode"]
+        skill = AudioProductionSkill([sys.executable, str(ROOT / "tests" / "fake_audio_production.py")], None, {})
+        try:
+            ad = AudioProductionAdapter(skill, workspace=tmp, allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
+        except ContractError as e:
+            os.environ.pop("FAKE_AP_MODE", None)
+            if exp.get("contract_refused") and exp["contract_refused"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e!s:.200}"]}
+        drift = ad.drift()
+        os.environ.pop("FAKE_AP_MODE", None)
+        extra = [] if ap.get("no_capability") else ["audio-production"] + [f"audio-production:{t}" for t in ("CUT", "NORMALIZE", "GAIN", "MONO", "STEREO", "DOWNMIX", "FADE_IN", "FADE_OUT", "CONCAT")]
+        if drift:
+            extra = []   # what the resolver does with a drifted contract: the capability is MISSING
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=extra)
+        if ap.get("unknown_capability"):
+            base_caps = caps.resolve()
+            class _Caps:
+                def resolve(self, refresh=False):
+                    c = dict(base_caps); c[ap["unknown_capability"]] = Capability(ap["unknown_capability"], "UNKNOWN", "doctor unknown", {}); return c
+            caps = _Caps()
+        fake_engine = FakeAdapter(**fake)
+        svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine, ad]), caps=caps, provider=provider)
+        try:
+            ir = svc.plan(inputs, case.get("profile", "generic"), user_requirements=case.get("requirements"))
+        except ValueError as e:
+            if exp.get("plan_error") and exp["plan_error"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"plan refused: {e!s:.200}"]}
+        if exp.get("plan_error"):
+            return {"case": case["name"], "ok": False, "failures": ["an invalid request was planned"]}
+        d = ir.doc
+        types = [op["type"] for op in d["audio"]["operations"]]
+        if "ir_ops" in exp and types != exp["ir_ops"]:
+            failures.append(f"IR audio operations {types} != {exp['ir_ops']}")
+        skills = [s["skill"] for s in d["plan"]["steps"]]
+        if "steps" in exp and skills != exp["steps"]:
+            failures.append(f"plan steps {skills} != {exp['steps']}")
+        if "blocked" in exp and bool(ir.blocked()) != exp["blocked"]:
+            failures.append(f"blocked {bool(ir.blocked())} != {exp['blocked']} ({[b['subject'] for b in ir.blocked()]})")
+        if exp.get("blocked_subjects") and sorted({b["subject"] for b in ir.blocked()}) != sorted(exp["blocked_subjects"]):
+            failures.append(f"blocked subjects {sorted({b['subject'] for b in ir.blocked()})} != {exp['blocked_subjects']}")
+        if "plan_status" in exp and d["plan"]["status"] != exp["plan_status"]:
+            failures.append(f"plan status {d['plan']['status']} != {exp['plan_status']}")
+        rep = svc.validate(ir)
+        if exp.get("validate_error"):
+            if not any(exp["validate_error"] in e for e in rep.errors):
+                failures.append(f"validator did not report {exp['validate_error']!r}: {rep.errors}")
+        elif not rep.ok:
+            failures.append(f"IR invalid: {rep.errors}")
+        for s_ in d["plan"]["steps"]:
+            if s_["skill"].startswith("audio_") and s_.get("tool") and s_["tool"] != "audio-production/run":
+                failures.append(f"step {s_['id']} selected a non audio-production tool {s_['tool']}")
+            if s_["skill"].startswith("audio_") and s_.get("tool") is None and not exp.get("blocked"):
+                failures.append(f"step {s_['id']} has no tool")
+        if exp.get("render"):
+            if ap.get("run_mode"):
+                os.environ["FAKE_AP_MODE"] = ap["run_mode"]
+            ir_path = str(Path(tmp) / "ap.json"); save_ir(ir, ir_path)
+            rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
+            os.environ.pop("FAKE_AP_MODE", None)
+            want = exp["render"]
+            if want.get("status") and rr.get("status") != want["status"]:
+                failures.append(f"render status {rr.get('status')} != {want['status']}")
+            if want.get("execution_status") and (rr.get("execution") or {}).get("status") != want["execution_status"]:
+                failures.append(f"execution status {(rr.get('execution') or {}).get('status')} != {want['execution_status']}")
+            results = (rr.get("execution") or {}).get("results") or []
+            used = [(r.get("data") or {}).get("operation_type") for r in results if r["tool"] == "audio-production/run"]
+            if want.get("operations") is not None and used != want["operations"]:
+                failures.append(f"audio-production operations {used} != {want['operations']}")
+            if want.get("recovery_classes") is not None and [r["class"] for r in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
+                failures.append(f"recovery {[r['class'] for r in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
+            if want.get("qa_status") and (rr.get("qa") or {}).get("status") != want["qa_status"]:
+                failures.append(f"qa {(rr.get('qa') or {}).get('status')} != {want['qa_status']}")
+            if want.get("duration") is not None:
+                item = next((i for i in (rr.get("qa") or {}).get("items") or [] if i["name"] == "duration"), None)
+                if not item or abs(float(item["observed"]) - float(want["duration"])) > 0.01:
+                    failures.append(f"delivered duration {item and item['observed']} != {want['duration']}")
+            if any(o.tool.startswith("ffmpeg-skill/") and o.tool.split("/")[1] in ("cut", "loudness", "audio") and (o.args or {}).get("output") for o in fake_engine.calls):
+                failures.append("the reference engine processed audio although the audio path was selected (fallback)")   # QA measurements (no output) are the engine's business
+            if (rr.get("execution") or {}).get("status") == "COMPLETED":
+                prov = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text())
+                for e in prov["operations"]:
+                    if e["tool"] == "audio-production/run":
+                        blob = json.dumps(e["args"]).lower()
+                        if any(k in blob for k in ('"argv"', '"command"', '"filter"', '"executable"', '"shell"', "ffmpeg -")):
+                            failures.append("provenance args carry command material")
+                        if not e.get("decision") or not (e.get("skill_result") or {}).get("artifact", {}).get("sha256"):
+                            failures.append(f"provenance of {e['skill']} lacks the decision / the Skill's artifact hash")
+                if want.get("skill_observations") is not None and [o["kind"] for o in prov.get("skill_observations") or []] != want["skill_observations"]:
+                    failures.append(f"skill observations {[o['kind'] for o in prov.get('skill_observations') or []]}")
+        return {"case": case["name"], "ok": not failures, "failures": failures}
     vo = case.get("video_editing_ops")
     if vo:
         # ADR-029: editing operations (concat / speed / resize / fit / fill / overlay) from explicit requirements through Decision → plan →

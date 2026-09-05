@@ -10,11 +10,11 @@ from video_agent.tools.base import ToolAdapter
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 
 
-def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False) -> Dict[str, Any]:
+def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False, video: bool = True, channels: int = 2) -> Dict[str, Any]:
     return {"file": path, "format": "mov,mp4,m4a,3gp,3g2,mj2", "duration": duration, "size_bytes": 1000, "bitrate": 500, "subtitle_streams": 0,
             "video": {"codec": "h264", "width": 1280, "height": 720, "fps": 30.0, "pix_fmt": "yuv420p", "hdr": hdr, "hdr_format": "HLG" if hdr else None, "rotation": 0, "variable_frame_rate_suspected": vfr,
-                      "color_primaries": "bt709", "color_transfer": "bt709", "bit_depth": 8},
-            "audio": {"codec": "aac", "channels": 2, "sample_rate": 48000} if audio else None}
+                      "color_primaries": "bt709", "color_transfer": "bt709", "bit_depth": 8} if video else None,
+            "audio": {"codec": "aac", "channels": channels, "sample_rate": 48000} if audio else None}
 
 
 def _read_fake(path: str) -> Optional[Dict[str, Any]]:
@@ -81,7 +81,9 @@ class FakeAdapter(ToolAdapter):
         if script == "probe":
             meta = _read_fake(op.args["inputs"][0])
             dur = meta["duration"] if meta else self.duration
-            return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], dur, self.audio, self.vfr, self.hdr), [], "", 0.1, attempt, dry_run)
+            # a self-describing fake file may declare itself audio-only ("video": false) and its channel count (audio-only fixtures, audio-production outputs)
+            return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], dur, self.audio, self.vfr, self.hdr, video=bool((meta or {}).get("video", True)),
+                                                                        channels=int((meta or {}).get("channels", 2))), [], "", 0.1, attempt, dry_run)
         if script == "silence":
             keep = [[max(0.0, (s[1] or self.duration) - 0.15) if i == 0 and s[0] == 0 else 0.0, 0.0] for i, s in enumerate(self.silences[:1])]
             data = {"silences": self.silences, "keep": [[2.85, 13.85]], "input_duration": self.duration, "kept_duration": 11.0, "removed_seconds": 5.0}

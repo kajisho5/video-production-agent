@@ -1774,6 +1774,42 @@ Requirement edit.* (explicit --set) → Decision (TRANSFORM / BLOCK, policy vide
   motion graphics, conference-specific rules, changes to either Skill, CROP / FREEZE / REVERSE / IMAGE_INSERT / POSITION
   (unsupported by the Skill: not tools).
 
+### audio-production-skill integration: the audio production path (implemented, ADR-030)
+
+```
+audio.production=true (+ audio.gain / channels / fade_in / fade_out / concat / sample_rate; explicit requirements)
+  + the existing silence decisions (→ audio.cut) and audio.loudness decision (→ NORMALIZE)
+  → Decision (TRANSFORM / KEEP / BLOCK; policy audio.<op>.approval, DEFAULT CONFIRM, explicit request waives)
+  → ProductionStep (skill audio_<op>, tool audio-production/run only)
+  → IR audio.operations[] (type, subject, input / inputs / output, allowlisted params, temporal scope, decision ids; concat: segments + timeline_duration)
+  → compiler lower_audio_loudness / lower_audio_op (names only; wrong tool = CompileError)
+  → AudioProductionAdapter (contract-checked, drift-checked; typed request on stdin; one response document; sha256 / probe / provenance verified)
+  → audio-production CLI → ffmpeg-skill ≥ 0.9.1 → FFmpeg → OBSERVED probe + NORMALIZE re-measurement → QA (audio deliverable) → Artifact / provenance
+```
+
+- **Boundary:** the Skill's CLI and its contract (`audio-production skill --json`, audio-production/contract@1) are the only
+  interface; the single tool `audio-production/run` carries the operation type inside the typed request. No import of the
+  Skill, no command / argv / filter / executable / environment / credential; the contract's `forbidden_fields` and the agent's
+  FORBIDDEN_ARG_KEYS are refused by name; every parameter is validated against the contract's parameter schema.
+- **Capability:** `audio-production` AVAILABLE only with a compatible, drift-free contract and doctor ok / degraded;
+  `audio-production:<TYPE>` per operation from the doctor (supported → AVAILABLE, unsupported → MISSING, unknown → AVAILABLE only
+  when this resolver measured the required filters / encoders itself, else UNKNOWN). UNKNOWN is never selectable; no fallback.
+- **Subjects:** an asset with audio, once `audio.production` is on, is delivered as audio (a video container's audio track is
+  extracted by the Skill — `audio.extract` decision, CONFIRM by policy). A video-only asset, a video preset profile, or
+  `edit.*` on the same request → BLOCK. Without the switch every existing path is byte-identical.
+- **Planned operations:** cut (from the silence decisions), normalize (from the loudness decision, same IR type, tolerance
+  re-measured by the Skill), gain, mono / stereo / downmix (target vs probed channels: KEEP when it already holds), fade in /
+  out, concat (`programme_audio`, crossfade). Not planned though executable: MIX, SILENCE_REMOVE, NOISE_REDUCTION, DYNAMICS,
+  TRIM. Not offered by the Skill: CHANNEL_MAP, standalone RESAMPLE (BLOCK without a normalisation), FORMAT_CONVERT.
+- **Loudness:** measurement (media-analysis / ffmpeg-skill loudness observation) ≠ rule (target / tolerance from policy) ≠
+  decision (`audio.loudness` TRANSFORM) ≠ execution (NORMALIZE re-measured against `tolerance_lufs`; the Skill's measurement
+  becomes an OBSERVED `loudness` observation in provenance; QA measures the delivered file itself).
+- **QA / artifacts:** `delivery_subjects` marks audio-path subjects `audio_only` (expected duration from cut / concat, expected
+  channels from the planned layout); the video layer checks duration and the absence of a video stream; artifact identity /
+  reuse semantics unchanged (WAV intermediates, generic delivery = last intermediate).
+- **Not here:** LLM-driven audio editing, speaker identity, a QC Skill, MIX / noise reduction / dynamics planning, changes to
+  either Skill, conference-specific rules.
+
 ## 52. Architecture / Repository
 
 A possible structure:

@@ -1,0 +1,37 @@
+{
+ "name": "ap_unknown_capability_blocks",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   }
+  ],
+  "unknown_capability": "audio-production:GAIN"
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.gain": -3
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "capability.audio_gain"
+  ],
+  "plan_status": "BLOCKED",
+  "validate_error": "has no selected tool"
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "name": "ap_requirement_to_decision_to_plan",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.gain": -3,
+  "audio.channels": "mono",
+  "audio.fade_out": 1.0,
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "ir_ops": [
+   "audio.cut",
+   "audio.gain",
+   "audio.mono",
+   "audio.fade_out",
+   "audio.loudness"
+  ],
+  "steps": [
+   "audio_cut",
+   "audio_gain",
+   "audio_mono",
+   "audio_fade_out",
+   "audio_normalize"
+  ],
+  "blocked": false,
+  "plan_status": "APPROVED"
+ }
+}

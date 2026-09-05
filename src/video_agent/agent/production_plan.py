@@ -24,7 +24,11 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    # editing operations (ADR-029): the IR parameter allowlist of each operation plus the subject / references
                    "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color"), "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
-                   "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade")}
+                   "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
+                   # audio production path (ADR-030): the subject's audio through audio-production-skill
+                   "audio_cut": ("asset", "remove"), "audio_normalize": ("asset", "target_lufs", "true_peak", "tolerance_lu", "sample_rate"), "audio_gain": ("asset", "gain_db"),
+                   "audio_mono": ("asset",), "audio_stereo": ("asset",), "audio_downmix": ("asset",), "audio_fade_in": ("asset", "duration"), "audio_fade_out": ("asset", "duration"),
+                   "audio_concat": ("asset", "inputs", "crossfade")}
 
 
 @dataclass
@@ -134,12 +138,13 @@ def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str,
     timeline (a derived scope from the IR operation, not a source), and — for the speed step and every step after it — the
     length changed by the video.speed factor (the scope of a step is on the timeline its output has)."""
     ops = (doc.get("video") or {}).get("operations") or []
+    aops = (doc.get("audio") or {}).get("operations") or []
     assets = doc.get("assets") or {}
     steps = (doc.get("plan") or {}).get("steps") or []
     if subject in assets:
         dur = ((assets[subject].get("technical") or {}).get("duration"))
     else:
-        dur = next((op.get("timeline_duration") for op in ops if op.get("type") == "video.concat" and op.get("output") == subject), None)
+        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "audio.concat") and op.get("output") == subject), None)
     if dur is None:
         return None
     speed = next((op for op in ops if op.get("type") == "video.speed" and op.get("asset") == subject and op.get("factor")), None)
