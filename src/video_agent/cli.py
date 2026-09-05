@@ -102,6 +102,11 @@ def _print_analysis(analysis) -> int:
     for o in analysis.observations:
         ext = f"  skill {o.skill}@{o.skill_version}  ext {o.external_id}  cache {o.cache.get('status')}" if o.skill_version else ""
         print(f"  observation {o.id}  {o.kind:15s} {o.source}{ext}")
+        if o.kind == "sync":
+            d = o.data
+            drift = d.get("drift") or {}
+            print(f"    sync {d.get('target_asset_id')} vs reference {d.get('reference_asset_id')}: offset {d.get('offset_seconds'):+.3f}s (target starts later when positive)  "
+                  f"confidence {d.get('confidence')}" + (f"  drift {drift.get('drift_ppm'):+.1f} ppm" if drift.get("drift_ppm") is not None else "") + f"  applied_to_timeline {d.get('applied_to_timeline')}")
         if o.kind == "transcript":
             tr = o.data
             prov = tr.get("provenance") or {}

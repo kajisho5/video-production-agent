@@ -1633,7 +1633,23 @@ stable across plan versions). A Session is a grouping a person or the system dec
   situations. `video-agent context <ir> [--at s | --between a b] [--timeline …]` lists situations.
 - **Genericity:** any asset (video, audio, screen capture, image, caption file) whose analysis yields events on a
   timeline takes part; no analysis Skill was added or changed. Cross-asset situations on the master timeline need the
-  existing `TimelineMap` offsets from a multi-source sync capability (not available yet; recorded in GAP §16).
+  existing `TimelineMap` offsets; the `sync` analysis kind (ADR-035) now measures them through ffmpeg-skill/sync.
+
+### Multi-source sync observation (implemented, ADR-035)
+
+```
+inputs [reference, target…] → AnalysisRequest(kinds += sync) → registry-selected ffmpeg-skill/sync (audio cross-correlation in the Skill)
+  → Observation(kind=sync, OBSERVED; asset = target; data: offset_seconds, confidence, meaning, drift?, reference_asset_id, target_asset_id, min_confidence, applied_to_timeline)
+  → TimelineMap(asset:target).offset_seconds / drift_ratio (only when confidence ≥ sync.min_confidence; else recorded, map unchanged)
+```
+
+- The first input is the reference (master clock); every other input with audio is measured against it (pairwise; three or more
+  sources are a set of pairwise observations, no global solver). Offset sign and drift are the tool's: positive = the target
+  starts later than the reference; `drift_ratio = 1 + drift_ppm / 1e6`. The agent never correlates audio itself.
+- A measurement, not a decision: no event, no inference, no decision and no plan operation is derived from it (the plan hash is
+  identical with and without the kind). Failures (no audio, too little audio, malformed result) stay in the analysis failure
+  domain; `replace_audio` / `trim_second` are never requested (no synced output is written by the agent).
+- Not here: camera / source switching, multicam rendering, speaker identity, automatic offset correction.
 
 ### Production Decision Engine (implemented, ADR-027)
 

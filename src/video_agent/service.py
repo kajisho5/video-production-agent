@@ -23,7 +23,7 @@ from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
 from .temporal import session_for_asset
-from .media.analysis import ANALYSIS_KINDS, CORE_KINDS, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
+from .media.analysis import ANALYSIS_KINDS, CORE_KINDS, SYNC_MIN_CONFIDENCE_DEFAULT, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
 from .models import Artifact, Inference, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
 from .profiles import load_profile
@@ -212,10 +212,11 @@ class Service:
         base = targeted_kinds(reqs) if strat == "TARGETED" else list(CORE_KINDS)
         extra = [k for k in (kinds or []) if k not in base]   # explicitly requested measurements (system / user), never chosen by an AI
         kinds = base + extra
+        p: Dict[str, Any] = {"threshold_db": float(rules.get("silence.threshold_db", -40)), "min_silence": 0.5, **{k: v for k, v in (params or {}).items() if v is not None}}
+        if "sync" in kinds:
+            p.setdefault("min_confidence", float(rules.get("sync.min_confidence", SYNC_MIN_CONFIDENCE_DEFAULT)))   # policy or the explicit default (ADR-035)
         return AnalysisRequest(inputs=list(inputs), kinds=kinds, strategy=strat, budget=AnalysisBudget.from_rules(rules),
-                               cache_policy=cache_policy or ("only" if strat == "CACHED_ONLY" else "use"),
-                               params={"threshold_db": float(rules.get("silence.threshold_db", -40)), "min_silence": 0.5, **{k: v for k, v in (params or {}).items() if v is not None}},
-                               hash_sources=hash_sources)
+                               cache_policy=cache_policy or ("only" if strat == "CACHED_ONLY" else "use"), params=p, hash_sources=hash_sources)
 
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
@@ -942,7 +943,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "sync.")
 
 
 def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
@@ -977,7 +978,7 @@ def _default_who() -> str:
 def _request_rules(user_requirements: Dict[str, Any]) -> List[Rule]:
     out = []
     for k, v in user_requirements.items():
-        if k.startswith(("audio.", "silence.", "delivery.", "edit.", "subtitle", "thumbnail", "color.", "motion.", "qc")):
+        if k.startswith(("audio.", "silence.", "delivery.", "edit.", "subtitle", "thumbnail", "color.", "motion.", "qc", "sync.")):
             out.append(Rule(f"request.{k}", "PREFERENCE", "REQUEST", k, v, "request"))
     return out
 

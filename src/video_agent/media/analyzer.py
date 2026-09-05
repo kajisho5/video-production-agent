@@ -13,8 +13,8 @@ from ..models import Asset, Observation, now_iso
 from ..temporal import Timeline
 from ..temporal.events import events_from_observation
 from ..tools.base import ToolAdapter, ToolError
-from .analysis import (probe_facts, ANALYSIS_KINDS, CORE_KINDS, IR_STRATEGY, LEGACY_STRATEGY, AnalysisError, AnalysisRequest, Analyzer, BudgetMeter, ObservationCache,
-                       cache_key, validate_observation)
+from .analysis import (probe_facts, sync_facts, ANALYSIS_KINDS, CORE_KINDS, IR_STRATEGY, LEGACY_STRATEGY, SYNC_MIN_CONFIDENCE_DEFAULT, SYNC_TOOL_PARAMS, AnalysisError,
+                       AnalysisRequest, Analyzer, BudgetMeter, ObservationCache, cache_key, validate_observation)
 
 STRATEGIES = ("FULL_ANALYSIS", "COARSE_ANALYSIS", "TARGETED_ANALYSIS", "CACHED_ONLY")   # names recorded in the IR
 
@@ -133,7 +133,7 @@ class MediaAnalyzer(Analyzer):
             tl.add_timeline(asset.id)
             dur = probe.get("duration") or 0.0
             has_audio = bool(probe.get("audio"))
-            for kind in [k for k in req.kinds if k != "media_probe"]:
+            for kind in [k for k in req.kinds if k != "media_probe" and not ANALYSIS_KINDS[k].get("pairwise")]:
                 if ANALYSIS_KINDS[kind]["needs_audio"] and not has_audio:
                     rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no audio stream"})
                     continue
@@ -158,6 +158,8 @@ class MediaAnalyzer(Analyzer):
             if not has_audio:
                 warnings.append(f"{p}: no audio stream; silence and loudness analysis skipped")
             assets.append(asset)
+        if "sync" in req.kinds:
+            self._sync(req, meter, assets, obs, tl, warnings, calls, rows)
         usage = meter.usage()
         analysis = {"analysis_id": req.analysis_id, "request": req.to_dict(), "analyzer": self.identity, "started_at": started, "completed_at": now_iso(),
                     "status": "FAILED" if any(r["status"] == "FAILED" for r in rows) else "OK", "rows": rows, "budget": usage,
@@ -165,8 +167,56 @@ class MediaAnalyzer(Analyzer):
         return AnalysisResult(assets=assets, observations=obs, timeline=tl, strategy=IR_STRATEGY[req.strategy], warnings=warnings, tool_calls=calls,
                               analyses=[analysis], budget=usage)
 
+    def _sync(self, req: AnalysisRequest, meter: BudgetMeter, assets: List[Asset], obs: List[Observation], tl: Timeline, warnings: List[str],
+              calls: List[Dict[str, Any]], rows: List[Dict[str, Any]]) -> None:
+        """ADR-035: pairwise sync measurement. The FIRST input is the reference (the master timeline's clock); every other input with
+        audio is measured against it through the registry-selected sync tool. The result is an Observation of
+        kind `sync` on the target asset; when its confidence reaches `min_confidence` the target's TimelineMap takes the measured
+        offset / drift ratio. Nothing here decides an edit: a low-confidence or failed measurement leaves the map untouched (0 / 1)."""
+        if "sync_analysis" not in self.tools:
+            rows.append({"asset_id": None, "kind": "sync", "status": "FAILED", "error": {"kind": "ANALYZER_UNAVAILABLE", "message": "no tool selected for skill sync_analysis in this environment"}})
+            warnings.append("sync analysis unavailable: no tool selected for skill sync_analysis")
+            return
+        if len(assets) < 2:
+            rows.append({"asset_id": assets[0].id if assets else None, "kind": "sync", "status": "SKIPPED", "reason": "sync needs two or more inputs (the first is the reference)"})
+            warnings.append("sync analysis skipped: it needs two or more inputs (the first is the reference)")
+            return
+        ref = assets[0]
+        if not ref.technical.get("audio"):
+            rows.append({"asset_id": ref.id, "kind": "sync", "status": "SKIPPED", "reason": "the reference (first input) has no audio stream"})
+            warnings.append(f"sync analysis skipped: the reference {ref.path} has no audio stream")
+            return
+        kp = req.kind_params("sync")
+        tool_params = {k: v for k, v in kp.items() if k in SYNC_TOOL_PARAMS}
+        min_conf = float(kp.get("min_confidence", SYNC_MIN_CONFIDENCE_DEFAULT))
+        ref_fp = ref.hash or f"stat:{ref.technical.get('file', {}).get('size')}:{int(ref.technical.get('file', {}).get('mtime') or 0)}"
+        for target in assets[1:]:
+            if not target.technical.get("audio"):
+                rows.append({"asset_id": target.id, "kind": "sync", "status": "SKIPPED", "reason": "no audio stream", "reference_asset_id": ref.id})
+                continue
+            tgt_fp = target.hash or f"stat:{target.technical.get('file', {}).get('size')}:{int(target.technical.get('file', {}).get('mtime') or 0)}"
+            args: Dict[str, Any] = {"reference": ref.path, "second": target.path, **tool_params}
+            o, row = self._observe(req, meter, "sync", target, f"{ref_fp}+{tgt_fp}", args, tool_params, calls, [target.id],
+                                   shape_extra={"reference_asset_id": ref.id, "target_asset_id": target.id, "min_confidence": min_conf})
+            row["reference_asset_id"] = ref.id
+            rows.append(row)
+            if o is None:
+                warnings.append(f"sync analysis failed for {target.path}: {(row.get('error') or {}).get('kind')} {(row.get('error') or {}).get('message', '')}".rstrip())
+                continue
+            facts = sync_facts(o.data)
+            applied = facts["offset_seconds"] is not None and facts["confidence"] is not None and facts["confidence"] >= min_conf
+            o.data["applied_to_timeline"] = applied
+            if applied:
+                tm = tl.timelines.get(f"asset:{target.id}")
+                if tm is not None:
+                    tm.offset_seconds = float(facts["offset_seconds"])
+                    tm.drift_ratio = float(facts["drift_ratio"])
+            else:
+                warnings.append(f"sync of {target.path}: confidence {facts['confidence']} below {min_conf}; the offset is recorded, the timeline map is unchanged")
+            obs.append(o)
+
     def _observe(self, req: AnalysisRequest, meter: BudgetMeter, kind: str, asset: Asset, fp: str, args: Dict[str, Any], kparams: Dict[str, Any],
-                 calls: List[Dict[str, Any]], asset_ids: List[str]):
+                 calls: List[Dict[str, Any]], asset_ids: List[str], shape_extra: Optional[Dict[str, Any]] = None):
         """One measurement: cache → budget → tool → validation. Returns (Observation | None, provenance row)."""
         skill = ANALYSIS_KINDS[kind]["skill"]
         tool = self._tool(skill)
@@ -189,6 +239,8 @@ class MediaAnalyzer(Analyzer):
                 o = Observation.from_dict(rec["observation"])
                 o.asset_id = asset.id           # cache identity is the asset content, the id belongs to this analysis
                 o.analysis_id = req.analysis_id
+                if shape_extra:
+                    o.data.update(shape_extra)  # pair ids belong to this analysis too (the measurement is keyed by both contents)
                 errs = validate_observation(o, req, asset_ids, kind)
                 if errs:
                     row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_CACHE_INVALID", "message": "; ".join(errs)}})
@@ -235,7 +287,13 @@ class MediaAnalyzer(Analyzer):
             row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
             row["skill_analysis_id"] = ext_obs.get("analysis_id")
         else:
-            data = self._shape(kind, r.data, kparams)
+            try:
+                data = self._shape(kind, r.data, kparams)
+            except ToolError as e:   # the tool answered, but not with the measurement keys the kind is defined by
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": str(e)[:200]}})
+                return None, row
+            if shape_extra:
+                data.update(shape_extra)
             o = Observation(kind=kind, asset_id=asset.id, source=source, data=data, analysis_id=req.analysis_id, analyzer=self.identity, cache_key=key,
                             skill=tool.split("/", 1)[0], tool=tool, fingerprint=fp, parameters=dict(kparams))
         errs = validate_observation(o, req, asset_ids, kind)
@@ -288,6 +346,14 @@ class MediaAnalyzer(Analyzer):
             d = {"silent": bool(data.get("silent"))}
             if not d["silent"]:
                 d.update({"lufs": _f(data.get("input_i")), "true_peak": _f(data.get("input_tp")), "lra": _f(data.get("input_lra"))})
+            return d
+        if kind == "sync":
+            # the tool's measurement keys, verbatim (offset sign and drift meaning are the tool's); paths and commands are not facts
+            d = {"offset_seconds": _f(data.get("offset_seconds")), "confidence": _f(data.get("confidence")), "meaning": data.get("meaning")}
+            if isinstance(data.get("drift"), dict):
+                d["drift"] = {k: v for k, v in data["drift"].items() if k in ("residual_at_end_seconds", "measured_over_seconds", "drift_ppm", "meaning", "confidence")}
+            if d["offset_seconds"] is None or d["confidence"] is None:
+                raise ToolError("sync result lacks offset_seconds / confidence")
             return d
         return dict(data)
 
