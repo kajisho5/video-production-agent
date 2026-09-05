@@ -98,6 +98,9 @@ class CapabilityResolver:
         caps["asr:whisper"] = Capability("asr:whisper", "AVAILABLE" if asr else "MISSING", asr or "no local whisper engine")
         for prov, var in AI_ENV.items():
             caps[f"ai:{prov}"] = Capability(f"ai:{prov}", "AVAILABLE" if self.env.get(var) else "MISSING", f"{var} {'set' if self.env.get(var) else 'not set'}")
+        configured = (self.env.get("VIDEO_AGENT_AI_PROVIDER") or "null").lower()
+        caps["ai:provider"] = Capability("ai:provider", "AVAILABLE" if configured not in ("", "null", "none") else "MISSING",
+                                         f"VIDEO_AGENT_AI_PROVIDER={configured} (deterministic pipeline; AI recommendations are proposals only)", {"provider": configured})
         self._cache = caps
         return caps
 

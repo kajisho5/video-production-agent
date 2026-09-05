@@ -1037,6 +1037,35 @@ AIProvider
 
 Do not hard-wire core deterministic media functions to an AI API.
 
+### AI Provider Contract / Reasoning Boundary (implemented, ADR-018)
+
+`providers/base.py`: `AIProvider` (name, model, `available()`, `describe()` without credentials, `complete(AIRequest) → AIResponse`),
+`AIRequest` (task_type ∈ {production_recommendation, requirements_extraction}, inputs = system-produced evidence summaries,
+schema, context), `AIResponse` (task_type, structured result, confidence, evidence ids, short reasoning, provider, model,
+`AIUsage`, latency, response_hash), `AIProviderError` (TIMEOUT / RATE_LIMIT / MALFORMED / UNAVAILABLE / AUTH / BUDGET).
+`NullProvider` is the default; no real provider is bundled.
+
+`agent/ai_reasoning.py` is the only consumer: it builds the request from observations / events (never media, never
+credentials), validates the response into `Inference`s with provenance `AI_GENERATED` (intent must be a registered,
+implemented production skill; evidence must cite existing observation / event ids; tool / argv / command / risk /
+approval keys are stripped), budgets calls (`analysis.budget.max_ai_calls`, default 4, one attempt, no retry) and
+records every call in `provenance.ai_calls` (provider, model, task, request fingerprint, response hash, usage,
+latency, outcome). Revisions reuse recorded AI inferences and spend no calls.
+
+The decision engine treats AI inferences as proposals: a recommendation covered by a measured decision becomes extra
+evidence on it (confidence / risk / approval untouched); anything else is a review decision `ai.<intent>` with approval
+from policy (`ai.recommendation.approval`, default CONFIRM), risk from the skill registry, and `executable: false`.
+
+```text
+AI ≠ Tool executor    AI ≠ Skill registry    AI ≠ Compiler    AI ≠ final execution authority
+AI → structured recommendation → Inference (AI_GENERATED) → Decision (policy / risk / approval) → SkillRegistry →
+Capability → Tool → Project IR → Compiler → ToolRouter → Adapter → Skill package → runtime → QA → provenance
+```
+
+Observations stay measurements: the validator rejects an observation whose source is not a tool id + version.
+A provider failure is an AI-domain failure (warning + `ai_calls[].error`), never a media-engine incident; the plan
+stays deterministic.
+
 ## 43. Security and Workspace
 
 Design for:
@@ -1255,6 +1284,11 @@ motion-graphics-skill, color-grading-skill, thumbnail-skill, qc-skill.
 
 Not part of the ecosystem contract (deliberately absent): plugin manager, package installer, dynamic import, marketplace,
 remote registry, arbitrary code loading. A package becomes known through its adapter module and one registration line.
+
+The Brain includes an **AI Provider** (reasoning / model interface, §42): it contributes production intent and
+inferences with evidence and confidence; it never selects a skill or tool, never emits commands, and never bypasses
+policy. ffmpeg-skill, the first Reference Skill, is external OSS (100+ GitHub stars at the time of writing) — the
+first real component of the ecosystem; that adoption is project context, not a functional specification.
 
 ## 52. Architecture / Repository
 

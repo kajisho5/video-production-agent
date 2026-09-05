@@ -78,3 +78,21 @@ unit 59/59（境界テスト 12 件: 追加分は planner / analyzer / QA に既
 実装しなかったもの（意図的）: 外部 package loader、plugin manager、dynamic import、future skill の dummy、`SkillSpec` の改名。DECLARED / IMPLEMENTED / AVAILABLE は既存の `NOT_IMPLEMENTED` / `implemented` / `AVAILABLE` に対応付け、新 status は作っていない。
 
 テスト: unit 66/66（EcosystemContractTests 7 件: Reference Skill 登録、tool 契約、Skill→Tool→Adapter の閉包、future skill 非 AVAILABLE + production code に future package 名が無いこと、default fallback 無し、fake-skill package の test scope 登録と Registry→…→provenance 伝播 + validator 拒否、engine 漏洩の静的検査）、integration 11/11（実 runtime での契約テスト追加）、evals 6/6。
+
+## 8. PR #7 — AI Provider Contract / Reasoning Boundary（2026-09-04 追記）
+
+調査: 既存は `providers/base.py` の `AIProvider`（`extract_requirements` のみ、呼び出し元なし）と `NullProvider`、capability `ai:anthropic` / `ai:openai`、provenance 値 `AI_GENERATED`。`ai_calls` / `max_ai_calls` / AI 由来 inference の扱いは未実装。
+
+| Gap | 事実（変更前） | 対応 |
+|---|---|---|
+| G16 Provider 契約が型として無い | 抽象クラスに 1 メソッドのみ、request / response / usage / identity / failure の型が無い | `AIRequest` / `AIResponse` / `AIUsage` / `AIProviderError`（6 failure kind）/ `TASK_TYPES`。`NullProvider` が既定、実 provider は未同梱 |
+| G17 AI 出力の受け口が無い | AI の結果を Inference / Decision に変換する層が無い | `agent/ai_reasoning.py`: evidence 要約の request 生成、untrusted response の検証（intent は実装済み production skill、evidence は既存 id、tool / argv / command / risk / approval を除去）、`AI_GENERATED` inference |
+| G18 Decision が AI 提案を扱わない | — | 計測済み decision と一致する提案は evidence に追加（confidence / risk / approval 不変）。それ以外は `ai.<intent>` の review decision（policy の approval、registry の risk、`executable: false`） |
+| G19 budget が無い | `analysis.budget` は time のみ、`max_ai_calls` 未実装 | `analysis.budget.max_ai_calls`（既定 4）。超過は `BUDGET` で明示失敗、1 回の呼び出しに 1 試行、retry 無し。revision は記録済み AI inference を再利用し呼び出しゼロ |
+| G20 AI provenance が無い | — | `provenance.ai_calls[]`（provider / model / task / request fingerprint / response hash / usage / latency / error）、`provenance.ai_provider`。job の provenance.json にも複製。IR schema は変更なし（provenance は追加キー許容） |
+| G21 Observation の捏造防止が無い | validator は observation の source を検査しない | source が `<tool>@<version>` でない observation を拒否、AI inference は `AI_GENERATED` 必須、evidence 無し inference を拒否 |
+| G22 doctor に provider 表示が無い | key の有無のみ | `ai:provider`（設定名のみ、key は表示しない）。`explain` に AI 呼び出し要約 |
+
+実装しなかったもの: 実 provider（OpenAI / Anthropic / Gemini / local）、AI による requirements 抽出の呼び出し（task type のみ予約）、CoT の保存、AI による Tool ID 指定。
+
+テスト: unit 77/77（AIProviderBoundaryTests 11 件）、integration 12/12（FakeAIProvider → 実メディア production、AI の command が実行されないことを provenance の command で確認）、evals 6/6。

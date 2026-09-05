@@ -9,7 +9,12 @@ from ..media.analyzer import AnalysisResult
 from ..models import Alternative, Decision, Inference, Intent, Requirement
 from ..policy.rules import RuleSet
 from ..skills.registry import SkillRegistry
+from .ai_reasoning import AI_KIND_PREFIX
 from .requirements import requirement_map
+
+# production-skill intent → decision subjects that would already execute it (measured path)
+INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
+                   "delivery_export": ("delivery.",), "delivery_check": ("delivery.",)}
 
 
 def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, inferences: List[Inference], rules: RuleSet,
@@ -121,4 +126,25 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         else:
             decs.append(Decision(subject=f"delivery.{t['id']}", decision="deliver the processed file without re-encoding to a platform preset",
                                  reason="profile target has no preset (generic: keep source format)", confidence=1.0, evidence=[targets.id], risk="LOW", approval="AUTO", provenance=targets.provenance, params=dict(t)))
+    # ---- AI recommendations (provenance AI_GENERATED): proposals only. A recommendation that a measured decision already
+    # covers becomes extra evidence on that decision (its confidence / risk / approval are untouched). Anything else is a
+    # review item: approval from policy (default CONFIRM), risk from the skill registry, never executable by itself.
+    for inf in inferences:
+        if not inf.kind.startswith(AI_KIND_PREFIX):
+            continue
+        intent = str(inf.data.get("intent") or inf.kind[len(AI_KIND_PREFIX):])
+        subjects = INTENT_SUBJECTS.get(intent, ())
+        covered = [d for d in decs if d.status != "BLOCKED" and any(d.subject == sub or (sub.endswith(".") and d.subject.startswith(sub)) for sub in subjects)
+                   and (d.params.get("asset_id") in (None, inf.asset_id))]
+        if covered:
+            for d in covered:
+                if inf.id not in d.evidence:
+                    d.evidence.append(inf.id)
+            continue
+        spec = registry.get(intent) if intent in registry.names() else None
+        decs.append(Decision(subject=f"ai.{intent}", decision=f"review: AI recommends {intent}",
+                             reason=inf.statement + "; no measurement supports automatic execution and AI output is not an execution authority",
+                             confidence=inf.confidence, evidence=[inf.id] + inf.evidence, risk=spec.risk_level if spec else "HIGH",
+                             approval=str(rules.get("ai.recommendation.approval", "CONFIRM")), provenance="AI_GENERATED",
+                             params={"asset_id": inf.asset_id, "intent": intent, "executable": False, "ai_params": inf.data.get("params") or {}}))
     return decs

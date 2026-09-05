@@ -24,7 +24,8 @@ def build_provenance(ir_doc: Dict[str, Any], ops: List[Operation], results: List
             "result": None if last is None else {"ok": last.ok, "exit_code": last.exit_code, "attempts": len(rs), "seconds": sum(r.seconds for r in rs), "commands": last.commands, "dry_run": last.dry_run},
         })
     return {"ir_hash": ir_doc["provenance"].get("ir_hash"), "source_hashes": ir_doc["provenance"]["source_hashes"], "profile_version": ir_doc["provenance"]["profile_version"],
-            "skill_versions": ir_doc["provenance"]["skill_versions"], "tool_versions": ir_doc["source"]["tool_versions"], "operations": entries, "recovery": recovery, "qa": qa}
+            "skill_versions": ir_doc["provenance"]["skill_versions"], "tool_versions": ir_doc["source"]["tool_versions"], "operations": entries, "recovery": recovery, "qa": qa,
+            "plan_hash": ir_doc["provenance"].get("plan_hash"), "ai_provider": ir_doc["provenance"].get("ai_provider"), "ai_calls": list(ir_doc["provenance"].get("ai_calls") or [])}
 
 
 def _version_of(versions: Dict[str, str], tool: str) -> str:

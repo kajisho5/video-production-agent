@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__
 from .agent import build_plan, decide, extract_requirements, infer, resolve_intent
+from .agent.ai_reasoning import AIReasoner, build_request, to_inferences
 from .agent.requirements import requirement_map
 from .audit import build_provenance, write_audit
 from .capabilities import CapabilityResolver
@@ -16,9 +17,10 @@ from .execution import CompileError, Executor, compile_ir
 from .execution.compiler import tool_version_of
 from .jobs import Job, JobStore
 from .media import MediaAnalyzer
-from .models import Artifact, Request, new_id, now_iso
+from .models import Artifact, Inference, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
 from .profiles import load_profile
+from .providers import AIProvider, AIProviderError, get_provider
 from .project import ProjectIR, load_ir, save_ir, validate_ir
 from .project.diff import plan_diff
 from .project.ir import snapshot_path
@@ -33,12 +35,15 @@ from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 
 
 class Service:
-    def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None):
+    def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
+                 provider: Optional[AIProvider] = None):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
         self.caps = caps or CapabilityResolver(self.skill_dir)
         self._adapter = adapter
         self.registry = default_registry()
+        self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
+        self._ai_calls: List[Dict[str, Any]] = []     # provenance.ai_calls for the project being planned
         # Reference Skill package: implemented in this codebase (tools/ffmpeg_skill) whether or not a checkout is installed.
         self.registry.register_package(FFMPEG_SKILL_PACKAGE)
         if self._adapter is not None:
@@ -114,10 +119,11 @@ class Service:
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
+        self._ai_calls = []
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
         return ir
 
-    def _reason(self, request: Request, profile, rules, analysis: AnalysisResult, suppressed: Optional[List[Dict[str, Any]]] = None):
+    def _reason(self, request: Request, profile, rules, analysis: AnalysisResult, suppressed: Optional[List[Dict[str, Any]]] = None, prior_ai=None):
         """Requirements → Intent → Inference → Decision → Plan. `suppressed` lists (subject, asset_id) pairs the user rejected:
         the planner must not propose them again. Returns (reqs, intent, inferences, decisions, plan, dropped)."""
         caps = self.caps.resolve()
@@ -128,6 +134,7 @@ class Service:
         intent = resolve_intent(reqs)
         target = rm.get("audio.loudness.target_lufs")
         inferences = infer(analysis, rules, target_lufs=float(target.value) if target else None, tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
+        inferences += self._ai_inferences(analysis, rules, prior_ai)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
@@ -143,8 +150,26 @@ class Service:
         plan = build_plan(decisions, analysis, frame_accurate=bool(precision and precision.value == "frame"), tools=tools)
         return reqs, intent, inferences, decisions, plan, dropped
 
-    def _fill(self, ir: ProjectIR, request: Request, profile, rules, analysis: AnalysisResult, plan_version: int, suppressed=None):
-        reqs, intent, inferences, decisions, plan, dropped = self._reason(request, profile, rules, analysis, suppressed)
+    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
+        """AI reasoning boundary. Recorded AI inferences (a revision) are reused: revising never spends AI calls. A provider
+        failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic."""
+        if prior_ai is not None:
+            return list(prior_ai)
+        if not self.provider.available():
+            return []
+        intents = [sp.name for sp in self.registry.all() if sp.implemented and ("artifact" in sp.outputs or "qa" in sp.outputs)]
+        reasoner = AIReasoner(self.provider, max_calls=int(rules.get("analysis.budget.max_ai_calls", DEFAULT_MAX_AI_CALLS)), calls=self._ai_calls)
+        try:
+            resp = reasoner.ask(build_request(analysis, intents, {"strategy": analysis.strategy}))
+        except AIProviderError as e:
+            analysis.warnings.append(f"ai: provider {self.provider.name} failed ({e.kind}); plan is deterministic only")
+            return []
+        infs, warns = to_inferences(resp, analysis, intents)
+        analysis.warnings.extend(warns)
+        return infs
+
+    def _fill(self, ir: ProjectIR, request: Request, profile, rules, analysis: AnalysisResult, plan_version: int, suppressed=None, prior_ai=None):
+        reqs, intent, inferences, decisions, plan, dropped = self._reason(request, profile, rules, analysis, suppressed, prior_ai)
         d = ir.doc
         d["request"] = request.to_dict()
         d["requirements"] = [r.to_dict() for r in reqs]
@@ -166,7 +191,8 @@ class Service:
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in (request.args or {}).get("inputs", [])})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
-                                "skill_versions": {s.name: s.version for s in self.registry.all() if s.phase == 1}, "tool_versions": d["source"]["tool_versions"]})
+                                "skill_versions": {s.name: s.version for s in self.registry.all() if s.phase == 1}, "tool_versions": d["source"]["tool_versions"],
+                                "ai_calls": list(self._ai_calls), "ai_provider": self.provider.describe() if self.provider.available() else None})
         ir.finalize_hash()
         return dropped
 
@@ -223,7 +249,9 @@ class Service:
                           args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso()})
         new_version = ir.version + 1
         fresh = ProjectIR.new(old["project"]["name"], old["project"]["profile"], self.workspace)
-        dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed)
+        prior_ai = [Inference.from_dict(i) for i in old["analysis"].get("inferences") or [] if i.get("provenance") == "AI_GENERATED"]
+        self._ai_calls = list(old["provenance"].get("ai_calls") or [])
+        dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed, prior_ai=prior_ai)
         nd = fresh.doc
         # carry identity, history and the audit trail
         nd["project"] = old["project"]
@@ -405,6 +433,7 @@ class Service:
         return {"probe": pr.data if pr.ok else {"error": pr.stderr_tail}, "check": ck.data if ck.data else {"error": ck.stderr_tail}}
 
 
+DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
 REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.")
 
 
