@@ -1043,6 +1043,79 @@ class ProductionDecisionEngineRealTests(unittest.TestCase):
         self.assertEqual(out2["execution"]["status"], "COMPLETED"); self.assertTrue(out2["execution"]["reused"])
 
 
+class MultiSourceSyncRealTests(unittest.TestCase):
+    """ADR-035 on real media through the real ffmpeg-skill CLI: camA.mp4 (speech at 1.0 s) and recorder.wav (the same audio with
+    1.25 s more pre-roll) → analyze --kind sync → ffmpeg-skill/sync measures the offset → OBSERVED Observation → TimelineMap →
+    Project IR save / load. Offset sign is the tool's: the recorder started 1.25 s EARLIER than the camera, so its offset is −1.25."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_sync_"))
+        cls.ws = str(Path(cls.tmp) / "ws")
+        from video_agent.tools.transcription.locate import locate_transcription
+        fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
+        if not fixture.is_file():
+            raise unittest.SkipTest("transcription-skill fixture ja_short.wav not found (speech is needed for a non-periodic correlation)")
+        src = Path(cls.tmp) / "src"
+        src.mkdir()
+        cls.cam = str(src / "camA.mp4")
+        cls.rec = str(src / "recorder.wav")
+        # the PR #22 speech fixture: speech from 1.0 s, audio padded to 11.5 s plus a 0.5 s tone tail (no trailing silence past the picture)
+        fc = "[1:a]adelay=1000|1000,apad=whole_dur=11.5[sp];sine=frequency=440:duration=0.5:sample_rate=48000,volume=0.1,aformat=channel_layouts=stereo[t];[sp][t]concat=n=2:v=0:a=1[a]"
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-i", str(fixture), "-filter_complex", fc,
+                        "-map", "0:v", "-map", "[a]", "-t", "12", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", cls.cam], check=True)
+        # the recorder started 1.25 s earlier: the same audio with 1.25 s more pre-roll
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", cls.cam, "-filter_complex", "[0:a]adelay=1250|1250[a]", "-map", "[a]", cls.rec], check=True)
+
+    def test_sync_measurement_to_timeline_map_and_ir(self):
+        svc = Service(workspace=self.ws)
+        self.assertEqual(svc.tools_for(svc.adapter([])).get("sync_analysis"), "ffmpeg-skill/sync")
+        _, _, an = svc.analyze([self.cam, self.rec], "generic", kinds=["sync"], hash_sources=False)
+        ids = {a.path: a.id for a in an.assets}
+        sync = [o for o in an.observations if o.kind == "sync"]
+        self.assertEqual(len(sync), 1, an.warnings)
+        o = sync[0]
+        self.assertEqual((o.asset_id, o.data["reference_asset_id"], o.data["target_asset_id"], o.provenance), (ids[self.rec], ids[self.cam], ids[self.rec], "OBSERVED"))
+        self.assertEqual(o.source.split("@")[0], "ffmpeg-skill/sync")
+        self.assertTrue(o.source.split("@")[1].startswith("0.9"), o.source)
+        self.assertAlmostEqual(o.data["offset_seconds"], -1.25, delta=0.05, msg=o.data)
+        self.assertGreaterEqual(o.data["confidence"], 0.3, o.data)
+        self.assertIn("earlier", o.data["meaning"])
+        self.assertTrue(o.data["applied_to_timeline"])
+        tm = an.timeline.timelines[f"asset:{ids[self.rec]}"]
+        self.assertAlmostEqual(tm.offset_seconds, -1.25, delta=0.05)
+        self.assertEqual(tm.drift_ratio, 1.0)
+        self.assertAlmostEqual(tm.to_master(2.25), 1.0, delta=0.05, msg="the speech at 2.25 s of the recorder is at 1.0 s on the camera (master) clock")
+        self.assertEqual(an.timeline.timelines[f"asset:{ids[self.cam]}"].offset_seconds, 0.0)
+        call = next(c for c in an.tool_calls if c["kind"] == "sync")
+        self.assertTrue(call["ok"] and call["tool"] == "ffmpeg-skill/sync")
+        # reversed order: the camera is measured against the recorder, the sign flips
+        _, _, rev = svc.analyze([self.rec, self.cam], "generic", kinds=["sync"], hash_sources=False)
+        ro = next(x for x in rev.observations if x.kind == "sync")
+        self.assertAlmostEqual(ro.data["offset_seconds"], 1.25, delta=0.05)
+        self.assertEqual(ro.asset_id, {a.path: a.id for a in rev.assets}[self.cam])
+        # Project IR: the observation and the timeline map survive save → load → validate; no decision / event / inference cites it
+        ir = svc.plan([self.cam, self.rec], "generic", kinds=["sync"], hash_sources=False)
+        p = str(Path(self.ws) / "sync.json")
+        save_ir(ir, p)
+        loaded = load_ir(p)
+        self.assertEqual(svc.validate(loaded).errors, [])
+        got = next(x for x in loaded.doc["analysis"]["observations"] if x["kind"] == "sync")
+        self.assertAlmostEqual(got["data"]["offset_seconds"], -1.25, delta=0.05)
+        self.assertAlmostEqual(loaded.doc["timeline"]["timelines"][f"asset:{got['asset_id']}"]["offset_seconds"], -1.25, delta=0.05)
+        self.assertFalse([d for d in loaded.doc["decisions"] if got["id"] in d["evidence"]])
+        self.assertFalse([e for e in loaded.doc["timeline"]["events"] if got["id"] in (e.get("evidence") or [])])
+        plain = svc.plan([self.cam, self.rec], "generic", hash_sources=False)
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], [s["skill"] for s in plain.doc["plan"]["steps"]], "the measurement changes no operation")
+        self.assertEqual([(op["type"], op.get("keep")) for op in ir.doc["video"]["operations"]], [(op["type"], op.get("keep")) for op in plain.doc["video"]["operations"]])
+        # CLI through the same boundary
+        out = subprocess.run([sys.executable, "-m", "video_agent.cli", "--workspace", self.ws, "--json", "analyze", self.cam, self.rec, "--kind", "sync", "--no-hash"],
+                             capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src")))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        doc = json.loads(out.stdout)
+        self.assertAlmostEqual([x["data"]["offset_seconds"] for x in doc["observations"] if x["kind"] == "sync"][0], -1.25, delta=0.05)
+
+
 class VideoEditingRealTests(unittest.TestCase):
     """PR #18 (ADR-028) on the real video-editing-skill and ffmpeg-skill 0.9.x: contract discovery and drift against the pinned
     contract, the Skill's doctor as the capability source, video.trim lowered to video-editing/cut, execution through the CLI

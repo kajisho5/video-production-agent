@@ -217,7 +217,11 @@ def default_registry() -> SkillRegistry:
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
     r.register(SkillSpec("speech_transcription", "1.0", "Speech → timestamped Transcript (segments, language, optional word timestamps); recognition only",
                          {"asset": "media"}, {"observation": "transcript", "events": "SPEECH"}, ["ffmpeg", "ffprobe", "transcription"], "LOW", True, "AUTO", ["transcription/transcribe"]))
-    # declared, not implemented in Phase 1 (registry keeps the contract visible)
+    # multi-source sync measurement (ADR-035): the offset / drift of a recording relative to the reference, by ffmpeg-skill/sync (audio
+    # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
+    r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
+                         {"reference": "media", "second": "media"}, {"observation": "sync"}, ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/sync"]))
+    # declared, not implemented in Phase 1 (registry keeps the contract visible): the *production* side (switching) of multi-source work
     r.register(SkillSpec("multi_source_sync", "0.1", "Align cameras/recorders by audio", {"assets": "media[]"}, {"timeline": "offsets"},
                          ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/sync", "ffmpeg-skill/multicam"], phase=2))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited

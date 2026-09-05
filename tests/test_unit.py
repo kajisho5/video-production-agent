@@ -1377,7 +1377,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         from video_agent.media import AnalysisRequest, AnalysisError, ANALYSIS_KINDS
         from video_agent.media.analysis import CORE_KINDS
         self.assertEqual(CORE_KINDS, ("media_probe", "silence", "loudness"), "FULL runs the core kinds")
-        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "stream_layout", "timing", "transcript", "video_format"],
+        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "stream_layout", "sync", "timing", "transcript", "video_format"],
                          "every kind maps to a production skill with a real tool (media-analysis-skill contract@1)")
         r = AnalysisRequest(inputs=[self.src], kinds=["silence"], strategy="FULL_ANALYSIS")
         self.assertEqual((r.strategy, r.kinds, r.cache_policy), ("FULL", ["media_probe", "silence"], "use"))
@@ -1395,7 +1395,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         self.assertIsInstance(an, Analyzer)
         self.assertEqual((an.id, an.version, an.identity), ("media", "1.0", "media@1.0"))
         self.assertEqual(an.supported_kinds[:3], ("media_probe", "silence", "loudness"))
-        self.assertEqual(len(an.supported_kinds), 11)
+        self.assertEqual(len(an.supported_kinds), 12)
         with self.assertRaises(NotImplementedError):
             Analyzer().analyze(None)
         self.assertFalse(any(hasattr(Analyzer, m) for m in ("decide", "approve", "compile", "render", "complete")))
@@ -5230,3 +5230,196 @@ class AudioConcatBasisTests(unittest.TestCase):
         # a policy BLOCK on the concat is never waived by its requirement
         irb = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.concat": True, "audio.concat.approval": "BLOCK"})
         self.assertEqual(next(d for d in irb.doc["decisions"] if d["subject"] == "audio.concat")["approval"], "BLOCK")
+
+
+class SyncObservationTests(unittest.TestCase):
+    """ADR-035: multi-source sync as an OBSERVED measurement. The first input is the reference; every other input with audio is
+    measured against it through the registry-selected tool (ffmpeg-skill/sync, faked here), the fact becomes an Observation of
+    kind `sync` on the target asset, and the target's TimelineMap takes the offset / drift ratio only when the confidence reaches
+    the policy gate. Nothing is decided from it."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())   # Windows: asset paths are resolved (no 8.3 short names); the lookups below compare against them
+        self.a = fake_media(self.tmp, "camA.mp4")
+        self.b = self._fake("recorder.wav", sync_offset=1.25, sync_confidence=0.91, video=False, channels=1)
+        os.environ.pop("FAKE_SYNC_MODE", None)
+
+    def tearDown(self):
+        os.environ.pop("FAKE_SYNC_MODE", None)
+
+    def _fake(self, name, **meta):
+        p = Path(self.tmp) / "src" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(json.dumps({"fake": True, "duration": 16.0, **meta}).encode())
+        return str(p)
+
+    def _svc(self, **kw):
+        return make_service(self.tmp, adapter=FakeAdapter(**kw))
+
+    def test_request_kind_and_registry(self):
+        from video_agent.media.analysis import ANALYSIS_KINDS, AnalysisRequest
+        req = AnalysisRequest(inputs=[self.a, self.b], kinds=["sync"], params={"max_offset": 30, "analyze_seconds": 60, "fix_drift": True, "min_confidence": 0.5, "threshold_db": -40})
+        self.assertEqual(req.kinds, ["media_probe", "sync"])
+        self.assertEqual(req.kind_params("sync"), {"max_offset": 30, "analyze_seconds": 60, "fix_drift": True, "min_confidence": 0.5})
+        self.assertTrue(ANALYSIS_KINDS["sync"]["pairwise"] and ANALYSIS_KINDS["sync"]["needs_audio"])
+        svc = self._svc()
+        self.assertEqual(svc.registry.get("sync_analysis").tools, ["ffmpeg-skill/sync"])
+        self.assertTrue(svc.registry.get("sync_analysis").implemented)
+        self.assertEqual(svc.registry.get("multi_source_sync").implemented, False, "the production side (switching) stays declared only")
+        with self.assertRaises(Exception):
+            AnalysisRequest(inputs=[self.a], kinds=["sync_offsets"])
+
+    def test_observation_from_tool_result(self):
+        svc = self._svc()
+        _, _, an = svc.analyze([self.a, self.b], "generic", kinds=["sync"], params={"fix_drift": True})
+        sync = [o for o in an.observations if o.kind == "sync"]
+        self.assertEqual(len(sync), 1)
+        o = sync[0]
+        ids = {a.path: a.id for a in an.assets}
+        self.assertEqual((o.asset_id, o.data["target_asset_id"], o.data["reference_asset_id"]), (ids[self.b], ids[self.b], ids[self.a]), "the observation sits on the target; the reference is the first input")
+        self.assertEqual((o.provenance, o.skill, o.tool), ("OBSERVED", "ffmpeg-skill", "ffmpeg-skill/sync"))
+        self.assertTrue(o.source.startswith("ffmpeg-skill/sync@"))
+        self.assertEqual(o.data["offset_seconds"], 1.25)
+        self.assertEqual(o.data["confidence"], 0.91)
+        self.assertEqual(o.data["meaning"], "second starts 1.250s later than reference")
+        self.assertNotIn("drift", o.data, "the fake measured no drift for this pair")
+        self.assertEqual(o.parameters, {"fix_drift": True}, "only tool parameters are recorded as the measurement's parameters")
+        for k in ("commands", "reference", "second", "output"):
+            self.assertNotIn(k, o.data, "paths and command lines are not facts")
+        row = next(r for r in an.analyses[0]["rows"] if r["kind"] == "sync")
+        self.assertEqual((row["status"], row["reference_asset_id"], row["asset_id"]), ("OK", ids[self.a], ids[self.b]))
+        call = next(c for c in an.tool_calls if c["kind"] == "sync")
+        self.assertEqual(call["tool"], "ffmpeg-skill/sync")
+        # the tool received the pair positionally and only the allowlisted flags
+        op = next(x for x in svc._adapter.adapters[0].calls if x.tool == "ffmpeg-skill/sync") if hasattr(svc._adapter, "adapters") else next(x for x in svc._adapter.calls if x.tool == "ffmpeg-skill/sync")
+        self.assertEqual((op.args["reference"], op.args["second"], op.args.get("fix_drift")), (an.assets[0].path, an.assets[1].path, True))
+        self.assertFalse({"replace_audio", "trim_second", "output"} & set(op.args))
+
+    def test_drift_and_timeline_map(self):
+        from video_agent.media.analysis import sync_facts
+        b = self._fake("drifty.wav", sync_offset=-0.4, sync_confidence=0.77, sync_drift_ppm=12.5, video=False, channels=1)
+        svc = self._svc()
+        _, _, an = svc.analyze([self.a, b], "generic", kinds=["sync"], params={"fix_drift": True})
+        o = next(x for x in an.observations if x.kind == "sync")
+        self.assertEqual((o.data["offset_seconds"], o.data["drift"]["drift_ppm"], o.data["drift"]["confidence"]), (-0.4, 12.5, 0.8))
+        facts = sync_facts(o.data)
+        self.assertAlmostEqual(facts["drift_ratio"], 1.0000125)
+        self.assertTrue(facts["applied_to_timeline"])
+        tm = an.timeline.timelines[f"asset:{o.asset_id}"]
+        self.assertEqual((tm.offset_seconds, tm.drift_ratio), (-0.4, 1.0000125), "TimelineMap takes the measured offset and the tool's clock ratio")
+        self.assertAlmostEqual(tm.to_master(10.0), 10.0 / 1.0000125 - 0.4)
+        ref = an.timeline.timelines[f"asset:{an.assets[0].id}"]
+        self.assertEqual((ref.offset_seconds, ref.drift_ratio), (0.0, 1.0), "the reference is the master clock")
+        # without drift measurement the ratio stays 1
+        _, _, an2 = svc.analyze([self.a, self.b], "generic", kinds=["sync"])
+        self.assertEqual(an2.timeline.timelines[f"asset:{an2.assets[1].id}"].drift_ratio, 1.0)
+
+    def test_reference_target_orientation_and_three_sources(self):
+        c = self._fake("camC.mp4", sync_offset=-2.0, sync_confidence=0.85)
+        svc = self._svc()
+        _, _, an = svc.analyze([self.a, self.b, c], "generic", kinds=["sync"])
+        ids = {a.path: a.id for a in an.assets}
+        sync = {o.asset_id: o for o in an.observations if o.kind == "sync"}
+        self.assertEqual(set(sync), {ids[self.b], ids[c]}, "one pairwise observation per non-reference input")
+        self.assertTrue(all(o.data["reference_asset_id"] == ids[self.a] for o in sync.values()))
+        self.assertEqual((sync[ids[self.b]].data["offset_seconds"], sync[ids[c]].data["offset_seconds"]), (1.25, -2.0))
+        self.assertEqual(an.timeline.timelines[f"asset:{ids[c]}"].offset_seconds, -2.0)
+        # the input order defines the reference: swapping puts the observation on the other asset
+        _, _, an2 = svc.analyze([self.b, self.a], "generic", kinds=["sync"])
+        ids2 = {a.path: a.id for a in an2.assets}
+        o2 = next(x for x in an2.observations if x.kind == "sync")
+        self.assertEqual((o2.asset_id, o2.data["reference_asset_id"]), (ids2[self.a], ids2[self.b]))
+
+    def test_serialize_roundtrip_observation_and_ir(self):
+        from video_agent.models import Observation
+        from video_agent.temporal import Timeline
+        b = self._fake("drifty.wav", sync_offset=1.25, sync_confidence=0.91, sync_drift_ppm=-7.0, video=False, channels=1)
+        svc = self._svc()
+        _, _, an = svc.analyze([self.a, b], "generic", kinds=["sync"], params={"fix_drift": True})
+        o = next(x for x in an.observations if x.kind == "sync")
+        back = Observation.from_dict(json.loads(json.dumps(o.to_dict())))
+        self.assertEqual(back.to_dict(), o.to_dict())
+        tl = Timeline.from_dict(json.loads(json.dumps(an.timeline.to_dict())))
+        self.assertEqual(tl.to_dict(), an.timeline.to_dict())
+        self.assertAlmostEqual(tl.timelines[f"asset:{o.asset_id}"].drift_ratio, 1 - 7.0 / 1e6)
+        # through the Project IR (schema 1.2 unchanged): observation and timeline map survive save → load → validate
+        ir = svc.plan([self.a, b], "generic", kinds=["sync"], params={"fix_drift": True})
+        p = str(Path(self.tmp) / "s.json")
+        save_ir(ir, p)
+        loaded = load_ir(p)
+        self.assertEqual(loaded.doc["schema_version"], "1.2")
+        self.assertEqual(svc.validate(loaded).errors, [])
+        got = next(x for x in loaded.doc["analysis"]["observations"] if x["kind"] == "sync")
+        self.assertEqual((got["data"]["offset_seconds"], got["data"]["confidence"], got["data"]["drift"]["drift_ppm"], got["provenance"]), (1.25, 0.91, -7.0, "OBSERVED"))
+        tm = loaded.doc["timeline"]["timelines"][f"asset:{got['asset_id']}"]
+        self.assertEqual(tm["offset_seconds"], 1.25)
+        self.assertAlmostEqual(tm["drift_ratio"], 1 - 7.0 / 1e6)
+        # a revision re-plans from the same evidence: the map is kept, not re-measured
+        from video_agent.media.analyzer import AnalysisResult
+        again = AnalysisResult.from_ir(loaded.doc)
+        self.assertEqual(again.timeline.timelines[f"asset:{got['asset_id']}"].offset_seconds, 1.25)
+
+    def test_failures_and_low_confidence(self):
+        svc = self._svc()
+        # the tool refuses (no audio to correlate): analysis failure domain, no observation, timeline untouched, plan still works
+        os.environ["FAKE_SYNC_MODE"] = "no_audio"
+        _, _, an = svc.analyze([self.a, self.b], "generic", kinds=["sync"])
+        self.assertEqual([o for o in an.observations if o.kind == "sync"], [])
+        row = next(r for r in an.analyses[0]["rows"] if r["kind"] == "sync")
+        self.assertEqual((row["status"], row["error"]["kind"]), ("FAILED", "ANALYZER_UNAVAILABLE"))
+        self.assertIn("no audio stream to correlate", row["error"]["message"])
+        self.assertTrue(any("sync analysis failed" in w for w in an.warnings))
+        self.assertEqual(an.timeline.timelines[f"asset:{an.assets[1].id}"].offset_seconds, 0.0)
+        os.environ["FAKE_SYNC_MODE"] = "short"
+        _, _, an = svc.analyze([self.a, self.b], "generic", kinds=["sync"], cache_policy="bypass")
+        self.assertEqual(next(r for r in an.analyses[0]["rows"] if r["kind"] == "sync")["status"], "FAILED")
+        # a result without the measurement keys is invalid, never stored
+        os.environ["FAKE_SYNC_MODE"] = "malformed"
+        _, _, an = svc.analyze([self.a, self.b], "generic", kinds=["sync"], cache_policy="bypass")
+        self.assertEqual([o for o in an.observations if o.kind == "sync"], [])
+        self.assertEqual(next(r for r in an.analyses[0]["rows"] if r["kind"] == "sync")["status"], "FAILED")
+        os.environ.pop("FAKE_SYNC_MODE")
+        # low confidence: the fact is recorded, the timeline map is not touched, and the gate value with its origin is in the data
+        low = self._fake("noisy.wav", sync_offset=3.3, sync_confidence=0.12, video=False, channels=1)
+        _, _, an = svc.analyze([self.a, low], "generic", kinds=["sync"])
+        o = next(x for x in an.observations if x.kind == "sync")
+        self.assertEqual((o.data["offset_seconds"], o.data["confidence"], o.data["min_confidence"], o.data["applied_to_timeline"]), (3.3, 0.12, 0.3, False))
+        self.assertEqual(an.timeline.timelines[f"asset:{o.asset_id}"].offset_seconds, 0.0)
+        self.assertTrue(any("below 0.3" in w for w in an.warnings))
+        # the gate is policy: a request preference lowers it, the value travels with the observation
+        _, _, an = svc.analyze([self.a, low], "generic", kinds=["sync"], user_requirements={"sync.min_confidence": 0.1}, cache_policy="bypass")
+        o = next(x for x in an.observations if x.kind == "sync")
+        self.assertEqual((o.data["min_confidence"], o.data["applied_to_timeline"]), (0.1, True))
+        self.assertEqual(an.timeline.timelines[f"asset:{o.asset_id}"].offset_seconds, 3.3)
+        # a single input, or a reference without audio: skipped with a reason, no failure
+        _, _, an = svc.analyze([self.a], "generic", kinds=["sync"])
+        self.assertEqual(next(r for r in an.analyses[0]["rows"] if r["kind"] == "sync")["status"], "SKIPPED")
+        svc_mute = make_service(self.tmp, adapter=FakeAdapter(audio=False))
+        _, _, an = svc_mute.analyze([self.a, self.b], "generic", kinds=["sync"], cache_policy="bypass")   # bypass: the cached probes of the same files carry audio
+        self.assertEqual(next(r for r in an.analyses[0]["rows"] if r["kind"] == "sync")["status"], "SKIPPED")
+        # no tool for the skill: reported as unavailable, nothing invented
+        svc_notool = make_service(self.tmp, adapter=FakeAdapter(), caps=FakeCaps(missing=["ffmpeg-skill"]))
+        with self.assertRaises(Exception):
+            svc_notool.analyze([self.a, self.b], "generic", kinds=["sync"])
+
+    def test_no_decision_no_event_no_plan_change(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", kinds=["sync"])
+        plain = svc.plan([self.a, self.b], "generic")
+        sync_ids = {o["id"] for o in ir.doc["analysis"]["observations"] if o["kind"] == "sync"}
+        self.assertTrue(sync_ids)
+        self.assertFalse([d for d in ir.doc["decisions"] if set(d["evidence"]) & sync_ids], "no decision rests on a sync measurement")
+        self.assertFalse([i for i in ir.doc["analysis"]["inferences"] if set(i["evidence"]) & sync_ids], "no inference reads it either")
+        self.assertFalse([e for e in ir.doc["timeline"]["events"] if e["kind"] == "OBSERVED" and set(e.get("evidence") or []) & sync_ids], "a sync fact is a timeline mapping, never an event")
+        norm = lambda doc: json.dumps({k: doc[k] for k in ("video", "audio", "delivery", "qa")}, sort_keys=True).replace(list(doc["assets"])[0], "A").replace(list(doc["assets"])[1], "B")   # noqa: E731
+        import re
+        strip = lambda t: re.sub(r"(dec|obs|inf|evt)_[0-9a-f]{10,}", "id", t)   # noqa: E731
+        self.assertEqual(strip(norm(ir.doc)), strip(norm(plain.doc)), "the operations are identical: the measurement changes no operation")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], [s["skill"] for s in plain.doc["plan"]["steps"]])
+        self.assertEqual([d["subject"] for d in ir.doc["decisions"]], [d["subject"] for d in plain.doc["decisions"]])
+        self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual(ir.doc["timeline"]["timelines"][f"asset:{ir.doc['analysis']['observations'][0]['asset_id']}"]["offset_seconds"], 0.0, "the reference keeps the master clock")
+        # explain --observation walks to the fact (the CLI `analyze --kind sync` path runs against the real Skill in test_integration)
+        rows = Service.explain_observation(ir.doc, next(iter(sync_ids))) if hasattr(Service, "explain_observation") else None
+        if rows is not None:
+            self.assertIn("sync", json.dumps(rows))
