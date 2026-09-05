@@ -307,7 +307,7 @@ def cmd_diff(args, svc: Service) -> int:
 
 
 def cmd_check(args, svc: Service) -> int:
-    out = svc.check(args.output, args.platform)
+    out = svc.check(args.output, args.platform, qc=bool(getattr(args, "qc", False)))
     if args.json:
         _print(out, True)
     else:
@@ -316,7 +316,14 @@ def cmd_check(args, svc: Service) -> int:
         print(f"{args.output}: {p.get('duration')}s, {v.get('codec')} {v.get('width')}x{v.get('height')} @ {v.get('fps')}fps, " + (f"audio {a.get('codec')} {a.get('channels')}ch" if a else "no audio"))
         for r in out["check"].get("checks", []):
             print(f"  {r['status']:4s} {r['check']:14s} {r['value']}  (expected {r['expected']})" + (f"  -> {r['fix']}" if r["status"] != "PASS" and r.get("fix") else ""))
-    return 0 if out["check"].get("ok") else 1
+        if out.get("qc"):
+            q = out["qc"]
+            print(f"  qc   {q.get('verdict') or 'not admitted'}  report {q.get('report_id') or '-'}" + (f"  problems: {'; '.join(q['problems'])}" if q.get("problems") else ""))
+            for c in q.get("checks") or []:
+                if c.get("status") != "PASS":
+                    print(f"       {c.get('status'):4s} {c.get('check_id')}  {', '.join(c.get('finding_codes') or [])}")
+    ok = bool(out["check"].get("ok")) and (not out.get("qc") or out["qc"].get("verdict") in ("PASS", "WARN"))
+    return 0 if ok else 1
 
 
 def _print_plan(doc) -> None:
@@ -446,6 +453,29 @@ def cmd_sessions(args, svc: Service) -> int:
 
 
 def cmd_explain(args, svc: Service) -> int:
+    if getattr(args, "pipeline", False):
+        ir = load_ir(args.project)
+        job = prov = None
+        arts = svc.artifacts(ir)
+        runs = ir.doc.get("provenance", {}).get("runs") or []
+        if runs:
+            from video_agent.jobs import JobStore
+            j = JobStore(svc.workspace).load(runs[-1]["job_id"])
+            if j is not None:
+                job = j.to_dict()
+                pp = Path(j.dir) / "provenance.json"
+                if pp.exists():
+                    prov = json.loads(pp.read_text(encoding="utf-8"))
+        info = svc.explain_pipeline(ir.doc, job=job, provenance=prov, artifacts=arts)
+        if args.json:
+            _print(info, True)
+            return 0
+        print("  ".join(f"{lv} {info['counts'][lv]}" for lv in info["levels"]))
+        for row in info["rows"]:
+            refs = row.get("evidence") or row.get("decisions") or row.get("depends_on") or []
+            print(f"{row['level']:12s} {str(row.get('id'))[:44]:44s} {str(row.get('detail') or '')[:110]}" + (f"  ← {','.join(str(x) for x in refs)[:80]}" if refs else ""))
+        print(f"boundary: {info['boundary']}")
+        return 0
     if getattr(args, "artifact", None):
         info = svc.explain_artifact(args.artifact)
         if args.json:
@@ -649,7 +679,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project"); p.add_argument("--from", type=int, dest="from"); p.add_argument("--to", type=int)
     p.set_defaults(fn=cmd_diff)
     p = sub.add_parser("check", help="probe + platform compliance of an output file")
-    p.add_argument("output"); p.add_argument("--platform", default="custom")
+    p.add_argument("output"); p.add_argument("--platform", default="custom"); p.add_argument("--qc", action="store_true", help="also run the qc-skill report (admitted only for the file's own sha256)")
     p.set_defaults(fn=cmd_check)
     p = sub.add_parser("events", help="temporal events recorded in a Project IR (canonical order)")
     p.add_argument("project"); p.set_defaults(fn=cmd_events)
@@ -663,6 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--artifact", help="artifact id: show artifact -> job -> operations -> step -> decisions -> evidence")
     p.add_argument("--observation", help="observation id (or the Skill's external id, e.g. a transcript id): observation -> skill -> tool -> engine/model -> asset -> events")
     p.add_argument("--context", help="context id: context -> tracks -> events -> observations, plus the inferences / decisions resting on it")
+    p.add_argument("--pipeline", action="store_true", help="the whole chain of the project: request -> requirements -> observations -> events -> inferences -> decisions -> plan -> IR -> skill -> capability -> tool -> execution -> QA -> artifacts")
     p.set_defaults(fn=cmd_explain)
     p = sub.add_parser("artifacts", help="registered artifacts (of a project IR, or all)")
     p.add_argument("project", nargs="?"); p.add_argument("--job"); p.set_defaults(fn=cmd_artifacts)

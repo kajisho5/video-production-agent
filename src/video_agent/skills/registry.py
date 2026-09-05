@@ -1,5 +1,6 @@
 """Skill registry: what the system knows how to do, independent of what is installed (Capability) and
-of what executes it (Tool). Phase 1 ships five skills; the registry is a plain contract, not a plugin system."""
+of what executes it (Tool). The registry is a plain contract, not a plugin system: every production skill is declared here with its
+tool candidates (in declared order, no ranking, no fallback) and the capabilities it needs."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -219,8 +220,27 @@ def default_registry() -> SkillRegistry:
     # declared, not implemented in Phase 1 (registry keeps the contract visible)
     r.register(SkillSpec("multi_source_sync", "0.1", "Align cameras/recorders by audio", {"assets": "media[]"}, {"timeline": "offsets"},
                          ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/sync", "ffmpeg-skill/multicam"], phase=2))
-    r.register(SkillSpec("caption_generation", "0.1", "Transcribe and burn captions", {"asset": "video"}, {"artifact": "CAPTIONS"},
-                         ["ffmpeg", "ffmpeg-skill", "filter:libass", "asr:whisper"], "MEDIUM", False, "CONFIRM", ["ffmpeg-skill/caption"], phase=3))
+    # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited
+    # ffmpeg-skill/caption directly); each Skill is reached only through its own package tool and needs the package capability
+    r.register(SkillSpec("subtitle_generation", "1.0", "Transcript cues → SRT / WebVTT sidecar (mapped onto the delivered timeline)", {"transcript": "observation"}, {"artifact": "CAPTIONS"},
+                         ["subtitle"], "LOW", True, "CONFIRM", ["subtitle/generate"]))
+    r.register(SkillSpec("subtitle_burn_in", "1.0", "Burn the subtitle document into the picture (subtitle-skill render → ffmpeg-skill/caption)", {"asset": "video", "captions": "artifact"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffprobe", "ffmpeg-skill", "subtitle", "encoder:libx264", "filter:subtitles"], "MEDIUM", True, "CONFIRM", ["subtitle/render"]))
+    r.register(SkillSpec("thumbnail_frame", "1.0", "One video frame at an explicit timestamp as a PNG / JPEG", {"asset": "video", "at": "float"}, {"artifact": "THUMBNAIL"},
+                         ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM", ["thumbnail/extract_frame"]))
+    r.register(SkillSpec("thumbnail_render", "1.0", "A video frame with a caption rendered as a thumbnail document", {"asset": "video", "at": "float", "text": "str"}, {"artifact": "THUMBNAIL"},
+                         ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM", ["thumbnail/render"]))
+    for name, typ, desc, inputs, risk in (
+        ("color_strip_dovi", "STRIP_DOVI", "Strip Dolby Vision side data", {"asset": "video"}, "LOW"),
+        ("color_hdr_to_sdr", "HDR_TO_SDR", "Tone-map an HDR source to SDR BT.709", {"asset": "video"}, "MEDIUM"),
+        ("color_lut", "LUT_APPLY", "Apply a 3D .cube LUT", {"asset": "video", "lut": "cube"}, "MEDIUM"),
+        ("color_retag", "RETAG", "Re-tag the colour metadata (bt709 / bt2020-pq / bt2020-hlg / bt601)", {"asset": "video", "target": "str"}, "LOW"),
+    ):
+        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading", f"color-grading:{typ}"], risk, True, "CONFIRM", ["color-grading/run"]))
+    r.register(SkillSpec("motion_graphics", "1.0", "Render titles / lower thirds / text and image overlays onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffprobe", "ffmpeg-skill", "motion-graphics"], "MEDIUM", True, "CONFIRM", ["motion-graphics/run"]))
+    r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
+                         ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     r.register(SkillSpec("semantic_deletion", "0.1", "Remove content based on meaning", {"asset": "video", "ranges": "ranges"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill"], "HIGH", False, "CONFIRM", ["ffmpeg-skill/cut"], phase=4))
     return r

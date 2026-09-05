@@ -323,3 +323,10 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 未検証（accepted limitation）: Windows / macOS での実 audio-production-skill E2E（CI の integration job は ubuntu のみ。Windows / macOS では fake process による unit / evals のみ）、wav 以外の出力 format（mp3 / m4a / flac …）、5.1 / 7.1 入力の DOWNMIX（fake のみ）。
 
 未対応・別 PR 候補: MIX（複数入力のレベル指定 requirement）、NOISE_REDUCTION / DYNAMICS（根拠となる measurement が無い）、`audio.<op>.approval` の request 指定、video+audio asset で video と audio の両方を納品する二経路、QC Skill との接続（qc-skill は PR #1 未マージ）、mp3 / m4a 等の audio delivery format（現状 wav のみ）。
+
+## 22. PR #22 — Phase 3 integrated production pipeline（ADR-031 / ADR-032、2026-09-05 追記）
+
+- 統合済み: subtitle / thumbnail / color-grading / motion-graphics / qc の adapter・capability・registry・Decision・ProductionPlan・IR section・compiler・QA・artifact。fake 10 scenario（`tests/test_pipeline.py`）、実 Skill 10 scenario（`tests/test_integration.py::IntegratedPipelineRealTests`）、evals 89–97。
+- 未実装（次の作業）: 「話者が変わったらカメラを切り替える」。SPEAKER / CAMERA event は schema のみ、speaker_id は常に null（推定禁止）。ProductionContext の `transition` inference は存在するが、それを実行する operation（multicam 切替）を持つ Skill が無く、`multi_source_sync` は phase 2 未実装。必要なもの: (1) 同期 Skill（offsets）、(2) source 切替 operation を持つ編集 Skill、(3) `transition` inference → `camera.switch` decision（CONFIRM）→ plan step。Event から step への近道は作らない。
+- Accepted limitation: thumbnail `extract_frame` は ffmpeg-skill look の既定幅 1280 で出る（agent は寸法を期待値にしない）。subtitle-skill は workspace 相対入力のみ → burn-in は中間物にのみ適用（source 直接は BLOCK）。motion-graphics の title / lower_third / image_overlay は doctor が unknown → resolver の filter 実測で AVAILABLE（実測できない環境では UNKNOWN → BLOCK）。thumbnail-skill は Pillow 未導入だと MISSING。qc-skill の request timeout は Skill 側で未使用（process boundary の timeout のみ）。Windows / macOS の実 E2E、HDR 素材の HDR_TO_SDR / LUT / STRIP_DOVI、lower_third / image_overlay の実描画は未検証（unit fake のみ）。
+- P1（次PR）: audio.extract の CONFIRM waiver（PR #21 audit）は据え置き。QC WARN の promotion policy は profile の `qc.warn.promotion` で制御、既定 CONFIRM。

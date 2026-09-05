@@ -19,6 +19,7 @@ from ..skills.registry import SkillRegistry
 from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
 from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
+from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, parse_edit_requirements
 from .requirements import requirement_map
 
@@ -62,8 +63,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     for inf in inferences:
         by_asset.setdefault(inf.asset_id, []).append(inf)
 
-    def approval_for(subject_key: str, explicit: Optional[Requirement] = None, floor: Optional[str] = None) -> Dict[str, Any]:
-        key, default = APPROVAL_KEYS[subject_key]
+    def approval_for(subject_key: str, explicit: Optional[Requirement] = None, floor: Optional[str] = None, keys: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        key, default = (keys or APPROVAL_KEYS)[subject_key]
         return resolve_approval(rules, key, default, floor=floor, explicit=explicit)
 
     # policy conflicts surface as decisions requiring confirmation (a constraint is never overridden silently)
@@ -368,6 +369,12 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                        confidence=1.0, evidence=ev, risk=OPERATIONS[op]["risk"], approval=approval_for(op, explicit=req[0]), provenance="USER",
                        params={"asset_id": subject, **p}, requirements=req, serves_intent=None)
         cap_block(OPERATIONS[op]["skill"], f"capability.{OPERATIONS[op]['skill']}")
+    # ---- finishing (ADR-031 / ADR-032): subtitles, colour, motion graphics, thumbnail, QC gate — on the programme or each asset, after the edits
+    def has_edit(subject: str) -> bool:
+        srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]
+        return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and d.subject in OPERATIONS and d.params.get("asset_id") == subject for d in decs) \
+            or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
+    decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- delivery
     targets = m.get("delivery.targets")
     for t in (targets.value if targets else []):

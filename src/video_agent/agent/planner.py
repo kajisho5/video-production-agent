@@ -10,17 +10,22 @@ from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, ir_audio_operation, is_audio_capable, kept_after_cut
 from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, concat_segments, ir_operation
+from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
+                        ir_thumbnail, picture_size)
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
+from .qc import QC_SKILL, rules_for_subject, sidecar_rules
+from .subtitles import BURN_SKILL, GENERATE_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
                project_id: str = "", constraints: Optional[List[Dict[str, Any]]] = None, objective: str = "", inferences: Optional[List[Inference]] = None,
-               audio_production: bool = False) -> Dict[str, Any]:
+               audio_production: bool = False, qc_tolerance_lu: float = 2.0) -> Dict[str, Any]:
     """Decisions (+ the events / observations they rest on) → ProductionPlan + IR sections.
     `tools` is the skill → tool map produced by SkillRegistry.resolve_tools for this environment; it is the only
     source of tool ids here (the planner has no default engine). A step whose skill is absent from the map is emitted
     with tool=None and the plan is marked BLOCKED so the validator / decide() refuse it explicitly.
-    Returns {"plan": ProductionPlan.to_dict(), "steps", "summary", "video_ops", "audio_ops", "delivery"}."""
+    Returns {"plan": ProductionPlan.to_dict(), "steps", "summary", "video_ops", "audio_ops", "delivery", "captions_ops", "graphics_ops", "color_ops", "qc"}
+    (ADR-031 / ADR-032: the finishing sections and the QC gate)."""
     if tools is None:
         raise TypeError("build_plan needs the skill → tool map resolved by SkillRegistry (tools=None is not allowed)")
     no_tool: List[str] = []
@@ -46,6 +51,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     steps: List[ProductionStep] = []
     video_ops: List[Dict[str, Any]] = []
     audio_ops: List[Dict[str, Any]] = []
+    captions_ops: List[Dict[str, Any]] = []
+    graphics_ops: List[Dict[str, Any]] = []
+    color_ops: List[Dict[str, Any]] = []
+    qc_plan: Dict[str, Any] = {"enabled": False, "decision_ids": [], "subjects": {}, "sidecars": {}}
     delivery: List[Dict[str, Any]] = []
     outputs: List[Dict[str, Any]] = []
     summary: List[str] = []
@@ -59,6 +68,141 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     current_of: Dict[str, str] = {}      # subject → latest logical output
     last_of: Dict[str, str] = {}
     scope_of: Dict[str, Dict[str, float]] = {}   # subject → temporal scope on the timeline the subject's current output has
+    sidecar_of: Dict[str, str] = {}      # subject → logical id of its subtitle sidecar (captions.generate output)
+    picture_of: Dict[str, str] = {}      # subject → the logical output the thumbnail is taken from (the finished picture before loudness / export)
+    techn = {a.id: a.technical for a in analysis.assets}
+
+    def decided(subject: str, subj: str) -> List[Decision]:
+        return [x for x in decisions if x.subject == subj and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == subject]
+
+    def finishing_steps(subject: str, sources: List[str]) -> None:
+        """Colour → motion graphics → subtitle sidecar (+ burn-in) on the subject's current picture (ADR-031). Each decision becomes one
+        step and one IR operation; the sidecar's cues are the transcript segments mapped through this plan's trim / concat / speed."""
+        nonlocal order
+        for op_type in COLOR_ORDER:
+            for d in decided(subject, op_type):
+                spec = COLOR_OPERATIONS[op_type]
+                params = {k: v for k, v in d.params.items() if k in spec["params"] or k == "lut"}
+                out_id = f"{subject}_{op_type.split('.', 1)[1]}"
+                scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+                color_ops.append(ir_color_operation(op_type, subject, params, [d.id], current_of[subject], out_id, scope=scope))
+                order += 1
+                st = ProductionStep(id=f"step_{op_type.split('.', 1)[1]}_{subject}", order=order, skill=spec["skill"], tool=tool_for(spec["skill"]), inputs=[current_of[subject]],
+                                    params={"asset": subject, **params}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]),
+                                    decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+                steps.append(st)
+                current_of[subject], last_of[subject] = out_id, st.id
+                summary.append(d.decision)
+        g_decs = [d for typ in ELEMENT_TYPES for d in decided(subject, f"graphics.{typ}")]
+        if g_decs:
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            elements = []
+            for n, d in enumerate(g_decs):
+                end = d.params.get("end")
+                el: Dict[str, Any] = {"id": f"el{n + 1}_{d.params['type']}", "type": d.params["type"], "start": float(d.params["start"]),
+                                      "end": round(float(end), 3) if end is not None else round(scope["end"], 3), "parameters": dict(d.params.get("parameters") or {})}
+                if d.params.get("fade") is not None:
+                    el["animation"] = {"kind": "fade", "parameters": {"duration": float(d.params["fade"])}}
+                elements.append(el)
+            out_id = f"{subject}_graphics"
+            graphics_ops.append(ir_graphics_render(subject, elements, [d.id for d in g_decs], current_of[subject], out_id, scope=scope))
+            order += 1
+            st = ProductionStep(id=f"step_graphics_{subject}", order=order, skill=GRAPHICS_SKILL, tool=tool_for(GRAPHICS_SKILL), inputs=[current_of[subject]],
+                                params={"asset": subject, "elements": [e["id"] for e in elements]}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [],
+                                evidence=evidence_of([d.id for d in g_decs]), decision_ids=[d.id for d in g_decs], decision_id=g_decs[0].id, temporal_scope=scope)
+            steps.append(st)
+            current_of[subject], last_of[subject] = out_id, st.id
+            summary.append(f"Render {len(elements)} graphics element(s) on {subject}")
+        for d in decided(subject, "subtitle.generate"):
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            speed = next((float(op["factor"]) for op in video_ops if op.get("asset") == subject and op.get("type") == "video.speed"), 1.0)
+            concat = next((op for op in video_ops if op.get("type") == "video.concat" and op.get("output") == subject), None)
+            cues: List[Dict[str, Any]] = []
+            tmap: Dict[str, Any] = {"speed": speed, "inputs": {}}
+            for n, src in enumerate(sources):
+                keep = kept_ranges_of(video_ops, src, durations.get(src, 0.0))
+                offset = 0.0
+                if concat is not None:   # where the input's first kept range lands on the programme timeline (map_point already removed the trimmed material)
+                    seg = next((s_ for s_ in concat.get("segments") or [] if s_.get("input") == src), None)
+                    offset = round(float(seg["timeline_range"][0]), 3) if seg else 0.0
+                segs = [seg_ for o in analysis.observations if o.kind == "transcript" and o.asset_id == src for seg_ in ((o.data or {}).get("segments") or [])]
+                cues += cues_from_segments(segs, keep, offset=offset, speed=speed, id_prefix=f"c{n + 1}_" if len(sources) > 1 else "c")
+                tmap["inputs"][src] = {"keep": keep, "offset": offset}
+            cues.sort(key=lambda c: (c["start"], c["id"]))
+            out_id = f"{subject}_captions"
+            captions_ops.append(ir_captions_generate(subject, out_id, d.params["format"], d.params["language"], cues, [d.id], list(d.params.get("transcript_ids") or []), tmap,
+                                                     constraints=d.params.get("constraints"), scope=scope))
+            order += 1
+            st = ProductionStep(id=f"step_captions_{subject}", order=order, skill=GENERATE_SKILL, tool=tool_for(GENERATE_SKILL), inputs=[],
+                                params={"asset": subject, "format": d.params["format"], "language": d.params["language"], "cues": len(cues)}, outputs=[out_id],
+                                depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+            steps.append(st)
+            sidecar_of[subject] = out_id
+            outputs.append({"role": "CAPTIONS", "logical": out_id, "format": d.params["format"], "expected": {"cues": len(cues), "language": d.params["language"], "source": subject}})
+            summary.append(f"Subtitles for {subject}: {len(cues)} cue(s) ({d.params['format']}, {d.params['language']}) on the delivered timeline")
+            for b in decided(subject, "subtitle.burn_in"):
+                burn_out = f"{subject}_burn"
+                captions_ops.append(ir_captions_burn(subject, current_of[subject], out_id, burn_out, [b.id], scope=scope))
+                order += 1
+                bst = ProductionStep(id=f"step_burn_{subject}", order=order, skill=BURN_SKILL, tool=tool_for(BURN_SKILL), inputs=[current_of[subject], out_id], params={"asset": subject},
+                                     outputs=[burn_out], depends_on=[x for x in [last_of.get(subject), st.id] if x], evidence=evidence_of([b.id]),
+                                     decision_ids=[b.id], decision_id=b.id, temporal_scope=scope)
+                steps.append(bst)
+                current_of[subject], last_of[subject] = burn_out, bst.id
+                summary.append(b.decision)
+        picture_of[subject] = current_of[subject]
+
+    def thumbnail_steps(subject: str, sources: List[str]) -> None:
+        nonlocal order
+        for d in decided(subject, "thumbnail.render"):
+            scope = scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)}
+            at = d.params.get("at")
+            if at is None:
+                at = round(float(scope["end"]) * float(d.params.get("at_ratio") or 0.0), 3)
+            size = picture_size(techn.get(sources[0]) or {}, video_ops, subject) if sources else None
+            params: Dict[str, Any] = {"timestamp": min(float(at), max(0.0, float(scope["end"]) - 0.001)), "format": d.params["format"]}
+            skill = str(d.params.get("skill") or THUMBNAIL_FRAME_SKILL)
+            if skill == THUMBNAIL_RENDER_SKILL:
+                params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48), "color": d.params.get("color", "#FFFFFF"),
+                               "position": d.params.get("position", "bottom"), "width": size[0] if size else None, "height": size[1] if size else None})
+            out_id = f"{subject}_thumbnail"
+            src = picture_of.get(subject) or current_of[subject]
+            graphics_ops.append(ir_thumbnail(subject, params, [d.id], src, out_id))
+            order += 1
+            dep = next((s_.id for s_ in steps if src in s_.outputs), None)
+            st = ProductionStep(id=f"step_thumbnail_{subject}", order=order, skill=skill, tool=tool_for(skill), inputs=[src],
+                                params={"asset": subject, "at": params["timestamp"], "format": params["format"], **({"text": params["text"]} if "text" in params else {})}, outputs=[out_id],
+                                depends_on=[dep] if dep else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+            steps.append(st)
+            outputs.append({"role": "THUMBNAIL", "logical": out_id, "format": params["format"], "expected": {"timestamp": params["timestamp"], "source": subject}})
+            summary.append(d.decision)
+
+    def qc_steps(subject: str, tolerance_lu: float) -> None:
+        """One qc_check step per delivery artifact of the subject (after its check), and one for the subtitle sidecar (ADR-032)."""
+        nonlocal order
+        for d in [x for x in decisions if x.subject == "qc.check" and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
+            qc_plan["enabled"] = True
+            qc_plan["decision_ids"].append(d.id)
+            for exp in [s_ for s_ in steps if s_.skill == "delivery_export" and (s_.params or {}).get("target") and s_.outputs and s_.outputs[0].startswith(f"{subject}_delivery_")]:
+                target = exp.params["target"]
+                art = exp.outputs[0]
+                chk = next((s_.id for s_ in steps if s_.skill == "delivery_check" and (s_.params or {}).get("target") == target and art in s_.inputs), exp.id)
+                order += 1
+                st = ProductionStep(id=f"step_qc_{target}_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[art], params={"asset": subject, "target": target, "kind": "delivery", "artifact": art},
+                                    outputs=[], depends_on=[chk], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+                steps.append(st)
+                qc_plan["subjects"][subject] = {"kind": "delivery", "targets": sorted(set(list((qc_plan["subjects"].get(subject) or {}).get("targets") or []) + [target]))}
+            if subject in sidecar_of:
+                sc = sidecar_of[subject]
+                ref = next((s_.outputs[0] for s_ in steps if s_.skill == "delivery_export" and s_.outputs and s_.outputs[0].startswith(f"{subject}_delivery_")), None)
+                order += 1
+                st = ProductionStep(id=f"step_qc_captions_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[sc] + ([ref] if ref else []),
+                                    params={"asset": subject, "target": "captions", "kind": "subtitle", "artifact": sc}, outputs=[],
+                                    depends_on=[x for x in [next((s_.id for s_ in steps if sc in s_.outputs), None), next((s_.id for s_ in steps if ref and ref in s_.outputs), None)] if x],
+                                    evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+                steps.append(st)
+                qc_plan["sidecars"][sc] = {"kind": "subtitle", "reference": ref, "subject": subject}
+            summary.append(d.decision)
 
     def edit_steps(subject: str, sources: List[str]) -> None:
         """The single-source editing operations decided for `subject` (video.speed → resize → fit / fill → overlay), chained on its
@@ -235,8 +379,11 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
         elif concat_dec is None:
             edit_steps(asset.id, [asset.id])
+            finishing_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
             delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
+            thumbnail_steps(asset.id, [asset.id])
+            qc_steps(asset.id, qc_tolerance_lu)
     if audio_concat_dec is not None:
         # ---- audio programme: the cut audio of every input, in the decided order; later audio operations apply to it
         inputs = list(audio_concat_dec.params["inputs"])
@@ -273,8 +420,11 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         durations[PROGRAMME] = total
         summary.append(f"Join {' + '.join(inputs)} into one programme ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
+        finishing_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
+        thumbnail_steps(PROGRAMME, inputs)
+        qc_steps(PROGRAMME, qc_tolerance_lu)
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:
@@ -290,4 +440,5 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "delivery": delivery}
+    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "delivery": delivery,
+            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan}

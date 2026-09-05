@@ -1810,6 +1810,22 @@ audio.production=true (+ audio.gain / channels / fade_in / fade_out / concat / s
 - **Not here:** LLM-driven audio editing, speaker identity, a QC Skill, MIX / noise reduction / dynamics planning, changes to
   either Skill, conference-specific rules.
 
+### Phase 3 finishing Skills and the QC gate (implemented, ADR-031 / ADR-032)
+
+```
+Requirement (subtitle / thumbnail / color.* / motion.* / qc) → Decision (decision_finishing.py) → ProductionPlan step
+  → IR captions / graphics / color operations, qa.qc → compiler (lower_captions / lower_thumbnail / lower_color_op / lower_graphics_render / lower_qc_check)
+  → subtitle / thumbnail / color-grading / motion-graphics / qc adapters (tools/skill_process.py transport) → the Skills' CLIs → ffmpeg-skill → FFmpeg
+  → QA (agent's own checks + the admitted qc report) → artifact stage (approved / candidate / working)
+```
+
+- **Subtitles** come from the transcript Observation (transcription-skill) of every source; cues are mapped through the plan's own
+  trim / concat / speed onto the delivered timeline; no transcript → BLOCK; speaker never set.
+- **Fixed order** per subject: trim → concat → edits → color → graphics → captions → loudness → export → check → thumbnail → qc.
+- **QC gate:** qc-skill's report is admitted only when its fingerprint equals the sha256 the agent computed itself; PASS → READY
+  (stage approved), WARN → candidate unless policy `qc.warn.promotion` is AUTO, FAIL → working (never final). The agent's own QA stays.
+- **Not implemented:** camera switching on speaker change (needs a sync Skill, a switching operation and a `transition` → decision path).
+
 ## 52. Architecture / Repository
 
 A possible structure:

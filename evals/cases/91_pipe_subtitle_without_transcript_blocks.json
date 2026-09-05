@@ -1,0 +1,16 @@
+{
+ "name": "pipe_subtitle_without_transcript_blocks",
+ "profile": "youtube",
+ "pipeline": {
+  "transcription": false,
+  "missing_capabilities": [
+   "transcription"
+  ]
+ },
+ "requirements": {
+  "subtitle": true
+ },
+ "expect": {
+  "plan_error": "speech_transcription"
+ }
+}

@@ -9,7 +9,7 @@ from typing import Any, Dict
 from ..models import stable_hash
 
 # schema_version is deliberately excluded: the same plan content must hash identically before and after a migration.
-PLAN_SECTIONS = ("assets", "video", "audio", "delivery", "qa")
+PLAN_SECTIONS = ("assets", "video", "audio", "captions", "graphics", "color", "delivery", "qa")   # the finishing sections (ADR-031) and the QC gate (qa.qc) change what is executed
 
 
 def plan_hash(doc: Dict[str, Any]) -> str:

@@ -1,0 +1,24 @@
+{
+ "name": "pipe_failure_midway_then_resume",
+ "profile": "youtube",
+ "pipeline": {
+  "modes": {
+   "FAKE_MG_MODE": "tool_error_final"
+  }
+ },
+ "requirements": {
+  "color.target": "bt709",
+  "motion.title": "Opening",
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "render": {
+   "execution_status": "FAILED",
+   "failed_tool": "motion-graphics/run",
+   "recovery_classes": [
+    "SKILL_ERROR"
+   ]
+  }
+ }
+}

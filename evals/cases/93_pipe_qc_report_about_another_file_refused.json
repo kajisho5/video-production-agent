@@ -1,0 +1,22 @@
+{
+ "name": "pipe_qc_report_about_another_file_refused",
+ "profile": "youtube",
+ "pipeline": {
+  "modes": {
+   "FAKE_QC_MODE": "fingerprint_mismatch"
+  }
+ },
+ "requirements": {
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "render": {
+   "execution_status": "FAILED",
+   "failed_tool": "qc/check",
+   "recovery_classes": [
+    "SKILL_ERROR"
+   ]
+  }
+ }
+}

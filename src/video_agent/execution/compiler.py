@@ -1,5 +1,6 @@
-"""Compiler: Project IR → ordered Operations with typed adapter args. Fixed Phase 1 order per asset:
-trim → loudness → export → check. Paths for intermediates are decided here; no engine flags appear here.
+"""Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
+trim → concat → edits → colour → graphics → captions (sidecar, burn-in) → loudness → export → check → thumbnail → QC gate.
+Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
 produced its inputs). Changing the trim therefore changes the loudness key too, so a resumed job can never reuse
@@ -11,7 +12,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, TOOL as AUDIO_TOOL
-from ..agent.editing import EDIT_ORDER, OPERATIONS, PROGRAMME
+from ..agent.editing import EDIT_ORDER, OPERATIONS, PROGRAMME, delivery_subjects
+from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
+from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
+from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, RENDER_TOOL
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
 
@@ -109,6 +113,77 @@ def lower_audio_op(tool: str, op: Dict[str, Any], current: Any, out_id: str) -> 
     return args
 
 
+def lower_color_op(tool: str, op: Dict[str, Any], current: str, out_id: str, lut_id: Optional[str] = None) -> Dict[str, Any]:
+    """IR colour operation → color-grading/run arguments: the contract's operation type plus the allowlisted parameters by name;
+    a LUT travels as an artifact id the adapter resolves through the paths map (ADR-031)."""
+    spec = COLOR_OPERATIONS[op["type"]]
+    if tool != COLOR_TOOL:
+        raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {COLOR_TOOL}")
+    args: Dict[str, Any] = {"operation": spec["type"], "input": current, "output": out_id, "format": "mp4"}
+    for k in spec["params"]:
+        if op.get(k) is not None:
+            args[k] = op[k]
+    if lut_id:
+        args["lut"] = lut_id
+    return args
+
+
+def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None) -> Dict[str, Any]:
+    """IR graphics.render → motion-graphics/run arguments: the element list as planned (image paths become artifact ids)."""
+    if tool != GRAPHICS_TOOL:
+        raise CompileError(f"graphics.render cannot be executed by {tool}; the only tool of this operation is {GRAPHICS_TOOL}")
+    elements = []
+    for e in op.get("elements") or []:
+        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k != "image"}}
+        if e["type"] == "image_overlay" and image_id:
+            el["parameters"]["image"] = image_id
+        if e.get("animation"):
+            el["animation"] = {"kind": e["animation"]["kind"], "parameters": dict(e["animation"]["parameters"])}
+        elements.append(el)
+    return {"input": current, "output": out_id, "elements": elements}
+
+
+def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
+    """IR graphics.thumbnail → thumbnail/extract_frame (a plain frame) or thumbnail/render (frame + caption) arguments."""
+    want = THUMBNAIL_RENDER_TOOL if op.get("text") is not None else THUMBNAIL_FRAME_TOOL
+    if tool != want:
+        raise CompileError(f"graphics.thumbnail cannot be executed by {tool}; this operation needs {want}")
+    args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"], "output": out_id}
+    if want == THUMBNAIL_RENDER_TOOL:
+        for k in ("width", "height", "text", "font_id", "font_size", "color", "position"):
+            if op.get(k) is not None:
+                args[k] = op[k]
+    return args
+
+
+def lower_captions(tool: str, op: Dict[str, Any], current: Optional[str], out_id: str, sidecar_id: Optional[str] = None) -> Dict[str, Any]:
+    """IR captions.generate / captions.burn → subtitle/generate / subtitle/render arguments (the same document; the burn-in also
+    names the video input and the sidecar it was generated from)."""
+    if op["type"] == "captions.generate":
+        if tool != GENERATE_TOOL:
+            raise CompileError(f"captions.generate cannot be executed by {tool}; the only tool of this operation is {GENERATE_TOOL}")
+        args: Dict[str, Any] = {"operation": "generate", "format": op["format"], "document_id": f"{op['asset']}_captions", "language": op["language"], "cues": list(op["cues"]), "output": out_id}
+        if op.get("constraints"):
+            args["constraints"] = dict(op["constraints"])
+        if op.get("temporal_scope"):
+            args["video_duration"] = float(op["temporal_scope"]["end"])
+        return args
+    if tool != RENDER_TOOL:
+        raise CompileError(f"captions.burn cannot be executed by {tool}; the only tool of this operation is {RENDER_TOOL}")
+    return {"operation": "render", "input": current, "sidecar": sidecar_id, "format": "srt", "document_id": f"{op['asset']}_captions", "language": op["_language"], "cues": list(op["_cues"]), "output": out_id}
+
+
+def lower_qc_check(tool: str, kind: str, input_id: str, rules: Dict[str, Any], subtitle_id: Optional[str] = None, reference_id: Optional[str] = None) -> Dict[str, Any]:
+    if tool != QC_TOOL:
+        raise CompileError(f"the QC gate cannot be executed by {tool}; the only tool of this operation is {QC_TOOL}")
+    args: Dict[str, Any] = {"input": input_id, "kind": kind, "rules": dict(rules), "cache_policy": "bypass"}
+    if subtitle_id:
+        args["subtitle"] = subtitle_id
+    if reference_id:
+        args["reference_video"] = reference_id
+    return args
+
+
 def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
     """(skill, asset-or-target key) → tool id, from plan.steps. The compiler never chooses tools itself."""
     out: Dict[Tuple[str, str], str] = {}
@@ -203,6 +278,96 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, lower_audio_op(tool, op, st["current"], out_id), [st["current"]], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
             st["current"] = out_id
 
+    def finishing(subject: str) -> None:
+        """Colour → graphics → captions (sidecar, then the burn-in) on the subject's current picture, in IR order (ADR-031)."""
+        st = state[subject]
+        for op in (d.get("color") or {}).get("operations") or []:
+            if op["asset"] != subject or op["type"] not in COLOR_ORDER:
+                continue
+            name = op["type"].split(".", 1)[1]
+            st["gen"] += 1
+            out_id = f"{subject}_{name}"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_{name}" / f"{st['stem']}_{name}.mp4")
+            skill = COLOR_OPERATIONS[op["type"]]["skill"]
+            tool = tool_for(skill, subject)
+            inputs = [st["current"]]
+            lut_id = None
+            if op["type"] == "color.lut":
+                lut_id = f"{subject}_{name}_lut"
+                paths[lut_id] = op["lut"]
+                keys[lut_id] = ""
+                inputs.append(lut_id)
+            add(tool, lower_color_op(tool, op, st["current"], out_id, lut_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            st["current"] = out_id
+        for op in (d.get("graphics") or {}).get("operations") or []:
+            if op["asset"] != subject or op["type"] != "graphics.render":
+                continue
+            st["gen"] += 1
+            out_id = f"{subject}_graphics"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_graphics" / f"{st['stem']}_graphics.mp4")
+            tool = tool_for(GRAPHICS_SKILL, subject)
+            inputs = [st["current"]]
+            image_id = None
+            if op.get("image"):
+                image_id = f"{subject}_graphics_image"
+                paths[image_id] = op["image"]
+                keys[image_id] = ""
+                inputs.append(image_id)
+            add(tool, lower_graphics_render(tool, op, st["current"], out_id, image_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
+            st["current"] = out_id
+        gen = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.generate"), None)
+        if gen is not None:
+            sc_id = gen.get("output") or f"{subject}_captions"
+            paths[sc_id] = str(job / "artifacts" / f"{st['stem']}_captions.{gen['format']}")
+            tool = tool_for(GENERATE_SKILL, subject)
+            add(tool, lower_captions(tool, gen, None, sc_id), [], [sc_id], list(gen.get("decision_ids") or []), st["fp"], skill=GENERATE_SKILL)
+            burn = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.burn"), None)
+            if burn is not None:
+                st["gen"] += 1
+                out_id = burn.get("output") or f"{subject}_burn"
+                paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_burn" / f"{st['stem']}_burn.mp4")
+                tool = tool_for(BURN_SKILL, subject)
+                b = dict(burn, _language=gen["language"], _cues=gen["cues"])
+                add(tool, lower_captions(tool, b, st["current"], out_id, sc_id), [st["current"], sc_id], [out_id], list(burn.get("decision_ids") or []), st["fp"], skill=BURN_SKILL)
+                st["current"] = out_id
+        st["picture"] = st["current"]
+
+    def thumbnail(subject: str) -> None:
+        st = state[subject]
+        for op in (d.get("graphics") or {}).get("operations") or []:
+            if op["asset"] != subject or op["type"] != "graphics.thumbnail":
+                continue
+            out_id = op.get("output") or f"{subject}_thumbnail"
+            ext = "png" if op["format"] == "png" else "jpg"
+            paths[out_id] = str(job / "artifacts" / f"{st['stem']}_thumbnail.{ext}")
+            skill = THUMBNAIL_RENDER_SKILL if op.get("text") is not None else THUMBNAIL_FRAME_SKILL
+            tool = tool_for(skill, subject)
+            src = st.get("picture") or st["current"]
+            add(tool, lower_thumbnail(tool, op, src, out_id), [src], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+
+    def qc_gate(subject: str) -> None:
+        """One qc/check per delivery artifact of the subject and one for its subtitle sidecar (ADR-032): kind qa, no output, never reused."""
+        qc = (d.get("qa") or {}).get("qc") or {}
+        if not qc.get("enabled"):
+            return
+        st = state[subject]
+        row = next((r for r in delivery_subjects(d) if r["id"] == subject), None)
+        tol = float((d["qa"].get("thresholds") or {}).get("loudness_tolerance_lu", 2.0))
+        for t in d["delivery"]["targets"]:
+            art_id = f"{subject}_delivery_{t['id']}"
+            if art_id not in paths or not t.get("preset"):
+                continue
+            spec = rules_for_subject(row, t, d, tol) if row else {"kind": "delivery", "rules": {}}
+            tool = tool_for(QC_SKILL, subject)
+            add(tool, lower_qc_check(tool, spec["kind"], art_id, spec["rules"]), [art_id], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
+        for sc_id, srow in (qc.get("sidecars") or {}).items():
+            if srow.get("subject") != subject or sc_id not in paths:
+                continue
+            spec = sidecar_rules()
+            ref = srow.get("reference") if srow.get("reference") in paths else None
+            tool = tool_for(QC_SKILL, subject)
+            add(tool, lower_qc_check(tool, spec["kind"], sc_id, spec["rules"], reference_id=ref), [sc_id] + ([ref] if ref else []), [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
+
     def delivery(subject: str) -> None:
         st = state[subject]
         for t in d["delivery"]["targets"]:
@@ -251,8 +416,11 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 delivery(asset_id)
         elif concat is None:
             edits(asset_id)
+            finishing(asset_id)
             loudness(asset_id)
             delivery(asset_id)
+            thumbnail(asset_id)
+            qc_gate(asset_id)
     if audio_concat is not None:
         subject = audio_concat.get("output") or PROGRAMME_AUDIO
         inputs = [state[a]["current"] for a in audio_concat["inputs"]]
@@ -275,6 +443,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         args = lower_video_edit(tool, concat, inputs, subject)
         add(tool, args, inputs, [subject], list(concat.get("decision_ids") or []), fp, skill="video_concat")
         edits(subject)
+        finishing(subject)
         loudness(subject)
         delivery(subject)
+        thumbnail(subject)
+        qc_gate(subject)
     return ops, paths

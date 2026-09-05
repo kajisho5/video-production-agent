@@ -44,14 +44,22 @@ def plan_diff(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
     na = {_okey(o): o for o in new["audio"]["operations"]}
     ot = {t["id"]: t for t in old["delivery"]["targets"]}
     nt = {t["id"]: t for t in new["delivery"]["targets"]}
+    fin = {}
+    for sec in ("captions", "graphics", "color"):   # finishing sections (ADR-031): the same key as the video / audio operations
+        o_ = {_okey(o): o for o in (old.get(sec) or {}).get("operations") or []}
+        n_ = {_okey(o): o for o in (new.get(sec) or {}).get("operations") or []}
+        fin[sec] = _diff_map(o_, n_, _op_view)
+    oq = {"qc": (old.get("qa") or {}).get("qc")} if (old.get("qa") or {}).get("qc", {}).get("enabled") else {}
+    nq = {"qc": (new.get("qa") or {}).get("qc")} if (new.get("qa") or {}).get("qc", {}).get("enabled") else {}
     out: Dict[str, Any] = {
         "from_version": old["plan"]["version"], "to_version": new["plan"]["version"],
         "decisions": _diff_map(od, nd, _decision_view),
         "video": _diff_map(ov, nv, _op_view), "audio": _diff_map(oa, na, _op_view),
         "delivery": _diff_map(ot, nt, lambda t: {k: v for k, v in t.items() if k != "decision_ids"}),
+        **fin, "qc": _diff_map(oq, nq, lambda q: {k: v for k, v in q.items() if k != "decision_ids"}),
     }
     out["summary"] = summarize(out)
-    out["empty"] = not any(sec[k] for sec in (out["decisions"], out["video"], out["audio"], out["delivery"]) for k in ("added", "removed", "changed"))
+    out["empty"] = not any(sec[k] for sec in (out["decisions"], out["video"], out["audio"], out["delivery"], out["captions"], out["graphics"], out["color"], out["qc"]) for k in ("added", "removed", "changed"))
     return out
 
 
@@ -83,6 +91,19 @@ def summarize(diff: Dict[str, Any]) -> List[str]:
         lines.append(f"DELIVERY {k}: none → {v.get('preset')} ({v.get('platform')})")
     for k, v in diff["delivery"]["changed"].items():
         lines.append(f"DELIVERY {k}: {v['before'].get('preset')}/{v['before'].get('platform')} → {v['after'].get('preset')}/{v['after'].get('platform')}")
+    for sec in ("captions", "graphics", "color"):   # finishing operations (ADR-031): type@subject, listed by presence
+        for k in (diff.get(sec) or {}).get("removed", {}):
+            lines.append(f"{sec.upper()} {k}: removed")
+        for k in (diff.get(sec) or {}).get("added", {}):
+            lines.append(f"{sec.upper()} {k}: added")
+        for k in (diff.get(sec) or {}).get("changed", {}):
+            lines.append(f"{sec.upper()} {k}: parameters changed")
+    for k in (diff.get("qc") or {}).get("removed", {}):
+        lines.append("QC gate: removed")
+    for k in (diff.get("qc") or {}).get("added", {}):
+        lines.append("QC gate: added")
+    for k in (diff.get("qc") or {}).get("changed", {}):
+        lines.append("QC gate: rules changed")
     for k, v in diff["decisions"]["removed"].items():
         lines.append(f"DECISION {k}: {v['decision']} → dropped")
     for k, v in diff["decisions"]["added"].items():
