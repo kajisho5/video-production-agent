@@ -5055,3 +5055,178 @@ class AudioExtractConfirmTests(unittest.TestCase):
         # steps that cite the pending extraction are PROPOSED, not executable
         from video_agent.agent.production_plan import executable_steps
         self.assertEqual([s for s in executable_steps(ir.doc) if s.startswith(("step_cut", "step_fade"))], [])
+
+
+class RevisionIntegrityTests(unittest.TestCase):
+    """ADR-034: an approved v1 can be revised. The USER_DECISION events of v1 travel with the project as review history and cite the
+    decision of the version they reviewed; v2's active decisions are its own (PROPOSED, never pre-approved), v1's review records are
+    kept verbatim in revision.history[].reviews, and a citation that is not recorded there is refused."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.src = fake_media(self.tmp)
+        self.svc = make_service(self.tmp)
+
+    def _approved_v1(self):
+        ir = self.svc.plan([self.src], "conference")   # conference: leading / trailing silence trims are CONFIRM
+        p = str(Path(self.tmp) / "conf.json")
+        save_ir(ir, p)
+        pending = [d["id"] for d in ir.pending_confirmations()]
+        self.assertTrue(pending)
+        self.svc.approve(load_ir(p), p, pending, who="reviewer")
+        v1 = load_ir(p)
+        self.assertEqual((v1.doc["plan"]["status"], v1.doc["revision"]["approved_plan_version"]), ("APPROVED", 1))
+        return p, v1, pending
+
+    def test_1_approved_v1_revise_v2_validates(self):
+        p, v1, pending = self._approved_v1()
+        out = self.svc.revise(load_ir(p), p, feedback="a touch quieter", user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        self.assertTrue(out["created"])
+        v2 = load_ir(p)
+        self.assertEqual(v2.version, 2)
+        self.assertEqual(self.svc.validate(v2).errors, [])
+        self.assertEqual(v2.doc["plan"]["status"], "REVIEW", "a revision waits for its own approval")
+
+    def test_2_approved_v1_revise_approve_render(self):
+        p, v1, pending = self._approved_v1()
+        self.svc.revise(load_ir(p), p, user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        self.assertEqual(self.svc.render(load_ir(p), p)["status"], "WAITING_FOR_APPROVAL", "v1's approval is not v2's")
+        self.assertTrue(self.svc.approve(load_ir(p), p, ["all"], who="reviewer")["renderable"])
+        out = self.svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(out["job"]["plan_version"], 2)
+        self.assertTrue(out["artifacts"])
+
+    def test_3_v1_review_history_is_kept_verbatim(self):
+        p, v1, pending = self._approved_v1()
+        v1_reviews = json.loads(json.dumps(v1.doc["execution"]["reviews"]))
+        v1_events = [e for e in v1.doc["timeline"]["events"] if e["type"] == "USER_DECISION"]
+        self.svc.revise(load_ir(p), p, user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        v2 = load_ir(p)
+        hist = v2.doc["revision"]["history"][-1]
+        self.assertEqual(hist["reviews"], v1_reviews, "v1's review records are history, unchanged")
+        self.assertEqual(hist["from_version"], 1)
+        carried = [e for e in v2.doc["timeline"]["events"] if e["type"] == "USER_DECISION"]
+        self.assertEqual([e["id"] for e in carried], [e["id"] for e in v1_events], "the USER_DECISION events travel unchanged")
+        self.assertTrue(all(e["metadata"]["plan_version"] == 1 and e["evidence"] == [e["metadata"]["decision"]] for e in carried))
+        self.assertEqual(v2.doc["execution"]["reviews"], {}, "no active review in v2: nothing is re-approved")
+        self.assertEqual(v2.doc["execution"]["approvals"], {})
+        # the v1 snapshot is intact
+        snap = json.loads(Path(hist["snapshot"]).read_text(encoding="utf-8"))
+        self.assertEqual((snap["plan"]["version"], snap["revision"]["approved_plan_version"], snap["execution"]["reviews"]), (1, 1, v1_reviews))
+
+    def test_4_v1_and_v2_decisions_are_not_confused(self):
+        p, v1, pending = self._approved_v1()
+        self.svc.revise(load_ir(p), p, user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        v2 = load_ir(p)
+        active = {d["id"]: d for d in v2.doc["decisions"]}
+        for did in pending:
+            if did in active:   # same content → same deterministic id: still a v2 decision, PROPOSED, without v1's approval
+                self.assertEqual(active[did]["status"], "PROPOSED")
+            self.assertNotIn(did, v2.doc["execution"]["reviews"])
+        self.assertTrue(all(d["status"] in ("PROPOSED", "BLOCKED") for d in v2.doc["decisions"]), "no v2 decision inherits an APPROVED status")
+        self.assertEqual([d["subject"] for d in v2.pending_confirmations()], [d["subject"] for d in v1.doc["decisions"] if d["approval"] == "CONFIRM"])
+        self.assertNotEqual(v2.plan_hash(), v1.plan_hash(), "the loudness target changed: a different plan")
+
+    def test_5_rejected_revision_unchanged(self):
+        ir = self.svc.plan([self.src], "youtube")
+        p = str(Path(self.tmp) / "y.json")
+        save_ir(ir, p)
+        lead = next(d for d in ir.doc["decisions"] if d["subject"] == "silence.leading")
+        self.svc.reject(load_ir(p), p, [lead["id"]], reason="keep the intro", who="reviewer")
+        self.assertEqual(self.svc.render(load_ir(p), p)["status"], "BLOCKED")
+        self.assertTrue(self.svc.revise(load_ir(p), p, who="editor")["created"])
+        v2 = load_ir(p)
+        self.assertEqual(self.svc.validate(v2).errors, [])
+        rej = [d for d in v2.doc["decisions"] if d["status"] == "REJECTED"]
+        self.assertEqual([d["id"] for d in rej], [lead["id"]], "the rejected decision stays visible as history")
+        self.assertEqual(v2.doc["execution"]["reviews"][lead["id"]]["action"], "REJECTED")
+        self.assertIn(lead["id"], v2.doc["revision"]["history"][-1]["rejected_decision_ids"])
+        self.assertIn(lead["id"], v2.doc["revision"]["history"][-1]["reviews"])
+        self.assertFalse([s for s in v2.doc["plan"]["steps"] if lead["id"] in s["decision_ids"]])
+
+    def test_6_tampered_history_reference_is_refused(self):
+        from video_agent.project.ir import ProjectIR
+        p, v1, pending = self._approved_v1()
+        self.svc.revise(load_ir(p), p, user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        base = load_ir(p).doc
+        self.assertEqual(self.svc.validate(ProjectIR(json.loads(json.dumps(base)))).errors, [])
+
+        def errors(fn):
+            doc = json.loads(json.dumps(base))
+            fn(doc)
+            return validate_ir(ProjectIR(doc), check_paths=False, registry=self.svc.registry).errors
+        ud = lambda doc: next(e for e in doc["timeline"]["events"] if e["type"] == "USER_DECISION")   # noqa: E731
+        # a citation that exists in no version
+        self.assertTrue(any("evidence not found" in e for e in errors(lambda doc: ud(doc).update(evidence=["dec_0000000000"]))))
+        # the history record removed: the carried event has nothing to resolve against
+        self.assertTrue(any("evidence not found" in e for e in errors(lambda doc: doc["revision"]["history"][-1].update(reviews={}))))
+        # an event forged as a review of the *current* version while citing the historical decision
+        self.assertTrue(any("earlier plan version" in e or "evidence not found" in e for e in errors(lambda doc: ud(doc)["metadata"].update(plan_version=2))))
+        # history never becomes an active decision: a step citing the historical id is refused as unknown
+        hist_id = next(iter(base["revision"]["history"][-1]["reviews"]))
+        if hist_id not in {d["id"] for d in base["decisions"]}:
+            self.assertTrue(any("unknown decision" in e for e in errors(lambda doc: doc["plan"]["steps"][0]["decision_ids"].append(hist_id))))
+
+    def test_7_resume_does_not_reuse_v1_across_versions(self):
+        p, v1, pending = self._approved_v1()
+        out1 = self.svc.render(load_ir(p), p)
+        self.assertEqual(out1["status"], "COMPLETED", out1)
+        self.svc.revise(load_ir(p), p, user_requirements={"audio.loudness.target_lufs": -18}, who="editor")
+        self.assertEqual(self.svc.render(load_ir(p), p, resume=out1["job"]["id"])["status"], "WAITING_FOR_APPROVAL", "resume never bypasses v2's approval")
+        self.svc.approve(load_ir(p), p, ["all"], who="reviewer")
+        out2 = self.svc.render(load_ir(p), p, resume=out1["job"]["id"])
+        self.assertEqual(out2["status"], "COMPLETED", out2)
+        self.assertNotEqual(out2["job"]["id"], out1["job"]["id"])
+        self.assertEqual((out2["job"]["plan_version"], out2["job"]["resumed_from"]), (2, out1["job"]["id"]))
+        self.assertNotEqual(out2["job"]["plan_hash"], out1["job"]["plan_hash"])
+        loud = [r for r in out2["execution"]["results"] if r["tool"].endswith("/loudness") and r.get("output")]
+        self.assertTrue(loud and all(r["op_id"] not in out2["execution"]["skipped"] for r in loud), "the changed loudness operation ran again")
+        prov = json.loads((Path(self.tmp) / "jobs" / out2["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        self.assertEqual(prov["plan_version"], 2)
+        self.assertNotEqual(prov["plan_hash"], v1.plan_hash())
+
+
+class AudioConcatBasisTests(unittest.TestCase):
+    """ADR-034 (P2-B): the approval basis of audio.concat is its own explicit requirement `audio.concat=true`; the generic
+    `audio.production` switch enables the path only and waives nothing (audio.extract stays CONFIRM, ADR-033)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.wav = fake_audio(self.tmp, "a.wav", channels=2)
+        self.mono = fake_audio(self.tmp, "b.wav", channels=1)
+        self.mp4 = fake_media(self.tmp, "talk.mp4")
+        for k in ("FAKE_AP_MODE", "FAKE_AP_CALLS"):
+            os.environ.pop(k, None)
+
+    def _svc(self):
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.audio_production import AudioProductionAdapter, AudioProductionSkill
+        ad = AudioProductionAdapter(AudioProductionSkill([sys.executable, AudioProductionPathTests.FAKE], None, {}), workspace=self.tmp, allowed_inputs=[str(Path(self.wav).parent)], ffmpeg_skill_dir=self.tmp)
+        return make_service(self.tmp, caps=FakeCaps(extra=AudioProductionPathTests.CAPS), adapter=ToolRouter([FakeAdapter(lufs=-11.0), ad]))
+
+    def test_explicit_concat_basis_is_audio_concat(self):
+        svc = self._svc()
+        ir = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.concat": True})
+        cat = next(d for d in ir.doc["decisions"] if d["subject"] == "audio.concat")
+        self.assertEqual((cat["type"], cat["approval"], cat["status"], cat["basis"]["approval"]["key"]), ("TRANSFORM", "AUTO", "PROPOSED", "audio.concat.approval"))
+        notes = cat["basis"]["approval"]["notes"]
+        self.assertTrue(any("CONFIRM waived" in n and "audio.concat from cli" in n for n in notes), notes)
+        self.assertFalse(any("audio.production" in n for n in notes), "the switch is not the basis")
+        req = {r["id"]: r for r in ir.doc["requirements"]}
+        self.assertTrue(all(req[i]["provenance"] == "USER" for i in cat["evidence"] if i in req and req[i]["key"] == "audio.concat"))
+        self.assertIn("audio.concat", {req[i]["key"] for i in cat["evidence"] if i in req})
+        self.assertEqual(ir.doc["plan"]["status"], "APPROVED")
+        self.assertIn("audio_concat", [s["skill"] for s in ir.doc["plan"]["steps"]])
+
+    def test_switch_alone_waives_nothing(self):
+        svc = self._svc()
+        ir = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.gain": -3})
+        self.assertNotIn("audio.concat", {d["subject"] for d in ir.doc["decisions"]}, "no concat without its requirement")
+        self.assertNotIn("audio.concat", [s["skill"] for s in ir.doc["plan"]["steps"]])
+        irx = svc.plan([self.mp4], "generic", user_requirements={"audio.production": True, "audio.fade_in": 0.5})
+        ex = next(d for d in irx.doc["decisions"] if d["subject"] == "audio.extract")
+        self.assertEqual((ex["approval"], irx.doc["plan"]["status"]), ("CONFIRM", "REVIEW"), "ADR-033 unchanged")
+        # a policy BLOCK on the concat is never waived by its requirement
+        irb = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.concat": True, "audio.concat.approval": "BLOCK"})
+        self.assertEqual(next(d for d in irb.doc["decisions"] if d["subject"] == "audio.concat")["approval"], "BLOCK")

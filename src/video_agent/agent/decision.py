@@ -123,7 +123,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 cf = float(audio.get("crossfade") or 0.0)
                 eng.decide(subject="audio.concat", type="TRANSFORM", decision="audio concat " + " + ".join(a.id for a in audio_assets) + f" → {PROGRAMME_AUDIO}" + (f" (crossfade {cf:g}s)" if cf else ""),
                            reason=f"user asked to join the audio of the inputs in the given order ({sw.source}); the cut inputs become one programme",
-                           confidence=1.0, evidence=a_ev + probe_ids_of([a.id for a in audio_assets]), risk=AUDIO_OPERATIONS["audio.concat"]["risk"], approval=approval_for("audio.concat", explicit=sw),
+                           confidence=1.0, evidence=a_ev + probe_ids_of([a.id for a in audio_assets]), risk=AUDIO_OPERATIONS["audio.concat"]["risk"],
+                           approval=approval_for("audio.concat", explicit=m["audio.concat"]),   # the concat's own explicit requirement; the switch enables the path only (ADR-033 / ADR-034)
                            provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": [a.id for a in audio_assets], "crossfade": cf}, requirements=audio["requirements"], serves_intent=None)
                 cap_block("audio_concat", "capability.audio_concat")
     concat_ok = False

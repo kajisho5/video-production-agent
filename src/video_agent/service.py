@@ -390,6 +390,10 @@ class Service:
         nd = fresh.doc
         # carry identity, history and the audit trail
         nd["project"] = old["project"]
+        # ADR-034: the USER_DECISION events of every earlier version travel with the project as review history. Their evidence names
+        # the decision of the version they reviewed; that decision is *not* an active v(n+1) decision (only REJECTED ones are carried,
+        # nothing is re-approved), so the review records of v(n) are kept verbatim in revision.history[].reviews and the validator
+        # resolves a historical citation there — never against the active decision set.
         nd["timeline"]["events"] += [e for e in old["timeline"]["events"] if e["type"] == "USER_DECISION"]
         nd["decisions"] = rejected + nd["decisions"]            # rejected decisions stay visible, with their reviews
         nd["execution"]["reviews"] = {k: v for k, v in (old["execution"].get("reviews") or {}).items() if k in {d["id"] for d in rejected}}
@@ -417,7 +421,8 @@ class Service:
             Path(snap).write_text(json.dumps(old, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
         nd["revision"]["history"].append({"version": new_version, "from_version": ir.version, "created_at": now_iso(), "by": who, "feedback_ids": fb_ids,
                                           "rejected_decision_ids": [d["id"] for d in rejected], "rejection_reasons": {d["id"]: (old["execution"].get("reviews") or {}).get(d["id"], {}).get("reason", "") for d in rejected},
-                                          "dropped_proposals": dropped, "diff": diff, "plan_hash": fresh.plan_hash(), "ir_hash_before": old["provenance"].get("ir_hash"), "snapshot": snap})
+                                          "dropped_proposals": dropped, "diff": diff, "plan_hash": fresh.plan_hash(), "ir_hash_before": old["provenance"].get("ir_hash"), "snapshot": snap,
+                                          "reviews": json.loads(json.dumps(old["execution"].get("reviews") or {}))})   # v(n)'s review records, verbatim (history, not approval)
         ir.doc = nd
         save_ir(ir, ir_path)
         return {"version": new_version, "created": True, "snapshot": snap, "diff": diff, "dropped_proposals": dropped, "pending": [d["id"] for d in ir.pending_confirmations()],

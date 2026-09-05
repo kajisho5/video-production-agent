@@ -341,3 +341,14 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 
 - 検証: unit `AudioExtractConfirmTests`（8 case: generic switch → CONFIRM / 専用 requirement → AUTO / 他 audio op 不変 / BLOCK 不変 / reject・revise / resume / explain / IR・validator・compiler）、evals 81 更新 + 98 / 99、integration `test_video_container_delivers_audio` に CONFIRM + review record + `audio.extract=true` の assert 追加。
 - 残 P1: speaker → camera switching（§22）。残 P2: approve 後の revise で USER_DECISION event が旧 decision id を cite し validator error（main で再現、pre-existing）。
+
+## 24. P2-A / P2-B — Revision integrity と audio.concat basis（ADR-034、2026-09-05 追記）
+
+| Gap | 旧実装 | 修正 |
+|---|---|---|
+| G97 approve 済み v1 を revise すると v2 が validate 不能 | USER_DECISION event は持ち越すが、その evidence（v1 decision id）は v2 に無く、v1 の review record も落ちる | `revision.history[].reviews` に v1 の review を verbatim 保持。validator は旧版の USER_DECISION event に限り history に対して解決（history に無い id / 現在版偽装は error） |
+| G98 `audio.concat` の basis が `audio.production` を explicit として記録 | `approval_for("audio.concat", explicit=<switch>)` | `explicit=m["audio.concat"]`（挙動不変、provenance が正しい） |
+
+- 検証: unit `RevisionIntegrityTests`（7）/ `AudioConcatBasisTests`（2）、integration `test_approve_revise_approve_render_real_media`（実 ffmpeg: APPROVED v1 → revise → APPROVED v2 → render → QA PASS → artifact）。
+- 残 P1: speaker → camera switching（§22）。残 P2: なし（既知分は本節で解消）。
+
