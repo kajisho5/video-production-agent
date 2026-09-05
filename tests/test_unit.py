@@ -3184,7 +3184,8 @@ class ProductionContextTests(unittest.TestCase):
         self.assertEqual([(c.scope["start"], c.scope["end"]) for c in contexts_between(ctxs, 8.0, 12.5)], [(3.5, 8.8), (8.8, 9.0), (9.0, 12.0), (12.0, 12.3), (12.3, 13.5)])
         # deterministic: same events → same contexts and ids; a second build is identical
         again = build_contexts(an.timeline.events, an.assets, an.observations, [])
-        self.assertEqual([c.to_dict() for c in ctxs], [c.to_dict() for c in again])
+        strip = lambda c: {k: v for k, v in c.to_dict().items() if k != "created_at"}   # the build timestamp is wall-clock (CI crossed a second boundary), not content
+        self.assertEqual([strip(c) for c in ctxs], [strip(c) for c in again])
         self.assertEqual(c.id, ProductionContext.make_id(c.timeline_id, c.scope, c.event_ids))
         self.assertTrue(all(x.id.startswith("ctx_") for x in ctxs))
         # validation: references must exist, ids must match content, scope inside the asset
