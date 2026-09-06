@@ -4655,6 +4655,13 @@ class VideoEditingOperationsTests(unittest.TestCase):
         dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
         self.assertEqual((dur["status"], dur["observed"]), ("PASS", 11.0)); self.assertIn("11.000", dur["expected"])
         art = out["artifacts"][0]
+        # QC_ARCHITECTURE.md §5 (ADR-039): this duration check is judged against the Plan's own kept-ranges/
+        # concat/speed timeline, not a fixed rule -- and it verifies exactly the artifact registered below, by id
+        self.assertEqual(dur["threshold_source"], "plan")
+        self.assertEqual(dur["subject_artifact_id"], art["id"])
+        stream = next(i for i in out["qa"]["items"] if i["name"] == "video_stream")
+        self.assertEqual(stream["threshold_source"], "rule", "a technical-spec check (a video stream is present) is not derived from this Plan's own declared intent")
+        self.assertEqual(stream["subject_artifact_id"], art["id"], "every item verifying this subject links to the same Artifact regardless of its threshold source")
         self.assertEqual(art["logical_name"], "programme_delivery_youtube"); self.assertEqual(sorted(art["source"]), sorted(ir.doc["assets"]))
         self.assertEqual(art["step_id"], "step_export_youtube")
         exp_op = next(r for r in out["execution"]["results"] if r["tool"] == "ffmpeg-skill/export")
