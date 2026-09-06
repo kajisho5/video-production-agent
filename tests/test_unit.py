@@ -109,14 +109,16 @@ class AdapterTests(unittest.TestCase):
         self.skill = FfmpegSkill(root, "0.8.4", ["probe", "cut", "loudness", "export", "check"])
 
     def test_ffmpeg_skill_version_range_is_explicit(self):
-        """The supported ffmpeg-skill range is a declared contract (PR #13 / PR #17): 0.8.4 ≤ v < 0.10. 0.9.x is accepted
-        (contract / doctor added, `--json` gained "status", no media behaviour changed); 0.10 is unverified and rejected;
-        anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit."""
+        """The supported ffmpeg-skill range is a declared contract (PR #13 / PR #17 / PR #46): 0.8.4 ≤ v < 0.11. 0.9.x-0.10.x
+        are accepted (0.9.0: contract / doctor added, `--json` gained "status"; 0.10.0: per-tool doctor fields, contract
+        reencodes_video/reencodes_audio, join.py's audio-less multi-clip fix -- no media behaviour changed for either);
+        0.11 is unverified and rejected; anything unparsable is rejected. Widening the range needs a verified integration
+        run, not a silent edit."""
         from video_agent.tools.ffmpeg_skill.locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (0, 10, 0)))
-        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12"):
+        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (0, 11, 0)))
+        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9"):
             self.assertTrue(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
-        for v in ("0.8.3", "0.7.9", "0.10.0", "0.11.2", "1.0.0", "unknown", "", "0.9.x"):
+        for v in ("0.8.3", "0.7.9", "0.11.0", "0.12.2", "1.0.0", "unknown", "", "0.9.x"):
             self.assertFalse(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
 
     def test_argv_typed_and_catalog_enforced(self):
@@ -2812,8 +2814,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(rows["media-analysis"]["version"], "0.1.0")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
-        # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution
-        res = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, media_analysis_dir="/nonexistent")
+        # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
+        # PATH is nulled too (not just media_analysis_dir): a bare "/nonexistent" dir would otherwise still let
+        # a real `media-analysis` console script installed on this machine's PATH resolve the capability anyway.
+        res = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}, media_analysis_dir="/nonexistent")
         cap = res.resolve()["media-analysis"]
         self.assertEqual(cap.status, "MISSING")
         # explicit extra kinds via the service, and Skill / Tool version distinction
@@ -5601,3 +5605,78 @@ class AudioConcatBasisTests(unittest.TestCase):
         # a policy BLOCK on the concat is never waived by its requirement
         irb = svc.plan([self.wav, self.mono], "generic", user_requirements={"audio.production": True, "audio.concat": True, "audio.concat.approval": "BLOCK"})
         self.assertEqual(next(d for d in irb.doc["decisions"] if d["subject"] == "audio.concat")["approval"], "BLOCK")
+
+
+class LocateAuthoritativeOverrideTests(unittest.TestCase):
+    """An explicit dir or the Skill's own *_DIR env var names exactly where it lives; a checkout missing from that
+    location must resolve to nothing (MISSING), never fall back to guessing sibling directories. Found on this
+    session's own machine: it keeps every ecosystem Skill checked out as a sibling of video-production-agent (the
+    real, intended layout for this ecosystem, not a coincidence), so a caller's explicit "/nonexistent" override
+    was being silently overridden right back by the ../<skill-name> guess resolving to that real, unrelated
+    checkout -- exactly backwards from what an explicit override is for."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.parent = Path(self.tmp)
+        self.cwd_dir = self.parent / "video-production-agent"
+        self.cwd_dir.mkdir()
+        self._old_cwd = os.getcwd()
+        os.chdir(self.cwd_dir)
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+
+    def _checkout(self, name: str, package_dir: str) -> Path:
+        root = self.parent / name
+        (root / "src" / package_dir).mkdir(parents=True)
+        (root / "src" / package_dir / "cli.py").write_text("")
+        return root
+
+    def test_ffmpeg_skill_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        sibling = self.parent / "ffmpeg-skill"
+        (sibling / "scripts").mkdir(parents=True)
+        (sibling / "scripts" / "probe.py").write_text("")
+        self.assertIsNotNone(locate_ffmpeg_skill(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_ffmpeg_skill("/nonexistent", env={"PATH": ""}))
+
+    def test_media_analysis_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        self._checkout("media-analysis-skill", "media_analysis")
+        self.assertIsNotNone(locate_media_analysis(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_media_analysis("/nonexistent", env={"PATH": ""}))
+
+    def test_transcription_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.transcription.locate import locate_transcription
+        self._checkout("transcription-skill", "transcription_skill")
+        self.assertIsNotNone(locate_transcription(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_transcription("/nonexistent", env={"PATH": ""}))
+
+    def test_video_editing_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.video_editing.locate import locate_video_editing
+        self._checkout("video-editing-skill", "video_editing_skill")
+        self.assertIsNotNone(locate_video_editing(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_video_editing("/nonexistent", env={"PATH": ""}))
+
+    def test_audio_production_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.audio_production.locate import locate_audio_production
+        self._checkout("audio-production-skill", "audio_production")
+        self.assertIsNotNone(locate_audio_production(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_audio_production("/nonexistent", env={"PATH": ""}))
+
+    def test_cli_skill_explicit_miss_ignores_sibling_checkout(self):
+        """subtitle/thumbnail/color-grading/motion-graphics/qc all share this one locate_cli_skill() helper."""
+        from video_agent.tools.skill_process import locate_cli_skill
+        self._checkout("subtitle-skill", "subtitle_skill")
+        found = locate_cli_skill("subtitle", "subtitle_skill", "subtitle_skill", "subtitle-skill", "VIDEO_AGENT_SUBTITLE_DIR",
+                                 env={"PATH": ""}, checkout_names=("subtitle-skill",))
+        self.assertIsNotNone(found, "sanity: the sibling is genuinely auto-discoverable")
+        missed = locate_cli_skill("subtitle", "subtitle_skill", "subtitle_skill", "subtitle-skill", "VIDEO_AGENT_SUBTITLE_DIR",
+                                  "/nonexistent", env={"PATH": ""}, checkout_names=("subtitle-skill",))
+        self.assertIsNone(missed)
+
+    def test_env_var_miss_also_ignores_sibling_checkout(self):
+        """The *_DIR env var is just as authoritative as the explicit constructor argument."""
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        self._checkout("media-analysis-skill", "media_analysis")
+        self.assertIsNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": "/nonexistent"}))

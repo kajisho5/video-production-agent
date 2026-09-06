@@ -1143,7 +1143,7 @@ class VideoEditingRealTests(unittest.TestCase):
         import hashlib
         self.assertEqual(cut["data"]["artifact"]["sha256"], hashlib.sha256(Path(cut["output"]).read_bytes()).hexdigest())
         self.assertEqual(cut["data"]["operation"]["tool"], "ffmpeg-skill/cut"); self.assertEqual(cut["data"]["operation"]["skill"], "video-editing")
-        self.assertTrue(cut["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+        self.assertEqual(cut["data"]["observation"]["source"], f"ffmpeg-skill/probe@{locate_ffmpeg_skill().version}")
         self.assertEqual(cut["data"]["observation"]["provenance"], "OBSERVED")
         self.assertTrue(cut["data"]["timeline"]["tracks"][0]["segments"], "source → timeline mapping reported by the Skill")
         self.assertTrue(cut["commands"] and all(c.startswith("/") or c.startswith("ffmpeg") for c in cut["commands"]), "ffmpeg command lines are provenance only")
@@ -1225,7 +1225,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         for r, op in zip(res, ops):
             self.assertTrue(r["ok"] and os.path.isfile(r["output"]), r)
             self.assertEqual(r["data"]["artifact"]["sha256"], hashlib.sha256(Path(r["output"]).read_bytes()).hexdigest())
-            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertTrue(r["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["data"]["observation"]["source"], f"ffmpeg-skill/probe@{locate_ffmpeg_skill().version}")
             self.assertEqual(r["data"]["operation"]["type"], op["type"].split(".", 1)[1].upper())
             self.assertFalse(any(k in json.dumps(r["data"]["operation"].get("parameters") or {}).lower() for k in ("argv", "command", "filter", "shell")))
         # ffprobe facts on every intermediate: duration follows the IR (concat timeline → speed), geometry follows resize / fit / fill
@@ -1332,7 +1332,7 @@ class AudioProductionRealTests(unittest.TestCase):
         for r in res:
             self.assertTrue(r["ok"] and os.path.isfile(r["output"]) and r["output"].endswith(".wav"), r)
             self.assertEqual(r["data"]["artifact"]["sha256"], hashlib.sha256(Path(r["output"]).read_bytes()).hexdigest())
-            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertTrue(r["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["data"]["observation"]["source"], f"ffmpeg-skill/probe@{locate_ffmpeg_skill().version}")
             self.assertTrue(r["data"]["operation"]["tool"].startswith("ffmpeg-skill/")); self.assertEqual(r["data"]["provenance"]["skill"], "audio-production")
             self.assertFalse(any(k in json.dumps(r["data"]["operation"]["parameters"]).lower() for k in ("argv", "command", "filter", "shell")))
         items = {i["name"]: i for i in out["qa"]["items"]}
