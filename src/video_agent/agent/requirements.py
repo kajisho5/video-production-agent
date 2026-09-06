@@ -1,6 +1,11 @@
 """Request → Requirements. Phase 1 has no LLM: requirements come from structured CLI arguments (USER), the
 profile (PROFILE), and defaults (DEFAULT). A small keyword pass over free text produces USER requirements
-only for unambiguous phrases; anything else is left for the user to state explicitly."""
+only for unambiguous phrases; anything else is left for the user to state explicitly. A second, narrower
+pass (NUMERIC_KEYWORDS) extracts an explicit numeric target from an otherwise-unambiguous phrase (e.g. "-16
+LUFS") -- without it, "normalize loudness to -16 LUFS" only set the boolean intent (audio.normalize=True)
+and silently fell back to the profile's own default target, which can make an explicitly-requested
+normalization look like "nothing to do" if the source happens to already be within tolerance of that
+unrelated default (found via a real `video-agent plan --request` run, not assumed)."""
 from __future__ import annotations
 
 import re
@@ -18,6 +23,13 @@ KEYWORDS = [
     (re.compile(r"frame.?accurate|フレーム単位", re.I), "edit.precision", "frame"),
 ]
 
+# Same "only unambiguous phrases" discipline as KEYWORDS above, but the captured group becomes the
+# requirement's value (cast by the third element) instead of a fixed True/string.
+NUMERIC_KEYWORDS = [
+    (re.compile(r"(-?\d+(?:\.\d+)?)\s*LUFS", re.I), "audio.loudness.target_lufs", float),
+    (re.compile(r"(-?\d+(?:\.\d+)?)\s*dB\s*TP", re.I), "audio.loudness.true_peak", float),
+]
+
 
 def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> List[Requirement]:
     reqs: List[Requirement] = []
@@ -31,6 +43,14 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
         if request.raw and rx.search(request.raw) and key not in seen:
             reqs.append(Requirement(key=key, value=value, provenance="USER", source="request-text"))
             seen.add(key)
+    # numeric target extraction (e.g. "-16 LUFS"): takes priority over the profile/rules default
+    # for the same key, since seen already includes it once matched here
+    for rx, key, cast in NUMERIC_KEYWORDS:
+        if request.raw and key not in seen:
+            m = rx.search(request.raw)
+            if m:
+                reqs.append(Requirement(key=key, value=cast(m.group(1)), provenance="USER", source="request-text"))
+                seen.add(key)
     # profile-level requirements
     reqs.append(Requirement(key="delivery.targets", value=profile.delivery_targets, provenance="PROFILE", source=f"profile:{profile.name}"))
     for key in ("audio.loudness.target_lufs", "audio.loudness.true_peak", "silence.leading.min_seconds", "silence.threshold_db"):
