@@ -237,6 +237,25 @@ class PipelineTests(unittest.TestCase):
         dec2 = next(x for x in ir2.doc["decisions"] if x["subject"] == "delivery.youtube")
         self.assertEqual(dec2["params"]["preset"], "youtube")   # unchanged from the profile's own definition, not re-derived from the phrase
 
+    def test_delivery_preserve_source_is_a_rejected_key_not_a_silent_no_op(self):
+        """`delivery.preserve_source` used to be added to every project (`agent/requirements.py`'s `defaults`
+        dict, value always `True`) and, since `delivery.` is an accepted `--set` prefix, could also be
+        explicitly overridden by a user (`--set delivery.preserve_source=false`) — with zero effect either
+        way: `grep -rn preserve_source src/` shows the only real thing by this name is
+        `policy/rules.py`'s hardcoded, non-overridable `sys.preserve_source` CONSTRAINT (never write to the
+        source path, ADR-022's workspace boundary, enforced structurally by `ArtifactStore.check_path()`).
+        `delivery.preserve_source` was a vestigial duplicate under a different key that nothing ever
+        consumed — worse than merely dead, since a user could believe `--set
+        delivery.preserve_source=false` disables a safety guarantee it never touched. Fixed by dropping the
+        default (it no longer appears in a plan nobody asked about it) and explicitly rejecting an explicit
+        `--set`, rather than silently accepting-and-ignoring it."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "generic")
+        self.assertNotIn("delivery.preserve_source", {r["key"] for r in ir.doc["requirements"]})
+        with self.assertRaises(ValueError) as ctx:
+            svc.plan([self.src], "generic", user_requirements={"delivery.preserve_source": False})
+        self.assertIn("delivery.preserve_source", str(ctx.exception))
+
     def test_generic_without_preset_delivers_intermediate(self):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "generic")
