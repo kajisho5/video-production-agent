@@ -388,12 +388,24 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- delivery
     targets = m.get("delivery.targets")
-    for t in (targets.value if targets else []):
+    platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")
+    target_list = list(targets.value) if targets else []
+    platform_targets: set = set()
+    if platform_req and target_list and not any(t.get("preset") for t in target_list):
+        # the profile's own targets are generic (no preset chosen yet): the platform named in the request
+        # text picks the export preset instead of the request silently doing nothing — the platform name
+        # is the preset name for every platform this keyword pass currently recognises (just "youtube")
+        target_list = [dict(t, preset=platform_req.value, platform=platform_req.value) for t in target_list]
+        platform_targets = {t["id"] for t in target_list}
+    for t in target_list:
         if t.get("preset"):
+            plat_ev = [platform_req.id] if t["id"] in platform_targets else []
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision=f"export preset '{t['preset']}', check platform '{t.get('platform', 'custom')}'",
-                       reason=f"delivery target from {targets.provenance.lower()} ({targets.source}); codec/container follow the preset (format-level, mechanical)",
-                       confidence=1.0, evidence=[targets.id], risk="LOW", approval=approval_for("delivery.export"), provenance=targets.provenance, params=dict(t),
-                       requirements=[targets], serves_intent=_serves(intent, f"delivery.{t['id']}"))
+                       reason=(f"the request named the platform \"{t['preset']}\" for delivery" if t["id"] in platform_targets else
+                               f"delivery target from {targets.provenance.lower()} ({targets.source})") + "; codec/container follow the preset (format-level, mechanical)",
+                       confidence=1.0, evidence=[targets.id] + plat_ev, risk="LOW", approval=approval_for("delivery.export"),
+                       provenance=platform_req.provenance if t["id"] in platform_targets else targets.provenance, params=dict(t),
+                       requirements=([targets, platform_req] if t["id"] in platform_targets else [targets]), serves_intent=_serves(intent, f"delivery.{t['id']}"))
             cap_block("delivery_export", f"capability.delivery_export.{t['id']}")
         else:
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision="deliver the processed file without re-encoding to a platform preset",

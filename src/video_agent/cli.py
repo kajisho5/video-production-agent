@@ -466,6 +466,8 @@ def cmd_sessions(args, svc: Service) -> int:
 
 
 def cmd_explain(args, svc: Service) -> int:
+    if not getattr(args, "artifact", None) and not args.project:
+        raise ValueError("PROJECT is required for --decision / --step / --context / --observation / --pipeline (only --artifact does not need one)")
     if getattr(args, "pipeline", False):
         ir = load_ir(args.project)
         job = prov = None
