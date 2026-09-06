@@ -224,8 +224,8 @@ class PipelineTests(unittest.TestCase):
         this fix, `_register_artifacts()`'s `not t.get("preset")` guard silently dropped every no-preset deliverable
         regardless of whether it was ever processed, so `render()` reported COMPLETED with `artifacts: []` even
         though a real, QA-verified file existed. The genuinely unprocessed case (nothing to trim, nothing to
-        deliver) is intentionally different — see WORK_QUEUE.md item 9 in AI-video-production-OS: that deliverable
-        would need a real copy/remux into the workspace that doesn't exist yet, so it correctly stays unregistered.
+        deliver) is covered separately below (`test_generic_without_preset_and_genuinely_untouched_still_registers_an_artifact`),
+        via a real stream-copy materialization into the workspace (AI-video-production-OS WORK_QUEUE item 9).
         Also covers a second bug found registering this artifact for real: since it is an *alias* of the trim op's
         own output (no dedicated export op names the delivery id itself), the naive id-match in `_register_artifacts()`
         found no operation and no decision for it at all (`operations: []`, `decision_ids: []`) despite being the
@@ -250,6 +250,34 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(art["operations"], "the real trim operation must be credited, not silently dropped")
         self.assertEqual(set(art["decision_ids"]), {subjects["silence.leading"], subjects["silence.trailing"], subjects["delivery.main"]})
         self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+
+    def test_generic_without_preset_and_genuinely_untouched_still_registers_an_artifact(self):
+        """A no-preset delivery whose subject nothing ever touched (no silence to trim, no preset) used to have
+        no path at all: `compiler.py`'s `delivery()` only ever aliased an already-in-workspace intermediate, and a
+        genuinely untouched subject's `current` still names its raw source asset, which `ArtifactStore.check_path()`
+        (ADR-022) correctly refuses to register at its external path. Fixed with a real stream copy
+        (`ffmpeg-skill export.py --preset copy`) that materializes the source into the workspace, giving the
+        deliverable a real in-workspace file — same fix `agent/planner.py`'s `delivery_steps()` plans a matching
+        `delivery_export` step for (needed so the compiler has a tool to compile: ADR-021). AI-video-production-OS
+        WORK_QUEUE item 9."""
+        svc = make_service(self.tmp, adapter=FakeAdapter(silences=[]))   # no leading/trailing silence at all: nothing to trim
+        ir = svc.plan([self.src], "generic")
+        self.assertEqual(ir.doc["video"]["operations"], [], "genuinely nothing to do besides delivery")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["delivery_export"])
+        exp_step = ir.doc["plan"]["steps"][0]
+        self.assertEqual(exp_step["params"]["preset"], "copy")
+        p = str(Path(self.tmp) / "u.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
+        self.assertTrue(os.path.isfile(art["path"]))
+        self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+        self.assertEqual(art["tool"], "ffmpeg-skill/export", "credited to the real stream-copy op, not left blank")
+        subjects = {d["subject"]: d["id"] for d in ir.doc["decisions"]}
+        self.assertEqual(set(art["decision_ids"]), {subjects["delivery.main"]})
 
     def test_same_file_name_twice_gets_distinct_paths(self):
         a = fake_media(self.tmp, "camA/clip.mp4")

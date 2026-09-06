@@ -89,6 +89,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     sidecar_of: Dict[str, str] = {}      # subject → logical id of its subtitle sidecar (captions.generate output)
     picture_of: Dict[str, str] = {}      # subject → the logical output the thumbnail is taken from (the finished picture before loudness / export)
     techn = {a.id: a.technical for a in analysis.assets}
+    raw_asset_ids = set(techn)   # subject ids that name a raw source asset (as opposed to a produced intermediate/programme)
 
     def decided(subject: str, subj: str) -> List[Decision]:
         return [x for x in decisions if x.subject == subj and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == subject]
@@ -347,6 +348,23 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                     outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": t["preset"], "expected": {"platform": t.get("platform", "custom"), "source": subject}})
                     if first:
                         summary.append(f"Export '{t['id']}' with preset {t['preset']} and check against {t.get('platform', 'custom')} spec")
+                elif current in raw_asset_ids and techn.get(subject, {}).get("video"):
+                    # generic profile, genuinely untouched (no edit/loudness step ever ran): `current` still names
+                    # the raw source asset, which ArtifactStore.check_path() (ADR-022) refuses to register directly
+                    # since it lives outside the workspace. Materialize it with one real stream copy (ffmpeg-skill
+                    # export.py --preset copy) instead of the alias below — same bytes, but now a real in-workspace
+                    # file the deliverable's Artifact can point at. Requires a video stream (export.py dies without
+                    # one), so a genuinely untouched pure-audio subject on the audio-production path still falls
+                    # through to the alias branch unchanged.
+                    order += 1
+                    exp = ProductionStep(id=f"step_export_{t['id']}" if single else f"step_export_{t['id']}_{subject}", order=order, skill="delivery_export",
+                                         tool=tool_for("delivery_export"), inputs=[current], params={"preset": "copy", "target": t["id"]}, outputs=[art],
+                                         depends_on=[last_step] if last_step else [], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id,
+                                         temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
+                    steps.append(exp)
+                    outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": "source", "expected": {"platform": t.get("platform", "custom"), "source": subject}})
+                    if first:
+                        summary.append(f"Deliver '{t['id']}' as a stream copy of the untouched source (no platform preset)")
                 else:
                     outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": "source", "expected": {"platform": t.get("platform", "custom"), "source": subject}})
                     if first:
