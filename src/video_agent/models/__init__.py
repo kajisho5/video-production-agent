@@ -136,6 +136,12 @@ class Decision(Model):
 
 
 TIME_EPS = 1e-6   # seconds: float tolerance for temporal comparisons (canonical timebase is seconds as float)
+# a scope end meant to cover an asset's entire duration is rounded to 3 decimals when built (e.g. planner.py's
+# round(dur, 3)), which can round *up* by as much as 5e-4 s versus the raw, unrounded probe duration it is then
+# checked against in within() — TIME_EPS is far too tight to absorb that and would reject a scope that is, in
+# fact, the asset's own exact length. Matches project/validator.py's own independently-chosen tolerance for the
+# same class of "does this range exceed the source duration" check.
+DURATION_EPS = 0.01
 
 
 @dataclass
@@ -194,7 +200,7 @@ class TimeRange(Model):
         return abs(self.stop - other.start) <= tolerance or abs(other.stop - self.start) <= tolerance
 
     def within(self, duration: Optional[float]) -> bool:
-        return duration is None or self.stop <= float(duration) + TIME_EPS
+        return duration is None or self.stop <= float(duration) + DURATION_EPS
 
 
 TemporalRange = TimeRange
