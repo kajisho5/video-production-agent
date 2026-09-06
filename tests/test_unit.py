@@ -217,6 +217,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(art), 1)
         self.assertEqual(paths[art[0]], paths[ops[-1].outputs[0]], "the last intermediate is the deliverable")
 
+    def test_full_duration_scope_tolerates_its_own_rounding(self):
+        """A step/event/context scope covering an asset's whole duration is built via round(dur, 3) (e.g.
+        `planner.py`'s loudness/delivery/audio-cut scopes), which can round *up* past the raw, unrounded probe
+        duration by as much as 5e-4 s. `TimeRange.within()` used to compare that against the raw duration with
+        TIME_EPS (1e-6) — far tighter than the rounding grain — so any real asset whose duration's 4th decimal is
+        >= 5 (roughly half of all real, untrimmed footage, since an exact multiple of 0.001s is essentially never
+        the true length of a real recording) failed validation outright with a spurious "exceeds asset duration"
+        error, on both `plan` (which validates immediately) and `render`. Fixed via `DURATION_EPS` (0.01s,
+        matching `project/validator.py`'s own tolerance for the same class of check)."""
+        svc = make_service(self.tmp, adapter=FakeAdapter(silences=[], duration=20.485986))   # 4th decimal is 9: round(., 3) = 20.486 > 20.485986
+        ir = svc.plan([self.src], "generic", user_requirements={"audio.loudness.target_lufs": -16})
+        rep = svc.validate(ir)
+        self.assertEqual(rep.errors, [], rep.errors)
+        p = str(Path(self.tmp) / "dur.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+
     def test_generic_without_preset_still_registers_a_processed_artifact(self):
         """A no-preset delivery whose subject was actually processed (silence trimmed here) must still become a
         registered, QA'd Artifact — the deliverable already lives inside the workspace (compile_ir gave it the last
@@ -1726,6 +1744,13 @@ class TemporalEventSessionTests(unittest.TestCase):
         self.assertIs(TemporalRange, TimeRange)
         self.assertEqual(TimeRange(1.0, 1.0 - 1e-9).end, 1.0, "sub-epsilon inversion is float noise, normalised")
         self.assertTrue(TimeRange(0, 5).within(5.0000001) and not TimeRange(0, 5.1).within(5.0) and TimeRange(0, 99).within(None))
+        # a scope end covering an asset's whole duration is built via round(dur, 3) (planner.py), which can round
+        # *up* past the raw, unrounded probe duration by as much as 5e-4 s — real footage with a 4th-decimal digit
+        # >= 5 (e.g. 8.485986 s) used to fail here with TIME_EPS's 1e-6, wrongly rejecting the asset's own exact
+        # length as "exceeding" it. DURATION_EPS (0.01 s, matching project/validator.py's own tolerance for the
+        # same class of check) absorbs the rounding while still catching a genuine, meaningful overrun.
+        self.assertTrue(TimeRange(0, round(8.485986, 3)).within(8.485986))
+        self.assertFalse(TimeRange(0, 8.6).within(8.485986), "a real 0.1s+ overrun is still rejected")
 
     # 15-17 relations, 14 ordering
     def test_relations_and_ordering(self):
