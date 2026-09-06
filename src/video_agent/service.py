@@ -33,7 +33,7 @@ from .project.diff import plan_diff
 from .project.ir import snapshot_path
 from .media.analyzer import AnalysisResult
 from .qa import run_qa
-from .skills import default_registry
+from .skills import ProvidesFinding, check_all, default_registry
 from .tools import ToolRouter
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
 from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
@@ -166,6 +166,17 @@ class Service:
         """Skill packages known to this codebase and whether they are usable here (ecosystem view for `video-agent skills`)."""
         router = self.adapter([])
         return self.registry.package_availability(self.caps.resolve(), router.supports, {a.name: str(getattr(a, "version", "")) for a in router.adapters})
+
+    def check_provides(self) -> List[ProvidesFinding]:
+        """Read-only provides/Capability consumption diagnostic (`video-agent skills --check-provides`,
+        `skills/diagnostics.py`). For every registered Skill package: does its Capability Contract's
+        `provides[]` match what this Agent's own package declares, and what a production SkillSpec
+        consumes? A package that is not currently installed here (no live contract) reports UNKNOWN,
+        never a guess. Purely additive: never calls `SkillRegistry.select_tool()` and never touches the
+        execution path."""
+        router = self.adapter([])
+        contracts = {a.name: getattr(a, "contract", None) for a in router.adapters}
+        return check_all(self.registry.packages(), contracts, self.registry.all())
 
     def require_tools(self, tools: Dict[str, str], needed: List[str], router: ToolRouter) -> None:
         """Fail early with the registry's reason when a skill this command depends on has no executable tool here."""

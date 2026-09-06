@@ -48,6 +48,16 @@ def cmd_doctor(args, svc: Service) -> int:
 
 
 def cmd_skills(args, svc: Service) -> int:
+    if getattr(args, "check_provides", False):
+        findings = svc.check_provides()
+        if args.json:
+            _print({"findings": [f.to_dict() for f in findings]}, True)
+            return 0
+        width = max((len(f.status) for f in findings), default=len("PROVIDES_MISMATCH"))
+        print("Provides/Capability consumption diagnostic (read-only; never affects tool selection):")
+        for f in findings:
+            print(f"  {f.status:{width}s}  {f.skill_id:16s} {f.capability_id or '(no id)':32s} {f.tool_id or '(no tool id)':28s}  {f.detail}")
+        return 0
     rows = svc.skills()
     pkgs = svc.packages()
     if args.json:
@@ -625,6 +635,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="inspect the environment (AVAILABLE / MISSING / DEGRADED / UNKNOWN)")
     p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("skills", help="list skills with their status here (AVAILABLE / UNAVAILABLE / NOT_IMPLEMENTED) and the selected tool")
+    p.add_argument("--check-provides", action="store_true",
+                   help="read-only diagnostic: does each Skill's Capability Contract provides[] match what this Agent "
+                        "recognizes and a production SkillSpec consumes? (PROVIDES_VALID / PROVIDES_MISMATCH / "
+                        "CAPABILITY_UNCONSUMED / CAPABILITY_MISSING / UNKNOWN). Never affects tool selection.")
     p.set_defaults(fn=cmd_skills)
     p = sub.add_parser("analyze", help="probe media and list observed events")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources (faster on huge files)")

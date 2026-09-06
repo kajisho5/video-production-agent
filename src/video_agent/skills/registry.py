@@ -186,6 +186,15 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/fill"]))
     r.register(SkillSpec("video_overlay", "1.0", "Composite a PNG / JPEG image over the picture", {"asset": "video", "image": "png|jpg"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/overlay"]))
+    # video-editing-skill's own TRIM (start/end range, distinct from silence_cleanup's multi-range CUT) is a
+    # real, tested, published Capability (video.trim) with no consuming SkillSpec at all until now (found by
+    # skills/diagnostics.py's ecosystem-wide run, docs/design decision kajisho5/AI-video-production-OS
+    # WORK_QUEUE.md item 1/8). Declared for the roadmap only, like multi_source_sync/semantic_deletion below:
+    # wiring an actual "video.trim" edit request through agent/editing.py's EDIT_OPS and
+    # agent/production_plan.py's domain-parameter table is real design work (a new request verb, its exact
+    # parameter contract, a risk classification) this addition deliberately does not decide unprompted.
+    r.register(SkillSpec("video_trim", "0.1", "Trim to an explicit start/end time range", {"asset": "video", "start": "time", "end": "time"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/trim"], phase=2))
     # audio production operations only audio-production-skill provides (ADR-030): the audio path of an asset (explicit `audio.production`);
     # each skill needs the Skill's own per-operation capability (from its doctor) besides the package capability
     for name, typ, desc, inputs, risk in (
