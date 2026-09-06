@@ -202,9 +202,12 @@ def cmd_render(args, svc: Service) -> int:
             r = out["resume"]
             print(f"  resumed from {r['resumed_from']} ({r['prior_state']}); plan {'CHANGED' if r['plan_changed'] else 'unchanged'}; reused {len(out['execution']['skipped'])} of {r['candidate_ops']} completed operation(s)")
         if out["status"] == "WAITING_FOR_APPROVAL":
-            for d in out["pending"]:
+            for d in out.get("pending", []):
                 print(f"  CONFIRM {d['id']}  {d['subject']}: {d['decision']}\n    {d['reason']}")
-            print("  " + out["hint"])
+            if out.get("hint"):
+                print("  " + out["hint"])
+            elif "plan_status" in out:
+                print(f"  plan is {out['plan_status']}; re-run 'plan' or check for a BLOCK decision")
         if out["status"] == "BLOCKED":
             for d in out.get("blocked", []):
                 print(f"  BLOCKED {d['id']} {d['subject']}: {d['reason']}")

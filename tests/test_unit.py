@@ -2030,9 +2030,24 @@ class ProductionPlanTests(unittest.TestCase):
         self.assertEqual(ir.doc["plan"]["status"], "REJECTED")
         self.assertEqual(ir.doc["plan"]["steps"][0]["status"], "REJECTED")
         self.assertEqual(svc.render(ir, p, approve=["all"])["status"], "BLOCKED")
-        # DRAFT: a plan with no steps has nothing to execute
+        # DRAFT: a plan with no decisions and no steps has nothing to execute
         from video_agent.agent.production_plan import plan_status as ps
         self.assertEqual(ps({"decisions": [], "plan": {"version": 1, "steps": []}, "revision": {}}), "DRAFT")
+        # APPROVED: decisions resolved (AUTO/LOW) but zero edit steps (e.g. delivery-only or
+        # QC-only request needing no changes) is a done plan, not stuck forever in DRAFT
+        resolved_doc = {
+            "decisions": [{"id": "d1", "approval": "AUTO", "status": "APPROVED"}],
+            "plan": {"version": 1, "steps": []},
+            "revision": {},
+        }
+        self.assertEqual(ps(resolved_doc), "APPROVED")
+        # REVIEW: a CONFIRM decision is still pending even though there are no steps citing it
+        pending_doc = {
+            "decisions": [{"id": "d1", "approval": "CONFIRM", "status": "PROPOSED"}],
+            "plan": {"version": 1, "steps": []},
+            "revision": {},
+        }
+        self.assertEqual(ps(pending_doc), "REVIEW")
 
     # 24-25 revision and diff, 26 resume
     def test_revision_diff_and_resume_compatibility(self):
@@ -4954,8 +4969,11 @@ class AudioExtractConfirmTests(unittest.TestCase):
         self.assertEqual(v2["audio"]["operations"], [])
         self.assertTrue(any("extraction was rejected" in s for s in v2["plan"]["summary"]))
         self.assertNotIn("audio.extract", {d["subject"] for d in v2["decisions"] if d["status"] != "REJECTED"})
+        # the revision drops the whole audio path (nothing left cites the rejected extraction), so v2 is a no-op
+        # delivery plan; approving it explicitly (--approve all, nothing pending) completes it without running
+        # a single audio operation — a rejection never revives as a silent Skill run
         out2 = svc.render(load_ir(p), p, approve=["all"])
-        self.assertNotIn(out2["status"], ("COMPLETED",))
+        self.assertEqual(out2["status"], "COMPLETED")
         self.assertEqual(self._runs(), 0)
         # approve instead of reject: v1 approval is recorded, the render runs; a later revision needs its own approval again
         ir2, p2 = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5}, name="ok")
