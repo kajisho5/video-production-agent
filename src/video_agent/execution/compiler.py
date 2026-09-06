@@ -355,16 +355,16 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         tol = float((d["qa"].get("thresholds") or {}).get("loudness_tolerance_lu", 2.0))
         for t in d["delivery"]["targets"]:
             art_id = f"{subject}_delivery_{t['id']}"
-            if art_id not in paths or not t.get("preset"):
-                # `agent/planner.py`'s `qc_steps()` only creates a qc ProductionStep (and a tool
-                # selection) alongside a `delivery_export` step, which only exists for a preset
-                # target; compiling a qc op here for a no-preset target would reference a tool
-                # `_step_tools()` never recorded and crash with CompileError. See WORK_QUEUE.md
-                # item 9 in AI-video-production-OS for the full no-preset delivery/QC writeup.
+            # a no-preset target is never re-encoded, so there is no dedicated delivery_export/_check op and no
+            # alias path unless something upstream actually changed the subject (compiler.delivery()); gate
+            # directly against the subject's own current media instead — same real bytes as the deliverable,
+            # and `agent/planner.py`'s `qc_steps()` plans the matching step/tool selection for exactly this case
+            check_input = art_id if art_id in paths else subject
+            if paths.get(check_input) is None:
                 continue
             spec = rules_for_subject(row, t, d, tol) if row else {"kind": "delivery", "rules": {}}
             tool = tool_for(QC_SKILL, subject)
-            add(tool, lower_qc_check(tool, spec["kind"], art_id, spec["rules"]), [art_id], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
+            add(tool, lower_qc_check(tool, spec["kind"], check_input, spec["rules"]), [check_input], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
         for sc_id, srow in (qc.get("sidecars") or {}).items():
             if srow.get("subject") != subject or sc_id not in paths:
                 continue

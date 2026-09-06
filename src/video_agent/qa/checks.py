@@ -64,12 +64,13 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
     qc_by_artifact = qc_by_artifact or {}
     qc_enabled = bool(((ir_doc.get("qa") or {}).get("qc") or {}).get("enabled"))
 
-    def qc_items(art: str, path: str, expected_kind: str) -> None:
+    def qc_items(art: str, path: str, expected_kind: str, qc_key: Optional[str] = None) -> None:
         """The QC gate's verdict for an artifact as QA items (layer qc): admission first (fingerprint == QA's own sha256 of the file,
-        the kind QA asked for, OBSERVED), then the verdict and every failing / warning check by name."""
+        the kind QA asked for, OBSERVED), then the verdict and every failing / warning check by name. `qc_key` is the id the qc op was
+        actually compiled against when it differs from `art` (a no-preset target gates the subject's own media directly, ADR-032)."""
         if not qc_enabled:
             return
-        r = qc_by_artifact.get(art)
+        r = qc_by_artifact.get(qc_key or art)
         if r is None:
             rep.items.append(QAItem("qc", "verdict", "FAIL", "no report", "an admitted qc report", kind="judgement", artifact=art, fix_hint="the QC gate was planned but no report exists for this artifact"))
             return
@@ -118,7 +119,13 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
         target_lufs = subject["target_lufs"]
         for t in ir_doc["delivery"]["targets"]:
             art = f"{asset_id}_delivery_{t['id']}"
-            path = paths.get(art)
+            # a no-preset target has no alias path unless something upstream changed the subject; when the
+            # user asked for the QC gate specifically, `execution/compiler.py`'s `qc_gate()` still measured
+            # the subject's own (unchanged) media directly, so QA must look there too or a real, already-admitted
+            # qc report would go unsurfaced. Outside of qc=true this stays exactly as narrow as before — no
+            # extra probing of a deliverable nobody asked to verify.
+            qc_key = art if art in paths else (asset_id if not t.get("preset") and qc_enabled else None)
+            path = paths.get(art) or (paths.get(asset_id) if not t.get("preset") and qc_enabled else None)
             if not path:
                 continue
             pr = measure(tools["media_probe"], {"inputs": [path]}, kind="media_probe", artifact=art)
@@ -197,7 +204,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                                                           possible_cause=f"{row['check']}={row['value']} vs {row['expected']}", recommended_action=row.get("fix", "")))
                 else:
                     rep.items.append(QAItem("delivery", "check", "WARN", "no result", "check.py output", artifact=art))
-            qc_items(art, path, "audio" if subject.get("audio_only") else "delivery")
+            qc_items(art, path, "audio" if subject.get("audio_only") else "delivery", qc_key=qc_key)
             if sheet_dir and v:
                 sheet = f"{sheet_dir}/{art}_sheet.png"
                 if not tools.get("visual_inspection"):
