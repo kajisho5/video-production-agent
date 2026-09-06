@@ -965,6 +965,39 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertIsNone(tool, "declared future skills are never selectable even when their tools exist")
         self.assertIn("not implemented", reason)
 
+    def test_select_tool_collision_policy_three_tiers(self):
+        """docs/CAPABILITY_MODEL.md's "Capability collision policy": when 2+ Providers are usable for a skill,
+        (1) an explicit provider always wins if it names a usable candidate, (2) failing that a default
+        provider is used if it names a usable candidate, (3) failing that too, this refuses loudly (never an
+        arbitrary pick) -- unless the skill is one of the OS's own baked-in DEFAULT_PROVIDERS, in which case
+        that silent-by-design fallback (the exact choice `skills/providers.default_providers()` would also
+        reach) keeps today's behaviour when a caller passes neither."""
+        from video_agent.skills import default_registry
+        reg = default_registry()
+        caps = FakeCaps().resolve()
+        supports_both = lambda t: True   # noqa: E731 -- both ffmpeg-skill/loudness and media-analysis/loudness "installed"
+        # Tier 1: explicit always wins over the OS's own baked-in default (ffmpeg-skill)
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, explicit="media-analysis"), ("media-analysis/loudness", "ok (explicit provider)"))
+        # an explicit provider that names no usable candidate is a loud, actionable error -- never silently ignored
+        tool, reason = reg.select_tool("loudness_analysis", caps, supports_both, explicit="nope-skill")
+        self.assertIsNone(tool)
+        self.assertIn("nope-skill", reason); self.assertIn("ffmpeg-skill", reason); self.assertIn("media-analysis", reason)
+        # Tier 2: an explicit default (e.g. a workspace providers.json entry) is used when nothing explicit was asked
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, default="media-analysis"), ("media-analysis/loudness", "ok (default provider)"))
+        # neither given: the OS's own baked-in default (skills/registry.DEFAULT_PROVIDERS) is used, same reason as before this policy existed
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both), ("ffmpeg-skill/loudness", "ok"))
+        # a skill with only one usable candidate never consults either tier: explicit naming a *different*, unavailable provider is simply moot
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, lambda t: t == "ffmpeg-skill/loudness", explicit="media-analysis"), ("ffmpeg-skill/loudness", "ok"))
+        # Tier 3: a genuine collision with no OS-level default declared for it (unlike the 4 already known ones) refuses rather than guessing
+        reg.get("loudness_analysis").tools = ["alpha-skill/loudness", "beta-skill/loudness"]
+        tool, reason = reg.select_tool("loudness_analysis", caps, supports_both)
+        self.assertIsNone(tool, reason)
+        self.assertIn("2 providers available", reason); self.assertIn("alpha-skill", reason); self.assertIn("beta-skill", reason)
+        self.assertIn("provider.loudness_analysis", reason)
+        # ... and the same collision resolves cleanly once either tier actually names one of the two
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, explicit="beta-skill")[0], "beta-skill/loudness")
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, default="alpha-skill")[0], "alpha-skill/loudness")
+
     def test_future_skills_are_listed_but_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
@@ -1121,7 +1154,10 @@ class SkillToolBoundaryTests(unittest.TestCase):
 
     def test_registry_selected_tool_propagates_to_the_adapter(self):
         """Registry → Service → planner (plan.steps[].tool) → compiler (Operation.tool) → ToolRouter → adapter, for a
-        tool that is not ffmpeg-skill. Nothing downstream rewrites or defaults the tool id."""
+        tool that is not ffmpeg-skill. Nothing downstream rewrites or defaults the tool id. Both other-skill and
+        ffmpeg-skill are usable candidates here (a real collision), so an explicit `provider.silence_cleanup`
+        choice is what selects other-skill (docs/CAPABILITY_MODEL.md's collision policy, Tier 1) -- exactly the
+        supported extension path, not an accident of declaration order."""
         from video_agent.tools import ToolRouter
         class OtherEngine(FakeAdapter):
             name = "other-skill"
@@ -1132,8 +1168,9 @@ class SkillToolBoundaryTests(unittest.TestCase):
         ff, other = FakeAdapter(), OtherEngine()
         svc = make_service(self.tmp, adapter=ToolRouter([ff, other]))
         svc.registry.get("silence_cleanup").tools = ["other-skill/trim", "ffmpeg-skill/cut"]
-        self.assertEqual(svc.tools_for()["silence_cleanup"], "other-skill/trim")
-        ir = svc.plan([self.src], "youtube")
+        provider_choice = {"provider.silence_cleanup": "other-skill"}
+        self.assertEqual(svc.tools_for(user_requirements=provider_choice)["silence_cleanup"], "other-skill/trim")
+        ir = svc.plan([self.src], "youtube", user_requirements=provider_choice)
         steps = {st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}
         self.assertEqual(steps["silence_cleanup"], "other-skill/trim")
         self.assertEqual(steps["delivery_export"], "ffmpeg-skill/export")
@@ -1153,6 +1190,61 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertEqual((exp["tool"], exp["tool_version"]), ("ffmpeg-skill/export", "0.8.4-fake"))
         # the job's artifact record follows the export tool, not a fixed engine name
         self.assertEqual(out["job"]["artifacts"][0]["tool"], "ffmpeg-skill/export")
+
+
+class ProviderPolicyTests(unittest.TestCase):
+    """skills/providers.py: Tiers 1 (explicit `--set provider.<skill>=<package>`) and 2 (default-provider
+    policy, OS-level baked-in overridden by a workspace `providers.json`) of docs/CAPABILITY_MODEL.md's
+    collision policy. Tier 3 (refusal) is exercised directly against SkillRegistry.select_tool() in
+    SkillToolBoundaryTests; this class is about how the two config-derived dicts are built."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_explicit_providers_extracts_only_provider_dot_keys(self):
+        from video_agent.skills.providers import explicit_providers
+        got = explicit_providers({"provider.loudness_analysis": "media-analysis", "audio.loudness.target_lufs": -16, "provider.": "ignored-empty-name"})
+        self.assertEqual(got, {"loudness_analysis": "media-analysis"})
+        self.assertEqual(explicit_providers({}), {})
+        self.assertEqual(explicit_providers(None), {})
+
+    def test_default_providers_is_the_os_baked_in_default_with_no_workspace_file(self):
+        from video_agent.skills.providers import default_providers
+        from video_agent.skills.registry import DEFAULT_PROVIDERS
+        self.assertEqual(default_providers(self.tmp), DEFAULT_PROVIDERS)
+        self.assertIsNot(default_providers(self.tmp), DEFAULT_PROVIDERS, "a caller must never be able to mutate the module's own baked-in dict")
+
+    def test_default_providers_workspace_file_overrides_per_skill(self):
+        from video_agent.skills.providers import default_providers
+        (Path(self.tmp) / "providers.json").write_text(json.dumps({"loudness_analysis": "media-analysis"}), encoding="utf-8")
+        got = default_providers(self.tmp)
+        self.assertEqual(got["loudness_analysis"], "media-analysis")
+        self.assertEqual(got["media_probe"], "ffmpeg-skill", "an unrelated skill's OS-level default is untouched by an override naming a different skill")
+
+    def test_default_providers_malformed_workspace_file_is_a_loud_error(self):
+        from video_agent.skills.providers import default_providers
+        (Path(self.tmp) / "providers.json").write_text("not json", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            default_providers(self.tmp)
+        self.assertIn("providers.json", str(ctx.exception))
+        (Path(self.tmp) / "providers.json").write_text(json.dumps({"loudness_analysis": 3}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            default_providers(self.tmp)
+        (Path(self.tmp) / "providers.json").write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            default_providers(self.tmp)
+
+    def test_plan_rejects_unknown_skill_name_in_provider_requirement(self):
+        """A `provider.<skill>` requirement naming a skill that does not exist would otherwise resolve to
+        nothing and silently apply to no real skill, indistinguishable from a correct choice that just
+        happens not to collide -- caught eagerly instead, like every other requirement-shape mistake."""
+        svc = make_service(self.tmp)
+        src = fake_media(self.tmp)
+        with self.assertRaises(ValueError) as ctx:
+            svc.plan([src], "generic", user_requirements={"provider.no_such_skill": "ffmpeg-skill"})
+        self.assertIn("no_such_skill", str(ctx.exception))
+        ir = svc.plan([src], "generic", user_requirements={"provider.loudness_analysis": "ffmpeg-skill"})
+        self.assertIn("provider.loudness_analysis", {r["key"] for r in ir.doc["requirements"]}, "a valid provider choice is still recorded, for provenance, even where FakeAdapter leaves nothing to disambiguate")
 
 
 class EcosystemContractTests(unittest.TestCase):
@@ -1250,11 +1342,13 @@ class EcosystemContractTests(unittest.TestCase):
         self.assertEqual((pkg.skill_id, pkg.tool_ids(), pkg.validate()), ("fake-skill", ["fake-skill/tool"], []))
         with self.assertRaises(ValueError):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
-        # the only "core" change a new package needs: a production skill cites its tool as a candidate
+        # the only "core" change a new package needs: a production skill cites its tool as a candidate. Both
+        # fake-skill and ffmpeg-skill are now usable candidates (a real collision), so which one runs is an
+        # explicit provider.<skill> choice (docs/CAPABILITY_MODEL.md's collision policy), not declaration order.
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
         self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "fake-skill", "ffmpeg-skill", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
-        ir = svc.plan([self.src], "youtube")
+        ir = svc.plan([self.src], "youtube", user_requirements={"provider.silence_cleanup": "fake-skill"})
         self.assertTrue(svc.validate(ir).ok)
         self.assertEqual({st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}["silence_cleanup"], "fake-skill/tool")
         ops, _ = compile_ir(ir, "/w/jobs/j")
@@ -4206,7 +4300,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         fake = FakeAdapter()
         svc = make_service(self.tmp, caps=FakeCaps(extra=["video-editing", "encoder:aac"]), adapter=ToolRouter([fake, ad]))
         svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]
-        ir = svc.plan([self.src], "youtube")
+        ir = svc.plan([self.src], "youtube", user_requirements={"provider.silence_cleanup": "video-editing"})
         step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "silence_cleanup")
         self.assertEqual(step["tool"], "video-editing/cut")
         self.assertEqual(svc.validate(ir).errors, [])

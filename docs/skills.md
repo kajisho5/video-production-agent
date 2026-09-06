@@ -29,14 +29,14 @@ AI ≠ Tool executor / AI ≠ Skill registry / AI ≠ Compiler / AI ≠ final ex
 
 ```text
 SkillSpec.required_capabilities ──CapabilityResolver──▶ 欠落があれば BLOCK 決定
-SkillSpec.tools（候補の順序）    ──ToolRouter.supports──▶ SkillRegistry.select_tool が最初に実行可能な tool を選択
+SkillSpec.tools（候補）          ──ToolRouter.supports──▶ 実行可能な候補が0/1件ならそのまま選択。2件以上なら Provider 衝突ポリシー（ADR-037）へ
                                                           │
                               Service が skill→tool 表を planner / analyzer / QA に渡す（必須引数、既定 engine 無し）
                                                           │
                                    plan.steps[].tool に記録 ─▶ compiler は plan の tool だけを使う ─▶ ToolRouter ─▶ Adapter ─▶ runtime
 ```
 
-- `SkillRegistry.select_tool(skill, caps, supports)` が唯一の選択関数。`resolve_tools()` はその一括版。
+- `SkillRegistry.select_tool(skill, caps, supports, explicit=None, default=None)` が唯一の選択関数。`resolve_tools()` はその一括版。実行可能な候補が2件以上（Provider 衝突）のときだけ `explicit`（Tier 1、`provider.<skill>=<package>` requirement）→ `default`（Tier 2、`skills/providers.py` の `default_providers()`: OS 既定を workspace の `providers.json` で上書き）→ 拒否（Tier 3、`select_tool` が None を返し理由に候補一覧と設定方法を含める）の順で解決する（ADR-037、CAPABILITY_MODEL.md の collision policy）。候補が0/1件の skill はこの3段を一切参照しない（選ぶものが無い）。
 - planner / analyzer / QA は `tools`（skill→tool 表）を**必須引数**として受け取る。既定の engine 表（旧 `DEFAULT_TOOLS`）は存在せず、`tools=None` は `TypeError`、必要な Skill が表に無ければ `ToolError`（analyzer / QA）または tool 無し step + BLOCKED summary（planner）になる。
 - validator は step の skill が実装済みで、tool がその Skill の候補に含まれ、adapter が対応し、**登録済み package が宣言している tool** であることを検査する。必要 capability は registry（production skill + package + ToolSpec）から集める。
 - `source.tool_versions` は package（tool id の prefix）→ version。冪等キー、provenance の `tool_version` / `skill_package`、artifact の `tool` はすべて operation の tool から引く。
@@ -63,7 +63,7 @@ SkillSpec.tools（候補の順序）    ──ToolRouter.supports──▶ Skill
 
 1. `tools/<package>/` に `ToolAdapter` 実装（`package()` が `SkillPackage` を返す、catalog 型付き引数、`supports("<package>/<tool>")`、`run` / `preview` / `measure`）。
 2. `capabilities/resolver.py` に検出項目を追加（package の所在と version、必要な外部ツール）。
-3. `skills/registry.py` の該当 production skill に `tools` 候補を追記（新しい production skill なら `SkillSpec` を 1 件追加）。
+3. `skills/registry.py` の該当 production skill に `tools` 候補を追記（新しい production skill なら `SkillSpec` を 1 件追加）。既存候補と衝突する（両方とも実行可能になり得る）なら、`--set provider.<skill>=<package>` か workspace の `providers.json` で選べることを利用者に伝える（コード側の変更は不要 — ADR-037）。
 4. `Service.adapter()` で adapter を `ToolRouter` に register（1 行。package は adapter から自動登録される）。
 5. その Skill が生成する新しい operation 語彙があれば `schemas/project.schema.json` と planner / compiler の該当分岐を追加（既存語彙を別 engine で実現するだけなら不要）。
 6. 契約テスト（`--help` / JSON キー）と、Registry → plan.steps → compiler → Router → adapter → provenance の伝播テスト。

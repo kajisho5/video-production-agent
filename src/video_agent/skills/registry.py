@@ -11,6 +11,18 @@ from .contract import SkillPackage, ToolSpec
 # Skills whose phase is above this are declared for the roadmap only: they are never selectable and never "available".
 IMPLEMENTED_PHASE = 1
 
+# docs/CAPABILITY_MODEL.md's "Capability collision policy", Tier 2 (OS-level default): the package each currently-declared
+# multi-candidate skill resolved to before Tiers 1-3 existed (its first-declared tools[] candidate). Named explicitly here,
+# in the open, instead of left as an accident of declaration order -- this is the "silent default this OS replaces with an
+# explicit, provenance-recorded choice" the roadmap's Phase 3 names. A workspace `providers.json` (skills/providers.py)
+# overrides these per skill; a `--set provider.<skill>=<package>` requirement overrides both (Tier 1, always wins).
+DEFAULT_PROVIDERS: Dict[str, str] = {
+    "media_probe": "ffmpeg-skill",
+    "silence_analysis": "ffmpeg-skill",
+    "loudness_analysis": "ffmpeg-skill",
+    "silence_cleanup": "ffmpeg-skill",
+}
+
 
 @dataclass
 class SkillSpec:
@@ -99,15 +111,25 @@ class SkillRegistry:
         spec = self.get(name)
         return [c for c in spec.required_capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
 
-    def select_tool(self, name: str, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Tuple[Optional[str], str]:
-        """Skill → Capability check → first tool candidate that a registered adapter supports.
-        Returns (tool id, reason). Declared-but-unimplemented skills are never selected."""
+    def select_tool(self, name: str, caps: Dict[str, Any], supports: Callable[[str], bool],
+                    explicit: Optional[str] = None, default: Optional[str] = None) -> Tuple[Optional[str], str]:
+        """Skill → Capability check → the tool candidate this environment supports. Returns (tool id, reason).
+        Declared-but-unimplemented skills are never selected.
+
+        When more than one candidate is usable here (a real Provider collision, docs/CAPABILITY_MODEL.md's
+        "Capability collision policy"), the OS never picks silently -- it applies, in order: (1) `explicit`
+        (Tier 1, a Plan-time `provider.<skill>=<package>` choice -- always wins if the package it names is
+        actually usable here), (2) `default` (Tier 2, a resolved default-provider policy -- OS-level baked-in,
+        overridable per workspace by `providers.json`; see skills/providers.py), (3) refusal (Tier 3 -- more
+        than one Provider is AVAILABLE and neither of the above resolved it, so this fails loudly rather than
+        guessing). A skill with zero or one usable candidate has nothing to choose: neither tier is consulted."""
         spec = self.get(name)
         if not spec.implemented:
             return None, f"skill {name} is declared for phase {spec.phase} and not implemented"
         missing = self.missing_capabilities(name, caps)
         if missing:
             return None, "required capability missing: " + ", ".join(missing)
+        candidates: List[str] = []
         blocked: List[str] = []
         for tool in spec.tools:
             if not supports(tool):
@@ -116,10 +138,31 @@ class SkillRegistry:
             if tool_missing:   # the package / tool contract names capabilities this environment lacks: never executed on a guess
                 blocked.append(f"{tool} (missing {', '.join(tool_missing)})")
                 continue
-            return tool, "ok"
-        if blocked:
-            return None, "required capability missing for " + "; ".join(blocked)
-        return None, "no registered adapter supports any of: " + ", ".join(spec.tools)
+            candidates.append(tool)
+        if not candidates:
+            if blocked:
+                return None, "required capability missing for " + "; ".join(blocked)
+            return None, "no registered adapter supports any of: " + ", ".join(spec.tools)
+        if len(candidates) == 1:
+            return candidates[0], "ok"
+        if explicit is not None:
+            picked = next((t for t in candidates if t.split("/", 1)[0] == explicit), None)
+            if picked:
+                return picked, "ok (explicit provider)"
+            known = sorted({t.split("/", 1)[0] for t in candidates})
+            return None, f"explicit provider {explicit!r} for skill {name} is not among the available providers ({', '.join(known)})"
+        if default is not None:
+            picked = next((t for t in candidates if t.split("/", 1)[0] == default), None)
+            if picked:
+                return picked, "ok (default provider)"
+        builtin = DEFAULT_PROVIDERS.get(name)   # unset default=: the same choice a caller that resolves default_providers() would reach anyway
+        if builtin is not None:
+            picked = next((t for t in candidates if t.split("/", 1)[0] == builtin), None)
+            if picked:
+                return picked, "ok"
+        packages = sorted({t.split("/", 1)[0] for t in candidates})
+        return None, (f"{len(candidates)} providers available for skill {name} ({', '.join(packages)}) and none was chosen; "
+                      f"pin one with --set provider.{name}=<package>, or set a workspace providers.json default")
 
     def tool_missing_capabilities(self, tool_id: str, caps: Dict[str, Any]) -> List[str]:
         """Capabilities the tool's package declares (its runtime requirements, e.g. ffmpeg-skill / video-editing) that are not
@@ -135,21 +178,25 @@ class SkillRegistry:
         missing += [c for c in spec.required_capabilities if c not in pkg.capabilities and c in caps and getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
         return missing
 
-    def resolve_tools(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> Dict[str, str]:
-        """skill name → selected tool id, for every skill that is selectable in this environment."""
+    def resolve_tools(self, caps: Dict[str, Any], supports: Callable[[str], bool],
+                      explicit: Optional[Dict[str, str]] = None, default: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """skill name → selected tool id, for every skill that is selectable in this environment. `explicit` / `default`:
+        per-skill provider choices (Tiers 1/2 of the collision policy; see select_tool)."""
         out: Dict[str, str] = {}
         for spec in self.all():
-            tool, _ = self.select_tool(spec.name, caps, supports)
+            tool, _ = self.select_tool(spec.name, caps, supports, explicit=(explicit or {}).get(spec.name), default=(default or {}).get(spec.name))
             if tool:
                 out[spec.name] = tool
         return out
 
-    def availability(self, caps: Dict[str, Any], supports: Callable[[str], bool]) -> List[Dict[str, Any]]:
-        """Human/machine listing: AVAILABLE (tool selected) / UNAVAILABLE (capability or adapter missing) / NOT_IMPLEMENTED
-        (declared for a later phase). DECLARED == NOT_IMPLEMENTED; IMPLEMENTED == `implemented`; AVAILABLE == status."""
+    def availability(self, caps: Dict[str, Any], supports: Callable[[str], bool],
+                     explicit: Optional[Dict[str, str]] = None, default: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+        """Human/machine listing: AVAILABLE (tool selected) / UNAVAILABLE (capability or adapter missing, or an
+        unresolved Provider collision -- Tier 3 refusal) / NOT_IMPLEMENTED (declared for a later phase).
+        DECLARED == NOT_IMPLEMENTED; IMPLEMENTED == `implemented`; AVAILABLE == status."""
         rows = []
         for spec in self.all():
-            tool, reason = self.select_tool(spec.name, caps, supports)
+            tool, reason = self.select_tool(spec.name, caps, supports, explicit=(explicit or {}).get(spec.name), default=(default or {}).get(spec.name))
             status = "AVAILABLE" if tool else ("NOT_IMPLEMENTED" if not spec.implemented else "UNAVAILABLE")
             rows.append({"skill": spec.name, "version": spec.version, "phase": spec.phase, "status": status, "tool": tool, "reason": reason,
                          "implemented": spec.implemented, "packages": sorted({t.split("/", 1)[0] for t in spec.tools}),
