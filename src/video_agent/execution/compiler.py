@@ -356,6 +356,11 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         for t in d["delivery"]["targets"]:
             art_id = f"{subject}_delivery_{t['id']}"
             if art_id not in paths or not t.get("preset"):
+                # `agent/planner.py`'s `qc_steps()` only creates a qc ProductionStep (and a tool
+                # selection) alongside a `delivery_export` step, which only exists for a preset
+                # target; compiling a qc op here for a no-preset target would reference a tool
+                # `_step_tools()` never recorded and crash with CompileError. See WORK_QUEUE.md
+                # item 9 in AI-video-production-OS for the full no-preset delivery/QC writeup.
                 continue
             spec = rules_for_subject(row, t, d, tol) if row else {"kind": "delivery", "rules": {}}
             tool = tool_for(QC_SKILL, subject)

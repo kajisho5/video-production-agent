@@ -217,6 +217,29 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(art), 1)
         self.assertEqual(paths[art[0]], paths[ops[-1].outputs[0]], "the last intermediate is the deliverable")
 
+    def test_generic_without_preset_still_registers_a_processed_artifact(self):
+        """A no-preset delivery whose subject was actually processed (silence trimmed here) must still become a
+        registered, QA'd Artifact — the deliverable already lives inside the workspace (compile_ir gave it the last
+        intermediate's own path), so there is no ADR-022 workspace boundary reason to skip registering it. Before
+        this fix, `_register_artifacts()`'s `not t.get("preset")` guard silently dropped every no-preset deliverable
+        regardless of whether it was ever processed, so `render()` reported COMPLETED with `artifacts: []` even
+        though a real, QA-verified file existed. The genuinely unprocessed case (nothing to trim, nothing to
+        deliver) is intentionally different — see WORK_QUEUE.md item 9 in AI-video-production-OS: that deliverable
+        would need a real copy/remux into the workspace that doesn't exist yet, so it correctly stays unregistered."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "generic")   # technical silence trim runs unconditionally; no delivery preset here
+        p = str(Path(self.tmp) / "g.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual(art["type"], "MASTER")
+        self.assertEqual(art["format"], "source")
+        self.assertEqual(art["qa_status"], "PASS")
+        self.assertTrue(os.path.isfile(art["path"]))
+        self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+
     def test_same_file_name_twice_gets_distinct_paths(self):
         a = fake_media(self.tmp, "camA/clip.mp4")
         b = fake_media(self.tmp, "camB/clip.mp4")

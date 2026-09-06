@@ -628,7 +628,10 @@ class Service:
             asset_id = subject["id"]
             for t in d["delivery"]["targets"]:
                 logical = f"{asset_id}_delivery_{t['id']}"
-                if logical not in paths or not t.get("preset"):
+                if logical not in paths:
+                    # no preset and nothing upstream touched the subject: `compiler.delivery()`
+                    # recorded no path for it (an untouched source lives outside the workspace,
+                    # so there is no in-workspace file yet to register as an Artifact)
                     continue
                 rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"]})
             for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail
