@@ -231,7 +231,7 @@ class Service:
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
              kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None) -> ProjectIR:
-        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
+        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         _check_edit_requirements(user_requirements or {})
@@ -364,7 +364,7 @@ class Service:
         first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations)."""
         who = who or _default_who()
         old = json.loads(json.dumps(ir.doc))
-        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES)]
+        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         _check_edit_requirements(user_requirements or {})
@@ -962,6 +962,12 @@ class Service:
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
 REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc")
+# keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
+# policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
+# structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
+# turn on or off. Rejected explicitly rather than silently accepted-and-ignored, since silently accepting a
+# `--set` that looks like it disables a safety guarantee is worse than rejecting an unknown key.
+DEAD_REQUIREMENT_KEYS = {"delivery.preserve_source"}
 
 
 def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:

@@ -58,8 +58,7 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
             reqs.append(Requirement(key=key, value=rules.get(key), provenance=rules.provenance(key) or "PROFILE", source=rules.effective[key].source))
             seen.add(key)
     # defaults
-    defaults: Dict[str, Any] = {"edit.trim_leading_silence": "auto", "edit.trim_trailing_silence": "auto", "audio.normalize": "auto", "edit.precision": "keyframe-ok",
-                                "delivery.preserve_source": True}
+    defaults: Dict[str, Any] = {"edit.trim_leading_silence": "auto", "edit.trim_trailing_silence": "auto", "audio.normalize": "auto", "edit.precision": "keyframe-ok"}
     for k, v in defaults.items():
         if k not in seen:
             reqs.append(Requirement(key=k, value=v, provenance="DEFAULT", source="defaults"))
