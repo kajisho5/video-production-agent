@@ -217,6 +217,26 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("no audio stream", dec["reason"])
         self.assertEqual(ir.doc["audio"]["operations"], [])
 
+    def test_named_platform_in_request_text_actually_selects_the_delivery_preset(self):
+        """`agent/requirements.py`'s KEYWORDS pass extracts "youtube" mentioned in free text into a real
+        `delivery.platform` USER requirement (this part always worked) — but nothing in `decision.py` ever
+        read it back: `grep -rn '"delivery.platform"'` across `src/` found only its own definition, no
+        consumer. So a real `--request "please upload this to youtube"` on the generic profile planned and
+        rendered exactly as if the platform had never been named at all (no preset, "deliver as processed").
+        Fixed by having the delivery decision loop apply a named platform to the profile's own (preset-less)
+        targets, the same way `--profile youtube` would have. A profile whose targets already carry a preset
+        (e.g. `conference`, or `--profile youtube` itself) is untouched — this only fills in a gap, never
+        overrides an explicit choice."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "generic", request_text="please upload this to youtube")
+        dec = next(x for x in ir.doc["decisions"] if x["subject"] == "delivery.main")
+        self.assertEqual((dec["params"]["preset"], dec["params"]["platform"]), ("youtube", "youtube"))
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"] if s["skill"] in ("delivery_export", "delivery_check")], ["delivery_export", "delivery_check"])
+        # a profile whose target already has a preset is never overridden by the same phrase
+        ir2 = svc.plan([self.src], "youtube", request_text="please upload this to youtube")
+        dec2 = next(x for x in ir2.doc["decisions"] if x["subject"] == "delivery.youtube")
+        self.assertEqual(dec2["params"]["preset"], "youtube")   # unchanged from the profile's own definition, not re-derived from the phrase
+
     def test_generic_without_preset_delivers_intermediate(self):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "generic")
@@ -3803,6 +3823,17 @@ class ProductionDecisionEngineTests(unittest.TestCase):
         self.assertEqual((js["decision"]["type"], js["executable"]), ("KEEP", False))
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--decision", "dec_nope"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 1); self.assertIn("no such decision", r.stderr)
+        # PROJECT omitted (nargs="?", so argparse allows it): a clear error, not a raw Python TypeError from
+        # load_ir(None) leaking through main()'s generic exception handler ("expected str, bytes or os.PathLike
+        # object, not NoneType") with no mention of what's actually missing
+        for flag in (["--decision", "x"], ["--step", "x"], ["--context", "x"], ["--observation", "x"], ["--pipeline"]):
+            r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", *flag], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 1, flag)
+            self.assertIn("PROJECT is required", r.stderr, flag)
+            self.assertNotIn("NoneType", r.stderr, flag)
+        # --artifact never needs a project
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", "--artifact", "nonexistent"], capture_output=True, text=True, env=env)
+        self.assertNotIn("PROJECT is required", r.stderr)
 
     # 37-40: boundaries — engine is tool / domain independent, decisions never carry paths or commands, determinism, plan hash unchanged by basis
     def test_engine_boundaries_and_determinism(self):
