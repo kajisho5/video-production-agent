@@ -201,13 +201,29 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         for d in [x for x in decisions if x.subject == "qc.check" and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
             qc_plan["enabled"] = True
             qc_plan["decision_ids"].append(d.id)
+            preset_targets = set()
             for exp in [s_ for s_ in steps if s_.skill == "delivery_export" and (s_.params or {}).get("target") and s_.outputs and s_.outputs[0].startswith(f"{subject}_delivery_")]:
                 target = exp.params["target"]
+                preset_targets.add(target)
                 art = exp.outputs[0]
                 chk = next((s_.id for s_ in steps if s_.skill == "delivery_check" and (s_.params or {}).get("target") == target and art in s_.inputs), exp.id)
                 order += 1
                 st = ProductionStep(id=f"step_qc_{target}_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[art], params={"asset": subject, "target": target, "kind": "delivery", "artifact": art},
                                     outputs=[], depends_on=[chk], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+                steps.append(st)
+                qc_plan["subjects"][subject] = {"kind": "delivery", "targets": sorted(set(list((qc_plan["subjects"].get(subject) or {}).get("targets") or []) + [target]))}
+            # no-preset targets: no delivery_export step exists (compiler.delivery() aliases the deliverable
+            # to the subject's own current media instead, no re-encode), so gate directly against that real
+            # media — same bytes as the deliverable, nothing to wait on but the last real edit (ADR-032's
+            # own "each deliverable" promise still holds; only the discovery of *which* op stands in differs)
+            for t in delivery:
+                target = t["id"]
+                if t.get("preset") or target in preset_targets:
+                    continue
+                art = current_of[subject]
+                order += 1
+                st = ProductionStep(id=f"step_qc_{target}_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[art], params={"asset": subject, "target": target, "kind": "delivery", "artifact": art},
+                                    outputs=[], depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
                 steps.append(st)
                 qc_plan["subjects"][subject] = {"kind": "delivery", "targets": sorted(set(list((qc_plan["subjects"].get(subject) or {}).get("targets") or []) + [target]))}
             if subject in sidecar_of:
