@@ -201,6 +201,22 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(dec["decision"], "skip")
         self.assertEqual(ir.doc["audio"]["operations"], [])
 
+    def test_explicit_loudness_request_on_audio_less_input_is_not_silently_dropped(self):
+        """An explicit `--set audio.normalize=true --set audio.loudness.target_lufs=...` request on an asset with
+        no audio stream used to vanish with zero trace: `decision.py`'s whole audio.loudness block was gated on
+        `asset.technical.get("audio")`, so no Decision was ever created (unlike audio.production's analogous case,
+        which explicitly BLOCKs with a reason). The only record was a SKIPPED row buried in the raw project.json's
+        analysis output — not surfaced by plan's decision printout, `explain`, or report.md, so a user asking to
+        normalize a muted b-roll clip or a screen recording with no mic got no feedback anywhere a normal workflow
+        would look. Fixed with an explicit SKIP decision explaining why, matching audio.production's pattern."""
+        svc = make_service(self.tmp, adapter=FakeAdapter(audio=False))
+        ir = svc.plan([self.src], "generic", user_requirements={"audio.normalize": True, "audio.loudness.target_lufs": -16})
+        dec = next((x for x in ir.doc["decisions"] if x["subject"] == "audio.loudness"), None)
+        self.assertIsNotNone(dec, "the request must produce a visible decision, not silently disappear")
+        self.assertEqual(dec["decision"], "skip")
+        self.assertIn("no audio stream", dec["reason"])
+        self.assertEqual(ir.doc["audio"]["operations"], [])
+
     def test_generic_without_preset_delivers_intermediate(self):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "generic")

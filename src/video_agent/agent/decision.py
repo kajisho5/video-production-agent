@@ -229,7 +229,11 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         silent = next((i for i in infs if i.kind == "audio_silent"), None)
         loud_obs = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "loudness"]
         tol = resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)
-        if want_norm and want_norm.value in (True, "auto") and target is not None and asset.technical.get("audio"):
+        if want_norm and want_norm.value in (True, "auto") and target is not None and not asset.technical.get("audio"):
+            eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=f"{asset.id} has no audio stream; loudness normalization needs one (unsupported input, not guessed)",
+                       confidence=1.0, evidence=[target.id] + probe_ids_of([asset.id]), risk="LOW", approval="AUTO", provenance="USER" if want_norm.provenance == "USER" else target.provenance,
+                       params={"asset_id": asset.id}, requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
+        elif want_norm and want_norm.value in (True, "auto") and target is not None and asset.technical.get("audio"):
             if silent:
                 eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=silent.statement, confidence=silent.confidence, evidence=[silent.id] + silent.evidence, risk="LOW", approval="AUTO",
                            provenance="INFERRED", requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
