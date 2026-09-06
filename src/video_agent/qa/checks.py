@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..agent.editing import delivery_subjects
 from ..agent.qc import admit
+from ..artifacts import artifact_id
 from ..media.analysis import loudness_facts, probe_facts
 from ..models import Incident, ToolResult
 from ..tools.base import ToolAdapter, ToolError
@@ -23,6 +24,14 @@ class QAItem:
     kind: str = "format"
     fix_hint: str = ""
     artifact: str = ""
+    # ---- QC_ARCHITECTURE.md §5 (ADR-039, Phase 5): `threshold_source` says whether `expected` came from this
+    # Plan's own declared intent (kept ranges / concat timeline / speed factor for duration, the plan's own
+    # loudness-normalization target) or from a fixed, context-free rule (everything else here) -- the doc's own
+    # framing, not a new kind of question, just the existing threshold's provenance made visible on the finding.
+    # `subject_artifact_id` names which registered Artifact this item verified (computed the same way
+    # `artifacts.artifact_id()` will when `_register_artifacts()` runs, so it resolves even though QA runs first).
+    threshold_source: str = "rule"    # "plan" | "rule"
+    subject_artifact_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return self.__dict__.copy()
@@ -128,9 +137,14 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
             path = paths.get(art) or (paths.get(asset_id) if not t.get("preset") and qc_enabled else None)
             if not path:
                 continue
+            start_idx = len(rep.items)   # QC_ARCHITECTURE.md §5.1: every item below verifies this one subject artifact
+            try:   # a missing / unreadable path is the probe's own FAIL item below to report, never a crash here
+                subject_artifact_id = artifact_id(ir_doc["project"]["id"], ir_doc["plan"].get("id", ""), art, _sha256(path))
+            except OSError:
+                subject_artifact_id = ""
             pr = measure(tools["media_probe"], {"inputs": [path]}, kind="media_probe", artifact=art)
             if not pr.ok:
-                rep.items.append(QAItem("video", "probe", "FAIL", pr.stderr_tail, "readable file", artifact=art))
+                rep.items.append(QAItem("video", "probe", "FAIL", pr.stderr_tail, "readable file", artifact=art, subject_artifact_id=subject_artifact_id))
                 rep.incidents.append(Incident(type="CORRUPTED_FRAME", severity="HIGH", evidence=[art], possible_cause="output unreadable by the probe tool", recommended_action="re-run the export; inspect the tool log"))
                 continue
             p = probe_facts(facts(pr))
@@ -139,7 +153,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 got = p.get("duration") or 0.0   # an audio deliverable: duration is checked, the picture facts are not expected
                 ok = abs(got - kept) <= dur_tol
                 rep.items.append(QAItem("video", "duration", "PASS" if ok else "FAIL", round(got, 3), f"{kept:.3f} ± {dur_tol}", kind="judgement", artifact=art,
-                                        fix_hint="" if ok else "the audio cut landed differently from the planned ranges"))
+                                        fix_hint="" if ok else "the audio cut landed differently from the planned ranges", threshold_source="plan"))
                 if not ok:
                     rep.incidents.append(Incident(type="DURATION_MISMATCH", severity="MEDIUM", start=min(got, kept), end=max(got, kept), evidence=[art],
                                                   possible_cause="output duration differs from the planned kept duration", recommended_action="review the cut decision"))
@@ -148,7 +162,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 got = p.get("duration") or 0.0
                 ok = abs(got - kept) <= dur_tol
                 rep.items.append(QAItem("video", "duration", "PASS" if ok else "FAIL", round(got, 3), f"{kept:.3f} ± {dur_tol}", kind="judgement", artifact=art,
-                                        fix_hint="" if ok else "trim landed on a keyframe or the export trimmed to a platform maximum"))
+                                        fix_hint="" if ok else "trim landed on a keyframe or the export trimmed to a platform maximum", threshold_source="plan"))
                 if not ok:
                     rep.incidents.append(Incident(type="DURATION_MISMATCH", severity="MEDIUM", start=min(got, kept), end=max(got, kept), evidence=[art],
                                                   possible_cause="output duration differs from the planned kept duration (keyframe snap, platform maximum, or a lost segment)",
@@ -180,7 +194,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                         lufs, tp = lf["lufs"], lf["true_peak"]
                         if target_lufs is not None and lufs is not None:
                             ok = abs(lufs - target_lufs) <= lu_tol
-                            rep.items.append(QAItem("audio", "loudness", "PASS" if ok else "FAIL", lufs, f"{target_lufs:g} ± {lu_tol}", kind="judgement", artifact=art))
+                            rep.items.append(QAItem("audio", "loudness", "PASS" if ok else "FAIL", lufs, f"{target_lufs:g} ± {lu_tol}", kind="judgement", artifact=art, threshold_source="plan"))
                             if not ok:
                                 rep.incidents.append(Incident(type="LOUDNESS_FAILURE", severity="MEDIUM", evidence=[art], possible_cause="export re-encoded audio after normalisation or the platform trimmed the file",
                                                               recommended_action="normalise after export or check the preset's audio chain"))
@@ -205,6 +219,8 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 else:
                     rep.items.append(QAItem("delivery", "check", "WARN", "no result", "check.py output", artifact=art))
             qc_items(art, path, "audio" if subject.get("audio_only") else "delivery", qc_key=qc_key)
+            for i in rep.items[start_idx:]:
+                i.subject_artifact_id = subject_artifact_id
             if sheet_dir and v:
                 sheet = f"{sheet_dir}/{art}_sheet.png"
                 if not tools.get("visual_inspection"):
