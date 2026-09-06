@@ -383,8 +383,14 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 args = {"input": st["current"], "preset": t["preset"], "output": art_id}
                 add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
                 add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), st["fp"], kind="qa", skill="delivery_check")
-            elif st["current"] != subject:
-                # generic profile: the last processed intermediate is the deliverable (no re-encode)
+            elif st["current"] not in d["assets"]:
+                # generic profile: the last processed intermediate is the deliverable (no re-encode). Checking
+                # "not a raw source asset" rather than "!= subject" matters for a concat/audio_concat programme:
+                # its own subject id *is* the id of a real, already-produced (in-workspace) op output from the
+                # moment it's created, so `st["current"] != subject` never fires and this alias — and therefore
+                # the deliverable's own Artifact registration and QC gate — would never fire either, even though
+                # real work already produced it (unlike an untouched single source, whose subject id names the
+                # external, unregistrable original asset the whole way through).
                 paths[art_id] = paths[st["current"]]
 
     for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
