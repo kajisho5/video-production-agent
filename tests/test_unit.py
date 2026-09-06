@@ -82,6 +82,22 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(rs.get("silence.leading.approval"), "CONFIRM")
         self.assertTrue(rs.effective["edit.semantic_deletion.approval"].hard)
 
+    def test_generic_profile_has_no_dead_top_level_fields(self):
+        """`generic.json` used to carry a bare top-level `"semantic_deletion": "CONFIRM"` scalar — a leftover
+        from an earlier schema draft (`ARCHITECTURE_REVIEW.md`'s original design had a nested `"decisions"`
+        map; the shipped profile flattened it but the migration to a real `rules`-array entry, the way
+        `conference.json` correctly expresses the same intent as `edit.semantic_deletion.approval`, never
+        happened). `profiles/loader.py` merges every top-level key except `rules` into `Profile.data`, but
+        nothing anywhere reads `semantic_deletion` from it — confirmed dead, unlike `conference.json`'s own
+        real rule. Removed rather than migrated: `edit.semantic_deletion` is a Phase 4, not-yet-selectable
+        Skill (`skills/registry.py`'s `available=False`), so there is no live decision for a rule to resolve
+        against yet."""
+        p = load_profile("generic")
+        self.assertNotIn("semantic_deletion", p.data)
+        # inherited into every child profile's own .data too (loader.py merges the parent's data first)
+        self.assertNotIn("semantic_deletion", load_profile("youtube").data)
+        self.assertNotIn("semantic_deletion", load_profile("conference").data)
+
 
 class AdapterTests(unittest.TestCase):
     def setUp(self):
