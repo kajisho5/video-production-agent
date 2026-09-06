@@ -1702,39 +1702,54 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual(out2["artifacts"][0]["hash"], out["artifacts"][0]["hash"])
         self.assertEqual(out2["artifacts"][0]["id"], out["artifacts"][0]["id"], "the same bytes are the same artifact")
 
-    # ---- Scenario 11: the QC gate on a no-preset delivery (generic profile) — real qc-skill, no re-encode
-    def test_s11_qc_gate_without_a_delivery_preset(self):
+    # ---- Scenario 11: the QC gate AND Artifact registration on a no-preset delivery (generic profile) — real qc-skill and ffmpeg-skill
+    def test_s11_qc_gate_and_artifact_without_a_delivery_preset(self):
         """Every other scenario plans against the "youtube" profile, which always has a delivery preset, so none of
         them exercise the no-preset ("deliver as-is") path this delivery target takes under the generic profile.
-        `agent/planner.py`'s `qc_steps()` used to only plan a qc step alongside a `delivery_export` step (preset-only);
-        with none for a no-preset target, `--set qc=true` compiled nothing at all for it (the whole request silently
-        did nothing). Gates against the subject's own real media directly (no re-encode; same bytes as the
-        deliverable) for both an untouched subject and one something actually processed."""
+        Two bugs lived here (AI-video-production-OS WORK_QUEUE item 9): `agent/planner.py`'s `qc_steps()` used to
+        only plan a qc step alongside a `delivery_export` step (preset-only), so `--set qc=true` compiled nothing at
+        all for a no-preset target (fixed: it now gates the subject's own real media directly when nothing produced
+        an in-workspace file); and a genuinely untouched deliverable never got a registered Artifact at all, because
+        its raw source lives outside the workspace and `ArtifactStore.check_path()` (ADR-022) correctly refuses to
+        register an external path. Fixed with a real stream copy (ffmpeg-skill `export.py --preset copy`) that
+        materializes the untouched source into the workspace, so it gets a genuine Artifact like everything else."""
         self._need("motion-graphics", "qc")
         sha256_file = __import__("video_agent.media.analyzer", fromlist=["sha256_file"]).sha256_file
         svc = self._svc("s11")
         # untouched: `self.a` has real leading/trailing silence by design (TONE, for the other scenarios' own
         # trim coverage), so a clip with none at all is needed here to get truly zero edit steps — the plan
-        # must have nothing but the qc gate itself, not even the always-on technical cleanup
+        # must have nothing but the stream-copy export and the qc gate, not even the always-on technical cleanup
         toneless = str(Path(self.tmp) / "s11_toneless.mp4")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=6",
                         "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
                         "-c:a", "aac", "-b:a", "128k", toneless], check=True)
         ir, p = self._plan(svc, [toneless], {"qc": True}, profile="generic", name="s11a")
-        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["qc_check"])
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["delivery_export", "qc_check"])
+        exp_step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "delivery_export")
+        self.assertEqual(exp_step["params"]["preset"], "copy")
         out = self._render(svc, p)
+        self.assertEqual(len(out["artifacts"]), 1, "a genuinely untouched no-preset deliverable now registers a real Artifact")
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"]), ("MASTER", "source"))
+        self.assertEqual(Path(art["path"]).suffix, ".mp4", "copy keeps the source's own extension")
+        src_dur, src_res, src_audio, _ = self._probe(toneless)
+        dur, res, has_audio, _ = self._probe(art["path"])
+        self.assertAlmostEqual(dur, src_dur, delta=0.05); self.assertEqual(res, src_res); self.assertEqual(has_audio, src_audio)
+        self.assertNotEqual(art["hash"], sha256_file(toneless), "a remux changes container-level bytes even under a stream copy (no picture/audio re-encode)")
+        self.assertTrue(any(r["tool"].endswith("/export") and r["ok"] for r in out["execution"]["results"]), "a real delivery_export op ran (the stream copy)")
         qc = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check")
         self.assertTrue(qc["ok"] and qc["data"]["admitted"], qc["data"])
         self.assertIn(qc["data"]["verdict"], ("PASS", "WARN"), qc["data"].get("findings"))
-        self.assertEqual(qc["data"]["fingerprint"], sha256_file(toneless), "the QC gate measured the real, untouched source directly — no copy, no re-encode")
+        self.assertEqual(qc["data"]["fingerprint"], art["hash"], "the QC gate measured the real, delivered (copied) bytes, not the untouched source")
         qc_item = next(i for i in out["qa"]["items"] if i["layer"] == "qc" and i["name"] == "verdict")
         self.assertEqual(qc_item["status"], qc["data"]["verdict"])
-        self.assertEqual(out["artifacts"], [], "an untouched no-preset deliverable still has nothing registered (AI-video-production-OS WORK_QUEUE item 9) — only the QC gate itself is fixed here")
-        # processed: a real motion-graphics element, still no delivery preset — qc gates the real processed file
+        self._gate_coherent(out, art)
+        # processed: a real motion-graphics element, still no delivery preset — unchanged, no copy needed (already
+        # in-workspace); qc gates the real processed file
         ir2, p2 = self._plan(svc, [toneless], {"motion.title": "Live", "qc": True}, profile="generic", name="s11b")
         self.assertEqual([s["skill"] for s in ir2.doc["plan"]["steps"]], ["motion_graphics", "qc_check"])
         out2 = self._render(svc, p2)
-        art = out2["artifacts"][0]
-        self._gate_coherent(out2, art)
+        art2 = out2["artifacts"][0]
+        self._gate_coherent(out2, art2)
         qc2 = next(r for r in out2["execution"]["results"] if r["tool"] == "qc/check")
-        self.assertEqual(qc2["data"]["fingerprint"], art["hash"], "the QC gate measured the real, delivered (processed) bytes, not the untouched source")
+        self.assertEqual(qc2["data"]["fingerprint"], art2["hash"], "the QC gate measured the real, delivered (processed) bytes, not the untouched source")

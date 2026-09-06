@@ -355,10 +355,13 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         tol = float((d["qa"].get("thresholds") or {}).get("loudness_tolerance_lu", 2.0))
         for t in d["delivery"]["targets"]:
             art_id = f"{subject}_delivery_{t['id']}"
-            # a no-preset target is never re-encoded, so there is no dedicated delivery_export/_check op and no
-            # alias path unless something upstream actually changed the subject (compiler.delivery()); gate
-            # directly against the subject's own current media instead — same real bytes as the deliverable,
-            # and `agent/planner.py`'s `qc_steps()` plans the matching step/tool selection for exactly this case
+            # a no-preset target is never platform-checked (no delivery_check op), and a processed or genuinely-
+            # untouched-but-audio-only subject has no dedicated delivery_export either (compiler.delivery() only
+            # aliases or, for audio-only, does nothing) — gate directly against the subject's own current media
+            # instead in those cases, same real bytes as the deliverable. A genuinely untouched subject with a
+            # video stream does get a real delivery_export (the stream-copy materialization above), so `art_id`
+            # is already in `paths` there and this picks it up automatically; `agent/planner.py`'s `qc_steps()`
+            # plans the matching step/tool selection for every one of these cases.
             check_input = art_id if art_id in paths else subject
             if paths.get(check_input) is None:
                 continue
@@ -392,6 +395,17 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 # real work already produced it (unlike an untouched single source, whose subject id names the
                 # external, unregistrable original asset the whole way through).
                 paths[art_id] = paths[st["current"]]
+            elif (d["assets"][st["current"]].get("technical") or {}).get("video"):
+                # generic profile, genuinely untouched: st["current"] is still a raw source asset, which
+                # ArtifactStore.check_path() (ADR-022) refuses to register directly since it lives outside the
+                # workspace. Materialize it with a real stream copy (ffmpeg-skill export.py --preset copy) instead
+                # of aliasing the external path — same bytes, a real in-workspace file. Requires a video stream
+                # (export.py dies without one); `agent/planner.py`'s `delivery_steps()` plans the matching
+                # delivery_export step/tool selection for exactly this case, gated on the same condition.
+                ext = Path(paths[st["current"]]).suffix.lstrip(".").lower() or "mp4"
+                paths[art_id] = str(job / "artifacts" / f"{st['stem']}_{t['id']}.{ext}")
+                args = {"input": st["current"], "preset": "copy", "output": art_id}
+                add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
 
     for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
         paths[asset_id] = asset["path"]
