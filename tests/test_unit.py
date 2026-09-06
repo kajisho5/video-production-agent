@@ -4204,6 +4204,29 @@ class VideoEditingOperationsTests(unittest.TestCase):
         self.assertEqual(resolve_approval(rules, "video.resize.approval", "CONFIRM", explicit=Requirement.from_dict(req))["approval"], "CONFIRM")
         self.assertEqual(resolve_approval(resolve_rules([Rule("c2", "POLICY", "PROFILE", "video.fill.approval", "BLOCK", "profile")]), "video.fill.approval", "CONFIRM", explicit=Requirement.from_dict(req))["approval"], "BLOCK")
 
+    def test_concat_programme_without_preset_still_registers_an_artifact(self):
+        """A concat programme is a special case of the no-preset "processed" deliverable
+        (video-production-agent#32/#33): unlike a single untouched asset, the programme's own
+        subject id *is already* the id of a real op output the moment `video.concat` runs, so
+        `state[subject]["current"] != subject` never becomes true even though real work already
+        produced it — `compiler.py`'s `delivery()` used to key off that comparison and, for a
+        programme, never fired its no-preset alias branch at all, leaving `report.json`'s
+        "artifacts": [] even though a real, in-workspace, QA-verified concat output existed.
+        Fixed by checking "not a raw source asset" (`st["current"] not in d["assets"]`) instead
+        of "!= subject", which is true from the moment concat itself creates the programme."""
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True})
+        self.assertEqual([op["type"] for op in ir.doc["video"]["operations"] if op["type"] != "video.trim"], ["video.concat"])
+        p = str(Path(self.tmp) / "concat.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
+        self.assertTrue(art["operations"], "the real video-editing concat operation must be credited")
+        concat_dec = next(d["id"] for d in ir.doc["decisions"] if d["subject"] == "video.concat")
+        self.assertIn(concat_dec, art["decision_ids"])
+
     def test_plan_ir_shape_and_determinism(self):
         svc = self._svc()
         reqs = {**self.CHAIN, "edit.overlay": self.png}
