@@ -147,9 +147,9 @@ def main() -> int:
             sys.stderr.write("boom\n")
             return 1
         if MODE == "contract_drift":   # a compatible newer contract: one more element type (the adapter must notice, never silently keep 0.1.0 expectations)
-            c["element_types"].append(dict(c["element_types"][0], type="chapter", parameters={"title": {"type": "string", "required": True, "max_length": 200}}))
-            c["unsupported_element_types"] = [u for u in c["unsupported_element_types"] if u["type"] != "chapter"]
-            c["tools"][0]["element_types"] = sorted(c["tools"][0]["element_types"] + ["chapter"])
+            c["element_types"].append(dict(c["element_types"][0], type="watermark", parameters={"title": {"type": "string", "required": True, "max_length": 200}}))
+            c["unsupported_element_types"] = [u for u in c["unsupported_element_types"] if u["type"] != "watermark"]
+            c["tools"][0]["element_types"] = sorted(c["tools"][0]["element_types"] + ["watermark"])
         emit(c)
         return 0
     if cmd == "doctor":
