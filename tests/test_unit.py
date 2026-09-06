@@ -225,7 +225,12 @@ class PipelineTests(unittest.TestCase):
         regardless of whether it was ever processed, so `render()` reported COMPLETED with `artifacts: []` even
         though a real, QA-verified file existed. The genuinely unprocessed case (nothing to trim, nothing to
         deliver) is intentionally different — see WORK_QUEUE.md item 9 in AI-video-production-OS: that deliverable
-        would need a real copy/remux into the workspace that doesn't exist yet, so it correctly stays unregistered."""
+        would need a real copy/remux into the workspace that doesn't exist yet, so it correctly stays unregistered.
+        Also covers a second bug found registering this artifact for real: since it is an *alias* of the trim op's
+        own output (no dedicated export op names the delivery id itself), the naive id-match in `_register_artifacts()`
+        found no operation and no decision for it at all (`operations: []`, `decision_ids: []`) despite being the
+        direct, real output of a real operation — fixed by also matching an op whose output resolves to the same
+        on-disk path, and by crediting the delivery target's own decision_ids regardless of match."""
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "generic")   # technical silence trim runs unconditionally; no delivery preset here
         p = str(Path(self.tmp) / "g.json")
@@ -238,6 +243,12 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(art["format"], "source")
         self.assertEqual(art["qa_status"], "PASS")
         self.assertTrue(os.path.isfile(art["path"]))
+        # provenance: the artifact is an alias of the trim op's own output (no dedicated export op
+        # names it), so it must still be credited to that real op and cite every decision behind it
+        # (the trim's own decisions *and* delivery.main's) — not report as if nothing produced it
+        subjects = {d["subject"]: d["id"] for d in ir.doc["decisions"]}
+        self.assertTrue(art["operations"], "the real trim operation must be credited, not silently dropped")
+        self.assertEqual(set(art["decision_ids"]), {subjects["silence.leading"], subjects["silence.trailing"], subjects["delivery.main"]})
         self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
 
     def test_same_file_name_twice_gets_distinct_paths(self):

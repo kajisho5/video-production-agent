@@ -633,7 +633,7 @@ class Service:
                     # recorded no path for it (an untouched source lives outside the workspace,
                     # so there is no in-workspace file yet to register as an Artifact)
                     continue
-                rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"]})
+                rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"], "target_decision_ids": list(t.get("decision_ids") or [])})
             for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail
                 if o.get("role") in ("CAPTIONS", "THUMBNAIL") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
                     rows.append({"logical": o["logical"], "type": o["role"], "sources": list(subject["sources"]), "format": o.get("format") or "", "target": o["role"].lower()})
@@ -652,7 +652,11 @@ class Service:
                 if qc_enabled and row["type"] != "THUMBNAIL":   # the gate covers deliverables and sidecars; a thumbnail is checked by the agent only
                     qc_verdict = str(qc_item.observed) if qc_item is not None and str(qc_item.observed) in ("PASS", "WARN", "FAIL") else "FAIL"   # no admitted report → never promoted on silence
                 exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "thumbnail_frame", "thumbnail_render") and logical in o.outputs), None)
-                chain = [o for o in ops if logical in o.outputs or logical in o.inputs]
+                # a no-preset deliverable is an alias (compiler.delivery(): "the last processed intermediate
+                # is the deliverable") — no op names `logical` itself, so also credit whichever real op's
+                # output resolved to this same on-disk path, or a processed deliverable would misreport as
+                # if no operation and no decision had ever touched it
+                chain = [o for o in ops if logical in o.outputs or logical in o.inputs or any(paths.get(x) == path for x in o.outputs)]
                 step = next((s for s in d["plan"].get("steps") or [] if logical in (s.get("outputs") or [])), None)
                 probe = next((m for m in qa.measurements if str(m.get("tool", "")).endswith("/probe") and (m.get("args") or {}).get("inputs") == [path]), None)
                 media = {"measured_by": probe.get("tool")} if probe else {}
@@ -665,7 +669,7 @@ class Service:
                              format=row["format"], size=chk["size"], media=media,
                              name=delivery_name(d["delivery"].get("naming") or "", {"project": d["project"]["name"], "target": t["id"], "version": f"v{ir.version}", "format": row["format"], "date": str(d["project"].get("created_at", ""))[:10]}, Path(path).suffix.lstrip(".")),
                              operations=[o.id for o in chain], step_id=step["id"] if step else None,
-                             decision_ids=sorted({x for o in chain for x in o.decision_ids}),
+                             decision_ids=sorted({x for o in chain for x in o.decision_ids} | set(row.get("target_decision_ids") or [])),
                              qa={"status": art_qa, "pass": sum(1 for i in items if i.status == "PASS"), "warn": sum(1 for i in items if i.status == "WARN"),
                                  "fail": sum(1 for i in items if i.status == "FAIL"), "items": [i.to_dict() for i in items],
                                  **({"qc": qc_verdict, "qc_warn_promotion": warn_promotion} if qc_enabled else {})},
