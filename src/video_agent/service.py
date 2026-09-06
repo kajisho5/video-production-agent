@@ -102,51 +102,37 @@ class Service:
         skill = locate_ffmpeg_skill(self.skill_dir)
         policy = PathPolicy(allowed_inputs or [], self.workspace) if allowed_inputs is not None else None
         router = ToolRouter()
-        if skill:
-            router.register(FfmpegSkillAdapter(skill, policy))
-        ma = locate_media_analysis(self.media_analysis_dir)
-        if ma:
-            try:
-                # same boundary as the engine's PathPolicy: inputs from the allowed roots or the workspace (intermediates / artifacts under QA)
-                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else []
-                router.register(MediaAnalysisAdapter(ma, workspace=self.workspace, allowed_inputs=roots, cache_dir=str(Path(self.workspace) / "cache" / "media-analysis")))
-            except ToolError:
-                pass   # incompatible / broken installation: doctor reports it; the tool stays unavailable rather than half-usable
-        ts = locate_transcription(self.transcription_dir)
-        if ts:
-            try:
-                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else []
-                router.register(TranscriptionAdapter(ts, workspace=str(Path(self.workspace) / "cache" / "transcription"), allowed_inputs=roots, offline=self.offline))
-            except ToolError:
-                pass   # same rule: an incompatible transcription-skill is reported by doctor and never used
-        ve = locate_video_editing(self.video_editing_dir)
-        if ve:
-            try:
-                # outputs land inside the agent workspace (each operation in its own directory), inputs come from the allowed roots or the workspace
-                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
-                router.register(VideoEditingAdapter(ve, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None, path_policy=policy))
-            except ToolError:
-                pass   # same rule: an incompatible video-editing-skill is reported by doctor and never used
-        ap = locate_audio_production(self.audio_production_dir)
-        if ap:
-            try:
-                roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
-                router.register(AudioProductionAdapter(ap, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=str(skill.root) if skill else None, path_policy=policy))
-            except ToolError:
-                pass   # same rule: an incompatible audio-production-skill is reported by doctor and never used
-        # Phase 3 finishing Skills (ADR-031 / ADR-032): outputs inside the agent workspace, inputs from the allowed roots or the workspace
+        if skill:   # the Reference Skill/engine: unlike every other adapter below, a broken installation here is not
+            router.register(FfmpegSkillAdapter(skill, policy))   # caught -- it is the one package this codebase implements unconditionally (registered in __init__ regardless of a checkout), so failing to construct it is a real error, not a "not installed" case for doctor to report
+        # Every other Skill package (ADR-038, Phase 4 item 2: capability-driven registration replacing per-Skill
+        # hardcoded branches): (locate_fn, workspace/allowed_inputs, constructor). Adding a new Skill package here
+        # means adding one row, not a new branch -- the two `roots` shapes below are real, deliberate differences
+        # between Skills (media-analysis / transcription default to no extra root when `allowed_inputs` is None;
+        # every editing/finishing Skill defaults to the workspace itself, since its output always lands there),
+        # preserved exactly rather than smoothed into a false uniformity.
+        ma_roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else []
         roots = (list(allowed_inputs) + [self.workspace]) if allowed_inputs is not None else [self.workspace]
         engine = str(skill.root) if skill else None
-        for located, make in ((locate_subtitle(self.subtitle_dir), lambda sk: SubtitleAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
-                              (locate_thumbnail(self.thumbnail_dir), lambda sk: ThumbnailAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
-                              (locate_color_grading(self.color_grading_dir), lambda sk: ColorGradingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
-                              (locate_motion_graphics(self.motion_graphics_dir), lambda sk: MotionGraphicsAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
-                              (locate_qc(self.qc_dir), lambda sk: QcAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy))):
+        for located, make in (
+            (locate_media_analysis(self.media_analysis_dir),
+             lambda sk: MediaAnalysisAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots, cache_dir=str(Path(self.workspace) / "cache" / "media-analysis"))),
+            (locate_transcription(self.transcription_dir),
+             lambda sk: TranscriptionAdapter(sk, workspace=str(Path(self.workspace) / "cache" / "transcription"), allowed_inputs=ma_roots, offline=self.offline)),
+            (locate_video_editing(self.video_editing_dir),
+             lambda sk: VideoEditingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            (locate_audio_production(self.audio_production_dir),
+             lambda sk: AudioProductionAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            (locate_subtitle(self.subtitle_dir), lambda sk: SubtitleAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            (locate_thumbnail(self.thumbnail_dir), lambda sk: ThumbnailAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            (locate_color_grading(self.color_grading_dir), lambda sk: ColorGradingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            (locate_motion_graphics(self.motion_graphics_dir), lambda sk: MotionGraphicsAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            (locate_qc(self.qc_dir), lambda sk: QcAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
+        ):
             if located:
                 try:
                     router.register(make(located))
                 except ToolError:
-                    pass   # same rule: an incompatible installation is reported by doctor and never used
+                    pass   # incompatible / broken installation: doctor reports it; the tool stays unavailable rather than half-usable
         return self._sync_packages(router)
 
     def _sync_packages(self, router: ToolRouter) -> ToolRouter:
@@ -687,6 +673,8 @@ class Service:
                 media.update({i.name: i.observed for i in items if i.layer in ("video", "audio") and i.kind != "judgement"})   # QA facts (codec / stream / duration …)
                 a = Artifact(path=path, type=row["type"], hash=chk["sha256"], source=list(row["sources"]), generation=1,
                              tool=exp.tool if exp else "", tool_version=tool_version_of(d["source"]["tool_versions"], exp.tool) if exp else "",
+                             capability_id=exp.skill if exp else "", provider_id=(exp.tool.split("/", 1)[0] if exp and exp.tool else ""),
+                             derived_from=[s for s in row["sources"] if st.get(s) is not None],
                              qa_status=art_qa, stage=stage_for(art_qa, qc_verdict, warn_promotion),
                              id=artifact_id(d["project"]["id"], d["plan"].get("id", ""), logical, chk["sha256"]),
                              logical_name=logical, project_id=d["project"]["id"], plan_id=d["plan"].get("id", ""), plan_version=ir.version, job_id=job.id, jobs=[job.id],
