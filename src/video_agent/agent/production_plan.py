@@ -110,9 +110,10 @@ def step_status(step: Dict[str, Any], decisions: Dict[str, Dict[str, Any]]) -> s
 
 
 def plan_status(doc: Dict[str, Any]) -> str:
-    """DRAFT: no steps yet (nothing to run). REJECTED: a step cites a rejected decision. BLOCKED: a step cannot execute
+    """DRAFT: nothing has been decided yet (no steps and no decisions). REJECTED: a step cites a rejected decision. BLOCKED: a step cannot execute
     here (BLOCK decision / no tool) or a BLOCK decision is in force (ADR-029: a refused request blocks the plan even without a step). REVIEW: a CONFIRM decision is pending or the version needs re-approval.
-    APPROVED: every step's decisions are approved (explicitly, or AUTO by policy) and the version is not awaiting review."""
+    APPROVED: every step's decisions are approved (explicitly, or AUTO by policy) and the version is not awaiting review. A plan with decisions but zero
+    edit steps (e.g. a delivery-only or QC-only request that needs no changes) is APPROVED once its decisions resolve, not stuck in DRAFT forever."""
     decisions = {d["id"]: d for d in doc.get("decisions") or []}
     steps = (doc.get("plan") or {}).get("steps") or []
     statuses = [step_status(s, decisions) for s in steps]
@@ -120,7 +121,7 @@ def plan_status(doc: Dict[str, Any]) -> str:
         return "REJECTED"
     if "BLOCKED" in statuses or any(d["approval"] == "BLOCK" and d["status"] == "BLOCKED" for d in decisions.values()):
         return "BLOCKED"   # a BLOCK decision in force blocks the whole plan, whether or not a step cites it (a refused request is never partially run)
-    if not steps:
+    if not steps and not decisions:
         return "DRAFT"
     version = int(doc["plan"].get("version", 1))
     approved_version = (doc.get("revision") or {}).get("approved_plan_version")
