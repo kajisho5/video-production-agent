@@ -15,7 +15,7 @@ from .agent.production_plan import plan_status
 from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
-from .audit import build_provenance, write_audit
+from .audit import build_provenance, build_receipt, write_audit
 from .capabilities import CapabilityResolver
 from .context import ProductionContext, build_contexts, contexts_at, contexts_between, infer_from_contexts
 from .execution import CompileError, Executor, compile_ir
@@ -578,6 +578,23 @@ class Service:
         save_ir(ir, ir_path)
         save_ir(ir, str(job.dir / "ir.json"))
         write_audit(str(job.dir / "provenance.json"), prov)
+        # ProductionReceipt (docs/SPEC.md §6, ADR-040): emitted once execution reaches this point -- any terminal
+        # Executor status, "the Plan finished running" per PROVENANCE.md §4, not that it fully passed. Never
+        # reached for a Plan that was rejected/blocked/pending approval before execution started (this line is
+        # after `ex.run()`, not before it) -- nothing ran yet, so there is nothing to record (I5, resolved).
+        receipt_body = build_receipt(ir.doc, result.status, result.failed_op, out.get("artifacts") or [], (out.get("qa") or {}).get("items"))
+        receipt_path = str(job.dir / "receipt.json")
+        Path(receipt_path).write_text(json.dumps(receipt_body, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        rst = self.artifact_store()
+        chk = rst.integrity(receipt_path)
+        receipt_artifact = rst.register(Artifact(path=receipt_path, type="PRODUCTION_RECEIPT", hash=chk["sha256"], size=chk["size"],
+                                                 id=artifact_id(ir.doc["project"]["id"], ir.doc["plan"].get("id", ""), "production_receipt", chk["sha256"]),
+                                                 logical_name="production_receipt", project_id=ir.doc["project"]["id"], plan_id=ir.doc["plan"].get("id", ""),
+                                                 plan_version=ir.version, job_id=job.id, jobs=[job.id],
+                                                 provenance={"ir_path": ir_path, "plan_hash": ir.doc["provenance"].get("plan_hash"), "ir_hash": ir.doc["provenance"].get("ir_hash"),
+                                                             "provenance_path": str(job.dir / "provenance.json"), "receipt_body_id": receipt_body["id"]}))
+        out["receipt"] = receipt_body
+        out["receipt_artifact_id"] = receipt_artifact.id
         (job.dir / "report.json").write_text(json.dumps({k: v for k, v in out.items() if k != "job"}, indent=2, default=str) + "\n", encoding="utf-8")
         (job.dir / "report.md").write_text(render_report_md(ir.doc, out, job.id), encoding="utf-8")
         store.save(job)

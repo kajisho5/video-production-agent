@@ -580,6 +580,11 @@ class ResumeTests(unittest.TestCase):
         p = self._plan(svc)
         first = svc.render(load_ir(p), p)
         self.assertEqual(first["status"], "FAILED")
+        # ADR-040: a Plan whose execution reached a terminal (non-COMPLETED) state still gets a ProductionReceipt --
+        # "the Plan finished running," not that it fully passed (PROVENANCE.md §4 / I5)
+        self.assertIn("execution FAILED", " ".join(first["receipt"]["failures"]))
+        self.assertEqual(first["receipt"]["output_artifact_ids"], [], "no deliverable was ever registered on this failed run")
+        self.assertEqual({x["id"] for x in svc.artifacts(load_ir(p))}, {first["receipt_artifact_id"]}, "the receipt is the only artifact registered so far")
         done_tools = [r["tool"] for r in first["execution"]["results"] if r["ok"]]
         self.assertEqual(done_tools, ["ffmpeg-skill/cut", "ffmpeg-skill/loudness"])
         self.assertEqual(len(first["job"]["completed_ops"]), 2)
@@ -2401,9 +2406,34 @@ class ArtifactLifecycleTests(unittest.TestCase):
         # manifest persisted and readable through the service; integrity ok
         m = svc.artifact(a["id"])
         self.assertTrue(m["integrity"]["ok"])
-        self.assertEqual([x["id"] for x in svc.artifacts(ir)], [a["id"]])
+        # ADR-040: a ProductionReceipt is registered alongside the deliverable, as its own Artifact (type PRODUCTION_RECEIPT)
+        ids_by_type = {x["type"]: x["id"] for x in svc.artifacts(ir)}
+        self.assertEqual(set(ids_by_type), {"YOUTUBE", "PRODUCTION_RECEIPT"})
+        self.assertEqual(ids_by_type["YOUTUBE"], a["id"])
+        self.assertEqual(ids_by_type["PRODUCTION_RECEIPT"], out["receipt_artifact_id"])
         # the three hashes are different things
         self.assertNotEqual(a["hash"], ir.plan_hash()); self.assertNotEqual(a["hash"], ir.ir_hash()); self.assertNotEqual(ir.plan_hash(), ir.ir_hash())
+
+    def test_production_receipt_shape_and_registration(self):
+        """docs/SPEC.md §6 / PROVENANCE.md §4 (ADR-040): the ProductionReceipt is a real, registered Artifact
+        (type PRODUCTION_RECEIPT), not just a return-value dict -- readable back through the same `svc.artifact()`
+        path as any other artifact, with its own content-hash id distinct from the wrapping Artifact's id."""
+        svc, ir, p, out = self._render()
+        r = out["receipt"]
+        self.assertTrue(r["id"].startswith("receipt_"))
+        self.assertEqual((r["project_id"], r["plan_id"], r["plan_hash"], r["ir_hash"]), (ir.doc["project"]["id"], ir.doc["plan"]["id"], ir.plan_hash(), ir.ir_hash()))
+        self.assertEqual(r["input_artifact_ids"], sorted(ir.doc["assets"]))
+        self.assertEqual(r["output_artifact_ids"], [out["artifacts"][0]["id"]])
+        self.assertEqual(r["skill_versions"], ir.doc["provenance"]["skill_versions"])
+        self.assertEqual(r["tool_versions"], ir.doc["source"]["tool_versions"])
+        self.assertEqual(set(r["decisions"]), {d["id"] for d in ir.doc["decisions"]})
+        self.assertEqual(r["failures"], [])
+        m = svc.artifact(out["receipt_artifact_id"])
+        self.assertTrue(m["integrity"]["ok"])
+        self.assertEqual(m["type"], "PRODUCTION_RECEIPT")
+        self.assertNotEqual(m["id"], r["id"], "the wrapping Artifact's id (file-content hash) and the receipt body's own self-identifying id are two different, both-legitimate hashes")
+        on_disk = json.loads(Path(m["path"]).read_text())
+        self.assertEqual(on_disk, r, "the registered file is exactly the receipt body returned in render()'s own result")
 
     def test_artifact_produced_by_and_derived_from(self):
         """ARTIFACT_MODEL.md §3/§4 (ADR-038): `capability_id` / `provider_id` make the Provider that actually
@@ -2530,7 +2560,7 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(Path(a1["path"]).read_bytes(), h1, "v1 artifact untouched")
         self.assertTrue(svc.artifact(a1["id"])["integrity"]["ok"])
         ids = {x["id"] for x in svc.artifacts(load_ir(p))}
-        self.assertEqual(ids, {a1["id"], a2["id"]})
+        self.assertEqual(ids, {a1["id"], a2["id"], out1["receipt_artifact_id"], out2["receipt_artifact_id"]}, "each render gets its own ProductionReceipt too (ADR-040)")
         # v1 can still be archived; delivering v1 as final is refused because the IR moved on to plan v2
         from video_agent.artifacts import ArtifactError
         with self.assertRaises(ArtifactError):
