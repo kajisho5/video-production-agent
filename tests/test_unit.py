@@ -2405,6 +2405,36 @@ class ArtifactLifecycleTests(unittest.TestCase):
         # the three hashes are different things
         self.assertNotEqual(a["hash"], ir.plan_hash()); self.assertNotEqual(a["hash"], ir.ir_hash()); self.assertNotEqual(ir.plan_hash(), ir.ir_hash())
 
+    def test_artifact_produced_by_and_derived_from(self):
+        """ARTIFACT_MODEL.md §3/§4 (ADR-038): `capability_id` / `provider_id` make the Provider that actually
+        executed the producing Operation explicit on the Artifact itself (previously recoverable only by parsing
+        `tool`'s "<package>/<name>" prefix), and `derived_from` is the subset of `source` that are themselves
+        other registered Artifacts (never a raw source Asset id) -- a real graph edge, populated as a plain
+        projection of the store's own `get()`, not a new source of truth."""
+        svc, ir, p, out = self._render()
+        a = out["artifacts"][0]
+        self.assertEqual(a["capability_id"], "delivery_export")
+        self.assertEqual(a["provider_id"], "ffmpeg-skill")
+        self.assertEqual(a["provider_id"], a["tool"].split("/", 1)[0])
+        self.assertEqual(a["derived_from"], [], "today's single-generation delivery derives only from a raw source Asset, never another registered Artifact")
+        # a second, independent project: pre-register a fake Artifact under the exact asset id *this* plan will
+        # cite as `source` (asset ids are per-project, not stable across separate plan() calls, so it must be
+        # read from this plan's own IR rather than reused from the first render above) -- the render that follows
+        # must recognise it as a real derived-from edge, not a coincidence of matching ids
+        svc2 = make_service(self.tmp)
+        ir2 = svc2.plan([self.src], "youtube", project_name="second-generation")
+        asset_id = next(iter(ir2.doc["assets"]))
+        from video_agent.media.analyzer import sha256_file
+        from video_agent.models import Artifact
+        fake_parent = Artifact(path=self.src, type="MASTER", hash=sha256_file(self.src), id=asset_id, logical_name="fake_prior_generation")
+        svc2.artifact_store().register(fake_parent)
+        p2 = str(Path(self.tmp) / "produced_by.json")
+        save_ir(ir2, p2)
+        out2 = svc2.render(load_ir(p2), p2, approve=["all"])
+        a2 = out2["artifacts"][0]
+        self.assertEqual(a2["source"], [asset_id])
+        self.assertEqual(a2["derived_from"], [asset_id], "an already-registered Artifact among `source` is a real derived-from edge")
+
     # provenance chain artifact -> job -> operations -> step -> decision -> inference -> event -> observation
     def test_artifact_provenance_chain(self):
         svc, ir, p, out = self._render()

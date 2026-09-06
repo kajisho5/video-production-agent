@@ -291,6 +291,18 @@ class Artifact(Model):
     delivery_status: str = "NOT_READY"                       # NOT_READY | READY | DELIVERED | ARCHIVED (view of stage)
     delivery_history: List[Dict[str, Any]] = field(default_factory=list)
     provenance: Dict[str, Any] = field(default_factory=dict) # {ir_path, plan_hash, ir_hash, provenance_path}
+    # ---- ARTIFACT_MODEL.md §4 `produced_by` (ADR-038): `capability_id` / `provider_id` make the Provider that
+    # actually executed this Artifact's producing Operation explicit on the Artifact itself (previously only
+    # recoverable by parsing `tool`'s "<package>/<name>" prefix, or by consulting the Plan that authorized it).
+    # `skill_version` is already `tool_version` above and `operation_id` is already `operations` above -- not
+    # duplicated under new names. Defaults keep older job records loadable (schema stays additive, no migration).
+    capability_id: str = ""         # the production skill name that produced this Artifact, e.g. "delivery_export"
+    provider_id: str = ""           # the package that executed it, e.g. "ffmpeg-skill" (== tool.split("/", 1)[0])
+    # ---- ARTIFACT_MODEL.md §3 `derived_from` (ADR-038, PROPOSED there as "a projection of information the
+    # Plan/Operation model already has"): the subset of `source` that are themselves other registered Artifact
+    # ids (never raw source Asset ids) -- a real graph edge, not the full traversal/query API §3 explicitly
+    # defers as a separate, not-yet-evidenced concern.
+    derived_from: List[str] = field(default_factory=list)
 
 
 @dataclass
