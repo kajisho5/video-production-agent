@@ -32,12 +32,14 @@ def _from_checkout(root: Path) -> Optional[AudioProductionSkill]:
 
 def locate_audio_production(explicit: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Optional[AudioProductionSkill]:
     env_map: Mapping[str, str] = os.environ if env is None else env
-    cands: List[Path] = []
+    authoritative: List[Path] = []
     if explicit:
-        cands.append(Path(explicit))
+        authoritative.append(Path(explicit))
     if env_map.get(ENV_DIR):
-        cands.append(Path(env_map[ENV_DIR]))
-    cands += [Path.home() / ".claude" / "skills" / "audio-production-skill", Path.cwd() / "vendor" / "audio-production-skill", Path.cwd().parent / "audio-production-skill"]
+        authoritative.append(Path(env_map[ENV_DIR]))
+    # An explicit dir or the env var names exactly where to look; if there is no checkout there, that is the
+    # answer (MISSING), not a cue to keep guessing sibling directories that happen to exist here too.
+    cands = authoritative or [Path.home() / ".claude" / "skills" / "audio-production-skill", Path.cwd() / "vendor" / "audio-production-skill", Path.cwd().parent / "audio-production-skill"]
     for c in cands:
         found = _from_checkout(c)
         if found:

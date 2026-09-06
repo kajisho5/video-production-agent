@@ -107,10 +107,15 @@ class CapabilityResolver:
         else:
             caps["fonts"] = Capability("fonts", "UNKNOWN", "fc-list not found")
             caps["font:cjk-ja"] = Capability("font:cjk-ja", "UNKNOWN", "fc-list not found")
-        # ffmpeg-skill
+        # ffmpeg-skill. version_supported() only flags a version outside the verified range (DEGRADED, not
+        # MISSING): ffmpeg-skill construction itself stays unguarded (ARCHITECTURE_REVIEW §1.7) regardless of
+        # this status, so an operator sees the warning in `doctor`/`skills` without anything actually breaking.
         skill = locate_ffmpeg_skill(self.skill_dir, self.env)
         if skill:
-            caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "AVAILABLE", f"{skill.version} at {skill.root}", {"root": str(skill.root), "version": skill.version, "scripts": skill.scripts})
+            supported = skill.version_supported()
+            detail = f"{skill.version} at {skill.root}" if supported else f"{skill.version} at {skill.root} (outside the verified version range; re-verify before relying on it)"
+            caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "AVAILABLE" if supported else "DEGRADED", detail,
+                                              {"root": str(skill.root), "version": skill.version, "scripts": skill.scripts, "version_supported": supported})
         else:
             caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "MISSING", "set VIDEO_AGENT_FFMPEG_SKILL_DIR or install with `npx ffmpeg-skill`")
         # media-analysis-skill (external observation Skill): located checkout / console script + its own doctor
