@@ -559,6 +559,41 @@ class MediaAnalysisRealTests(unittest.TestCase):
         svc2 = Service(workspace=str(Path(self.tmp) / "ws_cap2"), media_analysis_dir="/nonexistent")
         self.assertEqual(svc2.caps.resolve()["media-analysis"].status, "AVAILABLE" if locate_media_analysis("/nonexistent") else "MISSING")
 
+    def test_explicit_provider_requirement_selects_media_analysis_over_the_default(self):
+        """docs/CAPABILITY_MODEL.md's collision policy, Tier 1, against the real collision it names: with both
+        ffmpeg-skill and media-analysis-skill genuinely installed, a `--set provider.media_probe=media-analysis`
+        requirement wins over the OS's own baked-in default (ffmpeg-skill) -- real packages, real contracts, not
+        a synthetic candidate list."""
+        svc = Service(workspace=str(Path(self.tmp) / "ws_explicit"))
+        tools = svc.tools_for(user_requirements={"provider.media_probe": "media-analysis"})
+        self.assertEqual(tools["media_probe"], "media-analysis/probe")
+        self.assertEqual(tools["loudness_analysis"], "ffmpeg-skill/loudness", "an explicit choice for one skill never leaks onto a different, unrelated skill")
+        ir = svc.plan([self.src], "generic", user_requirements={"provider.media_probe": "media-analysis", "provider.loudness_analysis": "media-analysis"})
+        req_values = {r["key"]: r["value"] for r in ir.doc["requirements"]}
+        self.assertEqual(req_values.get("provider.media_probe"), "media-analysis", "an explicit provider choice is recorded like any other requirement, for provenance")
+        self.assertEqual(req_values.get("provider.loudness_analysis"), "media-analysis")
+
+    def test_explicit_provider_naming_an_uninstalled_package_refuses_loudly(self):
+        svc = Service(workspace=str(Path(self.tmp) / "ws_bad_explicit"))
+        with self.assertRaises(RuntimeError) as ctx:
+            svc.analyze([self.src], "generic", user_requirements={"provider.media_probe": "no-such-skill"})
+        self.assertIn("no-such-skill", str(ctx.exception))
+        self.assertIn("ffmpeg-skill", str(ctx.exception)); self.assertIn("media-analysis", str(ctx.exception))
+
+    def test_workspace_providers_json_sets_a_default_without_any_explicit_requirement(self):
+        """Tier 2: a workspace-level `providers.json` resolves the collision the same way an explicit
+        requirement would, but for every plan in this workspace, with none of them needing to ask."""
+        ws = str(Path(self.tmp) / "ws_default")
+        Path(ws).mkdir(parents=True)
+        Path(ws, "providers.json").write_text(json.dumps({"media_probe": "media-analysis", "silence_analysis": "media-analysis"}), encoding="utf-8")
+        svc = Service(workspace=ws)
+        tools = svc.tools_for()
+        self.assertEqual(tools["media_probe"], "media-analysis/probe")
+        self.assertEqual(tools["silence_analysis"], "media-analysis/silence")
+        self.assertEqual(tools["loudness_analysis"], "ffmpeg-skill/loudness", "only the two skills named in providers.json are redirected")
+        rows = {r["skill"]: r for r in svc.skills()}
+        self.assertEqual(rows["media_probe"]["tool"], "media-analysis/probe")
+
     def test_all_kinds_lifted_with_provenance_and_skill_cache(self):
         ws = str(Path(self.tmp) / "ws_all")
         svc = self._service(ws)

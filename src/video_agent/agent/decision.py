@@ -54,8 +54,12 @@ def _serves(intent: Intent, subject: str) -> Optional[str]:
 
 
 def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, inferences: List[Inference], rules: RuleSet,
-           caps: Dict[str, Capability], registry: SkillRegistry, tool_supports=None) -> List[Decision]:
-    """tool_supports: callable(tool id) -> bool from the tool router; when given, a skill whose tools no adapter supports is BLOCKED too."""
+           caps: Dict[str, Capability], registry: SkillRegistry, tool_supports=None,
+           explicit_providers: Optional[Dict[str, str]] = None, default_providers: Optional[Dict[str, str]] = None) -> List[Decision]:
+    """tool_supports: callable(tool id) -> bool from the tool router; when given, a skill whose tools no adapter supports is
+    BLOCKED too -- including one whose Providers collide and neither explicit_providers nor default_providers resolves it
+    (docs/CAPABILITY_MODEL.md's collision policy, Tier 3): the same per-skill choices `Service.tools_for()` used to build
+    the tools map this plan's steps cite, so a step's tool and its BLOCK/no-BLOCK gating never disagree."""
     m = requirement_map(reqs)
     known = DecisionEngine.evidence_index(analysis.observations, analysis.timeline.events, inferences, reqs, rules, ai_prefix=AI_KIND_PREFIX)
     eng = DecisionEngine(rules, intent, known, reqs)
@@ -81,7 +85,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             return eng.decide(subject=subject, type="BLOCK", decision=f"BLOCK: skill {skill} unavailable", reason=f"required capability missing: {', '.join(missing)}", confidence=1.0,
                               evidence=[f"capability:{x}" for x in missing], risk="HIGH", approval="BLOCK", provenance="SYSTEM", params={"skill": skill, "missing": missing})
         if tool_supports is not None:
-            tool, reason = registry.select_tool(skill, caps, tool_supports)
+            tool, reason = registry.select_tool(skill, caps, tool_supports, explicit=(explicit_providers or {}).get(skill), default=(default_providers or {}).get(skill))
             if tool is None:
                 return eng.decide(subject=subject, type="BLOCK", decision=f"BLOCK: skill {skill} has no executable tool", reason=reason, confidence=1.0,
                                   evidence=[f"skill:{skill}"], risk="HIGH", approval="BLOCK", provenance="SYSTEM", params={"skill": skill, "missing": []})

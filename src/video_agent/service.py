@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .agent import build_plan, decide, extract_requirements, infer, resolve_intent
@@ -34,6 +34,7 @@ from .project.ir import snapshot_path
 from .media.analyzer import AnalysisResult
 from .qa import run_qa
 from .skills import ProvidesFinding, check_all, default_registry
+from .skills.providers import default_providers, explicit_providers
 from .tools import ToolRouter
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
 from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
@@ -154,13 +155,22 @@ class Service:
             self.registry.register_package(pkg)
         return router
 
-    def tools_for(self, router: Optional[ToolRouter] = None) -> Dict[str, str]:
-        """Skill → tool id for this environment (capabilities + registered adapters)."""
+    def _providers(self, user_requirements: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """(explicit, default) per-skill provider choices for `SkillRegistry.select_tool()`'s collision policy
+        (docs/CAPABILITY_MODEL.md): Tier 1 from `--set provider.<skill>=<package>` in this request's own
+        requirements (none, for calls with no request in scope, e.g. `doctor` / `skills`), Tier 2 from this
+        workspace's provider policy (OS-level default, overridden by `<workspace>/providers.json`)."""
+        return explicit_providers(user_requirements or {}), default_providers(self.workspace)
+
+    def tools_for(self, router: Optional[ToolRouter] = None, user_requirements: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """Skill → tool id for this environment (capabilities + registered adapters). `user_requirements`: this
+        request's own requirements, consulted only for an explicit `provider.<skill>=<package>` choice."""
         router = router or self.adapter([])
-        return self.registry.resolve_tools(self.caps.resolve(), router.supports)
+        explicit, default = self._providers(user_requirements)
+        return self.registry.resolve_tools(self.caps.resolve(), router.supports, explicit=explicit, default=default)
 
     def skills(self) -> List[Dict[str, Any]]:
-        return self.registry.availability(self.caps.resolve(), self.adapter([]).supports)
+        return self.registry.availability(self.caps.resolve(), self.adapter([]).supports, default=default_providers(self.workspace))
 
     def packages(self) -> List[Dict[str, Any]]:
         """Skill packages known to this codebase and whether they are usable here (ecosystem view for `video-agent skills`)."""
@@ -178,11 +188,20 @@ class Service:
         contracts = {a.name: getattr(a, "contract", None) for a in router.adapters}
         return check_all(self.registry.packages(), contracts, self.registry.all())
 
-    def require_tools(self, tools: Dict[str, str], needed: List[str], router: ToolRouter) -> None:
+    def _check_provider_requirements(self, user_requirements: Dict[str, Any]) -> None:
+        """A `provider.<skill>=<package>` requirement is validated against the registry's own skill names right
+        away: an unknown skill name would otherwise resolve to nothing and silently apply to no real skill,
+        indistinguishable from a correct choice that just happens not to collide."""
+        bad = sorted(name for name in explicit_providers(user_requirements) if name not in self.registry.names())
+        if bad:
+            raise ValueError(f"unknown skill name(s) in provider.<skill> requirement(s): {', '.join(bad)}; known skills: {', '.join(self.registry.names())}")
+
+    def require_tools(self, tools: Dict[str, str], needed: List[str], router: ToolRouter, user_requirements: Optional[Dict[str, Any]] = None) -> None:
         """Fail early with the registry's reason when a skill this command depends on has no executable tool here."""
         missing = [n for n in needed if n not in tools]
         if missing:
-            reasons = "; ".join(f"{n}: {self.registry.select_tool(n, self.caps.resolve(), router.supports)[1]}" for n in missing)
+            explicit, default = self._providers(user_requirements)
+            reasons = "; ".join(f"{n}: {self.registry.select_tool(n, self.caps.resolve(), router.supports, explicit=explicit.get(n), default=default.get(n))[1]}" for n in missing)
             raise RuntimeError(f"required skill(s) unavailable — {reasons}. Run `video-agent doctor` / `video-agent skills`.")
 
     def tool_versions(self) -> Dict[str, str]:
@@ -204,8 +223,8 @@ class Service:
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter(list(allowed_inputs) if allowed_inputs else [str(Path(p).resolve().parent) for p in inputs])
-        tools = self.tools_for(adapter)
-        self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"] + [ANALYSIS_KINDS[k]["skill"] for k in (kinds or []) if k in ANALYSIS_KINDS and k not in CORE_KINDS], adapter)
+        tools = self.tools_for(adapter, user_requirements)
+        self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"] + [ANALYSIS_KINDS[k]["skill"] for k in (kinds or []) if k in ANALYSIS_KINDS and k not in CORE_KINDS], adapter, user_requirements)
         req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy, kinds=kinds, params=params)
         analyzer = MediaAnalyzer(adapter, tools=tools, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), hash_sources=hash_sources,
                                  cache_dir=self.workspace if use_cache else None)
@@ -235,6 +254,7 @@ class Service:
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         _check_edit_requirements(user_requirements or {})
+        self._check_provider_requirements(user_requirements or {})
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params)
@@ -250,7 +270,8 @@ class Service:
         the planner must not propose them again. Returns (reqs, intent, inferences, decisions, plan, dropped)."""
         caps = self.caps.resolve()
         router = self.adapter([])
-        tools = self.tools_for(router)
+        explicit, default = self._providers((request.args or {}).get("requirements"))
+        tools = self.registry.resolve_tools(caps, router.supports, explicit=explicit, default=default)
         reqs = extract_requirements(request, profile, rules)
         rm = requirement_map(reqs)
         intent = resolve_intent(reqs)
@@ -260,7 +281,7 @@ class Service:
         contexts = build_contexts(analysis.timeline.events, analysis.assets, analysis.observations, inferences)
         inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
         inferences += self._ai_inferences(analysis, rules, prior_ai)
-        decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports)
+        decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
             keys = {(s["subject"], s.get("asset_id")) for s in suppressed}
@@ -368,6 +389,7 @@ class Service:
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
         _check_edit_requirements(user_requirements or {})
+        self._check_provider_requirements(user_requirements or {})
         fb_ids: List[str] = []
         duplicate_feedback = False
         if feedback or user_requirements:
@@ -540,8 +562,9 @@ class Service:
             job.transition("QA")
             checks = {op.args["input"]: r for op in ops if op.skill == "delivery_check" for r in result.results if r.op_id == op.id}
             qc_results = {op.args["input"]: r for op in ops if op.skill == "qc_check" for r in result.results if r.op_id == op.id}   # the QC gate's reports, per artifact (ADR-032)
-            qa_tools = self.tools_for(adapter)
-            self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter)
+            qa_reqs = ((ir.doc.get("request") or {}).get("args") or {}).get("requirements")
+            qa_tools = self.tools_for(adapter, qa_reqs)
+            self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter, qa_reqs)
             qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results)
             out["qa"] = qa.to_dict()
             try:
@@ -961,7 +984,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
