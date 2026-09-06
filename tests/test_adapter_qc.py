@@ -77,8 +77,9 @@ class QcAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
         self.assertEqual(ad.version, "0.1.0"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
-        self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 10)
-        self.assertEqual(sorted(ad.rules), ["audio", "delivery", "subtitle", "video"]); self.assertTrue(ad.owns_cache)
+        self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery", "delivery_package"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 12)
+        self.assertEqual(sorted(ad.rules), ["audio", "delivery", "delivery_package", "delivery_package_artifact", "delivery_package_cross_artifact", "delivery_package_dependency",
+                                            "delivery_package_duration_consistency", "subtitle", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video"]); self.assertTrue(ad.owns_cache)
         self.assertIn("qc/check", ad.describe()["tools"]); self.assertEqual(ad.describe()["drift"], [])
         pk = ad.package()
         self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "0.1.0", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
