@@ -5681,3 +5681,67 @@ class LocateAuthoritativeOverrideTests(unittest.TestCase):
         from video_agent.tools.media_analysis.locate import locate_media_analysis
         self._checkout("media-analysis-skill", "media_analysis")
         self.assertIsNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": "/nonexistent"}))
+
+
+class UnrecognizedFinishingKeyTests(unittest.TestCase):
+    """ADR-042: a key that matches one of edit./audio./subtitle/thumbnail/color./motion./qc but is not one its parser
+    actually reads used to be silently ignored -- no decision, no error, the feature just never happened. `_check_edit_
+    requirements` now refuses it by name instead. This must never falsely reject a real key: the two vocabularies (a
+    domain switch read via the Requirement map, and a policy default read via resolve_setting()/rules -- <subject>.
+    approval, thumbnail.at_ratio, qc.warn.promotion, subtitle.format's own default, the motion element start/duration
+    defaults) were traced exhaustively across agent/decision.py, agent/decision_finishing.py, agent/requirements.py and
+    every agent/*.py vocabulary module, not just guessed from each domain's own REQUIREMENT_KEYS constant."""
+
+    def _check(self, **kv):
+        from video_agent.service import _check_edit_requirements
+        _check_edit_requirements(kv)
+
+    def test_a_plausible_but_wrong_switch_name_is_refused_by_name(self):
+        with self.assertRaises(ValueError) as cm:
+            self._check(**{"subtitle.generate": True})
+        self.assertIn("subtitle.generate", str(cm.exception))
+        for bad in ("thumbnail.render", "qc.check", "color.hdr_to_sdr", "audio.mono", "audio.stereo", "audio.downmix", "audio.cut", "audio.loudness",
+                    "edit.trim_leading", "motion.text_overlay"):
+            with self.assertRaises(ValueError, msg=bad):
+                self._check(**{bad: True})
+
+    def test_every_domain_switch_key_is_accepted(self):
+        self._check(**{"edit.concat": True, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.5, "edit.concat.width": 640,
+                       "edit.concat.height": 360, "edit.concat.fps": 30, "edit.concat.mode": "pad", "edit.concat.pad_color": "black"})
+        self._check(**{"edit.speed": 2.0})
+        self._check(**{"edit.resize": 640, "edit.resize.fps": 30})
+        self._check(**{"edit.fit": "16:9", "edit.fit.width": 640, "edit.fit.pad_color": "black", "edit.fit.fps": 30})
+        self._check(**{"edit.fill": "1:1", "edit.fill.width": 640, "edit.fill.fps": 30})
+        self._check(**{"edit.trim_leading_silence": True, "edit.trim_trailing_silence": True, "edit.precision": "frame"})
+        self._check(**{"audio.production": True, "audio.extract": True, "audio.gain": 3, "audio.fade_in": 1, "audio.fade_out": 1,
+                       "audio.channels": "mono", "audio.concat": True, "audio.concat.crossfade": 0.5, "audio.sample_rate": 48000})
+        self._check(**{"audio.normalize": True, "audio.loudness.target_lufs": -16, "audio.loudness.true_peak": -1.0})
+        self._check(**{"subtitle": True, "subtitle.format": "srt", "subtitle.burn_in": True, "subtitle.max_chars_per_line": 40, "subtitle.max_lines": 2})
+        self._check(**{"color.target": "bt709", "color.sdr": True, "color.strip_dovi": True,
+                       "color.exposure": 0.5, "color.contrast": 1.0, "color.saturation": 1.0, "color.temperature": 6500, "color.tint": 0.0})
+        tmp = tempfile.mkdtemp()
+        cube = str(Path(tmp) / "x.cube"); Path(cube).write_text("")
+        self._check(**{"color.lut": cube, "color.lut.strength": 0.5})
+        self._check(**{"motion.title": "hi", "motion.title.subtitle": "sub", "motion.title.start": 1, "motion.title.end": 5})
+        self._check(**{"motion.lower_third": "name", "motion.lower_third.title": "title", "motion.lower_third.start": 1, "motion.lower_third.end": 5})
+        self._check(**{"motion.text": "hi", "motion.text.position": "top", "motion.text.start": 1, "motion.text.end": 5, "motion.text.fade": 0.5})
+        png = str(Path(tmp) / "x.png"); Path(png).write_bytes(b"\x89PNG\r\n\x1a\n")
+        self._check(**{"motion.image": png, "motion.image.position": "top", "motion.image.start": 1, "motion.image.end": 5, "motion.image.fade": 0.5, "motion.image.scale_percent": 50})
+        self._check(**{"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "hi", "thumbnail.format": "png", "thumbnail.font_size": 24, "thumbnail.position": "top"})
+        self._check(**{"qc": True})
+
+    def test_every_policy_default_key_is_accepted(self):
+        """These are read via resolve_setting()/rules, never the Requirement map -- unlike a switch key, an unrecognised
+        one there just falls back to the default (a deliberately different, more tolerant failure mode), so they must
+        stay accepted here even though no domain parser ever calls m.get() on them."""
+        self._check(**{"audio.gain.approval": "CONFIRM", "audio.channels.approval": "CONFIRM", "audio.extract.approval": "CONFIRM",
+                       "audio.fade_in.approval": "CONFIRM", "audio.fade_out.approval": "CONFIRM", "audio.concat.approval": "CONFIRM", "audio.loudness.approval": "AUTO"})
+        self._check(**{"subtitle.generate.approval": "CONFIRM", "subtitle.burn_in.approval": "CONFIRM", "thumbnail.render.approval": "CONFIRM", "qc.check.approval": "AUTO"})
+        self._check(**{"color.strip_dovi.approval": "CONFIRM", "color.hdr_to_sdr.approval": "CONFIRM", "color.primary_correction.approval": "CONFIRM",
+                       "color.lut.approval": "CONFIRM", "color.retag.approval": "CONFIRM"})
+        self._check(**{"audio.loudness.tolerance_lu": 2.0, "thumbnail.at_ratio": 0.5, "qc.warn.promotion": "block"})
+        # motion.title.start / motion.lower_third.start double as category-1 refinement keys of their own switch (tested
+        # in test_every_domain_switch_key_is_accepted with the switch set) -- only text_overlay/image_overlay's default
+        # keys never collide with a category-1 name (motion.text.*/motion.image.* are the real switch keys), so only
+        # those two are meaningful to check standalone here.
+        self._check(**{"motion.text_overlay.start": 1, "motion.text_overlay.duration": 5, "motion.image_overlay.start": 1, "motion.image_overlay.duration": 5})

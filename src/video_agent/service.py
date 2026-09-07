@@ -13,6 +13,7 @@ from .agent.ai_reasoning import AIReasoner, build_request, to_inferences
 from .agent.decision_engine import basis_rows
 from .agent.production_plan import plan_status
 from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
+from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -50,10 +51,15 @@ from .tools.motion_graphics import PACKAGE as MOTION_GRAPHICS_PACKAGE, MotionGra
 from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_report, locate_qc
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
-from .agent.finishing import parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
+from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
+from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
+from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
 from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, stage_for
+from .agent.audio import REQUIREMENT_KEYS as _AUDIO_REQUIREMENT_KEYS
 from .agent.audio import parse_audio_requirements
+from .agent.decision import APPROVAL_KEYS as _DECISION_APPROVAL_KEYS
+from .agent.decision_finishing import APPROVAL_KEYS as _FINISHING_APPROVAL_KEYS
 from .tools.base import ToolError
 
 
@@ -996,13 +1002,53 @@ REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.",
 # turn on or off. Rejected explicitly rather than silently accepted-and-ignored, since silently accepting a
 # `--set` that looks like it disables a safety guarantee is worse than rejecting an unknown key.
 DEAD_REQUIREMENT_KEYS = {"delivery.preserve_source"}
+_FINISHING_PREFIXES = ("edit.", "audio.", "subtitle", "thumbnail", "color.", "motion.", "qc")
+# Two genuinely different key surfaces share these 7 prefixes, and only the first was ever validated:
+# (1) "switch" keys, read via `m.get()`/the Requirement map inside parse_edit_requirements() and its siblings below (plus
+#     a handful of pre-existing keys read directly in agent/decision.py, agent/intent.py and analysis_request() above --
+#     edit.trim_leading_silence / edit.trim_trailing_silence / edit.precision / audio.normalize /
+#     audio.loudness.target_lufs / audio.loudness.true_peak predate ADR-029/030's own REQUIREMENT_KEYS constants). An
+#     unrecognised key here is the severe failure: the whole feature silently never happens (found via real-data testing
+#     with `--set subtitle.generate=true` -- the real switch is bare `subtitle`; `subtitle.generate` only names the
+#     internal decision subject -- which produced no decision, no error and no subtitles, plan still APPROVED).
+# (2) "policy default" keys, read via `resolve_setting(rules, "<key>", default)` / `rules.get(...)`, sourced from
+#     `_request_rules()` below, which -- by design, and unlike this function -- accepts *any* key matching these 7
+#     prefixes with zero validation and just lets resolve_setting() fall back to its default on a miss. This covers
+#     every `<subject>.approval` key (decision.py / decision_finishing.py APPROVAL_KEYS' values, not their dict keys --
+#     those are internal decision subjects, e.g. "video.concat" or "subtitle.generate", never a requirement key
+#     themselves) plus thumbnail.at_ratio/qc.warn.promotion/subtitle.format's own default and the motion element
+#     start/duration defaults (keyed by the internal ELEMENT_TYPES name, e.g. "motion.text_overlay.start" -- distinct
+#     from the real user-facing "motion.text.start" switch key in MOTION_KEYS; a separate, minor naming inconsistency,
+#     not fixed here). This surface intentionally tolerates an unrecognised key (it just keeps the default), so it must
+#     never be rejected as unknown -- only enumerated here so it is not mistaken for (1) and rejected by mistake.
+_MOTION_DEFAULT_KEYS = {f"motion.{typ}.{field}" for typ in ELEMENT_TYPES for field in ("start", "duration")}
+_APPROVAL_REQUIREMENT_KEYS = {v[0] for v in list(_DECISION_APPROVAL_KEYS.values()) + list(_FINISHING_APPROVAL_KEYS.values()) if v[0].startswith(_FINISHING_PREFIXES)}
+_POLICY_DEFAULT_KEYS = {"audio.loudness.tolerance_lu", "thumbnail.at_ratio", WARN_PROMOTION_KEY} | _MOTION_DEFAULT_KEYS | _APPROVAL_REQUIREMENT_KEYS
+_FINISHING_REQUIREMENT_KEYS = frozenset(
+    {k for keys in _EDIT_REQUIREMENT_KEYS.values() for k in keys}
+    | {"edit.trim_leading_silence", "edit.trim_trailing_silence", "edit.precision"}
+    | set(_AUDIO_REQUIREMENT_KEYS)
+    | {"audio.normalize", "audio.loudness.target_lufs", "audio.loudness.true_peak"}
+    | set(_SUBTITLE_REQUIREMENT_KEYS)
+    | set(COLOR_KEYS)
+    | {k for keys in MOTION_KEYS.values() for k in keys}
+    | set(_THUMBNAIL_REQUIREMENT_KEYS)
+    | {"qc"}
+    | _POLICY_DEFAULT_KEYS
+)
 
 
 def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     """Explicit `edit.*` requirements are range-checked before any analysis runs (an invalid value is a planning error, not a
-    guess and not something a later stage corrects)."""
+    guess and not something a later stage corrects). A key matching one of these 7 namespaces but recognised by neither the
+    switch vocabulary nor the policy-default vocabulary above is refused here too -- silently doing nothing is worse than an
+    error naming the real keys (`docs/decisions.md` ADR-042)."""
     from .models import Requirement
-    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith(("edit.", "audio.", "subtitle", "thumbnail", "color.", "motion.", "qc"))]
+    keys = [k for k in user_requirements if k.startswith(_FINISHING_PREFIXES)]
+    unknown = sorted(k for k in keys if k not in _FINISHING_REQUIREMENT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown requirement key(s): {', '.join(unknown)} (matches a recognised namespace but is not a real key there)")
+    reqs = [Requirement(key=k, value=user_requirements[k], provenance="USER", source="cli") for k in keys]
     rm = requirement_map(reqs)
     parse_edit_requirements(rm)
     parse_audio_requirements(rm)
