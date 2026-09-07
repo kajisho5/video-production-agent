@@ -4453,6 +4453,7 @@ class VideoEditingOperationsTests(unittest.TestCase):
                          ({"edit.overlay": str(Path(self.tmp) / "missing.png")}, "not found"), ({"edit.overlay": self.png, "edit.overlay.opacity": 2}, "within"),
                          ({"edit.overlay": self.png, "edit.overlay.position": "somewhere"}, "one of"), ({"edit.overlay": self.png, "edit.overlay.start": 5, "edit.overlay.end": 2}, "before"),
                          ({"edit.concat": True, "edit.concat.mode": "stretch"}, "pad or crop"), ({"edit.concat": True, "edit.concat.transition_duration": 1}, "needs edit.concat.transition"),
+                         ({"edit.concat": True, "edit.concat.transition": "none"}, "one of"), ({"edit.concat": True, "edit.concat.transition": "xyzzy"}, "one of"),
                          ({"edit.concat": True, "edit.concat.pad_color": "rgb(0,0,0)"}, "colour"), ({"edit.resize.fps": 30}, "ambiguous"),
                          ({"edit.overlay": str(Path(self.tmp) / "src" / ".." / "src" / "logo.png")}, "traversal"), ({"edit.concat": "maybe"}, "true or false")):
             with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
