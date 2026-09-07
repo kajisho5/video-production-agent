@@ -1111,8 +1111,9 @@ class MultiSourceSyncRealTests(unittest.TestCase):
         self.assertEqual(len(sync), 1, an.warnings)
         o = sync[0]
         self.assertEqual((o.asset_id, o.data["reference_asset_id"], o.data["target_asset_id"], o.provenance), (ids[self.rec], ids[self.cam], ids[self.rec], "OBSERVED"))
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
         self.assertEqual(o.source.split("@")[0], "ffmpeg-skill/sync")
-        self.assertTrue(o.source.split("@")[1].startswith("0.9"), o.source)
+        self.assertEqual(o.source.split("@")[1], locate_ffmpeg_skill().version, o.source)   # the installed checkout's actual version, not a decided-string guess (ADR-041)
         self.assertAlmostEqual(o.data["offset_seconds"], -1.25, delta=0.05, msg=o.data)
         self.assertGreaterEqual(o.data["confidence"], 0.3, o.data)
         self.assertIn("earlier", o.data["meaning"])
