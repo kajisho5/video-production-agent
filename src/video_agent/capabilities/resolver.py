@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..agent.ingest import locate_yt_dlp
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
 from ..tools.transcription import TranscriptionAdapter, locate_transcription
@@ -82,6 +83,12 @@ class CapabilityResolver:
         caps["ffmpeg"] = Capability("ffmpeg", "AVAILABLE" if ver else "MISSING", (ver or "").splitlines()[0] if ver else "not on PATH", {"path": ffmpeg})
         pver = _run([ffprobe, "-version"]) if ffprobe else None
         caps["ffprobe"] = Capability("ffprobe", "AVAILABLE" if pver else "MISSING", (pver or "").splitlines()[0] if pver else "not on PATH", {"path": ffprobe})
+        # yt-dlp (URL ingestion, ADR pending / issue #50 Task 1): an external engine dependency exactly like ffmpeg
+        # itself -- a bare versioned binary, no Skill contract -- so it is optional here (never in cli.py's "hard"
+        # doctor list): a deployment that never points `plan`/`analyze` at a URL needs nothing from it.
+        yt = locate_yt_dlp(env=self.env)
+        caps["yt-dlp"] = Capability("yt-dlp", "AVAILABLE" if yt else "MISSING", yt.version if yt else f"not on PATH (set VIDEO_AGENT_YTDLP, or install yt-dlp)",
+                                    {"path": yt.command[0] if yt else None, "version": yt.version if yt else None})
         enc_txt = _run([ffmpeg, "-hide_banner", "-encoders"]) if ffmpeg else None
         dec_txt = _run([ffmpeg, "-hide_banner", "-decoders"]) if ffmpeg else None
         flt_txt = _run([ffmpeg, "-hide_banner", "-filters"]) if ffmpeg else None

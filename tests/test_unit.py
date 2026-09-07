@@ -11,7 +11,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_adapter import FakeAdapter  # noqa: E402
 from fake_ai_provider import FakeAIProvider, recommend_from_analysis  # noqa: E402
+from fake_yt_dlp import install as install_fake_yt_dlp  # noqa: E402
 
+from video_agent.agent.ingest import ENV_YTDLP, IngestError, IngestRecord, YtDlp, download_url, is_url, locate_yt_dlp, probe_url  # noqa: E402
 from video_agent.capabilities.resolver import Capability  # noqa: E402
 from video_agent.execution import CompileError, Executor, compile_ir  # noqa: E402
 from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
@@ -5938,3 +5940,237 @@ class UnrecognizedFinishingKeyTests(unittest.TestCase):
         # keys never collide with a category-1 name (motion.text.*/motion.image.* are the real switch keys), so only
         # those two are meaningful to check standalone here.
         self._check(**{"motion.text_overlay.start": 1, "motion.text_overlay.duration": 5, "motion.image_overlay.start": 1, "motion.image_overlay.duration": 5})
+
+
+class UrlIngestTests(unittest.TestCase):
+    """URL ingestion (issue #50 Task 1): URL detection, locating yt-dlp (an external engine dependency exactly like
+    ffmpeg -- PATH / an env var, never a Skill checkout), the live-vs-VOD branch from yt-dlp's own `--dump-json`
+    metadata (never guessed), and the OBSERVED provenance recorded for the download -- against a fake yt-dlp process
+    (tests/fake_yt_dlp.py) that speaks the real CLI surface (`--version`, `--dump-json`, a download ending in
+    `--print after_move:filepath`). No network access, no real yt-dlp needed."""
+
+    FAKE = str(Path(__file__).resolve().parent / "fake_yt_dlp.py")
+    CLEAR = ("FAKE_YTDLP_MODE", "FAKE_YTDLP_VERSION", "FAKE_YTDLP_CALLS")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._path = os.environ.get("PATH", "")
+        for k in self.CLEAR:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k in self.CLEAR:
+            os.environ.pop(k, None)
+        os.environ["PATH"] = self._path
+
+    def _yt_dlp(self, version: str = "2026.08.19-fake") -> YtDlp:
+        return YtDlp(command=[sys.executable, self.FAKE], version=version)
+
+    # ---- URL detection: scheme + host, never "doesn't exist as a local path"
+    def test_is_url_accepts_http_and_https_only(self):
+        for good in ("https://www.youtube.com/watch?v=abc123", "http://example.com/video.mp4", "https://youtu.be/abc"):
+            self.assertTrue(is_url(good), good)
+        for bad in ("/home/user/video.mp4", "video.mp4", "C:\\videos\\a.mp4", "ftp://example.com/a.mp4",
+                    "file:///tmp/a.mp4", "", "not a url at all", "www.youtube.com/watch?v=abc"):
+            self.assertFalse(is_url(bad), bad)
+
+    # ---- locate_yt_dlp: explicit -> VIDEO_AGENT_YTDLP -> PATH, and only a binary that actually runs counts
+    def test_locate_yt_dlp_explicit_overrides_env_and_path(self):
+        bin_dir = Path(self.tmp) / "bin"
+        exe = install_fake_yt_dlp(bin_dir)
+        found = locate_yt_dlp(explicit=exe, env={"PATH": ""})
+        self.assertIsNotNone(found)
+        self.assertEqual(found.command, [exe])
+        self.assertEqual(found.version, "2026.08.19")   # fake_yt_dlp.py's default FAKE_YTDLP_VERSION
+
+    def test_locate_yt_dlp_env_var_when_no_explicit(self):
+        exe = install_fake_yt_dlp(Path(self.tmp) / "bin")
+        found = locate_yt_dlp(env={ENV_YTDLP: exe, "PATH": ""})
+        self.assertEqual(found.command, [exe])
+
+    def test_locate_yt_dlp_falls_back_to_path(self):
+        bin_dir = Path(self.tmp) / "bin"
+        install_fake_yt_dlp(bin_dir)
+        found = locate_yt_dlp(env={"PATH": str(bin_dir)})
+        self.assertIsNotNone(found)
+        self.assertEqual(Path(found.command[0]).name, "yt-dlp")
+
+    def test_locate_yt_dlp_missing_is_none(self):
+        self.assertIsNone(locate_yt_dlp(env={"PATH": ""}))
+        self.assertIsNone(locate_yt_dlp("/nonexistent/yt-dlp", env={"PATH": ""}))
+
+    def test_locate_yt_dlp_rejects_a_name_that_does_not_actually_run(self):
+        bin_dir = Path(self.tmp) / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        broken = bin_dir / "yt-dlp"
+        broken.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n")
+        broken.chmod(0o755)   # on PATH, executable, but --version fails: a broken install is MISSING, never guessed at
+        self.assertIsNone(locate_yt_dlp(env={"PATH": str(bin_dir)}))
+
+    # ---- probe_url: is_live / was_live decide the branch, never guessed
+    def test_probe_url_reports_in_progress_live(self):
+        os.environ["FAKE_YTDLP_MODE"] = "live"
+        meta = probe_url("https://example.com/live", self._yt_dlp())
+        self.assertTrue(meta["is_live"])
+        self.assertFalse(meta["was_live"])
+        self.assertEqual(meta["id"], "vid0000001")
+
+    def test_probe_url_reports_ended_stream_as_vod(self):
+        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        meta = probe_url("https://example.com/ended", self._yt_dlp())
+        self.assertFalse(meta["is_live"])
+        self.assertTrue(meta["was_live"])
+        self.assertEqual(meta["duration"], 42.5)
+
+    def test_probe_url_failure_is_reported_not_swallowed(self):
+        os.environ["FAKE_YTDLP_MODE"] = "probe_fail"
+        with self.assertRaises(IngestError) as cm:
+            probe_url("https://example.com/x", self._yt_dlp())
+        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
+
+    def test_probe_url_invalid_json_is_reported(self):
+        os.environ["FAKE_YTDLP_MODE"] = "bad_json"
+        with self.assertRaises(IngestError) as cm:
+            probe_url("https://example.com/x", self._yt_dlp())
+        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
+
+    # ---- download_url: engine location, live-vs-VOD argv, output capture, hash, provenance
+    def test_download_url_ended_stream_downloads_as_plain_vod(self):
+        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        calls_log = str(Path(self.tmp) / "calls.log")
+        os.environ["FAKE_YTDLP_CALLS"] = calls_log
+        rec = download_url("https://example.com/ended", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertFalse(rec.is_live)
+        self.assertTrue(rec.was_live)
+        self.assertFalse(rec.live_from_start)
+        self.assertEqual(rec.video_id, "vid0000001")
+        self.assertEqual(rec.source_url, "https://example.com/ended")
+        self.assertTrue(Path(rec.path).is_file())
+        self.assertTrue(Path(rec.path).resolve().is_relative_to(Path(self.tmp).resolve()), "download must land inside the workspace")
+        import hashlib
+        self.assertEqual(rec.sha256, hashlib.sha256(Path(rec.path).read_bytes()).hexdigest())
+        # no invocation (probe or download) ever passed --live-from-start for an ended stream
+        calls = [json.loads(ln) for ln in Path(calls_log).read_text().splitlines()]
+        self.assertTrue(any("-o" in c for c in calls), "the download invocation was made")
+        self.assertFalse(any("--live-from-start" in c for c in calls))
+
+    def test_download_url_in_progress_live_uses_live_from_start(self):
+        os.environ["FAKE_YTDLP_MODE"] = "live"
+        calls_log = str(Path(self.tmp) / "calls.log")
+        os.environ["FAKE_YTDLP_CALLS"] = calls_log
+        rec = download_url("https://example.com/live", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertTrue(rec.is_live)
+        self.assertTrue(rec.live_from_start)
+        calls = [json.loads(ln) for ln in Path(calls_log).read_text().splitlines()]
+        download_call = next(c for c in calls if "-o" in c)
+        self.assertIn("--live-from-start", download_call)
+
+    def test_download_url_lands_under_workspace_downloads(self):
+        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        rec = download_url("https://example.com/ended", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertEqual(Path(rec.path).parent, Path(self.tmp).resolve() / "downloads")
+
+    def test_download_url_engine_missing(self):
+        with self.assertRaises(IngestError) as cm:
+            download_url("https://example.com/x", self.tmp, env={"PATH": ""})
+        self.assertEqual(cm.exception.kind, "ENGINE_MISSING")
+
+    def test_download_url_failure_is_reported(self):
+        os.environ["FAKE_YTDLP_MODE"] = "download_fail"
+        with self.assertRaises(IngestError) as cm:
+            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertEqual(cm.exception.kind, "DOWNLOAD_FAILED")
+        self.assertIn("sign in", str(cm.exception).lower())
+
+    def test_download_url_no_output_is_invalid_not_silently_ignored(self):
+        os.environ["FAKE_YTDLP_MODE"] = "no_output"
+        with self.assertRaises(IngestError) as cm:
+            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertEqual(cm.exception.kind, "INVALID_OUTPUT")
+
+    def test_probe_failure_during_download_surfaces_before_any_download_attempt(self):
+        os.environ["FAKE_YTDLP_MODE"] = "probe_fail"
+        with self.assertRaises(IngestError) as cm:
+            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
+
+    def test_missing_video_id_is_reported(self):
+        os.environ["FAKE_YTDLP_MODE"] = "no_id"
+        with self.assertRaises(IngestError) as cm:
+            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
+        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
+
+    # ---- doctor: yt-dlp reported the same way ffmpeg / ffprobe are, but never in the hard "must be present" list
+    def test_doctor_reports_yt_dlp_available(self):
+        from video_agent.capabilities.resolver import CapabilityResolver
+        bin_dir = Path(self.tmp) / "bin"
+        install_fake_yt_dlp(bin_dir)
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": str(bin_dir)}).resolve()["yt-dlp"]
+        self.assertEqual(cap.status, "AVAILABLE")
+        self.assertEqual(cap.evidence["version"], "2026.08.19")
+
+    def test_doctor_reports_yt_dlp_missing(self):
+        from video_agent.capabilities.resolver import CapabilityResolver
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}).resolve()["yt-dlp"]
+        self.assertEqual(cap.status, "MISSING")
+
+    def test_doctor_never_hard_requires_yt_dlp(self):
+        """`video-agent doctor`'s exit code must stay 0 without yt-dlp: a deployment that never points `plan`/
+        `analyze` at a URL needs nothing from it (cli.py's cmd_doctor hard list)."""
+        import argparse
+        from video_agent.cli import cmd_doctor
+        svc = make_service(self.tmp, adapter=FakeAdapter(), caps=FakeCaps(missing=["yt-dlp"], extra=["yt-dlp"]))
+        self.assertEqual(cmd_doctor(argparse.Namespace(json=False), svc), 0)
+
+    # ---- IngestRecord -> Observation: same discipline as every other measurement
+    def test_ingest_record_becomes_an_observed_observation(self):
+        rec = IngestRecord(source_url="https://example.com/x", resolved_url="https://example.com/x?really=yes",
+                           video_id="vid0000001", title="a title", path="/ws/downloads/vid0000001.mp4",
+                           sha256="a" * 64, yt_dlp_version="2026.08.19", is_live=False, was_live=True,
+                           live_from_start=False, duration=42.5)
+        obs = rec.observation("asset_123")
+        self.assertEqual(obs.kind, "ingest")
+        self.assertEqual(obs.asset_id, "asset_123")
+        self.assertEqual(obs.provenance, "OBSERVED")
+        self.assertEqual(obs.source, "yt-dlp/download@2026.08.19")
+        self.assertEqual(obs.skill, "yt-dlp")
+        self.assertEqual(obs.skill_version, "2026.08.19")
+        self.assertEqual(obs.tool, "yt-dlp/download")
+        self.assertEqual(obs.external_id, "vid0000001")
+        self.assertEqual(obs.fingerprint, "a" * 64)
+        self.assertEqual(obs.data["source_url"], "https://example.com/x")
+        self.assertEqual(obs.data["was_live"], True)
+        # the project validator's own rule for every observation (project/validator.py): a tool source with '@', OBSERVED
+        self.assertIn("@", obs.source)
+        self.assertFalse(obs.source.startswith("ai"))
+
+    # ---- Service integration: the downloaded local file flows through the exact same pipeline as any local input
+    def test_service_analyze_attaches_ingest_observation_to_the_downloaded_asset(self):
+        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        ws = Path(self.tmp) / "ws"
+        rec = download_url("https://example.com/ended", str(ws), yt_dlp=self._yt_dlp())
+        svc = make_service(str(ws), adapter=FakeAdapter())
+        profile, rules, analysis = svc.analyze([rec.path], "generic", hash_sources=False, ingest_records={rec.path: rec})
+        asset = next(a for a in analysis.assets if str(Path(a.path).resolve()) == str(Path(rec.path).resolve()))
+        ingest_obs = [o for o in analysis.observations if o.kind == "ingest"]
+        self.assertEqual(len(ingest_obs), 1)
+        self.assertEqual(ingest_obs[0].asset_id, asset.id)
+        self.assertEqual(ingest_obs[0].data["video_id"], "vid0000001")
+        # unrecognised by name: nothing downstream special-cases "this asset came from a URL"
+        self.assertEqual(asset.provenance, "USER")
+
+    def test_cli_resolve_url_inputs_rewrites_in_place_and_returns_provenance(self):
+        """cli.py's own entry point (not agent/ingest.py directly): a URL and a local path in the same `plan`/
+        `analyze` call, resolved via the real yt-dlp lookup (PATH), against the fake process end to end."""
+        from video_agent.cli import _resolve_url_inputs
+        install_fake_yt_dlp(Path(self.tmp) / "bin")
+        os.environ["PATH"] = str(Path(self.tmp) / "bin") + os.pathsep + os.environ.get("PATH", "")
+        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        local_file = str(Path(self.tmp) / "local.mp4")
+        Path(local_file).write_bytes(b"\x00")
+        inputs = ["https://example.com/ended", local_file]
+        records = _resolve_url_inputs(inputs, self.tmp)
+        self.assertEqual(inputs[0], str(Path(self.tmp).resolve() / "downloads" / "vid0000001.mp4"))
+        self.assertEqual(inputs[1], local_file, "a local path is left untouched")
+        self.assertEqual(set(records), {inputs[0]})
+        self.assertEqual(records[inputs[0]].source_url, "https://example.com/ended")
