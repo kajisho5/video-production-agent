@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__
+from .agent.ingest import IngestRecord, is_url, download_url
 from .capabilities import CapabilityResolver
 from .project import load_ir, save_ir
 from .service import Service
@@ -33,6 +34,20 @@ def _kv(pairs: Optional[List[str]]) -> Dict[str, Any]:
         except ValueError:
             out[k] = v
     return out
+
+
+def _resolve_url_inputs(inputs: List[str], workspace: str) -> Dict[str, IngestRecord]:
+    """Rewrite any URL in `inputs` into a locally downloaded file, in place, before analysis ever sees it (issue #50
+    Task 1): everything past this point -- svc.analyze/plan, the naming below that reads args.inputs[0] -- deals
+    only with local files, exactly like any other input. Returns the download provenance keyed by the resolved
+    local path, threaded into svc.analyze/plan so it is recorded as an OBSERVED Observation on the right asset."""
+    records: Dict[str, IngestRecord] = {}
+    for i, raw in enumerate(inputs):
+        if is_url(raw):
+            record = download_url(raw, workspace)
+            inputs[i] = record.path
+            records[record.path] = record
+    return records
 
 
 def cmd_doctor(args, svc: Service) -> int:
@@ -92,7 +107,9 @@ def cmd_transcribe(args, svc: Service) -> int:
 
 
 def cmd_analyze(args, svc: Service) -> int:
-    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds)
+    ingest = _resolve_url_inputs(args.inputs, svc.workspace)
+    profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds,
+                                           ingest_records=ingest)
     doc = analysis.to_dict()
     if args.json:
         _print(doc, True)
@@ -143,8 +160,10 @@ def _print_analysis(analysis) -> int:
 
 
 def cmd_plan(args, svc: Service) -> int:
+    ingest = _resolve_url_inputs(args.inputs, svc.workspace)
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
-                  strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None})
+                  strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
+                  ingest_records=ingest)
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
         out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")

@@ -14,6 +14,7 @@ from .agent.decision_engine import basis_rows
 from .agent.production_plan import plan_status
 from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
+from .agent.ingest import IngestRecord
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -209,9 +210,12 @@ class Service:
     # ---- lifecycle
     def analyze(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None, hash_sources: bool = True,
                 strategy: Optional[str] = None, cache_policy: Optional[str] = None, use_cache: bool = True, kinds: Optional[List[str]] = None,
-                params: Optional[Dict[str, Any]] = None, allowed_inputs: Optional[List[str]] = None):
+                params: Optional[Dict[str, Any]] = None, allowed_inputs: Optional[List[str]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None):
         """params: typed per-kind parameters (e.g. transcript: language / model / offline) merged into the AnalysisRequest;
-        allowed_inputs: input roots for the measurement Skills' path policy (default: the inputs' own directories)."""
+        allowed_inputs: input roots for the measurement Skills' path policy (default: the inputs' own directories);
+        ingest_records: provenance for any input the caller downloaded from a URL (cli.py's `_resolve_url_inputs`,
+        issue #50 Task 1), keyed by the resolved local path -- recorded as an OBSERVED Observation on that asset,
+        never treated differently by anything below this point."""
         profile = load_profile(profile_name)
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(user_requirements or {}))
         adapter = self.adapter(list(allowed_inputs) if allowed_inputs else [str(Path(p).resolve().parent) for p in inputs])
@@ -221,6 +225,12 @@ class Service:
         analyzer = MediaAnalyzer(adapter, tools=tools, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), hash_sources=hash_sources,
                                  cache_dir=self.workspace if use_cache else None)
         analysis = analyzer.run(req)
+        if ingest_records:
+            by_path = {str(Path(a.path).resolve()): a for a in analysis.assets}
+            for local_path, record in ingest_records.items():
+                asset = by_path.get(str(Path(local_path).resolve()))
+                if asset:
+                    analysis.observations.append(record.observation(asset.id))
         return profile, rules, analysis
 
     def analysis_request(self, inputs: List[str], rules, request_text: str, user_requirements, profile, hash_sources: bool = True,
@@ -242,7 +252,7 @@ class Service:
 
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
-             kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None) -> ProjectIR:
+             kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None) -> ProjectIR:
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
         if bad:
             raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
@@ -250,7 +260,8 @@ class Service:
         self._check_provider_requirements(user_requirements or {})
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
-        profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params)
+        profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
+                                                ingest_records=ingest_records)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         self._ai_calls = []
