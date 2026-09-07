@@ -43,7 +43,10 @@ CONTRACT_SCHEMA = "video-editing/contract@1"
 REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"
 DOCTOR_SCHEMA = "video-editing/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)          # 0.1.x: the contract this adapter was verified against
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")   # 0.2.0 (video-editing-skill PR #8): FILL.anchor (not yet lowered
+                                               # here -- a real follow-up, not implemented by this widening alone)
+                                               # and outputs[].encoding named directly in request_shape (already
+                                               # accepted since 0.1.0, no lowering change needed)
 ENGINE_ID = "ffmpeg-skill"
 # the Skill's error vocabulary (contract errors.codes) and the agent's reading of each: (retryable by default, recovery class)
 ERROR_CODES: Dict[str, str] = {
@@ -166,7 +169,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic video editing (typed operations, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
