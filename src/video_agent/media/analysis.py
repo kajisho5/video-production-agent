@@ -41,7 +41,13 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # speech recognition (transcription-skill, ADR-024): a Transcript is a recognition fact; parameters are the Skill's own typed request keys
     "transcript": {"skill": "speech_transcription", "needs_audio": True,
                    "params": ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline", "timeout", "max_audio_seconds")},
+    # multi-source sync (ADR-035): the time offset (and clock drift) of every other input relative to the FIRST input, measured by
+    # the registry-selected sync tool (audio cross-correlation in the Skill). Pairwise: one observation per (reference, target); the agent never correlates itself.
+    # `max_offset` / `analyze_seconds` / `fix_drift` go to the tool; `min_confidence` is the agent's gate for applying the result to the TimelineMap
+    "sync": {"skill": "sync_analysis", "needs_audio": True, "params": ("max_offset", "analyze_seconds", "fix_drift", "min_confidence"), "pairwise": True},
 }
+SYNC_TOOL_PARAMS = ("max_offset", "analyze_seconds", "fix_drift")   # the only sync parameters forwarded to the tool (never replace_audio / trim_second / output)
+SYNC_MIN_CONFIDENCE_DEFAULT = 0.3   # below this the offset is recorded but not applied to the TimelineMap (the sync Skill's own benchmark flags misses at < 0.3)
 CORE_KINDS = ("media_probe", "silence", "loudness")   # what FULL runs by default; other kinds are requested explicitly
 STRATEGIES = ("FULL", "TARGETED", "CACHED_ONLY")
 # names recorded in the Project IR (schema enum) ↔ request strategy
@@ -170,6 +176,19 @@ def probe_facts(probe: Dict[str, Any]) -> Dict[str, Any]:
         return {"format": c.get("format"), "duration": c.get("duration"), "size_bytes": c.get("size"), "bitrate": c.get("bitrate"),
                 "video": probe.get("video"), "audio": probe.get("audio"), "subtitle_streams": probe.get("subtitle_streams", 0)}
     return {k: probe.get(k) for k in ("format", "duration", "size_bytes", "bitrate", "video", "audio", "subtitle_streams")}
+
+
+def sync_facts(data: Dict[str, Any]) -> Dict[str, Any]:
+    """One vocabulary for a sync fact as the sync tool reports it. Offset sign is the tool's: a positive `offset_seconds`
+    means the TARGET (the tool's `second`) starts LATER than the REFERENCE. `drift_ratio` is the tool's clock ratio of the target
+    relative to the reference (> 1 = the target runs long / slow), derived only from the reported `drift_ppm` (ratio = 1 + ppm / 1e6:
+    the same quantity in the unit the TimelineMap uses), or 1.0 when the tool measured no drift."""
+    d = data or {}
+    drift = d.get("drift") if isinstance(d.get("drift"), dict) else None
+    ppm = _num((drift or {}).get("drift_ppm"))
+    return {"reference_asset_id": d.get("reference_asset_id"), "target_asset_id": d.get("target_asset_id"), "offset_seconds": _num(d.get("offset_seconds")),
+            "confidence": _num(d.get("confidence")), "drift_ppm": ppm, "drift_ratio": (1.0 + ppm / 1e6) if ppm is not None else 1.0,
+            "drift_confidence": _num((drift or {}).get("confidence")) if drift else None, "applied_to_timeline": bool(d.get("applied_to_timeline"))}
 
 
 def targeted_kinds(requirements: Iterable[Any]) -> List[str]:

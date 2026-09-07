@@ -352,3 +352,13 @@ CI: video-editing-skill は PR #1 branch（claude/video-editing-skill-sd9vgt）�
 - 検証: unit `RevisionIntegrityTests`（7）/ `AudioConcatBasisTests`（2）、integration `test_approve_revise_approve_render_real_media`（実 ffmpeg: APPROVED v1 → revise → APPROVED v2 → render → QA PASS → artifact）。
 - 残 P1: speaker → camera switching（§22）。残 P2: なし（既知分は本節で解消）。
 
+## 25. Multi-source sync observation（ADR-035、2026-09-05 追記）
+
+| Gap | 旧実装 | 修正 |
+|---|---|---|
+| G99 TimelineMap offset を書く経路が無い（§16） | `add_timeline(asset.id)` 既定値のみ | analysis kind `sync` → `sync_analysis`（ffmpeg-skill/sync）→ Observation(kind=sync) → 信頼度ゲート付きで TimelineMap offset / drift_ratio |
+| G100 ffmpeg-skill/sync が catalog にあるのに未使用 | `multi_source_sync`（phase 2 宣言のみ） | measurement skill `sync_analysis` を実装。production 側（切替）は引き続き宣言のみ |
+
+- 検証: unit `SyncObservationTests`（7）、integration `MultiSourceSyncRealTests`（実 ffmpeg-skill 0.9.1: 既知 +1.25 s の 2 ソース → 測定 → Observation → TimelineMap → save/load → 順序反転で符号反転）。
+- 残: speaker → camera switching（§22）は未着手。sync は測定のみで Decision を生成しない。
+

@@ -1,6 +1,7 @@
 """FakeAdapter: canned ffmpeg-skill responses so unit tests run without ffmpeg."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -109,6 +110,25 @@ class FakeAdapter(ToolAdapter):
             rows = [{"check": "duration", "status": "PASS", "value": f"{in_dur}s", "expected": "any", "fix": "", "kind": "judgement"},
                     {"check": "video codec", "status": "PASS", "value": "h264", "expected": "h264", "fix": "", "kind": "format"}]
             return ToolResult(op.id, op.tool, True, 0, None, {"platform": op.args["platform"], "checks": rows, "failed": 0, "warnings": 0, "ok": True}, [], "", 0.1, attempt, dry_run)
+        if script == "sync":
+            # a fake measurement (tests only): reference / second are positional paths; replace_audio / trim_second / output must never be sent for a measurement
+            assert "replace_audio" not in op.args and "trim_second" not in op.args and "output" not in op.args, op.args
+            mode = os.environ.get("FAKE_SYNC_MODE", "")
+            if mode == "no_audio":
+                return ToolResult(op.id, op.tool, False, 1, None, {"status": "failed", "error": {"kind": "input", "message": f"{op.args['second']} has no audio stream to correlate"}}, [], f"error: {op.args['second']} has no audio stream to correlate", 0.1, attempt, dry_run)
+            if mode == "short":
+                return ToolResult(op.id, op.tool, False, 1, None, {"status": "failed", "error": {"kind": "input", "message": "not enough audio to analyse"}}, [], "error: not enough audio to analyse", 0.1, attempt, dry_run)
+            if mode == "malformed":
+                return ToolResult(op.id, op.tool, True, 0, None, {"status": "completed", "output": None, "dry_run": False, "commands": []}, [], "", 0.1, attempt, dry_run)
+            second = _read_fake(op.args["second"]) or {}
+            offset = float(second.get("sync_offset", 1.25))
+            conf = float(second.get("sync_confidence", 0.91))
+            doc = {"status": "completed", "output": None, "dry_run": False, "commands": ["ffmpeg -i ref -f s16le ...", "ffmpeg -i second -f s16le ..."], "reference": op.args["reference"], "second": op.args["second"],
+                   "offset_seconds": round(offset, 4), "confidence": round(conf, 3), "meaning": "second starts %.3fs %s than reference" % (abs(offset), "later" if offset > 0 else "earlier")}
+            if op.args.get("fix_drift") and second.get("sync_drift_ppm") is not None:
+                ppm = float(second["sync_drift_ppm"])
+                doc["drift"] = {"residual_at_end_seconds": round(ppm / 1e6 * 100, 4), "measured_over_seconds": 100.0, "drift_ppm": ppm, "meaning": "second file runs %.1f ppm long/slow" % ppm, "confidence": 0.8}
+            return ToolResult(op.id, op.tool, True, 0, None, doc, doc["commands"], "", 0.3, attempt, dry_run)
         if script == "look":
             if out and not dry_run:
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
