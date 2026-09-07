@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.1.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.2.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_VE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_VE_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
