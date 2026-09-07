@@ -35,6 +35,7 @@
   "video.aspect_ratio_matches_expected",
   "video.black_frames_within_tolerance",
   "video.freeze_frames_within_tolerance",
+  "video.luminance_within_legal_range",
   "audio.stream_present_matches_expected",
   "audio.decodes_without_errors",
   "audio.no_clipping",
@@ -59,11 +60,27 @@
   "subtitle.gaps_within_limit",
   "subtitle.duration_matches_video",
   "subtitle.coverage_within_limit",
+  "subtitle.timeline_mapping_matches_source",
   "delivery.file_size_within_limit",
   "delivery.extension_matches_expected",
-  "delivery.container_matches_expected"
+  "delivery.container_matches_expected",
+  "delivery_package.artifact_present",
+  "delivery_package.artifact_size_within_limit",
+  "delivery_package.artifact_extension_matches_expected",
+  "delivery_package.duration_consistent",
+  "delivery_package.dependency_satisfied"
  ],
  "contract_version": "1",
+ "delivery_package": {
+  "artifact_types": [
+   "audio",
+   "metadata",
+   "other",
+   "subtitle",
+   "thumbnail",
+   "video"
+  ]
+ },
  "description": "Deterministic media quality control / validation. Measures and checks video, audio, subtitle and delivery artifacts against caller-supplied rules; never decides whether media may ship.",
  "deterministic": true,
  "errors": {
@@ -165,6 +182,11 @@
   {
    "category": "video",
    "code": "VIDEO_FREEZE_EXCEEDED",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "video",
+   "code": "VIDEO_LUMINANCE_OUT_OF_RANGE",
    "default_severity": "FAIL"
   },
   {
@@ -298,6 +320,16 @@
    "default_severity": "WARN"
   },
   {
+   "category": "subtitle",
+   "code": "SUBTITLE_TIMELINE_CUE_COUNT_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "subtitle",
+   "code": "SUBTITLE_TIMELINE_MAPPING_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
    "category": "delivery",
    "code": "DELIVERY_FILE_TOO_SMALL",
    "default_severity": "FAIL"
@@ -310,6 +342,31 @@
   {
    "category": "delivery",
    "code": "DELIVERY_CONTAINER_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery_package",
+   "code": "DELIVERY_PACKAGE_ARTIFACT_MISSING",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery_package",
+   "code": "DELIVERY_PACKAGE_ARTIFACT_TOO_SMALL",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery_package",
+   "code": "DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery_package",
+   "code": "DELIVERY_PACKAGE_DURATION_MISMATCH",
+   "default_severity": "FAIL"
+  },
+  {
+   "category": "delivery_package",
+   "code": "DELIVERY_PACKAGE_DEPENDENCY_MISSING",
    "default_severity": "FAIL"
   }
  ],
@@ -342,7 +399,8 @@
   ]
  },
  "inputs": {
-  "input": "media or subtitle file path (one primary artifact per request)",
+  "artifacts": "list of {artifact_id, artifact_type, path} - N named artifacts validated together (kind=delivery_package only, required and non-empty for it)",
+  "input": "media or subtitle file path (one primary artifact per request; not accepted for kind=delivery_package)",
   "reference_video": "companion video file path, for duration comparison (kind=subtitle only)",
   "subtitle": "companion subtitle file path (kind=delivery only)"
  },
@@ -350,7 +408,8 @@
   "video",
   "audio",
   "subtitle",
-  "delivery"
+  "delivery",
+  "delivery_package"
  ],
  "measurements": {
   "audio": [
@@ -397,6 +456,7 @@
    "video.field_order",
    "video.black_segments",
    "video.freeze_segments",
+   "video.luminance_excursions",
    "video.decoded_frame_count",
    "video.decode_error_count",
    "video.decode_errors",
@@ -424,6 +484,74 @@
    "subtitle.exists",
    "subtitle.format",
    "subtitle.cue_count",
+   "subtitle.cues",
+   "subtitle.invalid_timestamps",
+   "subtitle.overlapping_cues",
+   "subtitle.empty_cues",
+   "subtitle.duplicate_ids",
+   "subtitle.invalid_control_characters",
+   "subtitle.duration_sec",
+   "subtitle.coverage_ratio",
+   "subtitle.duration_delta_sec",
+   "subtitle.cue_density_per_min",
+   "subtitle.excessive_line_length",
+   "subtitle.excessive_cue_duration",
+   "subtitle.gaps"
+  ],
+  "delivery_package": [
+   "delivery_package.artifact_present",
+   "delivery_package.artifact_size_bytes",
+   "delivery_package.artifact_extension",
+   "delivery_package.artifact_fingerprint",
+   "container.format_name",
+   "container.duration_sec",
+   "container.size_bytes",
+   "container.bit_rate",
+   "video.stream_present",
+   "video.stream_count",
+   "video.codec",
+   "video.width",
+   "video.height",
+   "video.aspect_ratio",
+   "video.frame_rate",
+   "video.frame_count",
+   "video.pixel_format",
+   "video.color_range",
+   "video.color_space",
+   "video.color_transfer",
+   "video.color_primaries",
+   "video.field_order",
+   "video.black_segments",
+   "video.freeze_segments",
+   "video.luminance_excursions",
+   "video.decoded_frame_count",
+   "video.decode_error_count",
+   "video.decode_errors",
+   "video.frame_count_delta",
+   "audio.stream_present",
+   "audio.stream_count",
+   "audio.codec",
+   "audio.sample_rate",
+   "audio.channels",
+   "audio.channel_layout",
+   "audio.duration_sec",
+   "audio.peak_level_dbfs",
+   "audio.rms_level_dbfs",
+   "audio.clipping_detected",
+   "audio.per_channel_levels",
+   "audio.integrated_loudness_lufs",
+   "audio.loudness_range_lu",
+   "audio.true_peak_dbfs",
+   "audio.silence_segments",
+   "audio.leading_silence_sec",
+   "audio.trailing_silence_sec",
+   "audio.internal_silence_segments",
+   "audio.decode_error_count",
+   "audio.decode_errors",
+   "subtitle.exists",
+   "subtitle.format",
+   "subtitle.cue_count",
+   "subtitle.cues",
    "subtitle.invalid_timestamps",
    "subtitle.overlapping_cues",
    "subtitle.empty_cues",
@@ -441,6 +569,7 @@
    "subtitle.exists",
    "subtitle.format",
    "subtitle.cue_count",
+   "subtitle.cues",
    "subtitle.invalid_timestamps",
    "subtitle.overlapping_cues",
    "subtitle.empty_cues",
@@ -475,6 +604,7 @@
    "video.field_order",
    "video.black_segments",
    "video.freeze_segments",
+   "video.luminance_excursions",
    "video.decoded_frame_count",
    "video.decode_error_count",
    "video.decode_errors",
@@ -507,6 +637,8 @@
   "clipping_threshold_dbfs",
   "freeze_min_duration_sec",
   "freeze_noise_db",
+  "luminance_legal_max",
+  "luminance_legal_min",
   "max_cue_duration_sec",
   "max_gap_sec",
   "max_line_length",
@@ -514,6 +646,113 @@
   "silence_threshold_db"
  ],
  "provenance": "OBSERVED",
+ "provides": [
+  {
+   "checks": [
+    "audio.channel_balance_within_tolerance",
+    "audio.channel_layout_matches_expected",
+    "audio.channels_match_expected"
+   ],
+   "id": "measure.audio.channel_layout",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "audio.loudness_range_within_tolerance",
+    "audio.no_clipping",
+    "audio.true_peak_within_tolerance"
+   ],
+   "id": "measure.audio.clipping_and_dynamics",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "audio.decodes_without_errors",
+    "audio.stream_present_matches_expected",
+    "video.decodes_without_errors",
+    "video.stream_present"
+   ],
+   "id": "measure.audio.integrity",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "audio.integrated_loudness_within_tolerance"
+   ],
+   "id": "measure.audio.loudness",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "audio.internal_silence_within_tolerance",
+    "audio.leading_silence_within_tolerance",
+    "audio.trailing_silence_within_tolerance"
+   ],
+   "id": "measure.audio.silence",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "delivery.container_matches_expected",
+    "delivery.extension_matches_expected",
+    "delivery.file_size_within_limit"
+   ],
+   "id": "measure.delivery.integrity",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "subtitle.coverage_within_limit",
+    "subtitle.cue_duration_within_limit",
+    "subtitle.duration_matches_video",
+    "subtitle.gaps_within_limit",
+    "subtitle.line_length_within_limit",
+    "subtitle.no_control_characters",
+    "subtitle.no_duplicate_ids",
+    "subtitle.no_empty_cues",
+    "subtitle.no_overlapping_cues",
+    "subtitle.presence_matches_expected",
+    "subtitle.timestamps_valid"
+   ],
+   "id": "measure.subtitle.timing",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "video.black_frames_within_tolerance"
+   ],
+   "id": "measure.video.black_frame",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "video.aspect_ratio_matches_expected",
+    "video.codec_matches_expected",
+    "video.frame_rate_matches_expected",
+    "video.pixel_format_matches_expected",
+    "video.resolution_matches_expected"
+   ],
+   "id": "measure.video.format",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  },
+  {
+   "checks": [
+    "video.freeze_frames_within_tolerance"
+   ],
+   "id": "measure.video.freeze",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "qc/run"
+  }
+ ],
  "role": "observation / validation",
  "rules": {
   "audio": {
@@ -611,6 +850,87 @@
     "type": "Optional[VideoRule]"
    }
   },
+  "delivery_package": {
+   "artifacts": {
+    "default": null,
+    "nested_rule": "delivery_package_artifact",
+    "type": "List[DeliveryArtifactRule]"
+   },
+   "cross_artifact": {
+    "default": null,
+    "nested_rule": "delivery_package_cross_artifact",
+    "type": "Optional[CrossArtifactRule]"
+   }
+  },
+  "delivery_package_artifact": {
+   "artifact_id": {
+    "default": null,
+    "type": "str"
+   },
+   "artifact_type": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "audio": {
+    "default": null,
+    "nested_rule": "audio",
+    "type": "Optional[AudioRule]"
+   },
+   "expected_extension": {
+    "default": null,
+    "type": "Optional[str]"
+   },
+   "min_size_bytes": {
+    "default": null,
+    "type": "Optional[int]"
+   },
+   "required": {
+    "default": true,
+    "type": "bool"
+   },
+   "subtitle": {
+    "default": null,
+    "nested_rule": "subtitle",
+    "type": "Optional[SubtitleRule]"
+   },
+   "video": {
+    "default": null,
+    "nested_rule": "video",
+    "type": "Optional[VideoRule]"
+   }
+  },
+  "delivery_package_cross_artifact": {
+   "dependencies": {
+    "default": null,
+    "nested_rule": "delivery_package_dependency",
+    "type": "List[ArtifactDependencyRule]"
+   },
+   "duration_consistency": {
+    "default": null,
+    "nested_rule": "delivery_package_duration_consistency",
+    "type": "List[ArtifactDurationConsistencyRule]"
+   }
+  },
+  "delivery_package_dependency": {
+   "artifact_id": {
+    "default": null,
+    "type": "str"
+   },
+   "requires_artifact_id": {
+    "default": null,
+    "type": "str"
+   }
+  },
+  "delivery_package_duration_consistency": {
+   "artifact_ids": {
+    "default": null,
+    "type": "List[str]"
+   },
+   "max_delta_sec": {
+    "default": null,
+    "type": "float"
+   }
+  },
   "subtitle": {
    "allow_duplicate_ids": {
     "default": false,
@@ -643,6 +963,55 @@
    "require_subtitle": {
     "default": null,
     "type": "Optional[bool]"
+   },
+   "timeline_integrity": {
+    "default": null,
+    "nested_rule": "timeline_integrity",
+    "type": "Optional[TimelineIntegrityRule]"
+   }
+  },
+  "timeline_integrity": {
+   "source_cues": {
+    "default": null,
+    "nested_rule": "timeline_source_cue",
+    "type": "List[SourceCue]"
+   },
+   "timeline": {
+    "default": null,
+    "nested_rule": "timeline_segment",
+    "type": "List[TimelineSegment]"
+   },
+   "tolerance_sec": {
+    "default": 0.1,
+    "type": "float"
+   }
+  },
+  "timeline_segment": {
+   "delivery_start": {
+    "default": null,
+    "type": "float"
+   },
+   "source_end": {
+    "default": null,
+    "type": "float"
+   },
+   "source_start": {
+    "default": null,
+    "type": "float"
+   },
+   "speed": {
+    "default": 1.0,
+    "type": "float"
+   }
+  },
+  "timeline_source_cue": {
+   "end": {
+    "default": null,
+    "type": "float"
+   },
+   "start": {
+    "default": null,
+    "type": "float"
    }
   },
   "video": {
@@ -686,11 +1055,19 @@
     "default": null,
     "type": "Optional[float]"
    },
+   "max_single_luminance_excursion_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
    "max_total_black_sec": {
     "default": null,
     "type": "Optional[float]"
    },
    "max_total_freeze_sec": {
+    "default": null,
+    "type": "Optional[float]"
+   },
+   "max_total_luminance_excursion_sec": {
     "default": null,
     "type": "Optional[float]"
    }

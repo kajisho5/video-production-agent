@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 SUPPORTED_MIN = (0, 8, 4)
-# 0.9.0 (2026-09-04): machine-readable contract / doctor added, `--json` results gain "status"; "no script changed its media
-# behaviour" (CHANGELOG). The full integration suite passes on 0.9.0, so 0.9.x is accepted; 0.10 is not verified.
-SUPPORTED_MAX_EXCLUSIVE = (0, 10, 0)
+# 0.10.0 (2026-09-06): per-tool `doctor --json` usable fields, `contract --json` reencodes_video/reencodes_audio,
+# join.py's audio-less multi-clip filtergraph-index fix, no other script changed its media behaviour (CHANGELOG).
+# The full real-Skill integration suite (tests/test_integration.py, all 9 Skills, no mocks) passes on 0.10.0, so
+# 0.9.x-0.10.x are accepted; 0.11 is not verified. Widening this needs a verified integration run, not a silent edit.
+SUPPORTED_MAX_EXCLUSIVE = (0, 11, 0)
 
 
 @dataclass
@@ -51,12 +53,15 @@ def _candidate(p: Path) -> Optional[FfmpegSkill]:
 
 def locate_ffmpeg_skill(explicit: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Optional[FfmpegSkill]:
     env = os.environ if env is None else env
-    cands: List[Path] = []
+    authoritative: List[Path] = []
     if explicit:
-        cands.append(Path(explicit))
+        authoritative.append(Path(explicit))
     if env.get("VIDEO_AGENT_FFMPEG_SKILL_DIR"):
-        cands.append(Path(env["VIDEO_AGENT_FFMPEG_SKILL_DIR"]))
-    cands += [Path.home() / ".claude" / "skills" / "ffmpeg-skill", Path.cwd() / "vendor" / "ffmpeg-skill", Path.cwd().parent / "ffmpeg-skill"]
+        authoritative.append(Path(env["VIDEO_AGENT_FFMPEG_SKILL_DIR"]))
+    # An explicit dir or the env var is the caller naming exactly where to look; if that candidate has no
+    # checkout there, that is the answer (MISSING), not a cue to go on guessing sibling directories that
+    # happen to exist here too -- a bad override must fail loudly, never resolve to some other checkout.
+    cands = authoritative or [Path.home() / ".claude" / "skills" / "ffmpeg-skill", Path.cwd() / "vendor" / "ffmpeg-skill", Path.cwd().parent / "ffmpeg-skill"]
     for c in cands:
         found = _candidate(c)
         if found:

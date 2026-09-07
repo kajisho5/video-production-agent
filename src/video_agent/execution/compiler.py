@@ -355,11 +355,19 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         tol = float((d["qa"].get("thresholds") or {}).get("loudness_tolerance_lu", 2.0))
         for t in d["delivery"]["targets"]:
             art_id = f"{subject}_delivery_{t['id']}"
-            if art_id not in paths or not t.get("preset"):
+            # a no-preset target is never platform-checked (no delivery_check op), and a processed or genuinely-
+            # untouched-but-audio-only subject has no dedicated delivery_export either (compiler.delivery() only
+            # aliases or, for audio-only, does nothing) — gate directly against the subject's own current media
+            # instead in those cases, same real bytes as the deliverable. A genuinely untouched subject with a
+            # video stream does get a real delivery_export (the stream-copy materialization above), so `art_id`
+            # is already in `paths` there and this picks it up automatically; `agent/planner.py`'s `qc_steps()`
+            # plans the matching step/tool selection for every one of these cases.
+            check_input = art_id if art_id in paths else subject
+            if paths.get(check_input) is None:
                 continue
             spec = rules_for_subject(row, t, d, tol) if row else {"kind": "delivery", "rules": {}}
             tool = tool_for(QC_SKILL, subject)
-            add(tool, lower_qc_check(tool, spec["kind"], art_id, spec["rules"]), [art_id], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
+            add(tool, lower_qc_check(tool, spec["kind"], check_input, spec["rules"]), [check_input], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
         for sc_id, srow in (qc.get("sidecars") or {}).items():
             if srow.get("subject") != subject or sc_id not in paths:
                 continue
@@ -378,9 +386,26 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 args = {"input": st["current"], "preset": t["preset"], "output": art_id}
                 add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
                 add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), st["fp"], kind="qa", skill="delivery_check")
-            elif st["current"] != subject:
-                # generic profile: the last processed intermediate is the deliverable (no re-encode)
+            elif st["current"] not in d["assets"]:
+                # generic profile: the last processed intermediate is the deliverable (no re-encode). Checking
+                # "not a raw source asset" rather than "!= subject" matters for a concat/audio_concat programme:
+                # its own subject id *is* the id of a real, already-produced (in-workspace) op output from the
+                # moment it's created, so `st["current"] != subject` never fires and this alias — and therefore
+                # the deliverable's own Artifact registration and QC gate — would never fire either, even though
+                # real work already produced it (unlike an untouched single source, whose subject id names the
+                # external, unregistrable original asset the whole way through).
                 paths[art_id] = paths[st["current"]]
+            elif (d["assets"][st["current"]].get("technical") or {}).get("video"):
+                # generic profile, genuinely untouched: st["current"] is still a raw source asset, which
+                # ArtifactStore.check_path() (ADR-022) refuses to register directly since it lives outside the
+                # workspace. Materialize it with a real stream copy (ffmpeg-skill export.py --preset copy) instead
+                # of aliasing the external path — same bytes, a real in-workspace file. Requires a video stream
+                # (export.py dies without one); `agent/planner.py`'s `delivery_steps()` plans the matching
+                # delivery_export step/tool selection for exactly this case, gated on the same condition.
+                ext = Path(paths[st["current"]]).suffix.lstrip(".").lower() or "mp4"
+                paths[art_id] = str(job / "artifacts" / f"{st['stem']}_{t['id']}.{ext}")
+                args = {"input": st["current"], "preset": "copy", "output": art_id}
+                add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
 
     for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
         paths[asset_id] = asset["path"]

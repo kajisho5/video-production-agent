@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.1.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.2.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_CG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_CG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -32,7 +32,7 @@ UNSUPPORTED = {u["type"] for u in CONTRACT["unsupported_operations"]}
 FORBIDDEN = set(CONTRACT["request"]["forbidden_fields"])
 ID_RE = re.compile(CONTRACT["request"]["id_pattern"])
 RESPONSE = "color-grading/response@1"
-TOOL_VERSIONS = {"ffmpeg-skill": "0.9.1-fake", "ffmpeg-skill_contract": "1.0", "ffmpeg": "fake", "ffprobe": "fake"}
+TOOL_VERSIONS = {"ffmpeg-skill": "0.9.2-fake", "ffmpeg-skill_contract": "1.0", "ffmpeg": "fake", "ffprobe": "fake"}
 
 
 def log(kind: str, argv) -> None:

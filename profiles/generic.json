@@ -13,6 +13,5 @@
     {"id": "generic.analysis.budget.time", "kind": "POLICY", "key": "analysis.budget.max_processing_time", "value": 600}
   ],
   "delivery": {"targets": [{"id": "main", "preset": null, "platform": "custom", "artifact_type": "MASTER"}]},
-  "naming": "{project}_{target}_{version}",
-  "semantic_deletion": "CONFIRM"
+  "naming": "{project}_{target}_{version}"
 }

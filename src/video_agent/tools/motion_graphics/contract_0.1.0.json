@@ -220,6 +220,127 @@
    ],
    "tool": "ffmpeg-skill/overlay",
    "type": "image_overlay"
+  },
+  {
+   "animation": "builtin_fade",
+   "description": "Persistent text bug in a corner (e.g. \"@handle\" or \"LIVE\"). Built-in 0.3s alpha fade in/out (ffmpeg-skill/graphics --template bug); not configurable per element.",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "position": {
+     "default": "top-right",
+     "enum": [
+      "top-left",
+      "top-right",
+      "bottom-left",
+      "bottom-right"
+     ],
+     "required": false,
+     "type": "string"
+    },
+    "text_color": {
+     "required": false,
+     "type": "color"
+    },
+    "title": {
+     "max_length": 200,
+     "required": true,
+     "type": "string"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:drawtext",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/graphics",
+   "type": "bug"
+  },
+  {
+   "animation": "builtin_fade",
+   "description": "Small chip in a corner (e.g. \"Part 2 -- Setup\"). Built-in 0.3s alpha fade in/out (ffmpeg-skill/graphics --template chapter); not configurable per element.",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "position": {
+     "default": "bottom-left",
+     "enum": [
+      "top-left",
+      "top-right",
+      "bottom-left",
+      "bottom-right"
+     ],
+     "required": false,
+     "type": "string"
+    },
+    "primary_color": {
+     "required": false,
+     "type": "color"
+    },
+    "title": {
+     "max_length": 200,
+     "required": true,
+     "type": "string"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:drawtext",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/graphics",
+   "type": "chapter"
+  },
+  {
+   "animation": "none",
+   "description": "Thin progress bar along the bottom of the frame that fills from empty to full over the element's own start/end window (ffmpeg-skill/graphics --template progress). No text, no position (always full-width along the bottom), and no fade -- it has none of its own to expose: the bar's fill is driven entirely by the element's timeline, not by an alpha.",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "primary_color": {
+     "required": false,
+     "type": "color"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:color",
+    "filter:drawbox",
+    "filter:overlay",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/graphics",
+   "type": "progress"
+  },
+  {
+   "animation": "builtin_pulse",
+   "description": "Big centered numbers counting down from count_from to 0, evenly spaced across the element's own start/end window, each with a brief built-in pulse (ffmpeg-skill/graphics --template countdown). No text, no position (always centered).",
+   "deterministic": "content_equivalent",
+   "parameters": {
+    "count_from": {
+     "default": 5,
+     "max": 60,
+     "min": 1,
+     "required": false,
+     "type": "integer"
+    },
+    "primary_color": {
+     "required": false,
+     "type": "color"
+    }
+   },
+   "required_capabilities": [
+    "ffmpeg-skill",
+    "ffmpeg",
+    "ffprobe",
+    "filter:drawtext",
+    "encoder:libx264"
+   ],
+   "tool": "ffmpeg-skill/graphics",
+   "type": "countdown"
   }
  ],
  "errors": {
@@ -435,6 +556,56 @@
    "output_hash"
   ]
  },
+ "provides": [
+  {
+   "element_type": "bug",
+   "id": "motion_graphics.bug",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "chapter",
+   "id": "motion_graphics.chapter",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "countdown",
+   "id": "motion_graphics.countdown",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "image_overlay",
+   "id": "motion_graphics.overlay",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "lower_third",
+   "id": "motion_graphics.lower_third",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "progress",
+   "id": "motion_graphics.progress",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "text_overlay",
+   "id": "motion_graphics.overlay",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  },
+  {
+   "element_type": "title",
+   "id": "motion_graphics.title_card",
+   "lifecycle": "EXPERIMENTAL",
+   "tool_id": "motion-graphics/run"
+  }
+ ],
  "repository": "https://github.com/kajisho5/motion-graphics-skill",
  "request": {
   "forbidden_fields": [
@@ -559,8 +730,12 @@
    "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, with fade animation) onto a video and write a validated artifact with provenance",
    "deterministic": true,
    "element_types": [
+    "bug",
+    "chapter",
+    "countdown",
     "image_overlay",
     "lower_third",
+    "progress",
     "text_overlay",
     "title"
    ],
@@ -613,26 +788,6 @@
    "reason": "no typed delegate tool draws an arbitrary shape (position/size/color) without a raw ffmpeg filter string; needs a typed shape tool in ffmpeg-skill first",
    "status": "not_implemented",
    "type": "shape"
-  },
-  {
-   "reason": "ffmpeg-skill/graphics supports this template, but it is outside this contract's first minimum (title, lower_third, text_overlay, image_overlay only)",
-   "status": "not_implemented",
-   "type": "chapter"
-  },
-  {
-   "reason": "same as chapter: template exists upstream, not exposed by this contract yet",
-   "status": "not_implemented",
-   "type": "bug"
-  },
-  {
-   "reason": "same as chapter: template exists upstream, not exposed by this contract yet",
-   "status": "not_implemented",
-   "type": "progress"
-  },
-  {
-   "reason": "same as chapter: template exists upstream, not exposed by this contract yet",
-   "status": "not_implemented",
-   "type": "countdown"
   }
  ],
  "version": "0.1.0",

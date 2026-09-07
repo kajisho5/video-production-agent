@@ -54,8 +54,12 @@ def _serves(intent: Intent, subject: str) -> Optional[str]:
 
 
 def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, inferences: List[Inference], rules: RuleSet,
-           caps: Dict[str, Capability], registry: SkillRegistry, tool_supports=None) -> List[Decision]:
-    """tool_supports: callable(tool id) -> bool from the tool router; when given, a skill whose tools no adapter supports is BLOCKED too."""
+           caps: Dict[str, Capability], registry: SkillRegistry, tool_supports=None,
+           explicit_providers: Optional[Dict[str, str]] = None, default_providers: Optional[Dict[str, str]] = None) -> List[Decision]:
+    """tool_supports: callable(tool id) -> bool from the tool router; when given, a skill whose tools no adapter supports is
+    BLOCKED too -- including one whose Providers collide and neither explicit_providers nor default_providers resolves it
+    (docs/CAPABILITY_MODEL.md's collision policy, Tier 3): the same per-skill choices `Service.tools_for()` used to build
+    the tools map this plan's steps cite, so a step's tool and its BLOCK/no-BLOCK gating never disagree."""
     m = requirement_map(reqs)
     known = DecisionEngine.evidence_index(analysis.observations, analysis.timeline.events, inferences, reqs, rules, ai_prefix=AI_KIND_PREFIX)
     eng = DecisionEngine(rules, intent, known, reqs)
@@ -81,7 +85,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             return eng.decide(subject=subject, type="BLOCK", decision=f"BLOCK: skill {skill} unavailable", reason=f"required capability missing: {', '.join(missing)}", confidence=1.0,
                               evidence=[f"capability:{x}" for x in missing], risk="HIGH", approval="BLOCK", provenance="SYSTEM", params={"skill": skill, "missing": missing})
         if tool_supports is not None:
-            tool, reason = registry.select_tool(skill, caps, tool_supports)
+            tool, reason = registry.select_tool(skill, caps, tool_supports, explicit=(explicit_providers or {}).get(skill), default=(default_providers or {}).get(skill))
             if tool is None:
                 return eng.decide(subject=subject, type="BLOCK", decision=f"BLOCK: skill {skill} has no executable tool", reason=reason, confidence=1.0,
                                   evidence=[f"skill:{skill}"], risk="HIGH", approval="BLOCK", provenance="SYSTEM", params={"skill": skill, "missing": []})
@@ -229,7 +233,11 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         silent = next((i for i in infs if i.kind == "audio_silent"), None)
         loud_obs = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "loudness"]
         tol = resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)
-        if want_norm and want_norm.value in (True, "auto") and target is not None and asset.technical.get("audio"):
+        if want_norm and want_norm.value in (True, "auto") and target is not None and not asset.technical.get("audio"):
+            eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=f"{asset.id} has no audio stream; loudness normalization needs one (unsupported input, not guessed)",
+                       confidence=1.0, evidence=[target.id] + probe_ids_of([asset.id]), risk="LOW", approval="AUTO", provenance="USER" if want_norm.provenance == "USER" else target.provenance,
+                       params={"asset_id": asset.id}, requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
+        elif want_norm and want_norm.value in (True, "auto") and target is not None and asset.technical.get("audio"):
             if silent:
                 eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=silent.statement, confidence=silent.confidence, evidence=[silent.id] + silent.evidence, risk="LOW", approval="AUTO",
                            provenance="INFERRED", requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
@@ -384,12 +392,24 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- delivery
     targets = m.get("delivery.targets")
-    for t in (targets.value if targets else []):
+    platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")
+    target_list = list(targets.value) if targets else []
+    platform_targets: set = set()
+    if platform_req and target_list and not any(t.get("preset") for t in target_list):
+        # the profile's own targets are generic (no preset chosen yet): the platform named in the request
+        # text picks the export preset instead of the request silently doing nothing — the platform name
+        # is the preset name for every platform this keyword pass currently recognises (just "youtube")
+        target_list = [dict(t, preset=platform_req.value, platform=platform_req.value) for t in target_list]
+        platform_targets = {t["id"] for t in target_list}
+    for t in target_list:
         if t.get("preset"):
+            plat_ev = [platform_req.id] if t["id"] in platform_targets else []
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision=f"export preset '{t['preset']}', check platform '{t.get('platform', 'custom')}'",
-                       reason=f"delivery target from {targets.provenance.lower()} ({targets.source}); codec/container follow the preset (format-level, mechanical)",
-                       confidence=1.0, evidence=[targets.id], risk="LOW", approval=approval_for("delivery.export"), provenance=targets.provenance, params=dict(t),
-                       requirements=[targets], serves_intent=_serves(intent, f"delivery.{t['id']}"))
+                       reason=(f"the request named the platform \"{t['preset']}\" for delivery" if t["id"] in platform_targets else
+                               f"delivery target from {targets.provenance.lower()} ({targets.source})") + "; codec/container follow the preset (format-level, mechanical)",
+                       confidence=1.0, evidence=[targets.id] + plat_ev, risk="LOW", approval=approval_for("delivery.export"),
+                       provenance=platform_req.provenance if t["id"] in platform_targets else targets.provenance, params=dict(t),
+                       requirements=([targets, platform_req] if t["id"] in platform_targets else [targets]), serves_intent=_serves(intent, f"delivery.{t['id']}"))
             cap_block("delivery_export", f"capability.delivery_export.{t['id']}")
         else:
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision="deliver the processed file without re-encoding to a platform preset",

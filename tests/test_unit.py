@@ -82,6 +82,22 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(rs.get("silence.leading.approval"), "CONFIRM")
         self.assertTrue(rs.effective["edit.semantic_deletion.approval"].hard)
 
+    def test_generic_profile_has_no_dead_top_level_fields(self):
+        """`generic.json` used to carry a bare top-level `"semantic_deletion": "CONFIRM"` scalar — a leftover
+        from an earlier schema draft (`ARCHITECTURE_REVIEW.md`'s original design had a nested `"decisions"`
+        map; the shipped profile flattened it but the migration to a real `rules`-array entry, the way
+        `conference.json` correctly expresses the same intent as `edit.semantic_deletion.approval`, never
+        happened). `profiles/loader.py` merges every top-level key except `rules` into `Profile.data`, but
+        nothing anywhere reads `semantic_deletion` from it — confirmed dead, unlike `conference.json`'s own
+        real rule. Removed rather than migrated: `edit.semantic_deletion` is a Phase 4, not-yet-selectable
+        Skill (`skills/registry.py`'s `available=False`), so there is no live decision for a rule to resolve
+        against yet."""
+        p = load_profile("generic")
+        self.assertNotIn("semantic_deletion", p.data)
+        # inherited into every child profile's own .data too (loader.py merges the parent's data first)
+        self.assertNotIn("semantic_deletion", load_profile("youtube").data)
+        self.assertNotIn("semantic_deletion", load_profile("conference").data)
+
 
 class AdapterTests(unittest.TestCase):
     def setUp(self):
@@ -93,14 +109,16 @@ class AdapterTests(unittest.TestCase):
         self.skill = FfmpegSkill(root, "0.8.4", ["probe", "cut", "loudness", "export", "check"])
 
     def test_ffmpeg_skill_version_range_is_explicit(self):
-        """The supported ffmpeg-skill range is a declared contract (PR #13 / PR #17): 0.8.4 ≤ v < 0.10. 0.9.x is accepted
-        (contract / doctor added, `--json` gained "status", no media behaviour changed); 0.10 is unverified and rejected;
-        anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit."""
+        """The supported ffmpeg-skill range is a declared contract (PR #13 / PR #17 / PR #46): 0.8.4 ≤ v < 0.11. 0.9.x-0.10.x
+        are accepted (0.9.0: contract / doctor added, `--json` gained "status"; 0.10.0: per-tool doctor fields, contract
+        reencodes_video/reencodes_audio, join.py's audio-less multi-clip fix -- no media behaviour changed for either);
+        0.11 is unverified and rejected; anything unparsable is rejected. Widening the range needs a verified integration
+        run, not a silent edit."""
         from video_agent.tools.ffmpeg_skill.locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (0, 10, 0)))
-        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12"):
+        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (0, 11, 0)))
+        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9"):
             self.assertTrue(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
-        for v in ("0.8.3", "0.7.9", "0.10.0", "0.11.2", "1.0.0", "unknown", "", "0.9.x"):
+        for v in ("0.8.3", "0.7.9", "0.11.0", "0.12.2", "1.0.0", "unknown", "", "0.9.x"):
             self.assertFalse(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
 
     def test_argv_typed_and_catalog_enforced(self):
@@ -201,6 +219,61 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(dec["decision"], "skip")
         self.assertEqual(ir.doc["audio"]["operations"], [])
 
+    def test_explicit_loudness_request_on_audio_less_input_is_not_silently_dropped(self):
+        """An explicit `--set audio.normalize=true --set audio.loudness.target_lufs=...` request on an asset with
+        no audio stream used to vanish with zero trace: `decision.py`'s whole audio.loudness block was gated on
+        `asset.technical.get("audio")`, so no Decision was ever created (unlike audio.production's analogous case,
+        which explicitly BLOCKs with a reason). The only record was a SKIPPED row buried in the raw project.json's
+        analysis output — not surfaced by plan's decision printout, `explain`, or report.md, so a user asking to
+        normalize a muted b-roll clip or a screen recording with no mic got no feedback anywhere a normal workflow
+        would look. Fixed with an explicit SKIP decision explaining why, matching audio.production's pattern."""
+        svc = make_service(self.tmp, adapter=FakeAdapter(audio=False))
+        ir = svc.plan([self.src], "generic", user_requirements={"audio.normalize": True, "audio.loudness.target_lufs": -16})
+        dec = next((x for x in ir.doc["decisions"] if x["subject"] == "audio.loudness"), None)
+        self.assertIsNotNone(dec, "the request must produce a visible decision, not silently disappear")
+        self.assertEqual(dec["decision"], "skip")
+        self.assertIn("no audio stream", dec["reason"])
+        self.assertEqual(ir.doc["audio"]["operations"], [])
+
+    def test_named_platform_in_request_text_actually_selects_the_delivery_preset(self):
+        """`agent/requirements.py`'s KEYWORDS pass extracts "youtube" mentioned in free text into a real
+        `delivery.platform` USER requirement (this part always worked) — but nothing in `decision.py` ever
+        read it back: `grep -rn '"delivery.platform"'` across `src/` found only its own definition, no
+        consumer. So a real `--request "please upload this to youtube"` on the generic profile planned and
+        rendered exactly as if the platform had never been named at all (no preset, "deliver as processed").
+        Fixed by having the delivery decision loop apply a named platform to the profile's own (preset-less)
+        targets, the same way `--profile youtube` would have. A profile whose targets already carry a preset
+        (e.g. `conference`, or `--profile youtube` itself) is untouched — this only fills in a gap, never
+        overrides an explicit choice."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "generic", request_text="please upload this to youtube")
+        dec = next(x for x in ir.doc["decisions"] if x["subject"] == "delivery.main")
+        self.assertEqual((dec["params"]["preset"], dec["params"]["platform"]), ("youtube", "youtube"))
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"] if s["skill"] in ("delivery_export", "delivery_check")], ["delivery_export", "delivery_check"])
+        # a profile whose target already has a preset is never overridden by the same phrase
+        ir2 = svc.plan([self.src], "youtube", request_text="please upload this to youtube")
+        dec2 = next(x for x in ir2.doc["decisions"] if x["subject"] == "delivery.youtube")
+        self.assertEqual(dec2["params"]["preset"], "youtube")   # unchanged from the profile's own definition, not re-derived from the phrase
+
+    def test_delivery_preserve_source_is_a_rejected_key_not_a_silent_no_op(self):
+        """`delivery.preserve_source` used to be added to every project (`agent/requirements.py`'s `defaults`
+        dict, value always `True`) and, since `delivery.` is an accepted `--set` prefix, could also be
+        explicitly overridden by a user (`--set delivery.preserve_source=false`) — with zero effect either
+        way: `grep -rn preserve_source src/` shows the only real thing by this name is
+        `policy/rules.py`'s hardcoded, non-overridable `sys.preserve_source` CONSTRAINT (never write to the
+        source path, ADR-022's workspace boundary, enforced structurally by `ArtifactStore.check_path()`).
+        `delivery.preserve_source` was a vestigial duplicate under a different key that nothing ever
+        consumed — worse than merely dead, since a user could believe `--set
+        delivery.preserve_source=false` disables a safety guarantee it never touched. Fixed by dropping the
+        default (it no longer appears in a plan nobody asked about it) and explicitly rejecting an explicit
+        `--set`, rather than silently accepting-and-ignoring it."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "generic")
+        self.assertNotIn("delivery.preserve_source", {r["key"] for r in ir.doc["requirements"]})
+        with self.assertRaises(ValueError) as ctx:
+            svc.plan([self.src], "generic", user_requirements={"delivery.preserve_source": False})
+        self.assertIn("delivery.preserve_source", str(ctx.exception))
+
     def test_generic_without_preset_delivers_intermediate(self):
         svc = make_service(self.tmp)
         ir = svc.plan([self.src], "generic")
@@ -216,6 +289,86 @@ class PipelineTests(unittest.TestCase):
         art = [k for k in paths if k.endswith("_delivery_main")]
         self.assertEqual(len(art), 1)
         self.assertEqual(paths[art[0]], paths[ops[-1].outputs[0]], "the last intermediate is the deliverable")
+
+    def test_full_duration_scope_tolerates_its_own_rounding(self):
+        """A step/event/context scope covering an asset's whole duration is built via round(dur, 3) (e.g.
+        `planner.py`'s loudness/delivery/audio-cut scopes), which can round *up* past the raw, unrounded probe
+        duration by as much as 5e-4 s. `TimeRange.within()` used to compare that against the raw duration with
+        TIME_EPS (1e-6) — far tighter than the rounding grain — so any real asset whose duration's 4th decimal is
+        >= 5 (roughly half of all real, untrimmed footage, since an exact multiple of 0.001s is essentially never
+        the true length of a real recording) failed validation outright with a spurious "exceeds asset duration"
+        error, on both `plan` (which validates immediately) and `render`. Fixed via `DURATION_EPS` (0.01s,
+        matching `project/validator.py`'s own tolerance for the same class of check)."""
+        svc = make_service(self.tmp, adapter=FakeAdapter(silences=[], duration=20.485986))   # 4th decimal is 9: round(., 3) = 20.486 > 20.485986
+        ir = svc.plan([self.src], "generic", user_requirements={"audio.loudness.target_lufs": -16})
+        rep = svc.validate(ir)
+        self.assertEqual(rep.errors, [], rep.errors)
+        p = str(Path(self.tmp) / "dur.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+
+    def test_generic_without_preset_still_registers_a_processed_artifact(self):
+        """A no-preset delivery whose subject was actually processed (silence trimmed here) must still become a
+        registered, QA'd Artifact — the deliverable already lives inside the workspace (compile_ir gave it the last
+        intermediate's own path), so there is no ADR-022 workspace boundary reason to skip registering it. Before
+        this fix, `_register_artifacts()`'s `not t.get("preset")` guard silently dropped every no-preset deliverable
+        regardless of whether it was ever processed, so `render()` reported COMPLETED with `artifacts: []` even
+        though a real, QA-verified file existed. The genuinely unprocessed case (nothing to trim, nothing to
+        deliver) is covered separately below (`test_generic_without_preset_and_genuinely_untouched_still_registers_an_artifact`),
+        via a real stream-copy materialization into the workspace (AI-video-production-OS WORK_QUEUE item 9).
+        Also covers a second bug found registering this artifact for real: since it is an *alias* of the trim op's
+        own output (no dedicated export op names the delivery id itself), the naive id-match in `_register_artifacts()`
+        found no operation and no decision for it at all (`operations: []`, `decision_ids: []`) despite being the
+        direct, real output of a real operation — fixed by also matching an op whose output resolves to the same
+        on-disk path, and by crediting the delivery target's own decision_ids regardless of match."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([self.src], "generic")   # technical silence trim runs unconditionally; no delivery preset here
+        p = str(Path(self.tmp) / "g.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual(art["type"], "MASTER")
+        self.assertEqual(art["format"], "source")
+        self.assertEqual(art["qa_status"], "PASS")
+        self.assertTrue(os.path.isfile(art["path"]))
+        # provenance: the artifact is an alias of the trim op's own output (no dedicated export op
+        # names it), so it must still be credited to that real op and cite every decision behind it
+        # (the trim's own decisions *and* delivery.main's) — not report as if nothing produced it
+        subjects = {d["subject"]: d["id"] for d in ir.doc["decisions"]}
+        self.assertTrue(art["operations"], "the real trim operation must be credited, not silently dropped")
+        self.assertEqual(set(art["decision_ids"]), {subjects["silence.leading"], subjects["silence.trailing"], subjects["delivery.main"]})
+        self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+
+    def test_generic_without_preset_and_genuinely_untouched_still_registers_an_artifact(self):
+        """A no-preset delivery whose subject nothing ever touched (no silence to trim, no preset) used to have
+        no path at all: `compiler.py`'s `delivery()` only ever aliased an already-in-workspace intermediate, and a
+        genuinely untouched subject's `current` still names its raw source asset, which `ArtifactStore.check_path()`
+        (ADR-022) correctly refuses to register at its external path. Fixed with a real stream copy
+        (`ffmpeg-skill export.py --preset copy`) that materializes the source into the workspace, giving the
+        deliverable a real in-workspace file — same fix `agent/planner.py`'s `delivery_steps()` plans a matching
+        `delivery_export` step for (needed so the compiler has a tool to compile: ADR-021). AI-video-production-OS
+        WORK_QUEUE item 9."""
+        svc = make_service(self.tmp, adapter=FakeAdapter(silences=[]))   # no leading/trailing silence at all: nothing to trim
+        ir = svc.plan([self.src], "generic")
+        self.assertEqual(ir.doc["video"]["operations"], [], "genuinely nothing to do besides delivery")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["delivery_export"])
+        exp_step = ir.doc["plan"]["steps"][0]
+        self.assertEqual(exp_step["params"]["preset"], "copy")
+        p = str(Path(self.tmp) / "u.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
+        self.assertTrue(os.path.isfile(art["path"]))
+        self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+        self.assertEqual(art["tool"], "ffmpeg-skill/export", "credited to the real stream-copy op, not left blank")
+        subjects = {d["subject"]: d["id"] for d in ir.doc["decisions"]}
+        self.assertEqual(set(art["decision_ids"]), {subjects["delivery.main"]})
 
     def test_same_file_name_twice_gets_distinct_paths(self):
         a = fake_media(self.tmp, "camA/clip.mp4")
@@ -429,6 +582,11 @@ class ResumeTests(unittest.TestCase):
         p = self._plan(svc)
         first = svc.render(load_ir(p), p)
         self.assertEqual(first["status"], "FAILED")
+        # ADR-040: a Plan whose execution reached a terminal (non-COMPLETED) state still gets a ProductionReceipt --
+        # "the Plan finished running," not that it fully passed (PROVENANCE.md §4 / I5)
+        self.assertIn("execution FAILED", " ".join(first["receipt"]["failures"]))
+        self.assertEqual(first["receipt"]["output_artifact_ids"], [], "no deliverable was ever registered on this failed run")
+        self.assertEqual({x["id"] for x in svc.artifacts(load_ir(p))}, {first["receipt_artifact_id"]}, "the receipt is the only artifact registered so far")
         done_tools = [r["tool"] for r in first["execution"]["results"] if r["ok"]]
         self.assertEqual(done_tools, ["ffmpeg-skill/cut", "ffmpeg-skill/loudness"])
         self.assertEqual(len(first["job"]["completed_ops"]), 2)
@@ -814,6 +972,39 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertIsNone(tool, "declared future skills are never selectable even when their tools exist")
         self.assertIn("not implemented", reason)
 
+    def test_select_tool_collision_policy_three_tiers(self):
+        """docs/CAPABILITY_MODEL.md's "Capability collision policy": when 2+ Providers are usable for a skill,
+        (1) an explicit provider always wins if it names a usable candidate, (2) failing that a default
+        provider is used if it names a usable candidate, (3) failing that too, this refuses loudly (never an
+        arbitrary pick) -- unless the skill is one of the OS's own baked-in DEFAULT_PROVIDERS, in which case
+        that silent-by-design fallback (the exact choice `skills/providers.default_providers()` would also
+        reach) keeps today's behaviour when a caller passes neither."""
+        from video_agent.skills import default_registry
+        reg = default_registry()
+        caps = FakeCaps().resolve()
+        supports_both = lambda t: True   # noqa: E731 -- both ffmpeg-skill/loudness and media-analysis/loudness "installed"
+        # Tier 1: explicit always wins over the OS's own baked-in default (ffmpeg-skill)
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, explicit="media-analysis"), ("media-analysis/loudness", "ok (explicit provider)"))
+        # an explicit provider that names no usable candidate is a loud, actionable error -- never silently ignored
+        tool, reason = reg.select_tool("loudness_analysis", caps, supports_both, explicit="nope-skill")
+        self.assertIsNone(tool)
+        self.assertIn("nope-skill", reason); self.assertIn("ffmpeg-skill", reason); self.assertIn("media-analysis", reason)
+        # Tier 2: an explicit default (e.g. a workspace providers.json entry) is used when nothing explicit was asked
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, default="media-analysis"), ("media-analysis/loudness", "ok (default provider)"))
+        # neither given: the OS's own baked-in default (skills/registry.DEFAULT_PROVIDERS) is used, same reason as before this policy existed
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both), ("ffmpeg-skill/loudness", "ok"))
+        # a skill with only one usable candidate never consults either tier: explicit naming a *different*, unavailable provider is simply moot
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, lambda t: t == "ffmpeg-skill/loudness", explicit="media-analysis"), ("ffmpeg-skill/loudness", "ok"))
+        # Tier 3: a genuine collision with no OS-level default declared for it (unlike the 4 already known ones) refuses rather than guessing
+        reg.get("loudness_analysis").tools = ["alpha-skill/loudness", "beta-skill/loudness"]
+        tool, reason = reg.select_tool("loudness_analysis", caps, supports_both)
+        self.assertIsNone(tool, reason)
+        self.assertIn("2 providers available", reason); self.assertIn("alpha-skill", reason); self.assertIn("beta-skill", reason)
+        self.assertIn("provider.loudness_analysis", reason)
+        # ... and the same collision resolves cleanly once either tier actually names one of the two
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, explicit="beta-skill")[0], "beta-skill/loudness")
+        self.assertEqual(reg.select_tool("loudness_analysis", caps, supports_both, default="alpha-skill")[0], "alpha-skill/loudness")
+
     def test_future_skills_are_listed_but_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
@@ -970,7 +1161,10 @@ class SkillToolBoundaryTests(unittest.TestCase):
 
     def test_registry_selected_tool_propagates_to_the_adapter(self):
         """Registry → Service → planner (plan.steps[].tool) → compiler (Operation.tool) → ToolRouter → adapter, for a
-        tool that is not ffmpeg-skill. Nothing downstream rewrites or defaults the tool id."""
+        tool that is not ffmpeg-skill. Nothing downstream rewrites or defaults the tool id. Both other-skill and
+        ffmpeg-skill are usable candidates here (a real collision), so an explicit `provider.silence_cleanup`
+        choice is what selects other-skill (docs/CAPABILITY_MODEL.md's collision policy, Tier 1) -- exactly the
+        supported extension path, not an accident of declaration order."""
         from video_agent.tools import ToolRouter
         class OtherEngine(FakeAdapter):
             name = "other-skill"
@@ -981,8 +1175,9 @@ class SkillToolBoundaryTests(unittest.TestCase):
         ff, other = FakeAdapter(), OtherEngine()
         svc = make_service(self.tmp, adapter=ToolRouter([ff, other]))
         svc.registry.get("silence_cleanup").tools = ["other-skill/trim", "ffmpeg-skill/cut"]
-        self.assertEqual(svc.tools_for()["silence_cleanup"], "other-skill/trim")
-        ir = svc.plan([self.src], "youtube")
+        provider_choice = {"provider.silence_cleanup": "other-skill"}
+        self.assertEqual(svc.tools_for(user_requirements=provider_choice)["silence_cleanup"], "other-skill/trim")
+        ir = svc.plan([self.src], "youtube", user_requirements=provider_choice)
         steps = {st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}
         self.assertEqual(steps["silence_cleanup"], "other-skill/trim")
         self.assertEqual(steps["delivery_export"], "ffmpeg-skill/export")
@@ -1002,6 +1197,61 @@ class SkillToolBoundaryTests(unittest.TestCase):
         self.assertEqual((exp["tool"], exp["tool_version"]), ("ffmpeg-skill/export", "0.8.4-fake"))
         # the job's artifact record follows the export tool, not a fixed engine name
         self.assertEqual(out["job"]["artifacts"][0]["tool"], "ffmpeg-skill/export")
+
+
+class ProviderPolicyTests(unittest.TestCase):
+    """skills/providers.py: Tiers 1 (explicit `--set provider.<skill>=<package>`) and 2 (default-provider
+    policy, OS-level baked-in overridden by a workspace `providers.json`) of docs/CAPABILITY_MODEL.md's
+    collision policy. Tier 3 (refusal) is exercised directly against SkillRegistry.select_tool() in
+    SkillToolBoundaryTests; this class is about how the two config-derived dicts are built."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_explicit_providers_extracts_only_provider_dot_keys(self):
+        from video_agent.skills.providers import explicit_providers
+        got = explicit_providers({"provider.loudness_analysis": "media-analysis", "audio.loudness.target_lufs": -16, "provider.": "ignored-empty-name"})
+        self.assertEqual(got, {"loudness_analysis": "media-analysis"})
+        self.assertEqual(explicit_providers({}), {})
+        self.assertEqual(explicit_providers(None), {})
+
+    def test_default_providers_is_the_os_baked_in_default_with_no_workspace_file(self):
+        from video_agent.skills.providers import default_providers
+        from video_agent.skills.registry import DEFAULT_PROVIDERS
+        self.assertEqual(default_providers(self.tmp), DEFAULT_PROVIDERS)
+        self.assertIsNot(default_providers(self.tmp), DEFAULT_PROVIDERS, "a caller must never be able to mutate the module's own baked-in dict")
+
+    def test_default_providers_workspace_file_overrides_per_skill(self):
+        from video_agent.skills.providers import default_providers
+        (Path(self.tmp) / "providers.json").write_text(json.dumps({"loudness_analysis": "media-analysis"}), encoding="utf-8")
+        got = default_providers(self.tmp)
+        self.assertEqual(got["loudness_analysis"], "media-analysis")
+        self.assertEqual(got["media_probe"], "ffmpeg-skill", "an unrelated skill's OS-level default is untouched by an override naming a different skill")
+
+    def test_default_providers_malformed_workspace_file_is_a_loud_error(self):
+        from video_agent.skills.providers import default_providers
+        (Path(self.tmp) / "providers.json").write_text("not json", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            default_providers(self.tmp)
+        self.assertIn("providers.json", str(ctx.exception))
+        (Path(self.tmp) / "providers.json").write_text(json.dumps({"loudness_analysis": 3}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            default_providers(self.tmp)
+        (Path(self.tmp) / "providers.json").write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            default_providers(self.tmp)
+
+    def test_plan_rejects_unknown_skill_name_in_provider_requirement(self):
+        """A `provider.<skill>` requirement naming a skill that does not exist would otherwise resolve to
+        nothing and silently apply to no real skill, indistinguishable from a correct choice that just
+        happens not to collide -- caught eagerly instead, like every other requirement-shape mistake."""
+        svc = make_service(self.tmp)
+        src = fake_media(self.tmp)
+        with self.assertRaises(ValueError) as ctx:
+            svc.plan([src], "generic", user_requirements={"provider.no_such_skill": "ffmpeg-skill"})
+        self.assertIn("no_such_skill", str(ctx.exception))
+        ir = svc.plan([src], "generic", user_requirements={"provider.loudness_analysis": "ffmpeg-skill"})
+        self.assertIn("provider.loudness_analysis", {r["key"] for r in ir.doc["requirements"]}, "a valid provider choice is still recorded, for provenance, even where FakeAdapter leaves nothing to disambiguate")
 
 
 class EcosystemContractTests(unittest.TestCase):
@@ -1061,7 +1311,7 @@ class EcosystemContractTests(unittest.TestCase):
     def test_future_skills_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
-        for name in ("multi_source_sync", "semantic_deletion"):
+        for name in ("multi_source_sync", "semantic_deletion", "video_trim"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
         self.assertNotIn("caption_generation", rows, "the former caption_generation declaration (ffmpeg-skill/caption) is replaced by subtitle_generation / subtitle_burn_in (ADR-031)")
         self.assertEqual((rows["subtitle_generation"]["implemented"], rows["subtitle_generation"]["status"]), (True, "UNAVAILABLE"), "implemented; no installation in unit tests")
@@ -1099,11 +1349,13 @@ class EcosystemContractTests(unittest.TestCase):
         self.assertEqual((pkg.skill_id, pkg.tool_ids(), pkg.validate()), ("fake-skill", ["fake-skill/tool"], []))
         with self.assertRaises(ValueError):
             svc.registry.register_package(SkillPackage(skill_id="bad", name="bad", version="1", description="", tools=[ToolSpec(tool_id="other/x", skill_id="other")]))
-        # the only "core" change a new package needs: a production skill cites its tool as a candidate
+        # the only "core" change a new package needs: a production skill cites its tool as a candidate. Both
+        # fake-skill and ffmpeg-skill are now usable candidates (a real collision), so which one runs is an
+        # explicit provider.<skill> choice (docs/CAPABILITY_MODEL.md's collision policy), not declaration order.
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
         self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "fake-skill", "ffmpeg-skill", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
-        ir = svc.plan([self.src], "youtube")
+        ir = svc.plan([self.src], "youtube", user_requirements={"provider.silence_cleanup": "fake-skill"})
         self.assertTrue(svc.validate(ir).ok)
         self.assertEqual({st["skill"]: st["tool"] for st in ir.doc["plan"]["steps"]}["silence_cleanup"], "fake-skill/tool")
         ops, _ = compile_ir(ir, "/w/jobs/j")
@@ -1664,6 +1916,13 @@ class TemporalEventSessionTests(unittest.TestCase):
         self.assertIs(TemporalRange, TimeRange)
         self.assertEqual(TimeRange(1.0, 1.0 - 1e-9).end, 1.0, "sub-epsilon inversion is float noise, normalised")
         self.assertTrue(TimeRange(0, 5).within(5.0000001) and not TimeRange(0, 5.1).within(5.0) and TimeRange(0, 99).within(None))
+        # a scope end covering an asset's whole duration is built via round(dur, 3) (planner.py), which can round
+        # *up* past the raw, unrounded probe duration by as much as 5e-4 s — real footage with a 4th-decimal digit
+        # >= 5 (e.g. 8.485986 s) used to fail here with TIME_EPS's 1e-6, wrongly rejecting the asset's own exact
+        # length as "exceeding" it. DURATION_EPS (0.01 s, matching project/validator.py's own tolerance for the
+        # same class of check) absorbs the rounding while still catching a genuine, meaningful overrun.
+        self.assertTrue(TimeRange(0, round(8.485986, 3)).within(8.485986))
+        self.assertFalse(TimeRange(0, 8.6).within(8.485986), "a real 0.1s+ overrun is still rejected")
 
     # 15-17 relations, 14 ordering
     def test_relations_and_ordering(self):
@@ -2030,9 +2289,24 @@ class ProductionPlanTests(unittest.TestCase):
         self.assertEqual(ir.doc["plan"]["status"], "REJECTED")
         self.assertEqual(ir.doc["plan"]["steps"][0]["status"], "REJECTED")
         self.assertEqual(svc.render(ir, p, approve=["all"])["status"], "BLOCKED")
-        # DRAFT: a plan with no steps has nothing to execute
+        # DRAFT: a plan with no decisions and no steps has nothing to execute
         from video_agent.agent.production_plan import plan_status as ps
         self.assertEqual(ps({"decisions": [], "plan": {"version": 1, "steps": []}, "revision": {}}), "DRAFT")
+        # APPROVED: decisions resolved (AUTO/LOW) but zero edit steps (e.g. delivery-only or
+        # QC-only request needing no changes) is a done plan, not stuck forever in DRAFT
+        resolved_doc = {
+            "decisions": [{"id": "d1", "approval": "AUTO", "status": "APPROVED"}],
+            "plan": {"version": 1, "steps": []},
+            "revision": {},
+        }
+        self.assertEqual(ps(resolved_doc), "APPROVED")
+        # REVIEW: a CONFIRM decision is still pending even though there are no steps citing it
+        pending_doc = {
+            "decisions": [{"id": "d1", "approval": "CONFIRM", "status": "PROPOSED"}],
+            "plan": {"version": 1, "steps": []},
+            "revision": {},
+        }
+        self.assertEqual(ps(pending_doc), "REVIEW")
 
     # 24-25 revision and diff, 26 resume
     def test_revision_diff_and_resume_compatibility(self):
@@ -2134,9 +2408,64 @@ class ArtifactLifecycleTests(unittest.TestCase):
         # manifest persisted and readable through the service; integrity ok
         m = svc.artifact(a["id"])
         self.assertTrue(m["integrity"]["ok"])
-        self.assertEqual([x["id"] for x in svc.artifacts(ir)], [a["id"]])
+        # ADR-040: a ProductionReceipt is registered alongside the deliverable, as its own Artifact (type PRODUCTION_RECEIPT)
+        ids_by_type = {x["type"]: x["id"] for x in svc.artifacts(ir)}
+        self.assertEqual(set(ids_by_type), {"YOUTUBE", "PRODUCTION_RECEIPT"})
+        self.assertEqual(ids_by_type["YOUTUBE"], a["id"])
+        self.assertEqual(ids_by_type["PRODUCTION_RECEIPT"], out["receipt_artifact_id"])
         # the three hashes are different things
         self.assertNotEqual(a["hash"], ir.plan_hash()); self.assertNotEqual(a["hash"], ir.ir_hash()); self.assertNotEqual(ir.plan_hash(), ir.ir_hash())
+
+    def test_production_receipt_shape_and_registration(self):
+        """docs/SPEC.md §6 / PROVENANCE.md §4 (ADR-040): the ProductionReceipt is a real, registered Artifact
+        (type PRODUCTION_RECEIPT), not just a return-value dict -- readable back through the same `svc.artifact()`
+        path as any other artifact, with its own content-hash id distinct from the wrapping Artifact's id."""
+        svc, ir, p, out = self._render()
+        r = out["receipt"]
+        self.assertTrue(r["id"].startswith("receipt_"))
+        self.assertEqual((r["project_id"], r["plan_id"], r["plan_hash"], r["ir_hash"]), (ir.doc["project"]["id"], ir.doc["plan"]["id"], ir.plan_hash(), ir.ir_hash()))
+        self.assertEqual(r["input_artifact_ids"], sorted(ir.doc["assets"]))
+        self.assertEqual(r["output_artifact_ids"], [out["artifacts"][0]["id"]])
+        self.assertEqual(r["skill_versions"], ir.doc["provenance"]["skill_versions"])
+        self.assertEqual(r["tool_versions"], ir.doc["source"]["tool_versions"])
+        self.assertEqual(set(r["decisions"]), {d["id"] for d in ir.doc["decisions"]})
+        self.assertEqual(r["failures"], [])
+        m = svc.artifact(out["receipt_artifact_id"])
+        self.assertTrue(m["integrity"]["ok"])
+        self.assertEqual(m["type"], "PRODUCTION_RECEIPT")
+        self.assertNotEqual(m["id"], r["id"], "the wrapping Artifact's id (file-content hash) and the receipt body's own self-identifying id are two different, both-legitimate hashes")
+        on_disk = json.loads(Path(m["path"]).read_text())
+        self.assertEqual(on_disk, r, "the registered file is exactly the receipt body returned in render()'s own result")
+
+    def test_artifact_produced_by_and_derived_from(self):
+        """ARTIFACT_MODEL.md §3/§4 (ADR-038): `capability_id` / `provider_id` make the Provider that actually
+        executed the producing Operation explicit on the Artifact itself (previously recoverable only by parsing
+        `tool`'s "<package>/<name>" prefix), and `derived_from` is the subset of `source` that are themselves
+        other registered Artifacts (never a raw source Asset id) -- a real graph edge, populated as a plain
+        projection of the store's own `get()`, not a new source of truth."""
+        svc, ir, p, out = self._render()
+        a = out["artifacts"][0]
+        self.assertEqual(a["capability_id"], "delivery_export")
+        self.assertEqual(a["provider_id"], "ffmpeg-skill")
+        self.assertEqual(a["provider_id"], a["tool"].split("/", 1)[0])
+        self.assertEqual(a["derived_from"], [], "today's single-generation delivery derives only from a raw source Asset, never another registered Artifact")
+        # a second, independent project: pre-register a fake Artifact under the exact asset id *this* plan will
+        # cite as `source` (asset ids are per-project, not stable across separate plan() calls, so it must be
+        # read from this plan's own IR rather than reused from the first render above) -- the render that follows
+        # must recognise it as a real derived-from edge, not a coincidence of matching ids
+        svc2 = make_service(self.tmp)
+        ir2 = svc2.plan([self.src], "youtube", project_name="second-generation")
+        asset_id = next(iter(ir2.doc["assets"]))
+        from video_agent.media.analyzer import sha256_file
+        from video_agent.models import Artifact
+        fake_parent = Artifact(path=self.src, type="MASTER", hash=sha256_file(self.src), id=asset_id, logical_name="fake_prior_generation")
+        svc2.artifact_store().register(fake_parent)
+        p2 = str(Path(self.tmp) / "produced_by.json")
+        save_ir(ir2, p2)
+        out2 = svc2.render(load_ir(p2), p2, approve=["all"])
+        a2 = out2["artifacts"][0]
+        self.assertEqual(a2["source"], [asset_id])
+        self.assertEqual(a2["derived_from"], [asset_id], "an already-registered Artifact among `source` is a real derived-from edge")
 
     # provenance chain artifact -> job -> operations -> step -> decision -> inference -> event -> observation
     def test_artifact_provenance_chain(self):
@@ -2233,7 +2562,7 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(Path(a1["path"]).read_bytes(), h1, "v1 artifact untouched")
         self.assertTrue(svc.artifact(a1["id"])["integrity"]["ok"])
         ids = {x["id"] for x in svc.artifacts(load_ir(p))}
-        self.assertEqual(ids, {a1["id"], a2["id"]})
+        self.assertEqual(ids, {a1["id"], a2["id"], out1["receipt_artifact_id"], out2["receipt_artifact_id"]}, "each render gets its own ProductionReceipt too (ADR-040)")
         # v1 can still be archived; delivering v1 as final is refused because the IR moved on to plan v2
         from video_agent.artifacts import ArtifactError
         with self.assertRaises(ArtifactError):
@@ -2485,8 +2814,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(rows["media-analysis"]["version"], "0.1.0")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
-        # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution
-        res = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, media_analysis_dir="/nonexistent")
+        # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
+        # PATH is nulled too (not just media_analysis_dir): a bare "/nonexistent" dir would otherwise still let
+        # a real `media-analysis` console script installed on this machine's PATH resolve the capability anyway.
+        res = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}, media_analysis_dir="/nonexistent")
         cap = res.resolve()["media-analysis"]
         self.assertEqual(cap.status, "MISSING")
         # explicit extra kinds via the service, and Skill / Tool version distinction
@@ -3685,6 +4016,17 @@ class ProductionDecisionEngineTests(unittest.TestCase):
         self.assertEqual((js["decision"]["type"], js["executable"]), ("KEEP", False))
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", p, "--decision", "dec_nope"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 1); self.assertIn("no such decision", r.stderr)
+        # PROJECT omitted (nargs="?", so argparse allows it): a clear error, not a raw Python TypeError from
+        # load_ir(None) leaking through main()'s generic exception handler ("expected str, bytes or os.PathLike
+        # object, not NoneType") with no mention of what's actually missing
+        for flag in (["--decision", "x"], ["--step", "x"], ["--context", "x"], ["--observation", "x"], ["--pipeline"]):
+            r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", *flag], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 1, flag)
+            self.assertIn("PROJECT is required", r.stderr, flag)
+            self.assertNotIn("NoneType", r.stderr, flag)
+        # --artifact never needs a project
+        r = subprocess.run([sys.executable, "-m", "video_agent.cli", "explain", "--artifact", "nonexistent"], capture_output=True, text=True, env=env)
+        self.assertNotIn("PROJECT is required", r.stderr)
 
     # 37-40: boundaries — engine is tool / domain independent, decisions never carry paths or commands, determinism, plan hash unchanged by basis
     def test_engine_boundaries_and_determinism(self):
@@ -4022,7 +4364,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         fake = FakeAdapter()
         svc = make_service(self.tmp, caps=FakeCaps(extra=["video-editing", "encoder:aac"]), adapter=ToolRouter([fake, ad]))
         svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]
-        ir = svc.plan([self.src], "youtube")
+        ir = svc.plan([self.src], "youtube", user_requirements={"provider.silence_cleanup": "video-editing"})
         step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "silence_cleanup")
         self.assertEqual(step["tool"], "video-editing/cut")
         self.assertEqual(svc.validate(ir).errors, [])
@@ -4111,6 +4453,7 @@ class VideoEditingOperationsTests(unittest.TestCase):
                          ({"edit.overlay": str(Path(self.tmp) / "missing.png")}, "not found"), ({"edit.overlay": self.png, "edit.overlay.opacity": 2}, "within"),
                          ({"edit.overlay": self.png, "edit.overlay.position": "somewhere"}, "one of"), ({"edit.overlay": self.png, "edit.overlay.start": 5, "edit.overlay.end": 2}, "before"),
                          ({"edit.concat": True, "edit.concat.mode": "stretch"}, "pad or crop"), ({"edit.concat": True, "edit.concat.transition_duration": 1}, "needs edit.concat.transition"),
+                         ({"edit.concat": True, "edit.concat.transition": "none"}, "one of"), ({"edit.concat": True, "edit.concat.transition": "xyzzy"}, "one of"),
                          ({"edit.concat": True, "edit.concat.pad_color": "rgb(0,0,0)"}, "colour"), ({"edit.resize.fps": 30}, "ambiguous"),
                          ({"edit.overlay": str(Path(self.tmp) / "src" / ".." / "src" / "logo.png")}, "traversal"), ({"edit.concat": "maybe"}, "true or false")):
             with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
@@ -4154,6 +4497,29 @@ class VideoEditingOperationsTests(unittest.TestCase):
         from video_agent.models import Requirement
         self.assertEqual(resolve_approval(rules, "video.resize.approval", "CONFIRM", explicit=Requirement.from_dict(req))["approval"], "CONFIRM")
         self.assertEqual(resolve_approval(resolve_rules([Rule("c2", "POLICY", "PROFILE", "video.fill.approval", "BLOCK", "profile")]), "video.fill.approval", "CONFIRM", explicit=Requirement.from_dict(req))["approval"], "BLOCK")
+
+    def test_concat_programme_without_preset_still_registers_an_artifact(self):
+        """A concat programme is a special case of the no-preset "processed" deliverable
+        (video-production-agent#32/#33): unlike a single untouched asset, the programme's own
+        subject id *is already* the id of a real op output the moment `video.concat` runs, so
+        `state[subject]["current"] != subject` never becomes true even though real work already
+        produced it — `compiler.py`'s `delivery()` used to key off that comparison and, for a
+        programme, never fired its no-preset alias branch at all, leaving `report.json`'s
+        "artifacts": [] even though a real, in-workspace, QA-verified concat output existed.
+        Fixed by checking "not a raw source asset" (`st["current"] not in d["assets"]`) instead
+        of "!= subject", which is true from the moment concat itself creates the programme."""
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True})
+        self.assertEqual([op["type"] for op in ir.doc["video"]["operations"] if op["type"] != "video.trim"], ["video.concat"])
+        p = str(Path(self.tmp) / "concat.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
+        self.assertTrue(art["operations"], "the real video-editing concat operation must be credited")
+        concat_dec = next(d["id"] for d in ir.doc["decisions"] if d["subject"] == "video.concat")
+        self.assertIn(concat_dec, art["decision_ids"])
 
     def test_plan_ir_shape_and_determinism(self):
         svc = self._svc()
@@ -4324,6 +4690,13 @@ class VideoEditingOperationsTests(unittest.TestCase):
         dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
         self.assertEqual((dur["status"], dur["observed"]), ("PASS", 11.0)); self.assertIn("11.000", dur["expected"])
         art = out["artifacts"][0]
+        # QC_ARCHITECTURE.md §5 (ADR-039): this duration check is judged against the Plan's own kept-ranges/
+        # concat/speed timeline, not a fixed rule -- and it verifies exactly the artifact registered below, by id
+        self.assertEqual(dur["threshold_source"], "plan")
+        self.assertEqual(dur["subject_artifact_id"], art["id"])
+        stream = next(i for i in out["qa"]["items"] if i["name"] == "video_stream")
+        self.assertEqual(stream["threshold_source"], "rule", "a technical-spec check (a video stream is present) is not derived from this Plan's own declared intent")
+        self.assertEqual(stream["subject_artifact_id"], art["id"], "every item verifying this subject links to the same Artifact regardless of its threshold source")
         self.assertEqual(art["logical_name"], "programme_delivery_youtube"); self.assertEqual(sorted(art["source"]), sorted(ir.doc["assets"]))
         self.assertEqual(art["step_id"], "step_export_youtube")
         exp_op = next(r for r in out["execution"]["results"] if r["tool"] == "ffmpeg-skill/export")
@@ -4954,8 +5327,11 @@ class AudioExtractConfirmTests(unittest.TestCase):
         self.assertEqual(v2["audio"]["operations"], [])
         self.assertTrue(any("extraction was rejected" in s for s in v2["plan"]["summary"]))
         self.assertNotIn("audio.extract", {d["subject"] for d in v2["decisions"] if d["status"] != "REJECTED"})
+        # the revision drops the whole audio path (nothing left cites the rejected extraction), so v2 is a no-op
+        # delivery plan; approving it explicitly (--approve all, nothing pending) completes it without running
+        # a single audio operation — a rejection never revives as a silent Skill run
         out2 = svc.render(load_ir(p), p, approve=["all"])
-        self.assertNotIn(out2["status"], ("COMPLETED",))
+        self.assertEqual(out2["status"], "COMPLETED")
         self.assertEqual(self._runs(), 0)
         # approve instead of reject: v1 approval is recorded, the render runs; a later revision needs its own approval again
         ir2, p2 = self._plan(svc, {"audio.production": True, "audio.fade_in": 0.5}, name="ok")
@@ -5423,3 +5799,142 @@ class SyncObservationTests(unittest.TestCase):
         rows = Service.explain_observation(ir.doc, next(iter(sync_ids))) if hasattr(Service, "explain_observation") else None
         if rows is not None:
             self.assertIn("sync", json.dumps(rows))
+
+
+class LocateAuthoritativeOverrideTests(unittest.TestCase):
+    """An explicit dir or the Skill's own *_DIR env var names exactly where it lives; a checkout missing from that
+    location must resolve to nothing (MISSING), never fall back to guessing sibling directories. Found on this
+    session's own machine: it keeps every ecosystem Skill checked out as a sibling of video-production-agent (the
+    real, intended layout for this ecosystem, not a coincidence), so a caller's explicit "/nonexistent" override
+    was being silently overridden right back by the ../<skill-name> guess resolving to that real, unrelated
+    checkout -- exactly backwards from what an explicit override is for."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.parent = Path(self.tmp)
+        self.cwd_dir = self.parent / "video-production-agent"
+        self.cwd_dir.mkdir()
+        self._old_cwd = os.getcwd()
+        os.chdir(self.cwd_dir)
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+
+    def _checkout(self, name: str, package_dir: str) -> Path:
+        root = self.parent / name
+        (root / "src" / package_dir).mkdir(parents=True)
+        (root / "src" / package_dir / "cli.py").write_text("")
+        return root
+
+    def test_ffmpeg_skill_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        sibling = self.parent / "ffmpeg-skill"
+        (sibling / "scripts").mkdir(parents=True)
+        (sibling / "scripts" / "probe.py").write_text("")
+        self.assertIsNotNone(locate_ffmpeg_skill(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_ffmpeg_skill("/nonexistent", env={"PATH": ""}))
+
+    def test_media_analysis_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        self._checkout("media-analysis-skill", "media_analysis")
+        self.assertIsNotNone(locate_media_analysis(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_media_analysis("/nonexistent", env={"PATH": ""}))
+
+    def test_transcription_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.transcription.locate import locate_transcription
+        self._checkout("transcription-skill", "transcription_skill")
+        self.assertIsNotNone(locate_transcription(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_transcription("/nonexistent", env={"PATH": ""}))
+
+    def test_video_editing_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.video_editing.locate import locate_video_editing
+        self._checkout("video-editing-skill", "video_editing_skill")
+        self.assertIsNotNone(locate_video_editing(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_video_editing("/nonexistent", env={"PATH": ""}))
+
+    def test_audio_production_explicit_miss_ignores_sibling_checkout(self):
+        from video_agent.tools.audio_production.locate import locate_audio_production
+        self._checkout("audio-production-skill", "audio_production")
+        self.assertIsNotNone(locate_audio_production(env={"PATH": ""}), "sanity: the sibling is genuinely auto-discoverable")
+        self.assertIsNone(locate_audio_production("/nonexistent", env={"PATH": ""}))
+
+    def test_cli_skill_explicit_miss_ignores_sibling_checkout(self):
+        """subtitle/thumbnail/color-grading/motion-graphics/qc all share this one locate_cli_skill() helper."""
+        from video_agent.tools.skill_process import locate_cli_skill
+        self._checkout("subtitle-skill", "subtitle_skill")
+        found = locate_cli_skill("subtitle", "subtitle_skill", "subtitle_skill", "subtitle-skill", "VIDEO_AGENT_SUBTITLE_DIR",
+                                 env={"PATH": ""}, checkout_names=("subtitle-skill",))
+        self.assertIsNotNone(found, "sanity: the sibling is genuinely auto-discoverable")
+        missed = locate_cli_skill("subtitle", "subtitle_skill", "subtitle_skill", "subtitle-skill", "VIDEO_AGENT_SUBTITLE_DIR",
+                                  "/nonexistent", env={"PATH": ""}, checkout_names=("subtitle-skill",))
+        self.assertIsNone(missed)
+
+    def test_env_var_miss_also_ignores_sibling_checkout(self):
+        """The *_DIR env var is just as authoritative as the explicit constructor argument."""
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        self._checkout("media-analysis-skill", "media_analysis")
+        self.assertIsNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": "/nonexistent"}))
+
+
+class UnrecognizedFinishingKeyTests(unittest.TestCase):
+    """ADR-042: a key that matches one of edit./audio./subtitle/thumbnail/color./motion./qc but is not one its parser
+    actually reads used to be silently ignored -- no decision, no error, the feature just never happened. `_check_edit_
+    requirements` now refuses it by name instead. This must never falsely reject a real key: the two vocabularies (a
+    domain switch read via the Requirement map, and a policy default read via resolve_setting()/rules -- <subject>.
+    approval, thumbnail.at_ratio, qc.warn.promotion, subtitle.format's own default, the motion element start/duration
+    defaults) were traced exhaustively across agent/decision.py, agent/decision_finishing.py, agent/requirements.py and
+    every agent/*.py vocabulary module, not just guessed from each domain's own REQUIREMENT_KEYS constant."""
+
+    def _check(self, **kv):
+        from video_agent.service import _check_edit_requirements
+        _check_edit_requirements(kv)
+
+    def test_a_plausible_but_wrong_switch_name_is_refused_by_name(self):
+        with self.assertRaises(ValueError) as cm:
+            self._check(**{"subtitle.generate": True})
+        self.assertIn("subtitle.generate", str(cm.exception))
+        for bad in ("thumbnail.render", "qc.check", "color.hdr_to_sdr", "audio.mono", "audio.stereo", "audio.downmix", "audio.cut", "audio.loudness",
+                    "edit.trim_leading", "motion.text_overlay"):
+            with self.assertRaises(ValueError, msg=bad):
+                self._check(**{bad: True})
+
+    def test_every_domain_switch_key_is_accepted(self):
+        self._check(**{"edit.concat": True, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.5, "edit.concat.width": 640,
+                       "edit.concat.height": 360, "edit.concat.fps": 30, "edit.concat.mode": "pad", "edit.concat.pad_color": "black"})
+        self._check(**{"edit.speed": 2.0})
+        self._check(**{"edit.resize": 640, "edit.resize.fps": 30})
+        self._check(**{"edit.fit": "16:9", "edit.fit.width": 640, "edit.fit.pad_color": "black", "edit.fit.fps": 30})
+        self._check(**{"edit.fill": "1:1", "edit.fill.width": 640, "edit.fill.fps": 30})
+        self._check(**{"edit.trim_leading_silence": True, "edit.trim_trailing_silence": True, "edit.precision": "frame"})
+        self._check(**{"audio.production": True, "audio.extract": True, "audio.gain": 3, "audio.fade_in": 1, "audio.fade_out": 1,
+                       "audio.channels": "mono", "audio.concat": True, "audio.concat.crossfade": 0.5, "audio.sample_rate": 48000})
+        self._check(**{"audio.normalize": True, "audio.loudness.target_lufs": -16, "audio.loudness.true_peak": -1.0})
+        self._check(**{"subtitle": True, "subtitle.format": "srt", "subtitle.burn_in": True, "subtitle.max_chars_per_line": 40, "subtitle.max_lines": 2})
+        self._check(**{"color.target": "bt709", "color.sdr": True, "color.strip_dovi": True,
+                       "color.exposure": 0.5, "color.contrast": 1.0, "color.saturation": 1.0, "color.temperature": 6500, "color.tint": 0.0})
+        tmp = tempfile.mkdtemp()
+        cube = str(Path(tmp) / "x.cube"); Path(cube).write_text("")
+        self._check(**{"color.lut": cube, "color.lut.strength": 0.5})
+        self._check(**{"motion.title": "hi", "motion.title.subtitle": "sub", "motion.title.start": 1, "motion.title.end": 5})
+        self._check(**{"motion.lower_third": "name", "motion.lower_third.title": "title", "motion.lower_third.start": 1, "motion.lower_third.end": 5})
+        self._check(**{"motion.text": "hi", "motion.text.position": "top", "motion.text.start": 1, "motion.text.end": 5, "motion.text.fade": 0.5})
+        png = str(Path(tmp) / "x.png"); Path(png).write_bytes(b"\x89PNG\r\n\x1a\n")
+        self._check(**{"motion.image": png, "motion.image.position": "top", "motion.image.start": 1, "motion.image.end": 5, "motion.image.fade": 0.5, "motion.image.scale_percent": 50})
+        self._check(**{"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "hi", "thumbnail.format": "png", "thumbnail.font_size": 24, "thumbnail.position": "top"})
+        self._check(**{"qc": True})
+
+    def test_every_policy_default_key_is_accepted(self):
+        """These are read via resolve_setting()/rules, never the Requirement map -- unlike a switch key, an unrecognised
+        one there just falls back to the default (a deliberately different, more tolerant failure mode), so they must
+        stay accepted here even though no domain parser ever calls m.get() on them."""
+        self._check(**{"audio.gain.approval": "CONFIRM", "audio.channels.approval": "CONFIRM", "audio.extract.approval": "CONFIRM",
+                       "audio.fade_in.approval": "CONFIRM", "audio.fade_out.approval": "CONFIRM", "audio.concat.approval": "CONFIRM", "audio.loudness.approval": "AUTO"})
+        self._check(**{"subtitle.generate.approval": "CONFIRM", "subtitle.burn_in.approval": "CONFIRM", "thumbnail.render.approval": "CONFIRM", "qc.check.approval": "AUTO"})
+        self._check(**{"color.strip_dovi.approval": "CONFIRM", "color.hdr_to_sdr.approval": "CONFIRM", "color.primary_correction.approval": "CONFIRM",
+                       "color.lut.approval": "CONFIRM", "color.retag.approval": "CONFIRM"})
+        self._check(**{"audio.loudness.tolerance_lu": 2.0, "thumbnail.at_ratio": 0.5, "qc.warn.promotion": "block"})
+        # motion.title.start / motion.lower_third.start double as category-1 refinement keys of their own switch (tested
+        # in test_every_domain_switch_key_is_accepted with the switch set) -- only text_overlay/image_overlay's default
+        # keys never collide with a category-1 name (motion.text.*/motion.image.* are the real switch keys), so only
+        # those two are meaningful to check standalone here.
+        self._check(**{"motion.text_overlay.start": 1, "motion.text_overlay.duration": 5, "motion.image_overlay.start": 1, "motion.image_overlay.duration": 5})

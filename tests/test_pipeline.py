@@ -118,6 +118,28 @@ class PipelineScenarioTests(unittest.TestCase):
         kinds = [o["kind"] for o in prov["skill_observations"]]
         self.assertIn("media.probe", kinds); self.assertIn("image.probe", kinds); self.assertIn("qc.report", kinds)
 
+    def test_s3b_primary_correction_then_lut_order(self):
+        """color.exposure/.saturation (PRIMARY_CORRECTION) and color.target (RETAG) together: PRIMARY_CORRECTION runs
+        before RETAG in the IR (ADR-036's fixed COLOR_ORDER), through the real Requirement -> Decision -> IR ->
+        Compiler pipeline (against the fake color-grading-skill, not a mock of this agent's own code)."""
+        svc = pipeline_service(self.tmp)
+        r = plan_and_render(svc, [self.a], {"color.exposure": 0.5, "color.saturation": 0.0, "color.target": "bt709", "qc": True}, name="s3b")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        self.assertEqual(skills_of(d), ["silence_cleanup", "color_primary_correction", "color_retag", "loudness_normalization", "delivery_export", "delivery_check", "qc_check"])
+        aid = list(d["assets"])[0]
+        ops = d["color"]["operations"]
+        self.assertEqual([op["type"] for op in ops], ["color.primary_correction", "color.retag"], "fixed order: technical correction before retag")
+        correction = ops[0]
+        self.assertEqual((correction["input"], correction["output"], correction["exposure"], correction["saturation"]), (f"{aid}_trim", f"{aid}_primary_correction", 0.5, 0.0))
+        self.assertNotIn("contrast", correction, "only explicitly requested parameters are sent; unset ones are left to the Skill's own defaults")
+        retag = ops[1]
+        self.assertEqual((retag["input"], retag["output"]), (f"{aid}_primary_correction", f"{aid}_retag"))
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED")
+        res = [x for x in out["execution"]["results"] if x["tool"] == "color-grading/run"]
+        self.assertEqual([x["data"]["operation_type"] for x in res], ["PRIMARY_CORRECTION", "RETAG"])
+
     # ---- Scenario 4: video → motion graphics → subtitle burn-in → QC
     def test_s4_motion_subtitle_burn_qc(self):
         svc = pipeline_service(self.tmp)

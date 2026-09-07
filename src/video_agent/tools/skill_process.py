@@ -43,15 +43,21 @@ class CliSkill:
 def locate_cli_skill(skill_id: str, module: str, package_dir: str, console: str, env_var: str, explicit: Optional[str] = None,
                      env: Optional[Mapping[str, str]] = None, checkout_names: Tuple[str, ...] = ()) -> Optional[CliSkill]:
     """Find a checkout (<dir>/src/<package_dir>/cli.py or __init__.py, run with PYTHONPATH=<dir>/src) or a console script on
-    PATH. Order: explicit dir, the env var, ~/.claude/skills/<name>, ./vendor/<name>, ../<name>, then PATH."""
+    PATH. Order: explicit dir, the env var, ~/.claude/skills/<name>, ./vendor/<name>, ../<name>, then PATH. An explicit dir
+    or the env var names exactly where to look; if there is no checkout there, that is the answer (MISSING), not a cue to
+    keep guessing sibling directories that happen to exist here too."""
     env_map: Mapping[str, str] = os.environ if env is None else env
-    cands: List[Path] = []
+    authoritative: List[Path] = []
     if explicit:
-        cands.append(Path(explicit))
+        authoritative.append(Path(explicit))
     if env_map.get(env_var):
-        cands.append(Path(env_map[env_var]))
-    for name in checkout_names or (skill_id,):
-        cands += [Path.home() / ".claude" / "skills" / name, Path.cwd() / "vendor" / name, Path.cwd().parent / name]
+        authoritative.append(Path(env_map[env_var]))
+    if authoritative:
+        cands = authoritative
+    else:
+        cands = []
+        for name in checkout_names or (skill_id,):
+            cands += [Path.home() / ".claude" / "skills" / name, Path.cwd() / "vendor" / name, Path.cwd().parent / name]
     for c in cands:
         pkg = c / "src" / package_dir
         if (pkg / "cli.py").is_file() or (pkg / "__init__.py").is_file():

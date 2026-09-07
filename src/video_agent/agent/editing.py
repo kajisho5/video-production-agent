@@ -51,7 +51,13 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 NAMED_POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center", "top", "bottom", "left", "right")
 _ASPECT_RE = re.compile(r"^[1-9][0-9]{0,3}:[1-9][0-9]{0,3}$")
 _COLOR_RE = re.compile(r"^([a-z]{1,16}|0x[0-9A-Fa-f]{6})$")
-_TRANSITION_RE = re.compile(r"^[a-z]{1,16}$")
+# video-editing-skill's CONCAT transition.type enum (its own contract.py TRANSITIONS, pinned here since the agent never
+# imports a Skill's package): "none" is deliberately excluded -- omitting `edit.concat.transition` entirely is how this
+# vocabulary asks for a straight cut, not a transition value named "none" (that spelling is ffmpeg-skill CLI's own
+# --transition flag, a different, lower-level vocabulary this agent never exposes directly).
+_TRANSITIONS = ("fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright",
+                "circleopen", "circleclose", "fadeblack", "fadewhite", "smoothleft", "smoothright", "radial")
+_TRANSITION_RE = re.compile("^(" + "|".join(_TRANSITIONS) + ")$")
 
 
 class EditRequirementError(ValueError):
@@ -119,7 +125,7 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
             if not _bool(vals["edit.concat"], "edit.concat"):
                 continue
             if "edit.concat.transition" in vals:
-                p["transition"] = {"type": _token(vals["edit.concat.transition"], "edit.concat.transition", _TRANSITION_RE, "a transition name"),
+                p["transition"] = {"type": _token(vals["edit.concat.transition"], "edit.concat.transition", _TRANSITION_RE, "one of " + ", ".join(_TRANSITIONS)),
                                    "duration": _number(vals.get("edit.concat.transition_duration", 0.5), "edit.concat.transition_duration", 0.05, 5.0)}
             elif "edit.concat.transition_duration" in vals:
                 raise EditRequirementError("edit.concat.transition_duration needs edit.concat.transition")

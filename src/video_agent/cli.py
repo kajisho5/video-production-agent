@@ -48,6 +48,16 @@ def cmd_doctor(args, svc: Service) -> int:
 
 
 def cmd_skills(args, svc: Service) -> int:
+    if getattr(args, "check_provides", False):
+        findings = svc.check_provides()
+        if args.json:
+            _print({"findings": [f.to_dict() for f in findings]}, True)
+            return 0
+        width = max((len(f.status) for f in findings), default=len("PROVIDES_MISMATCH"))
+        print("Provides/Capability consumption diagnostic (read-only; never affects tool selection):")
+        for f in findings:
+            print(f"  {f.status:{width}s}  {f.skill_id:16s} {f.capability_id or '(no id)':32s} {f.tool_id or '(no tool id)':28s}  {f.detail}")
+        return 0
     rows = svc.skills()
     pkgs = svc.packages()
     if args.json:
@@ -197,9 +207,12 @@ def cmd_render(args, svc: Service) -> int:
             r = out["resume"]
             print(f"  resumed from {r['resumed_from']} ({r['prior_state']}); plan {'CHANGED' if r['plan_changed'] else 'unchanged'}; reused {len(out['execution']['skipped'])} of {r['candidate_ops']} completed operation(s)")
         if out["status"] == "WAITING_FOR_APPROVAL":
-            for d in out["pending"]:
+            for d in out.get("pending", []):
                 print(f"  CONFIRM {d['id']}  {d['subject']}: {d['decision']}\n    {d['reason']}")
-            print("  " + out["hint"])
+            if out.get("hint"):
+                print("  " + out["hint"])
+            elif "plan_status" in out:
+                print(f"  plan is {out['plan_status']}; re-run 'plan' or check for a BLOCK decision")
         if out["status"] == "BLOCKED":
             for d in out.get("blocked", []):
                 print(f"  BLOCKED {d['id']} {d['subject']}: {d['reason']}")
@@ -458,6 +471,8 @@ def cmd_sessions(args, svc: Service) -> int:
 
 
 def cmd_explain(args, svc: Service) -> int:
+    if not getattr(args, "artifact", None) and not args.project:
+        raise ValueError("PROJECT is required for --decision / --step / --context / --observation / --pipeline (only --artifact does not need one)")
     if getattr(args, "pipeline", False):
         ir = load_ir(args.project)
         job = prov = None
@@ -630,6 +645,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="inspect the environment (AVAILABLE / MISSING / DEGRADED / UNKNOWN)")
     p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("skills", help="list skills with their status here (AVAILABLE / UNAVAILABLE / NOT_IMPLEMENTED) and the selected tool")
+    p.add_argument("--check-provides", action="store_true",
+                   help="read-only diagnostic: does each Skill's Capability Contract provides[] match what this Agent "
+                        "recognizes and a production SkillSpec consumes? (PROVIDES_VALID / PROVIDES_MISMATCH / "
+                        "CAPABILITY_UNCONSUMED / CAPABILITY_MISSING / UNKNOWN). Never affects tool selection.")
     p.set_defaults(fn=cmd_skills)
     p = sub.add_parser("analyze", help="probe media and list observed events")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--no-hash", action="store_true", help="skip sha256 of sources (faster on huge files)")

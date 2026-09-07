@@ -559,6 +559,41 @@ class MediaAnalysisRealTests(unittest.TestCase):
         svc2 = Service(workspace=str(Path(self.tmp) / "ws_cap2"), media_analysis_dir="/nonexistent")
         self.assertEqual(svc2.caps.resolve()["media-analysis"].status, "AVAILABLE" if locate_media_analysis("/nonexistent") else "MISSING")
 
+    def test_explicit_provider_requirement_selects_media_analysis_over_the_default(self):
+        """docs/CAPABILITY_MODEL.md's collision policy, Tier 1, against the real collision it names: with both
+        ffmpeg-skill and media-analysis-skill genuinely installed, a `--set provider.media_probe=media-analysis`
+        requirement wins over the OS's own baked-in default (ffmpeg-skill) -- real packages, real contracts, not
+        a synthetic candidate list."""
+        svc = Service(workspace=str(Path(self.tmp) / "ws_explicit"))
+        tools = svc.tools_for(user_requirements={"provider.media_probe": "media-analysis"})
+        self.assertEqual(tools["media_probe"], "media-analysis/probe")
+        self.assertEqual(tools["loudness_analysis"], "ffmpeg-skill/loudness", "an explicit choice for one skill never leaks onto a different, unrelated skill")
+        ir = svc.plan([self.src], "generic", user_requirements={"provider.media_probe": "media-analysis", "provider.loudness_analysis": "media-analysis"})
+        req_values = {r["key"]: r["value"] for r in ir.doc["requirements"]}
+        self.assertEqual(req_values.get("provider.media_probe"), "media-analysis", "an explicit provider choice is recorded like any other requirement, for provenance")
+        self.assertEqual(req_values.get("provider.loudness_analysis"), "media-analysis")
+
+    def test_explicit_provider_naming_an_uninstalled_package_refuses_loudly(self):
+        svc = Service(workspace=str(Path(self.tmp) / "ws_bad_explicit"))
+        with self.assertRaises(RuntimeError) as ctx:
+            svc.analyze([self.src], "generic", user_requirements={"provider.media_probe": "no-such-skill"})
+        self.assertIn("no-such-skill", str(ctx.exception))
+        self.assertIn("ffmpeg-skill", str(ctx.exception)); self.assertIn("media-analysis", str(ctx.exception))
+
+    def test_workspace_providers_json_sets_a_default_without_any_explicit_requirement(self):
+        """Tier 2: a workspace-level `providers.json` resolves the collision the same way an explicit
+        requirement would, but for every plan in this workspace, with none of them needing to ask."""
+        ws = str(Path(self.tmp) / "ws_default")
+        Path(ws).mkdir(parents=True)
+        Path(ws, "providers.json").write_text(json.dumps({"media_probe": "media-analysis", "silence_analysis": "media-analysis"}), encoding="utf-8")
+        svc = Service(workspace=ws)
+        tools = svc.tools_for()
+        self.assertEqual(tools["media_probe"], "media-analysis/probe")
+        self.assertEqual(tools["silence_analysis"], "media-analysis/silence")
+        self.assertEqual(tools["loudness_analysis"], "ffmpeg-skill/loudness", "only the two skills named in providers.json are redirected")
+        rows = {r["skill"]: r for r in svc.skills()}
+        self.assertEqual(rows["media_probe"]["tool"], "media-analysis/probe")
+
     def test_all_kinds_lifted_with_provenance_and_skill_cache(self):
         ws = str(Path(self.tmp) / "ws_all")
         svc = self._service(ws)
@@ -1181,7 +1216,7 @@ class VideoEditingRealTests(unittest.TestCase):
         import hashlib
         self.assertEqual(cut["data"]["artifact"]["sha256"], hashlib.sha256(Path(cut["output"]).read_bytes()).hexdigest())
         self.assertEqual(cut["data"]["operation"]["tool"], "ffmpeg-skill/cut"); self.assertEqual(cut["data"]["operation"]["skill"], "video-editing")
-        self.assertTrue(cut["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+        self.assertEqual(cut["data"]["observation"]["source"], f"ffmpeg-skill/probe@{locate_ffmpeg_skill().version}")
         self.assertEqual(cut["data"]["observation"]["provenance"], "OBSERVED")
         self.assertTrue(cut["data"]["timeline"]["tracks"][0]["segments"], "source → timeline mapping reported by the Skill")
         self.assertTrue(cut["commands"] and all(c.startswith("/") or c.startswith("ffmpeg") for c in cut["commands"]), "ffmpeg command lines are provenance only")
@@ -1263,7 +1298,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         for r, op in zip(res, ops):
             self.assertTrue(r["ok"] and os.path.isfile(r["output"]), r)
             self.assertEqual(r["data"]["artifact"]["sha256"], hashlib.sha256(Path(r["output"]).read_bytes()).hexdigest())
-            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertTrue(r["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["data"]["observation"]["source"], f"ffmpeg-skill/probe@{locate_ffmpeg_skill().version}")
             self.assertEqual(r["data"]["operation"]["type"], op["type"].split(".", 1)[1].upper())
             self.assertFalse(any(k in json.dumps(r["data"]["operation"].get("parameters") or {}).lower() for k in ("argv", "command", "filter", "shell")))
         # ffprobe facts on every intermediate: duration follows the IR (concat timeline → speed), geometry follows resize / fit / fill
@@ -1370,7 +1405,7 @@ class AudioProductionRealTests(unittest.TestCase):
         for r in res:
             self.assertTrue(r["ok"] and os.path.isfile(r["output"]) and r["output"].endswith(".wav"), r)
             self.assertEqual(r["data"]["artifact"]["sha256"], hashlib.sha256(Path(r["output"]).read_bytes()).hexdigest())
-            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertTrue(r["data"]["observation"]["source"].startswith("ffmpeg-skill/probe@0.9"))
+            self.assertEqual(r["data"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["data"]["observation"]["source"], f"ffmpeg-skill/probe@{locate_ffmpeg_skill().version}")
             self.assertTrue(r["data"]["operation"]["tool"].startswith("ffmpeg-skill/")); self.assertEqual(r["data"]["provenance"]["skill"], "audio-production")
             self.assertFalse(any(k in json.dumps(r["data"]["operation"]["parameters"]).lower() for k in ("argv", "command", "filter", "shell")))
         items = {i["name"]: i for i in out["qa"]["items"]}
@@ -1462,8 +1497,13 @@ class AudioProductionRealTests(unittest.TestCase):
         items = {i["name"]: i for i in out["qa"]["items"]}
         self.assertEqual(items["loudness"]["status"], "PASS", items["loudness"]); self.assertIn("-16", items["loudness"]["expected"])
         self.assertEqual(prov["skill_observations"][-1]["kind"], "loudness"); self.assertEqual(prov["skill_observations"][-1]["source"].split("@")[0], "ffmpeg-skill/loudness")
-        art = out["artifacts"] or []
-        self.assertEqual(art, [], "generic profile registers no preset artifact; the deliverable is the last intermediate")
+        # generic profile has no delivery preset, but real processing ran (concat/mono/normalize): the last
+        # intermediate is the deliverable, and it is a registered MASTER artifact (video-production-agent#32) —
+        # citing every real decision behind it (video-production-agent#33), not the pre-fix "artifacts: []"
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
+        self.assertTrue(art["operations"], "the real audio-production operation must be credited")
+        self.assertTrue(art["path"].endswith("programme_audio_loudnorm.wav"))
         self.assertTrue(out["paths"]["programme_audio_delivery_main"].endswith("programme_audio_loudnorm.wav"))
 
     def test_refusals_on_real_skill(self):
@@ -1769,3 +1809,55 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual(len(out2["execution"]["skipped"]), len(transforms), "every transform is reused; the checks and the QC gate run again")
         self.assertEqual(out2["artifacts"][0]["hash"], out["artifacts"][0]["hash"])
         self.assertEqual(out2["artifacts"][0]["id"], out["artifacts"][0]["id"], "the same bytes are the same artifact")
+
+    # ---- Scenario 11: the QC gate AND Artifact registration on a no-preset delivery (generic profile) — real qc-skill and ffmpeg-skill
+    def test_s11_qc_gate_and_artifact_without_a_delivery_preset(self):
+        """Every other scenario plans against the "youtube" profile, which always has a delivery preset, so none of
+        them exercise the no-preset ("deliver as-is") path this delivery target takes under the generic profile.
+        Two bugs lived here (AI-video-production-OS WORK_QUEUE item 9): `agent/planner.py`'s `qc_steps()` used to
+        only plan a qc step alongside a `delivery_export` step (preset-only), so `--set qc=true` compiled nothing at
+        all for a no-preset target (fixed: it now gates the subject's own real media directly when nothing produced
+        an in-workspace file); and a genuinely untouched deliverable never got a registered Artifact at all, because
+        its raw source lives outside the workspace and `ArtifactStore.check_path()` (ADR-022) correctly refuses to
+        register an external path. Fixed with a real stream copy (ffmpeg-skill `export.py --preset copy`) that
+        materializes the untouched source into the workspace, so it gets a genuine Artifact like everything else."""
+        self._need("motion-graphics", "qc")
+        sha256_file = __import__("video_agent.media.analyzer", fromlist=["sha256_file"]).sha256_file
+        svc = self._svc("s11")
+        # untouched: `self.a` has real leading/trailing silence by design (TONE, for the other scenarios' own
+        # trim coverage), so a clip with none at all is needed here to get truly zero edit steps — the plan
+        # must have nothing but the stream-copy export and the qc gate, not even the always-on technical cleanup
+        toneless = str(Path(self.tmp) / "s11_toneless.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=6",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-b:a", "128k", toneless], check=True)
+        ir, p = self._plan(svc, [toneless], {"qc": True}, profile="generic", name="s11a")
+        self.assertEqual([s["skill"] for s in ir.doc["plan"]["steps"]], ["delivery_export", "qc_check"])
+        exp_step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "delivery_export")
+        self.assertEqual(exp_step["params"]["preset"], "copy")
+        out = self._render(svc, p)
+        self.assertEqual(len(out["artifacts"]), 1, "a genuinely untouched no-preset deliverable now registers a real Artifact")
+        art = out["artifacts"][0]
+        self.assertEqual((art["type"], art["format"]), ("MASTER", "source"))
+        self.assertEqual(Path(art["path"]).suffix, ".mp4", "copy keeps the source's own extension")
+        src_dur, src_res, src_audio, _ = self._probe(toneless)
+        dur, res, has_audio, _ = self._probe(art["path"])
+        self.assertAlmostEqual(dur, src_dur, delta=0.05); self.assertEqual(res, src_res); self.assertEqual(has_audio, src_audio)
+        self.assertNotEqual(art["hash"], sha256_file(toneless), "a remux changes container-level bytes even under a stream copy (no picture/audio re-encode)")
+        self.assertTrue(any(r["tool"].endswith("/export") and r["ok"] for r in out["execution"]["results"]), "a real delivery_export op ran (the stream copy)")
+        qc = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check")
+        self.assertTrue(qc["ok"] and qc["data"]["admitted"], qc["data"])
+        self.assertIn(qc["data"]["verdict"], ("PASS", "WARN"), qc["data"].get("findings"))
+        self.assertEqual(qc["data"]["fingerprint"], art["hash"], "the QC gate measured the real, delivered (copied) bytes, not the untouched source")
+        qc_item = next(i for i in out["qa"]["items"] if i["layer"] == "qc" and i["name"] == "verdict")
+        self.assertEqual(qc_item["status"], qc["data"]["verdict"])
+        self._gate_coherent(out, art)
+        # processed: a real motion-graphics element, still no delivery preset — unchanged, no copy needed (already
+        # in-workspace); qc gates the real processed file
+        ir2, p2 = self._plan(svc, [toneless], {"motion.title": "Live", "qc": True}, profile="generic", name="s11b")
+        self.assertEqual([s["skill"] for s in ir2.doc["plan"]["steps"]], ["motion_graphics", "qc_check"])
+        out2 = self._render(svc, p2)
+        art2 = out2["artifacts"][0]
+        self._gate_coherent(out2, art2)
+        qc2 = next(r for r in out2["execution"]["results"] if r["tool"] == "qc/check")
+        self.assertEqual(qc2["data"]["fingerprint"], art2["hash"], "the QC gate measured the real, delivered (processed) bytes, not the untouched source")

@@ -5,10 +5,14 @@ from __future__ import annotations
 
 from ...skills.contract import SkillPackage, ToolSpec
 from .catalog import CATALOG
+from .locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
 
 SKILL_ID = "ffmpeg-skill"
 PREFIX = SKILL_ID + "/"
-SUPPORTED_RANGE = "0.8.4 <= v < 0.9"
+# Derived from locate.py's actual enforced bounds, not a separately hand-maintained string: a stale copy
+# here (found saying "< 0.9" while locate.py already enforced "< 0.10") is exactly the kind of drift that
+# gave the false confidence this repository was checking a version range it in fact wasn't.
+SUPPORTED_RANGE = f"{'.'.join(map(str, SUPPORTED_MIN))} <= v < {'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))}"
 BASE_CAPABILITIES = ["ffmpeg", "ffprobe", "ffmpeg-skill"]
 
 _EXTRA_CAPS = {"loudness": ["filter:loudnorm"], "cut": ["encoder:libx264"], "export": ["encoder:libx264"], "fit": ["encoder:libx264"],

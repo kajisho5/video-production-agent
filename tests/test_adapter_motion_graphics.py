@@ -89,7 +89,7 @@ class ContractTests(Base):
         self.assertEqual(a.tools, {TOOL_ID})
         self.assertTrue(a.supports(TOOL_ID))
         self.assertFalse(a.supports("motion-graphics/other"))
-        self.assertEqual(sorted(a.element_types), ["image_overlay", "lower_third", "text_overlay", "title"])
+        self.assertEqual(sorted(a.element_types), ["bug", "chapter", "countdown", "image_overlay", "lower_third", "progress", "text_overlay", "title"])
         self.assertIn("shape", a.unsupported)
         self.assertEqual(a.drift(), [])
         self.assertEqual(check_contract(pinned_contract()), [])
@@ -118,8 +118,8 @@ class ContractTests(Base):
     def test_drift_detected(self):
         self.mode("contract_drift")
         a = self.adapter()
-        self.assertTrue(any("chapter" in d for d in a.drift()), a.drift())
-        self.assertIn("chapter", a.element_types)
+        self.assertTrue(any("watermark" in d for d in a.drift()), a.drift())
+        self.assertIn("watermark", a.element_types)
 
     def test_doctor(self):
         a = self.adapter()
