@@ -523,7 +523,7 @@
   },
   "engine": {
     "id": "ffmpeg-skill",
-    "version_range": ">=0.9.0,<1.0.0",
+    "version_range": ">=0.10.0,<1.0.0",
     "tools_used": [
       "ffmpeg-skill/probe",
       "ffmpeg-skill/cut",
