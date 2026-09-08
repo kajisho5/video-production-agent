@@ -89,7 +89,7 @@ class ContractTests(Base):
         self.assertEqual(a.tools, {TOOL_ID})
         self.assertTrue(a.supports(TOOL_ID))
         self.assertFalse(a.supports("motion-graphics/other"))
-        self.assertEqual(sorted(a.element_types), ["bug", "chapter", "countdown", "image_overlay", "lower_third", "progress", "text_overlay", "title"])
+        self.assertEqual(sorted(a.element_types), ["bug", "chapter", "countdown", "image_overlay", "lower_third", "progress", "text_overlay", "title", "video_overlay"])
         self.assertIn("shape", a.unsupported)
         self.assertEqual(a.drift(), [])
         self.assertEqual(check_contract(pinned_contract()), [])
