@@ -23,7 +23,7 @@ ARGS: Dict[str, Tuple[str, ...]] = {
     "TRIM": ("input", "output", "start", "end", "accurate", "precision"),
     "CUT": ("input", "output", "keep", "segments", "accurate", "precision"),
     "CONCAT": ("inputs", "output", "transition", "width", "height", "fps", "mode", "pad_color"),
-    "SPEED": ("input", "output", "factor"),
+    "SPEED": ("input", "output", "factor", "smooth"),
     "FIT": ("input", "output", "aspect", "width", "pad_color", "fps"),
     "FILL": ("input", "output", "aspect", "width", "fps"),
     "RESIZE": ("input", "output", "width", "fps"),
@@ -139,6 +139,8 @@ def params_for(t: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if args.get("factor") is None:
             raise ToolError("video-editing: SPEED needs factor")
         p["factor"] = _num(args["factor"], "factor") if isinstance(args["factor"], (int, float)) else _str(args["factor"], "factor", r"^[0-9]{1,6}/[0-9]{1,6}$")
+        if args.get("smooth") is not None:
+            p["smooth"] = _str(args["smooth"], "smooth", r"^(blend|interpolate)$")
     elif t in ("FIT", "FILL", "RESIZE"):
         if t != "RESIZE":
             if args.get("aspect") is None:

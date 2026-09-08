@@ -45,7 +45,9 @@ CONTRACT_SCHEMA = "audio-production/contract@1"
 REQUEST_SCHEMA = "audio-production/request@1"
 RESPONSE_SCHEMA = "audio-production/response@1"
 DOCTOR_SCHEMA = "audio-production/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")   # 0.2.0 (audio-production-skill #7): loudness result read from the
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.")  # 0.3.0 (audio-production-skill #8): audio_stream added to
+                                               # GAIN/FADE_IN/FADE_OUT/MONO/STEREO/DOWNMIX/NOISE_REDUCTION/DYNAMICS.
+                                               # 0.2.0 (audio-production-skill #7): loudness result read from the
                                                # NORMALIZE call directly, requires ffmpeg-skill >= 0.12.0; additive
                                                # to the pinned contract, not lowered to 0.1. alone
 ENGINE_ID = "ffmpeg-skill"
@@ -169,7 +171,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic audio production (typed operation graph, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

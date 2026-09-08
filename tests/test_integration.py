@@ -1226,7 +1226,7 @@ class VideoEditingRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.3.0"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.0"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
         # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
@@ -1323,7 +1323,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
         self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.3.0")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.0")
         self.assertEqual(len(prov["skill_observations"]), len(rows))
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
@@ -1415,7 +1415,7 @@ class AudioProductionRealTests(unittest.TestCase):
         rows = [e for e in prov["operations"] if e["tool"] == "audio-production/run"]
         self.assertEqual([e["skill"] for e in rows], expect_skills)
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.2.0" and e["skill_package"] == "audio-production")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.3.0" and e["skill_package"] == "audio-production")
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] in ("TRANSFORM", "REMOVE") for e in rows for i in e["decision"]))
         return svc, p, out, res, prov
