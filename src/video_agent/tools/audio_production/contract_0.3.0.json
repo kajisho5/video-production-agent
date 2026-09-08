@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), fades, EBU R128 loudness normalisation, mix, concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -170,6 +170,13 @@
           "min": -60.0,
           "max": 60.0,
           "description": "gain in dB (negative attenuates)"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
         }
       },
       "tool": "ffmpeg-skill/audio",
@@ -333,6 +340,13 @@
           "min": 0.001,
           "max": 3600.0,
           "description": "seconds"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
         }
       },
       "tool": "ffmpeg-skill/audio",
@@ -360,6 +374,13 @@
           "min": 0.001,
           "max": 3600.0,
           "description": "seconds"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
         }
       },
       "tool": "ffmpeg-skill/audio",
@@ -490,7 +511,15 @@
         "min": 1,
         "max": 1
       },
-      "parameters": {},
+      "parameters": {
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
+        }
+      },
       "tool": "ffmpeg-skill/audio",
       "required_capabilities": [
         "ffmpeg-skill",
@@ -509,7 +538,15 @@
         "min": 1,
         "max": 1
       },
-      "parameters": {},
+      "parameters": {
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
+        }
+      },
       "tool": "ffmpeg-skill/audio",
       "required_capabilities": [
         "ffmpeg-skill",
@@ -528,7 +565,15 @@
         "min": 1,
         "max": 1
       },
-      "parameters": {},
+      "parameters": {
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
+        }
+      },
       "tool": "ffmpeg-skill/audio",
       "required_capabilities": [
         "ffmpeg-skill",
@@ -562,6 +607,13 @@
           "min": 10.0,
           "max": 60.0,
           "description": "noise floor to remove in dB"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
         }
       },
       "tool": "ffmpeg-skill/audio",
@@ -696,6 +748,13 @@
             }
           },
           "additionalProperties": false
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
         }
       },
       "tool": "ffmpeg-skill/audio",
@@ -943,7 +1002,8 @@
         "gate_attack",
         "gate_release",
         "gate_range",
-        "gate_knee"
+        "gate_knee",
+        "audio_stream"
       ],
       "cut": [
         "input",

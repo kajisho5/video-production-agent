@@ -39,7 +39,9 @@ CONTRACT_SCHEMA = "color-grading/contract@1"
 REQUEST_SCHEMA = "color-grading/request@1"
 RESPONSE_SCHEMA = "color-grading/response@1"
 DOCTOR_SCHEMA = "color-grading/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.")   # 0.3.0 (color-grading-skill #7): reencoded/dropped_non_av_streams
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.")  # 0.4.0 (color-grading-skill #8): gamma/lift/gain/levels/curves
+                                               # added to PRIMARY_CORRECTION.
+                                               # 0.3.0 (color-grading-skill #7): reencoded/dropped_non_av_streams
                                                # surfaced, audio_stream added to HDR_TO_SDR/LUT_APPLY/RETAG/
                                                # PRIMARY_CORRECTION; additive to the pinned contract
 ENGINE_ID = "ffmpeg-skill"
@@ -51,7 +53,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "execution", "ffmpeg_skill", "request", "response", "provenance",
               "schema_versions", "errors", "lut", "color_space", "hdr_sdr")
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "changes_duration", "changes_resolution", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

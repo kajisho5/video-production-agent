@@ -65,10 +65,10 @@ class ColorGradingAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
         self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
-                         ("0.3.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
-        self.assertIn("GAMMA", ad.unsupported); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
+                         ("0.4.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
+        self.assertEqual(ad.unsupported, ["WHITE_BALANCE"]); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.3.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.4.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
@@ -98,7 +98,7 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertIn("--allowed-lut", ad._argv(b, False, None))
         b = ad.build_request("color-grading/run", {"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_retag", "exposure": 0.5, "saturation": 0.0}, paths)
         self.assertEqual(b["request"]["project"]["operations"][0]["parameters"], {"exposure": 0.5, "saturation": 0.0})
-        for bad, msg in (({"filter": "x"}, "forbidden"), ({"argv": ["x"]}, "forbidden"), ({"operation": "GAMMA"}, "unsupported"), ({"operation": "NOPE"}, "unknown operation"),
+        for bad, msg in (({"filter": "x"}, "forbidden"), ({"argv": ["x"]}, "forbidden"), ({"operation": "WHITE_BALANCE"}, "unsupported"), ({"operation": "NOPE"}, "unknown operation"),
                          ({"target": "bt2100"}, "not one of"), ({"tonemap": "hable"}, "not declared"), ({"operation": "HDR_TO_SDR", "peak_nits": 99999}, "above"), ({"operation": "HDR_TO_SDR", "crf": 1.5}, "integer"),
                          ({"operation": "PRIMARY_CORRECTION", "exposure": 999}, "above"), ({"operation": "PRIMARY_CORRECTION", "contrast": -1}, "below"),
                          ({"operation": "LUT_APPLY"}, "requires parameter"), ({"format": "avi"}, "not one of"), ({"input": "missing"}, "not found")):

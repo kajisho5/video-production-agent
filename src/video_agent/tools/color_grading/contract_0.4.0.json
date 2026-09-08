@@ -4,10 +4,10 @@
   "id": "color-grading",
   "name": "color-grading-skill",
   "package": "color-grading-skill",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
-  "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU removal, and typed primary colour correction (exposure/contrast/saturation/white balance), executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or look to apply, nor which correction values to use.",
+  "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU removal, and typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves), executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or look to apply, nor which correction values to use.",
   "repository": "https://github.com/kajisho5/color-grading-skill",
   "not_provided": [
     "AI reasoning",
@@ -19,7 +19,7 @@
     "image understanding",
     "scene/face detection",
     "shot matching",
-    "gamma/lift/gain/levels/curves colour correction",
+    "a single white-balance operation type (use PRIMARY_CORRECTION's temperature and tint parameters)",
     "container/format conversion (ffmpeg-skill/export)",
     "arbitrary ffmpeg filters",
     "shell execution",
@@ -29,7 +29,7 @@
     {
       "tool_id": "color-grading/run",
       "skill_id": "color-grading",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "role": "execution",
       "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
       "inputs": [
@@ -300,7 +300,7 @@
     },
     {
       "type": "PRIMARY_CORRECTION",
-      "description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) (ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2); each parameter is one option of one real ffmpeg filter (exposure / eq / colortemperature / colorbalance), range-checked by ffmpeg-skill itself -- never a filter string",
+      "description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, three-way shadows/highlights (lift/gain), levels and a curves preset (ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2 for the first five, >= 0.12.3 for the other eight); each parameter is one option of one real ffmpeg filter (exposure / eq / colortemperature / colorbalance / colorlevels / curves), range-checked by ffmpeg-skill itself -- never a filter string",
       "inputs": 1,
       "parameters": {
         "exposure": {
@@ -342,6 +342,80 @@
           "max": 1.0,
           "default": 0.0,
           "description": "green(-1)/magenta(+1) tint; 0 is unchanged"
+        },
+        "gamma": {
+          "type": "number",
+          "required": false,
+          "min": 0.1,
+          "max": 10.0,
+          "default": 1.0,
+          "description": "master gamma (eq filter's own gamma); 1 is unchanged"
+        },
+        "lift": {
+          "type": "number",
+          "required": false,
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "description": "shadows lift (colorbalance rs/gs/bs, three-way colour correction); 0 is unchanged"
+        },
+        "gain": {
+          "type": "number",
+          "required": false,
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "description": "highlights gain (colorbalance rh/gh/bh, three-way colour correction); 0 is unchanged"
+        },
+        "levels_in_black": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 0,
+          "description": "colorlevels input black point, 0..255 (8-bit units); 0 is unchanged"
+        },
+        "levels_in_white": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 255,
+          "description": "colorlevels input white point, 0..255 (8-bit units); 255 is unchanged"
+        },
+        "levels_out_black": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 0,
+          "description": "colorlevels output black point, 0..255 (8-bit units); 0 is unchanged"
+        },
+        "levels_out_white": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 255,
+          "description": "colorlevels output white point, 0..255 (8-bit units); 255 is unchanged"
+        },
+        "curves": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "color_negative",
+            "cross_process",
+            "darker",
+            "increase_contrast",
+            "lighter",
+            "linear_contrast",
+            "medium_contrast",
+            "negative",
+            "strong_contrast",
+            "vintage"
+          ],
+          "default": null,
+          "description": "curves filter built-in preset; None (default) adds no curves term"
         },
         "crf": {
           "type": "integer",
@@ -386,6 +460,8 @@
         "filter:eq",
         "filter:colorbalance",
         "filter:colortemperature",
+        "filter:colorlevels",
+        "filter:curves",
         "encoder:libx264"
       ],
       "changes_duration": false,
@@ -398,31 +474,6 @@
       "type": "WHITE_BALANCE",
       "status": "not_implemented",
       "reason": "no single white-balance operation or flag exists; use PRIMARY_CORRECTION's temperature and tint parameters"
-    },
-    {
-      "type": "GAMMA",
-      "status": "not_implemented",
-      "reason": "ffmpeg-skill exposes no typed gamma filter (no eq gamma control) in its public contract"
-    },
-    {
-      "type": "LIFT",
-      "status": "not_implemented",
-      "reason": "ffmpeg-skill exposes no typed lift (shadows) control in its public contract"
-    },
-    {
-      "type": "GAIN",
-      "status": "not_implemented",
-      "reason": "ffmpeg-skill exposes no typed gain (highlights) control in its public contract; not to be confused with audio-production's audio GAIN operation"
-    },
-    {
-      "type": "LEVELS",
-      "status": "not_implemented",
-      "reason": "ffmpeg-skill exposes no typed levels filter in its public contract"
-    },
-    {
-      "type": "CURVES",
-      "status": "not_implemented",
-      "reason": "ffmpeg-skill exposes no typed curves filter in its public contract"
     }
   ],
   "output_formats": {
@@ -566,7 +617,7 @@
   "ffmpeg_skill": {
     "contract_version": "1.0",
     "version_window": {
-      "min": "0.12.1",
+      "min": "0.12.3",
       "max_exclusive": "1.0.0"
     },
     "tools_used": [
@@ -595,6 +646,14 @@
         "saturation",
         "temperature",
         "tint",
+        "gamma",
+        "lift",
+        "gain",
+        "levels_in_black",
+        "levels_in_white",
+        "levels_out_black",
+        "levels_out_white",
+        "curves",
         "audio_stream",
         "crf",
         "preset",
