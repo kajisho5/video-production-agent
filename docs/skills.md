@@ -2,9 +2,19 @@
 
 ```text
 video-production-agent = Brain / Orchestrator
-ffmpeg-skill           = First Reference Skill（deterministic media processing）— 実装済みの唯一の Skill package
-future skills          = 独立した専門 Skill（未実装、ドキュメント上の構想のみ）
+ffmpeg-skill           = First Reference Skill（deterministic media processing）— 実装済みの Skill package
+external Skills        = media-analysis-skill / transcription-skill / video-editing-skill /
+                          audio-production-skill / color-grading-skill / motion-graphics-skill /
+                          qc-skill / subtitle-skill / thumbnail-skill — いずれも実装済み、各リポジトリの
+                          checkout をチェックアウト場所（env var）で見つけたときに tools/<skill>/adapter.py
+                          経由で接続される（`service.py` の `register_package` 呼び出し一覧が現状の正）。
+                          image-skill は別ドメイン（画像編集、動画パイプライン外）で、この Orchestrator の
+                          adapter は未実装（AI-video-production-OS#39）。
 ```
+
+（このファイルはこれら10リポジトリ+この1リポジトリの現状を反映する生きたリファレンスとして扱う。
+`docs/GAP_ANALYSIS_PHASE2.md` などの日付付き監査記録は、その時点のスナップショットとして意図的に
+書き換えていない — 2026-09-04 時点で「ffmpeg-skill のみ」だったのは事実だが、現在の事実ではない。）
 
 ## 責務
 

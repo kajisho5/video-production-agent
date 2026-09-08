@@ -11,9 +11,11 @@ from typing import Dict, List, Optional
 SUPPORTED_MIN = (0, 8, 4)
 # 0.10.0 (2026-09-06): per-tool `doctor --json` usable fields, `contract --json` reencodes_video/reencodes_audio,
 # join.py's audio-less multi-clip filtergraph-index fix, no other script changed its media behaviour (CHANGELOG).
-# The full real-Skill integration suite (tests/test_integration.py, all 9 Skills, no mocks) passes on 0.10.0, so
-# 0.9.x-0.10.x are accepted; 0.11 is not verified. Widening this needs a verified integration run, not a silent edit.
-SUPPORTED_MAX_EXCLUSIVE = (0, 11, 0)
+# The full real-Skill integration suite (tests/test_integration.py, all Skills, no mocks) passes on 0.10.0, so
+# 0.9.x-0.10.x are accepted. Widened to 0.12.3 (2026-09-08): the full real-Skill integration suite was re-run
+# against a live 0.12.3 checkout (this session), including every satellite Skill's own real-media tests, with no
+# failures traced to ffmpeg-skill itself. Widening this needs a verified integration run, not a silent edit.
+SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
 
 
 @dataclass

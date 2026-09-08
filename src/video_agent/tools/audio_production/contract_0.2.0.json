@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), fades, EBU R128 loudness normalisation, mix, concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -67,6 +67,92 @@
         "ffmpeg-skill/loudness",
         "ffmpeg-skill/join"
       ]
+    }
+  ],
+  "provides": [
+    {
+      "id": "audio.concat",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "CONCAT"
+    },
+    {
+      "id": "audio.cut",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "CUT"
+    },
+    {
+      "id": "audio.downmix",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "DOWNMIX"
+    },
+    {
+      "id": "audio.dynamics",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "DYNAMICS"
+    },
+    {
+      "id": "audio.fade",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "FADE_IN"
+    },
+    {
+      "id": "audio.fade",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "FADE_OUT"
+    },
+    {
+      "id": "audio.gain",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "GAIN"
+    },
+    {
+      "id": "audio.mix",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "MIX"
+    },
+    {
+      "id": "audio.mono",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "MONO"
+    },
+    {
+      "id": "audio.noise_reduction",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "NOISE_REDUCTION"
+    },
+    {
+      "id": "audio.normalize",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "NORMALIZE"
+    },
+    {
+      "id": "audio.silence_remove",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "SILENCE_REMOVE"
+    },
+    {
+      "id": "audio.stereo",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "STEREO"
+    },
+    {
+      "id": "audio.trim",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "TRIM"
     }
   ],
   "operations": [
@@ -812,7 +898,7 @@
   "ffmpeg_skill": {
     "contract_version": "1.0",
     "version_window": {
-      "min": "0.9.1",
+      "min": "0.12.0",
       "max_exclusive": "1.0.0"
     },
     "tools_used": [
@@ -875,7 +961,6 @@
         "tp",
         "lra",
         "sample_rate",
-        "measure_only",
         "json"
       ],
       "join": [
@@ -1012,6 +1097,17 @@
       "sources (sha256)"
     ],
     "identity": "sha256 over canonical JSON of {type, parameters, input identities, tool versions}; sources by file sha256; no timestamps, no UUIDs"
+  },
+  "cleanup": {
+    "cli_flag": "--cleanup",
+    "policies": [
+      "keep",
+      "intermediates"
+    ],
+    "default": "keep",
+    "scope": "regular files directly inside <workspace>/.audio-production/<project_id>/ after a fully successful run; never on failure, never outputs",
+    "response_key": "cleanup",
+    "note": "operator-level (CLI), deliberately not a request option: the request block is pinned by consumers"
   },
   "schema_versions": {
     "contract": "1",
