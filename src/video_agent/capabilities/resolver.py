@@ -169,7 +169,7 @@ class CapabilityResolver:
                 ad = VideoEditingAdapter(ve, timeout=120.0, ffmpeg_skill_dir=str(skill.root) if skill else None)
                 doc = ad.doctor()
                 drift = ad.drift()
-                ok = bool(doc.get("ok")) and not drift
+                ok = bool(doc.get("ok")) and not ad.breaking_drift()
                 detail = f"{ad.version} at {ve.describe()} (doctor {'ok' if doc.get('ok') else doc.get('summary', 'not ready')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
                 caps["video-editing"] = Capability("video-editing", "AVAILABLE" if ok else "MISSING", detail,
                                                    {"version": ad.version, "root": ve.describe(), "contract": ad.contract.get("schema"), "tools": sorted(ad.tools),
@@ -192,7 +192,7 @@ class CapabilityResolver:
                 apa = AudioProductionAdapter(ap, timeout=180.0, ffmpeg_skill_dir=str(skill.root) if skill else None)
                 doc = apa.doctor()
                 drift = apa.drift()
-                ok = doc.get("status") in ("ok", "degraded") and not drift
+                ok = doc.get("status") in ("ok", "degraded") and not apa.breaking_drift()
                 detail = f"{apa.version} at {ap.describe()} (doctor {doc.get('status')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
                 ops = apa.operation_status(doc)
                 specs = {o["type"]: o for o in apa.contract.get("operations") or []}
@@ -261,7 +261,11 @@ class CapabilityResolver:
             ad = make(located)
             doc = ad.doctor()
             drift = ad.drift()
-            ok = doc.get("status") in ("ok", "degraded") and not drift
+            # ADR-045: an adapter that classifies drift (breaking_drift()) gates availability on the fatal subset
+            # only; one that doesn't yet (motion-graphics / qc / subtitle / thumbnail) keeps the stricter all-drift
+            # gate until it's given the same treatment.
+            gating_drift = ad.breaking_drift() if hasattr(ad, "breaking_drift") else drift
+            ok = doc.get("status") in ("ok", "degraded") and not gating_drift
             detail = f"{ad.version} at {located.describe()} (doctor {doc.get('status')})" + ("; contract drift: " + "; ".join(drift)[:200] if drift else "")
             evidence: Dict[str, Any] = {"version": ad.version, "root": located.describe(), "contract": ad.contract.get("schema") or ad.contract.get("contract_version"),
                                         "tools": sorted(ad.tools), "doctor": doc.get("status"), "problems": list(doc.get("problems") or []), "warnings": list(doc.get("warnings") or []), "drift": drift}

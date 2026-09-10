@@ -190,6 +190,33 @@ def drift_report(live: Dict[str, Any], pinned: Dict[str, Any], keys: Tuple[str, 
     return out
 
 
+def breaking_drift(live: Dict[str, Any], pinned: Dict[str, Any], fatal_keys: Tuple[str, ...], list_key: Optional[str] = None, item_id: str = "type",
+                   fatal_item_keys: Tuple[str, ...] = ()) -> List[str]:
+    """The subset of `drift_report`'s differences that can actually change this adapter's behaviour: a change to a
+    field it depends on for the wire protocol or for assumptions baked in outside per-call validation (`fatal_keys` /
+    `fatal_item_keys`), or an item the adapter already relies on disappearing from the live contract. A satellite
+    Skill's `version` moving within the range `check_contract` already accepts, a brand-new item appearing (more
+    capability than the pinned snapshot knew about), or a change confined to a field the adapter re-validates
+    against the live contract on every call (an operation's `parameters` schema, for one) is still visible via
+    `drift_report`/`.drift()` for operators, but a purely additive Skill release must not flip a capability from
+    AVAILABLE to MISSING by itself — only a genuine `fatal_keys` finding does that (ADR-045)."""
+    out: List[str] = []
+    for k in fatal_keys:
+        if live.get(k) != pinned.get(k):
+            out.append(f"{k}: pinned {json.dumps(pinned.get(k), sort_keys=True, default=str)[:160]} != live {json.dumps(live.get(k), sort_keys=True, default=str)[:160]}")
+    if list_key:
+        lo = {str(o.get(item_id)): o for o in live.get(list_key) or [] if isinstance(o, dict)}
+        po = {str(o.get(item_id)): o for o in pinned.get(list_key) or [] if isinstance(o, dict)}
+        for t in sorted(po):
+            if t not in lo:
+                out.append(f"{list_key} {t}: pinned but not in the installed contract")
+        for t in sorted(set(lo) & set(po)):
+            for k in fatal_item_keys:
+                if lo[t].get(k) != po[t].get(k):
+                    out.append(f"{list_key} {t}.{k}: pinned {json.dumps(po[t].get(k), sort_keys=True, default=str)[:120]} != live {json.dumps(lo[t].get(k), sort_keys=True, default=str)[:120]}")
+    return out
+
+
 def error_table(contract: Dict[str, Any]) -> Tuple[Dict[str, bool], Dict[str, int]]:
     """(code → retryable, code → exit code) from a contract's `errors` block. Two shapes exist in the ecosystem: a `retryable`
     map (audio-production family) or a `non_retryable` list (subtitle-skill); both are read, nothing is assumed."""

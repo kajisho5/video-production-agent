@@ -79,11 +79,32 @@ class ColorGradingAdapterTests(unittest.TestCase):
         os.environ["FAKE_CG_MODE"] = "contract_drift"
         ad2 = self._adapter()
         self.assertTrue(ad2.drift() and any("EXPOSURE" in x for x in ad2.drift()), "a compatible but different contract is reported as drift")
+        self.assertEqual(ad2.breaking_drift(), [], "a brand-new operation is additive capability, not a breaking change (ADR-045)")
         os.environ.pop("FAKE_CG_MODE")
         doc = ad.doctor()
         self.assertEqual((doc["status"], ad.operation_status(doc)["RETAG"], doc["exit_code"]), ("ok", "supported", 0))
         os.environ["FAKE_CG_MODE"] = "doctor_degraded"
         self.assertEqual(self._adapter().operation_status(self._adapter().doctor())["LUT_APPLY"], "unavailable")
+
+    # ADR-045: purely additive drift (a version bump within the accepted range, an operation gaining optional
+    # parameters, unsupported_operations shrinking) never blocks availability; an operation this adapter already
+    # relies on disappearing, or a protocol-shape field changing, does.
+    def test_breaking_drift_classification(self):
+        from video_agent.tools.color_grading import contract_breaking_drift, pinned_contract
+        pinned = pinned_contract()
+        live = json.loads(json.dumps(pinned))
+        live["version"] = "9.9.9"
+        for op in live["operations"]:
+            if op["type"] == "PRIMARY_CORRECTION":
+                op["parameters"] = dict(op["parameters"], new_knob={"type": "number"})
+        live["unsupported_operations"] = [u for u in live["unsupported_operations"] if u["type"] != "WHITE_BALANCE"]
+        self.assertEqual(contract_breaking_drift(live, pinned), [], "version bump + a new optional parameter + unsupported shrinking is additive")
+        live2 = json.loads(json.dumps(pinned))
+        live2["operations"] = [o for o in live2["operations"] if o["type"] != "PRIMARY_CORRECTION"]
+        self.assertTrue(contract_breaking_drift(live2, pinned), "an operation this adapter relies on disappearing must stay fatal")
+        live3 = json.loads(json.dumps(pinned))
+        live3["execution"]["shell"] = True
+        self.assertTrue(contract_breaking_drift(live3, pinned), "a protocol-shape field changing must stay fatal")
 
     def test_request_lowering_and_refusals(self):
         ad = self._adapter(); paths = self._paths()

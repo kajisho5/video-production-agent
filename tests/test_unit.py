@@ -4141,6 +4141,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         ad2 = self._adapter()   # compatible but drifted: usable only if the agent re-verifies; the drift is reported, never hidden
         drift = ad2.drift()
         self.assertTrue(any("video-editing/crop: installed but not pinned" in d for d in drift) and any(d.startswith("operations:") for d in drift), drift)
+        self.assertEqual(ad2.breaking_drift(), [], "a brand-new tool/operation is additive capability, not a breaking change (ADR-045)")
         # the pinned contract cannot be edited into something the checks would not notice
         bad = json.loads(json.dumps(pinned_contract()))
         bad["tools"][0]["produces_output"] = False
@@ -4150,6 +4151,25 @@ class VideoEditingAdapterTests(unittest.TestCase):
         bad = json.loads(json.dumps(pinned_contract())); bad["tools"][1]["operation_type"] = "CROP"
         self.assertTrue(any("not a declared operation" in e for e in check_contract(bad)))
         self.assertEqual(contract_drift(pinned_contract(), pinned_contract()), [])
+
+    # ADR-045: purely additive drift (a version bump within the accepted range, a new tool, an existing tool
+    # gaining optional parameters) never blocks availability; a tool this adapter already relies on disappearing,
+    # or a protocol-shape field changing, does.
+    def test_breaking_drift_classification(self):
+        from video_agent.tools.video_editing import contract_breaking_drift, pinned_contract
+        pinned = pinned_contract()
+        live = json.loads(json.dumps(pinned))
+        live["version"] = "9.9.9"
+        for t in live["tools"]:
+            if t["tool_id"] == "video-editing/speed":
+                t["parameters"] = dict(t["parameters"], smooth={"type": "string"})
+        self.assertEqual(contract_breaking_drift(live, pinned), [], "version bump + a tool's new optional parameter is additive")
+        live2 = json.loads(json.dumps(pinned))
+        live2["tools"] = [t for t in live2["tools"] if t["tool_id"] != "video-editing/speed"]
+        self.assertTrue(contract_breaking_drift(live2, pinned), "a tool this adapter relies on disappearing must stay fatal")
+        live3 = json.loads(json.dumps(pinned))
+        live3["execution"]["shell"] = True
+        self.assertTrue(contract_breaking_drift(live3, pinned), "a protocol-shape field changing must stay fatal")
 
     # 2. valid execution: argv list, request on stdin, response → ToolResult with artifact / observation / timeline / provenance
     def test_valid_execution_and_mapping(self):
@@ -5104,10 +5124,12 @@ class AudioProductionAdapterTests(unittest.TestCase):
             with self.assertRaises(ContractError, msg=mode) as cm:
                 self._adapter()
             self.assertIn(msg, str(cm.exception))
-        # a compatible but different contract is drift: reported, and the resolver makes the capability MISSING (never silently kept)
+        # a compatible but different contract is drift: reported, never silently kept -- but purely additive drift
+        # (a new operation the adapter doesn't know about yet) is not fatal to the capability (ADR-045)
         os.environ["FAKE_AP_MODE"] = "contract_drift"
         ad2 = self._adapter()
         self.assertTrue(any("RESAMPLE" in d for d in ad2.drift()), ad2.drift())
+        self.assertEqual(ad2.breaking_drift(), [], "a brand-new operation is additive capability, not a breaking change (ADR-045)")
         # static checks of the contract the adapter enforces: every tampering is a violation
         c = pinned_contract()
         for fn, msg in ((lambda d: d["execution"].update(arbitrary_filters=True), "arbitrary_filters"), (lambda d: d["execution"].update(canonical_invocation=["sh", "-c"]), "canonical_invocation"),
@@ -5116,6 +5138,26 @@ class AudioProductionAdapterTests(unittest.TestCase):
                         (lambda d: d["operations"][0].update(tool="bash/run"), "not an ffmpeg-skill tool"), (lambda d: d.update(schema_versions={"contract": "2"}), "schema_versions")):
             doc = json.loads(json.dumps(c)); fn(doc)
             self.assertTrue(any(msg in e for e in check_contract(doc)), (msg, check_contract(doc)))
+
+    # ADR-045: purely additive drift (a version bump within the accepted range, an operation gaining optional
+    # parameters, unsupported_operations shrinking) never blocks availability; an operation this adapter already
+    # relies on disappearing, or a protocol-shape field changing, does.
+    def test_breaking_drift_classification(self):
+        from video_agent.tools.audio_production import contract_breaking_drift, pinned_contract
+        pinned = pinned_contract()
+        live = json.loads(json.dumps(pinned))
+        live["version"] = "9.9.9"
+        for op in live["operations"]:
+            if op["type"] == "GAIN":
+                op["parameters"] = dict(op["parameters"], new_knob={"type": "number"})
+        live["unsupported_operations"] = [u for u in live["unsupported_operations"] if u["type"] != "RESAMPLE"]
+        self.assertEqual(contract_breaking_drift(live, pinned), [], "version bump + a new optional parameter + unsupported shrinking is additive")
+        live2 = json.loads(json.dumps(pinned))
+        live2["operations"] = [o for o in live2["operations"] if o["type"] != "GAIN"]
+        self.assertTrue(contract_breaking_drift(live2, pinned), "an operation this adapter relies on disappearing must stay fatal")
+        live3 = json.loads(json.dumps(pinned))
+        live3["execution"]["shell"] = True
+        self.assertTrue(contract_breaking_drift(live3, pinned), "a protocol-shape field changing must stay fatal")
 
     def test_valid_execution_and_mapping(self):
         ad = self._adapter(); paths = self._paths()
@@ -5255,9 +5297,11 @@ class AudioProductionAdapterTests(unittest.TestCase):
             os.environ["FAKE_AP_MODE"] = "doctor_fail"
             caps = CapabilityResolver(self.tmp, env={}).resolve()
             self.assertEqual(caps["audio-production"].status, "MISSING"); self.assertTrue(all(caps[f"audio-production:{t}"].status == "MISSING" for t in ops))
+            # ADR-045: purely additive drift (RESAMPLE gaining support) is visible in the detail but does not flip
+            # the capability to MISSING -- only breaking_drift() gates availability, and this fake's drift has none.
             os.environ["FAKE_AP_MODE"] = "contract_drift"
             caps = CapabilityResolver(self.tmp, env={}).resolve()
-            self.assertEqual(caps["audio-production"].status, "MISSING"); self.assertIn("drift", caps["audio-production"].detail)
+            self.assertEqual(caps["audio-production"].status, "AVAILABLE"); self.assertIn("drift", caps["audio-production"].detail)
         finally:
             res.locate_audio_production = orig
             os.environ.pop("FAKE_AP_MODE", None)

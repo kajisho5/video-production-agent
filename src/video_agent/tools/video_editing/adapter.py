@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
+from ..skill_process import breaking_drift
 from ..ffmpeg_skill.adapter import PathPolicy, run_process_group
 from .locate import VideoEditingSkill, locate_video_editing
 from .lowering import ARGS, OPERATION_ID, OUTPUT_ID, Lowering, op_type
@@ -187,6 +188,19 @@ DRIFT_KEYS = ("skill_id", "version", "schema", "schemas", "operations", "capabil
               "request_shape", "formats")
 DRIFT_TOOL_KEYS = ("tool_id", "skill_id", "version", "operation_type", "capability", "required_capabilities", "inputs", "input_arity", "parameters",
                    "produces_output", "writes_media", "deterministic", "result_keys", "executed_by", "kind")
+# ADR-045: the subset of DRIFT_KEYS / DRIFT_TOOL_KEYS that can actually break this adapter if it changes. `version`
+# moves within the range check_contract() already accepts; the top-level `operations` dict duplicates what the
+# per-tool comparison below already covers at finer grain, so it is redundant rather than informative; `unsupported`
+# growing/shrinking and a tool's `parameters` gaining new optional fields are capability the adapter simply didn't
+# know about yet -- request building re-validates every parameter against the *live* contract on every call, so a
+# stale pinned snapshot here can never cause a wrong call, only a once-per-bump refusal of a call this adapter
+# doesn't yet exercise. A tool disappearing from the live contract stays fatal via the per-tool membership check.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "operations", "unsupported"))
+FATAL_DRIFT_TOOL_KEYS = tuple(k for k in DRIFT_TOOL_KEYS if k not in ("version", "parameters"))
+
+
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "tools", "tool_id", FATAL_DRIFT_TOOL_KEYS)
 
 
 def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -359,6 +373,10 @@ class VideoEditingAdapter(ToolAdapter):
 
     def drift(self) -> List[str]:
         return contract_drift(self.contract)
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-045: the subset of `drift()` that should gate availability (protocol/execution-shape changes only)."""
+        return contract_breaking_drift(self.contract)
 
     def describe(self) -> Dict[str, Any]:
         return {"name": self.name, "version": self.version, "root": self.skill.describe(), "schemas": dict(self.contract.get("schemas") or {}),

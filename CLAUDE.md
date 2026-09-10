@@ -46,6 +46,8 @@ The Agent must not directly generate arbitrary FFmpeg shell commands. Use a vali
 
 Inspect existing code and available tooling yourself before asking the user for information that can be determined by inspection.
 
+Before running `tests/test_integration.py` (or anything else against the sibling Skill checkouts under `VIDEO_AGENT_*_DIR`), `git fetch` and fast-forward each checkout used in that run to its `origin/main`, and check `git status --short` is clean first. A stale local checkout produces false failures indistinguishable from real ones (e.g. `FfmpegSkillContractTests` failing because a catalog-declared script doesn't exist in an outdated `ffmpeg-skill` checkout, when the script is already on GitHub) and wastes time chasing a bug that isn't there. This matters especially because other sessions/agents work on these same repos concurrently — `origin/main` moves without this session's knowledge.
+
 If a requirement conflicts with the actual ffmpeg-skill interface, document the discrepancy and design an adapter rather than silently changing either project.
 
 When uncertain about a major architectural decision, explain the trade-off before making an irreversible choice.
