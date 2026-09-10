@@ -36,6 +36,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy, run_process_group
+from ..skill_process import breaking_drift
 from .locate import AudioProductionSkill, locate_audio_production
 from .lowering import OPERATION_ID, OUTPUT_ID, TOOL_ID, Lowering
 
@@ -182,6 +183,22 @@ def pinned_contract() -> Dict[str, Any]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "intermediate_format", "channel_layouts", "sample_rates",
               "execution", "ffmpeg_skill", "request", "response", "provenance", "schema_versions", "errors")
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "keeps_timeline", "deterministic")
+# ADR-045: the subset of DRIFT_KEYS / DRIFT_OPERATION_KEYS that can actually break this adapter if it changes.
+# `version` moves within the range check_contract() already accepts; a new operation appearing, an operation
+# gaining new optional `parameters`, `unsupported_operations`/`output_formats` growing, or the single tool's
+# `operations` list gaining an entry (`tools`, here a single-item list, is compared wholesale) are capability the
+# adapter simply didn't know about yet -- request building re-validates every parameter against the *live*
+# contract on every call, so a stale pinned snapshot here can never cause a wrong call, only a once-per-bump
+# refusal of a call this adapter doesn't yet exercise. The tool's role / produces_output / deterministic /
+# mutates_input / delegates_to invariants that `tools` could otherwise catch drifting are independently
+# hard-validated by check_contract() against the live contract on every fetch, so dropping `tools` from the fatal
+# set loses no real coverage.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools"))
+FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
+
+
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "operations", "type", FATAL_DRIFT_OPERATION_KEYS)
 
 
 def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -274,6 +291,7 @@ class AudioProductionAdapter(ToolAdapter):
         self.lowering = Lowering(self.contract, self.workspace)
         self.retryable: Dict[str, bool] = {str(k): bool(v) for k, v in ((self.contract.get("errors") or {}).get("retryable") or {}).items()}
         self._drift: Optional[List[str]] = None
+        self._breaking_drift: Optional[List[str]] = None
 
     # ---- process boundary
     def _invoke(self, argv: List[str], stdin: Optional[str] = None, timeout: Optional[float] = None) -> "tuple[int, str, str]":
@@ -319,6 +337,12 @@ class AudioProductionAdapter(ToolAdapter):
         if self._drift is None:
             self._drift = contract_drift(self.contract)
         return self._drift
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-045: the subset of `drift()` that should gate availability (protocol/execution-shape changes only)."""
+        if self._breaking_drift is None:
+            self._breaking_drift = contract_breaking_drift(self.contract)
+        return self._breaking_drift
 
     def operation_status(self, doctor: Dict[str, Any]) -> Dict[str, str]:
         """type → supported | unsupported | unknown as the Skill's doctor reports it (never guessed here)."""

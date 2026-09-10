@@ -28,8 +28,8 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
-                             remove_fresh, same_file, scan_forbidden, scrub)
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, fingerprint_matches, invoke,
+                             one_json_document, remove_fresh, same_file, scan_forbidden, scrub)
 from .locate import locate_color_grading
 
 SKILL_ID = "color-grading"
@@ -53,6 +53,18 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "execution", "ffmpeg_skill", "request", "response", "provenance",
               "schema_versions", "errors", "lut", "color_space", "hdr_sdr")
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "changes_duration", "changes_resolution", "deterministic")
+# ADR-045: the subset of DRIFT_KEYS / DRIFT_OPERATION_KEYS that can actually break this adapter if it changes.
+# `version` moves within the range check_contract() already accepts (that's the whole point of the range); a new
+# operation appearing, an operation gaining new optional `parameters`, `unsupported_operations`/`output_formats`
+# growing, or the single tool's `operations` list gaining an entry (`tools`, here a single-item list, is compared
+# wholesale) are all capability the adapter simply didn't know about yet -- params_for() re-validates every
+# parameter against the *live* contract on every call, so a stale pinned snapshot here can never cause a wrong
+# call, only a once-per-bump refusal of a call this adapter doesn't yet exercise. The tool's role / produces_output
+# / deterministic / input_type invariants that `tools` could otherwise catch drifting are independently
+# hard-validated by check_contract() against the live contract on every fetch, so dropping `tools` from the fatal
+# set loses no real coverage.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools"))
+FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
 PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
@@ -136,6 +148,10 @@ def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None
     return drift_report(live, pinned or pinned_contract(), DRIFT_KEYS, "operations", "type", DRIFT_OPERATION_KEYS)
 
 
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "operations", "type", FATAL_DRIFT_OPERATION_KEYS)
+
+
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
     ver = str(contract.get("version") or "")
     tools = [ToolSpec(tool_id=TOOL_ID, skill_id=SKILL_ID, version=ver, description=str(t.get("description", "")), required_capabilities=[SKILL_ID],
@@ -176,6 +192,7 @@ class ColorGradingAdapter(ToolAdapter):
         self.retryable, self.exit_codes = error_table(self.contract)
         self.tools = {TOOL_ID}
         self._drift: Optional[List[str]] = None
+        self._breaking_drift: Optional[List[str]] = None
 
     # ---- transport
     def _invoke(self, argv: List[str], stdin: Optional[str] = None, timeout: Optional[float] = None):
@@ -216,6 +233,12 @@ class ColorGradingAdapter(ToolAdapter):
         if self._drift is None:
             self._drift = contract_drift(self.contract)
         return self._drift
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-045: the subset of `drift()` that should gate availability (protocol/execution-shape changes only)."""
+        if self._breaking_drift is None:
+            self._breaking_drift = contract_breaking_drift(self.contract)
+        return self._breaking_drift
 
     # ---- ToolAdapter
     def describe(self) -> Dict[str, Any]:
