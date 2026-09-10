@@ -4877,6 +4877,13 @@ class PriorityAToolsTests(unittest.TestCase):
     def _svc(self, **kw):
         return make_service(self.tmp, adapter=FakeAdapter(**kw))
 
+    def test_deinterlace_default_approval_is_confirm(self):
+        """ADR-046 correction: deinterlace.py's own --help says it re-encodes the whole file (lossy) even as a
+        no-op, so its *default* policy (before any explicit-requirement waiver) must be CONFIRM like every other
+        edit.* op, not AUTO."""
+        from video_agent.agent.decision import APPROVAL_KEYS
+        self.assertEqual(APPROVAL_KEYS["video.deinterlace"][1], "CONFIRM")
+
     def test_requirement_vocabulary_and_refusals(self):
         from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
         from video_agent.agent.requirements import requirement_map
@@ -4964,7 +4971,7 @@ class PriorityAToolsTests(unittest.TestCase):
         skills = {s["skill"] for s in d["plan"]["steps"]}
         self.assertTrue({"video_deinterlace", "video_stabilize", "video_crop", "video_redact"}.issubset(skills))
         deint_dec = next(x for x in d["decisions"] if x["subject"] == "video.deinterlace")
-        self.assertEqual(deint_dec["approval"], "AUTO", "deinterlace is quality-only, no destructive framing/privacy consequence")
+        self.assertEqual(deint_dec["approval"], "AUTO", "default is CONFIRM (lossy re-encode); the explicit edit.deinterlace requirement waives it here, same as the other edit.* ops")
         crop_dec = next(x for x in d["decisions"] if x["subject"] == "video.crop")
         redact_dec = next(x for x in d["decisions"] if x["subject"] == "video.redact")
         self.assertEqual(crop_dec["risk"], "MEDIUM")

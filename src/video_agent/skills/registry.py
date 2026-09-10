@@ -290,8 +290,8 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("video_redact", "1.0", "Blur / pixelate a caller-supplied pixel rectangle for the whole clip (privacy redaction); no face/plate detection",
                          {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/redact"]))
-    r.register(SkillSpec("video_deinterlace", "1.0", "Deinterlace (yadif); quality-only, no framing/privacy consequence",
-                         {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/deinterlace"]))
+    r.register(SkillSpec("video_deinterlace", "1.0", "Deinterlace (yadif); quality-only but re-encodes the whole file (lossy), so it is CONFIRM not AUTO",
+                         {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "CONFIRM", ["ffmpeg-skill/deinterlace"]))
     r.register(SkillSpec("video_crop", "1.0", "Crop to a caller-supplied exact pixel rectangle; no auto letterbox/aspect detection (that is video_fit/video_fill)",
                          {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/crop"]))
