@@ -133,6 +133,18 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ToolError):
             a.build_argv("ffmpeg-skill/cut", {"input": "/x", "accurate": "yes"}, {})
 
+    def test_multicam_catalog_declares_every_real_flag(self):
+        """The catalog's `multicam` entry was missing max_offset/analyze_seconds/width/height/fps/crf (present in the real
+        multicam.py --help since ADR-035, found while auditing the ffmpeg-skill/agent boundary after ADR-045): an
+        undeclared-but-real flag is silently unusable (`ToolError: flag not in catalog`), not a parse error surfaced to
+        the caller. Fixed by declaring them; this pins the fix so the drift can't quietly come back."""
+        from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+        self.assertEqual(set(CATALOG["multicam"]["flags"]), {"switch", "auto", "audio", "offsets_only", "max_offset", "analyze_seconds", "fix_drift", "width", "height", "fps", "crf", "output", "preset"})
+        a = FfmpegSkillAdapter(self.skill)
+        argv = a.build_argv("ffmpeg-skill/multicam", {"inputs": ["/a.mp4", "/b.mp4"], "switch": "0-8:0,8-16:1", "max_offset": 30, "analyze_seconds": 60, "width": 1920, "height": 1080, "fps": 30, "crf": 20, "output": "/w/o.mp4"}, {})
+        for flag in ("--max-offset", "30", "--analyze-seconds", "60", "--width", "1920", "--height", "1080", "--fps", "30", "--crf", "20"):
+            self.assertIn(flag, argv)
+
     def test_path_policy(self):
         src = fake_media(self.tmp)
         ws = str(Path(self.tmp) / "ws")
