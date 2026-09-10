@@ -236,7 +236,7 @@ def default_registry() -> SkillRegistry:
     # video-editing-skill's own TRIM (start/end range, distinct from silence_cleanup's multi-range CUT) is a
     # real, tested, published Capability (video.trim) with no consuming SkillSpec at all until now (found by
     # skills/diagnostics.py's ecosystem-wide run, docs/design decision kajisho5/AI-video-production-OS
-    # WORK_QUEUE.md item 1/8). Declared for the roadmap only, like multi_source_sync/semantic_deletion below:
+    # WORK_QUEUE.md item 1/8). Declared for the roadmap only, like semantic_deletion below:
     # wiring an actual "video.trim" edit request through agent/editing.py's EDIT_OPS and
     # agent/production_plan.py's domain-parameter table is real design work (a new request verb, its exact
     # parameter contract, a risk classification) this addition deliberately does not decide unprompted.
@@ -277,9 +277,35 @@ def default_registry() -> SkillRegistry:
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
                          {"reference": "media", "second": "media"}, {"observation": "sync"}, ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/sync"]))
-    # declared, not implemented in Phase 1 (registry keeps the contract visible): the *production* side (switching) of multi-source work
-    r.register(SkillSpec("multi_source_sync", "0.1", "Align cameras/recorders by audio", {"assets": "media[]"}, {"timeline": "offsets"},
-                         ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/sync", "ffmpeg-skill/multicam"], phase=2))
+    # explicit multi-camera switch (ADR-045): the production side of multi-source work. ffmpeg-skill/multicam aligns every
+    # input to the reference by audio (the same correlation as sync_analysis) then cuts between them on the reference
+    # timeline per the user's own switch list -- no speaker detection, no automatic cut decision.
+    r.register(SkillSpec("camera_switch", "1.0", "Align 2+ cameras/recorders by audio and cut between them per an explicit switch list",
+                         {"inputs": "media[]", "switch": "str"}, {"artifact": "video"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/multicam"]))
+    # ---- ADR-046 Priority A batch: five previously-undeclared ffmpeg-skill scripts, wired as real (phase 1) Skills.
+    # video_grid is the third, mutually exclusive way to build PROGRAMME from 2+ video inputs (alongside video_concat /
+    # camera_switch); the other four are single-source filter-style ops that compose freely on top of whichever one ran.
+    r.register(SkillSpec("video_grid", "1.0", "Composite 2+ clips into one COLSxROWS comparison grid (explicit layout, no auto-detection)",
+                         {"inputs": "media[]", "cols": "int", "rows": "int"}, {"artifact": "video"}, ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/grid"]))
+    r.register(SkillSpec("video_redact", "1.0", "Blur / pixelate a caller-supplied pixel rectangle for the whole clip (privacy redaction); no face/plate detection",
+                         {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/redact"]))
+    r.register(SkillSpec("video_deinterlace", "1.0", "Deinterlace (yadif); quality-only but re-encodes the whole file (lossy), so it is CONFIRM not AUTO",
+                         {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "CONFIRM", ["ffmpeg-skill/deinterlace"]))
+    r.register(SkillSpec("video_crop", "1.0", "Crop to a caller-supplied exact pixel rectangle; no auto letterbox/aspect detection (that is video_fit/video_fill)",
+                         {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/crop"]))
+    r.register(SkillSpec("video_stabilize", "1.0", "Stabilize shaky footage (vidstab, two-pass analysis + render)",
+                         {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/stabilize"]))
+    # cropdetect is deliberately NOT a pipeline edit op (ADR-046): it is a read-only measurement (reports a crop
+    # rectangle, writes no file) meant to feed video_crop's x/y/width/height, the same "measure, then a separate
+    # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is registered here as a real,
+    # callable Skill+Tool (phase 1) but is not wired into agent/editing.py's OPERATIONS / EDIT_ORDER, and not (yet)
+    # integrated into the media/analysis.py Observation framework that sync_analysis / silence_analysis etc. use --
+    # that integration is real design work of its own (an AnalysisKind, a Decision that proposes video_crop from its
+    # result) left for a follow-up rather than decided unprompted here.
+    r.register(SkillSpec("cropdetect_analysis", "1.0", "Measure black letterbox/pillarbox bars and report the crop rectangle that removes them (measurement only, no output file)",
+                         {"asset": "video"}, {"observation": "crop_rectangle"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/cropdetect"]))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited
     # ffmpeg-skill/caption directly); each Skill is reached only through its own package tool and needs the package capability
     r.register(SkillSpec("subtitle_generation", "1.0", "Transcript cues → SRT / WebVTT sidecar (mapped onto the delivered timeline)", {"transcript": "observation"}, {"artifact": "CAPTIONS"},

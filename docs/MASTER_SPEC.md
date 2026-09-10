@@ -1649,7 +1649,77 @@ inputs [reference, target…] → AnalysisRequest(kinds += sync) → registry-se
 - A measurement, not a decision: no event, no inference, no decision and no plan operation is derived from it (the plan hash is
   identical with and without the kind). Failures (no audio, too little audio, malformed result) stay in the analysis failure
   domain; `replace_audio` / `trim_second` are never requested (no synced output is written by the agent).
-- Not here: camera / source switching, multicam rendering, speaker identity, automatic offset correction.
+- Not here: camera / source switching (see ADR-045 below), multicam rendering, speaker identity, automatic offset correction.
+
+### Explicit multi-camera switch (implemented, ADR-045)
+
+```
+2+ video inputs + edit.switch="START-END:CAM,..." (explicit) → Decision(video.switch, TRANSFORM, CONFIRM) → ProductionPlan step
+  (camera_switch) → IR video.switch{inputs, output=programme, switch, audio, timeline_duration} → registry-selected
+  ffmpeg-skill/multicam (aligns every input to the first by audio, cuts per the switch list) → programme
+```
+
+- `video.switch` is an alternative to `video.concat` for building `programme` from 2+ video inputs — never both: `edit.concat`
+  and `edit.switch` requested together is a BLOCK on both, an ambiguous request is never guessed. Unlike concat's summed
+  segments, the programme's duration is the (trimmed) reference input's own duration (multicam cuts on the reference
+  timeline, it does not lengthen it).
+- The times are entirely the user's own: no speaker detection, no automatic cut decision, no diarization Skill exists in
+  this ecosystem. `multicam.py`'s `--auto` (alternate cameras every N seconds) is not exposed — only the explicit
+  `--switch` form.
+- Everything downstream that only cares "does `programme` exist" (loudness, finishing, delivery, thumbnail, QC) does not
+  distinguish concat from switch.
+
+### Priority A tools: grid / redact / deinterlace / crop / stabilize (implemented, ADR-046)
+
+An audit of ffmpeg-skill found 39 real scripts against 12 declared in the catalog. ADR-046 wires in the first batch of
+five previously-undeclared scripts as real (phase 1) Skills, plus `cropdetect` as a read-only measurement:
+
+```
+video.grid:        2+ video inputs + edit.grid + edit.grid.cols/rows (explicit) → Decision(video.grid, TRANSFORM, CONFIRM)
+                    → IR video.grid{inputs, output=programme, cols, rows, …, timeline_duration} → ffmpeg-skill/grid
+video.redact:       1 subject + edit.redact={x,y,width,height} (explicit rectangle) → Decision(video.redact, TRANSFORM, CONFIRM)
+                    → IR video.redact{asset, x, y, width, height, mode, …} → ffmpeg-skill/redact
+video.deinterlace:  1 subject + edit.deinterlace (explicit) → Decision(video.deinterlace, TRANSFORM, AUTO)
+                    → IR video.deinterlace{asset, mode, parity, …} → ffmpeg-skill/deinterlace
+video.crop:         1 subject + edit.crop={x,y,width,height} (explicit rectangle) → Decision(video.crop, TRANSFORM, CONFIRM)
+                    → IR video.crop{asset, x, y, width, height, …} → ffmpeg-skill/crop
+video.stabilize:    1 subject + edit.stabilize (explicit) → Decision(video.stabilize, TRANSFORM, CONFIRM)
+                    → IR video.stabilize{asset, shakiness, smoothing, zoom, crop_mode, tripod} → ffmpeg-skill/stabilize
+```
+
+- `video.grid` is a **third** way to build `programme` from 2+ video inputs, alongside `video.concat` / `video.switch` —
+  all three are mutually exclusive (requesting more than one is a BLOCK on all of them, never a silent choice). Unlike
+  concat's summed segments or switch's reference-timeline duration, grid's programme duration is the **shortest**
+  (trimmed) input by default, or the **longest** with `edit.grid.pad` (grid.py holds each shorter cell's last frame).
+- `video.redact`, `video.deinterlace`, `video.crop` and `video.stabilize` are single-source ops appended to the existing
+  fixed pipeline order (`EDIT_ORDER`), after the multi-source entries and before `video.speed` — they apply to whichever
+  `programme` was built (concat / switch / grid) or to each untouched asset, and compose freely with each other and with
+  the pre-existing speed/resize/fit/fill/overlay chain (no new BLOCK-conflict rules among them: none of these operations
+  contradict another the way `edit.fit` + `edit.fill` do).
+- **Non-goals, matching the underlying scripts' own stated non-goals:** `video.redact` and `video.crop` never locate
+  anything themselves — no face detection, no license-plate detection, no automatic letterbox detection (that is
+  `video.fit`/`video.fill`, a different vocabulary that computes a rectangle from a target aspect ratio rather than
+  measuring existing bars). The caller always supplies the exact `{x, y, width, height}` rectangle in source pixels;
+  width and height must be even (crop.py's / redact.py's own validation for 4:2:0 chroma subsampling), checked at
+  planning time so a bad rectangle is refused, never silently rounded. `video.grid`'s `--auto` layout heuristics and
+  `video.stabilize`'s intermediate transforms file are entirely the Skill's own internals, never surfaced here.
+- **Risk / approval policy:** `video.redact` (HIGH — a wrong rectangle is a privacy/compliance leak) and `video.crop`
+  (MEDIUM — an irreversible framing change) default to CONFIRM like every other `edit.*` op; an explicit USER
+  requirement waives it the same way. `video.deinterlace` defaults to **AUTO** — it is quality-only, changes no framing
+  and no picture content that would need a human's confirmation, and (per this codebase's engineering principle of
+  always preserving the original media) is never destructive to anything the caller could not simply re-derive.
+  `video.grid` and `video.stabilize` default to CONFIRM (MEDIUM risk): a grid composite and a stabilization pass can
+  both visibly change the deliverable in ways worth a second look before committing.
+- **`cropdetect` is deliberately not a pipeline edit-op.** It is a read-only measurement (ffmpeg-skill/cropdetect
+  reports a crop rectangle and writes no file) with the same "measure, then a separate explicit op acts on the result"
+  shape as `sync_analysis` feeding `camera_switch` (ADR-045): it is registered as a real, callable Skill+Tool
+  (`cropdetect_analysis`, phase 1) reachable directly through the tool adapter, but it is not an `edit.*` requirement,
+  not in `EDIT_ORDER`, and not (yet) integrated into the `media/analysis.py` Observation/AnalysisKind framework that
+  `sync_analysis` / `silence_analysis` use. That integration — a new `AnalysisKind`, and a Decision that proposes
+  `video.crop` from its measured rectangle — is real design work of its own, deliberately left for a follow-up rather
+  than decided unprompted here. Its exact JSON result shape (`x`, `y`, `width`, `height`, `crop_filter`) is a
+  best-informed assumption consistent with the tool's stated purpose, since no real-media `--json` capture of
+  cropdetect.py was available to verify it during this batch (see the catalog.py comment at its declaration).
 
 ### Production Decision Engine (implemented, ADR-027)
 

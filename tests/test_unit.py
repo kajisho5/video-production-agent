@@ -133,6 +133,18 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ToolError):
             a.build_argv("ffmpeg-skill/cut", {"input": "/x", "accurate": "yes"}, {})
 
+    def test_multicam_catalog_declares_every_real_flag(self):
+        """The catalog's `multicam` entry was missing max_offset/analyze_seconds/width/height/fps/crf (present in the real
+        multicam.py --help since ADR-035, found while auditing the ffmpeg-skill/agent boundary after ADR-045): an
+        undeclared-but-real flag is silently unusable (`ToolError: flag not in catalog`), not a parse error surfaced to
+        the caller. Fixed by declaring them; this pins the fix so the drift can't quietly come back."""
+        from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+        self.assertEqual(set(CATALOG["multicam"]["flags"]), {"switch", "auto", "audio", "offsets_only", "max_offset", "analyze_seconds", "fix_drift", "width", "height", "fps", "crf", "output", "preset"})
+        a = FfmpegSkillAdapter(self.skill)
+        argv = a.build_argv("ffmpeg-skill/multicam", {"inputs": ["/a.mp4", "/b.mp4"], "switch": "0-8:0,8-16:1", "max_offset": 30, "analyze_seconds": 60, "width": 1920, "height": 1080, "fps": 30, "crf": 20, "output": "/w/o.mp4"}, {})
+        for flag in ("--max-offset", "30", "--analyze-seconds", "60", "--width", "1920", "--height", "1080", "--fps", "30", "--crf", "20"):
+            self.assertIn(flag, argv)
+
     def test_path_policy(self):
         src = fake_media(self.tmp)
         ws = str(Path(self.tmp) / "ws")
@@ -971,7 +983,7 @@ class SkillToolBoundaryTests(unittest.TestCase):
         tool, reason = reg.select_tool("silence_cleanup", caps, lambda t: False)
         self.assertIsNone(tool)
         self.assertIn("no registered adapter", reason)
-        tool, reason = reg.select_tool("multi_source_sync", caps, lambda t: True)
+        tool, reason = reg.select_tool("semantic_deletion", caps, lambda t: True)
         self.assertIsNone(tool, "declared future skills are never selectable even when their tools exist")
         self.assertIn("not implemented", reason)
 
@@ -1011,12 +1023,12 @@ class SkillToolBoundaryTests(unittest.TestCase):
     def test_future_skills_are_listed_but_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
-        self.assertEqual(rows["multi_source_sync"]["status"], "NOT_IMPLEMENTED")
+        self.assertEqual(rows["semantic_deletion"]["status"], "NOT_IMPLEMENTED")
         self.assertNotIn("caption_generation", rows, "replaced by subtitle_generation / subtitle_burn_in (ADR-031)")
         self.assertEqual(rows["subtitle_burn_in"]["status"], "UNAVAILABLE", "implemented, no subtitle-skill installed here")
         self.assertEqual(rows["silence_cleanup"]["status"], "AVAILABLE")
         self.assertEqual(rows["silence_cleanup"]["tool"], "ffmpeg-skill/cut")
-        self.assertNotIn("multi_source_sync", svc.tools_for())
+        self.assertNotIn("semantic_deletion", svc.tools_for())
         self.assertNotIn("subtitle_burn_in", svc.tools_for())
 
     def test_plan_steps_name_registry_selected_tools_and_compiler_uses_them(self):
@@ -1042,7 +1054,7 @@ class SkillToolBoundaryTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("has no selected tool" in e or "plan/steps/1/tool" in e for e in rep.errors), rep.errors)  # schema rejects null first
         ir = svc.plan([self.src], "youtube")
-        ir.doc["plan"]["steps"].append({"id": "step_sync", "skill": "multi_source_sync", "tool": "ffmpeg-skill/sync", "decision_ids": [], "params": {}})
+        ir.doc["plan"]["steps"].append({"id": "step_sync", "skill": "semantic_deletion", "tool": "ffmpeg-skill/sync", "decision_ids": [], "params": {}})
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not implemented" in e for e in rep.errors), rep.errors)
         ir = svc.plan([self.src], "youtube")
@@ -1314,7 +1326,7 @@ class EcosystemContractTests(unittest.TestCase):
     def test_future_skills_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
-        for name in ("multi_source_sync", "semantic_deletion", "video_trim"):
+        for name in ("semantic_deletion", "video_trim"):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
         self.assertNotIn("caption_generation", rows, "the former caption_generation declaration (ffmpeg-skill/caption) is replaced by subtitle_generation / subtitle_burn_in (ADR-031)")
         self.assertEqual((rows["subtitle_generation"]["implemented"], rows["subtitle_generation"]["status"]), (True, "UNAVAILABLE"), "implemented; no installation in unit tests")
@@ -4629,7 +4641,7 @@ class VideoEditingOperationsTests(unittest.TestCase):
         self.assertTrue(any("PNG / JPEG" in e for e in errors(lambda doc: op(doc, "video.overlay").update(image=self.a))))
         self.assertTrue(any("before it exists" in e for e in errors(lambda doc: doc["video"]["operations"].remove(op(doc, "video.concat")))))
         self.assertTrue(any("out of the fixed operation order" in e for e in errors(lambda doc: doc["video"]["operations"].append(dict(op(doc, "video.speed"))))))
-        self.assertTrue(any("more than one video.concat" in e for e in errors(lambda doc: doc["video"]["operations"].insert(2, dict(op(doc, "video.concat"))))))
+        self.assertTrue(any("more than one multi-source programme operation" in e for e in errors(lambda doc: doc["video"]["operations"].insert(2, dict(op(doc, "video.concat"))))))
         self.assertTrue(any("distinct inputs" in e for e in errors(lambda doc: op(doc, "video.concat").update(inputs=[op(doc, "video.concat")["inputs"][0]] * 2))))
         self.assertTrue(any("no video stream" in e for e in errors(lambda doc: doc["assets"][op(doc, "video.concat")["inputs"][0]]["technical"].update(video=None))))
         self.assertTrue(any("has no plan step" in e for e in errors(lambda doc: doc["plan"]["steps"].remove(next(s for s in doc["plan"]["steps"] if s["skill"] == "video_fit")))))
@@ -4770,6 +4782,280 @@ class VideoEditingOperationsTests(unittest.TestCase):
         o7 = svc.render(load_ir(p7), p7, approve=["all"])
         self.assertEqual(o7["execution"]["status"], "COMPLETED")
         self.assertEqual(next(i for i in o7["qa"]["items"] if i["name"] == "duration")["observed"], 22.0, "11 s kept at 0.5× → 22 s, expected from the IR")
+
+
+class CameraSwitchTests(unittest.TestCase):
+    """ADR-045: an explicit multi-camera switch list (`edit.switch`, "START-END:CAM,..." on the reference timeline) as an
+    alternative to `edit.concat` -- both build `programme` from 2+ video inputs and are mutually exclusive. No speaker
+    detection, no automatic cut decision: ffmpeg-skill/multicam aligns the inputs by audio and cuts exactly where the user
+    said to. Unlike concat, the programme's duration is the (trimmed) reference input's own duration, not a sum."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.a = fake_media(self.tmp, "a.mp4")
+        self.b = fake_media(self.tmp, "b.mp4")
+        self.c = fake_media(self.tmp, "c.mp4")
+
+    def _svc(self, **kw):
+        return make_service(self.tmp, adapter=FakeAdapter(**kw))
+
+    def test_requirement_vocabulary_and_refusals(self):
+        from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+
+        def parse(**kv):
+            reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in kv.items()]
+            return parse_edit_requirements(requirement_map(reqs))
+
+        self.assertEqual(parse(**{"edit.switch": "0-8:0,8-16:1"})["video.switch"]["params"], {"switch": "0-8:0,8-16:1"})
+        self.assertEqual(parse(**{"edit.switch": "0-8:0,8-16:1", "edit.switch.audio": 1})["video.switch"]["params"]["audio"], 1)
+        self.assertTrue(parse(**{"edit.switch": "0:30-1:00:0", "edit.switch.fix_drift": True})["video.switch"]["params"]["fix_drift"])
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.switch": ""})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.switch": "0-8-0"})   # missing the ':CAM' part
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.switch": "8-0:0"})   # start not before end
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.switch.audio": 1})   # refinement without the switch itself
+
+    def test_conflict_and_block_decisions(self):
+        svc = self._svc()
+        # edit.concat and edit.switch both build the programme: an ambiguous request is refused, not guessed
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True, "edit.switch": "0-8:0,8-16:1"})
+        blk = {d["subject"] for d in ir.doc["decisions"] if d["approval"] == "BLOCK"}
+        self.assertEqual(blk, {"video.concat", "video.switch"}, "both are refused, neither silently wins")
+        self.assertEqual([op["type"] for op in ir.doc["video"]["operations"] if op["type"] not in ("video.trim",)], [], "neither multi-source op is planned once they conflict")
+        # a single input cannot be switched
+        ir2 = svc.plan([self.a], "generic", user_requirements={"edit.switch": "0-8:0"})
+        self.assertEqual([d["subject"] for d in ir2.doc["decisions"] if d["approval"] == "BLOCK"], ["video.switch"])
+        # a switch list naming a camera index beyond the given inputs is refused, not clamped
+        ir3 = svc.plan([self.a, self.b], "generic", user_requirements={"edit.switch": "0-8:0,8-16:2"})
+        b3 = next(d for d in ir3.doc["decisions"] if d["subject"] == "video.switch")
+        self.assertEqual((b3["type"], b3["approval"]), ("BLOCK", "BLOCK"))
+        self.assertIn("camera index 2", b3["decision"])
+        ir4 = svc.plan([self.a, self.b], "generic", user_requirements={"edit.switch": "0-8:0,8-16:1", "edit.switch.audio": 5})
+        b4 = next(d for d in ir4.doc["decisions"] if d["subject"] == "video.switch")
+        self.assertEqual(b4["approval"], "BLOCK")
+
+    def test_plan_ir_and_render(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.switch": "0-8:0,8-16:1", "edit.switch.audio": 1})
+        d = ir.doc
+        a_id, b_id = list(d["assets"])
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        sw = next(x for x in d["decisions"] if x["subject"] == "video.switch")
+        self.assertEqual((sw["type"], sw["approval"]), ("TRANSFORM", "AUTO"), "an explicit switch list is its own confirmation, like every other edit.* op")
+        steps = d["plan"]["steps"]
+        step = next(s for s in steps if s["skill"] == "camera_switch")
+        self.assertEqual(step["tool"], "ffmpeg-skill/multicam")
+        self.assertEqual(step["inputs"], [f"{a_id}_trim", f"{b_id}_trim"])
+        self.assertEqual(step["params"], {"asset": "programme", "inputs": [a_id, b_id], "switch": "0-8:0,8-16:1", "audio": 1})
+        ops = [op for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual([op["type"] for op in ops], ["video.switch"])
+        sw_op = ops[0]
+        self.assertEqual((sw_op["asset"], sw_op["inputs"], sw_op["output"], sw_op["switch"], sw_op["audio"]), ("programme", [a_id, b_id], "programme", "0-8:0,8-16:1", 1))
+        # unlike concat, the programme's duration is the reference input's own (trimmed) duration -- not a sum of both
+        self.assertEqual(sw_op["timeline_duration"], 11.0, "the kept range of a.mp4 after silence trim (2.85-13.85s), not 22s like concat would give")
+        self.assertNotIn("segments", sw_op, "multicam has no per-input segment list; that vocabulary is concat's alone")
+        p = str(Path(self.tmp) / "switch.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/multicam")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS")
+        self.assertIn(sw["id"], out["artifacts"][0]["decision_ids"])
+
+    def test_validator_rejects_tampered_switch_ir(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.switch": "0-8:0,8-16:1"})
+        op = next(o for o in ir.doc["video"]["operations"] if o["type"] == "video.switch")
+        op["switch"] = "0-8:0,8-16:5"   # camera index 5 doesn't exist among the 2 inputs
+        self.assertTrue(any("camera index 5" in e for e in svc.validate(ir).errors))
+
+    def test_no_speaker_detection_anywhere(self):
+        """The vocabulary and the decision are entirely the user's own times; nothing here infers who is on camera."""
+        import inspect
+        from video_agent.agent import editing
+        self.assertNotIn("speaker", inspect.getsource(editing).lower())
+
+
+class PriorityAToolsTests(unittest.TestCase):
+    """ADR-046: five previously-undeclared ffmpeg-skill scripts wired in as real Skills -- redact / deinterlace / crop /
+    stabilize (single-source, apply to whatever PROGRAMME or untouched asset already is) and grid (a third, mutually
+    exclusive way to build PROGRAMME from 2+ inputs, alongside video.concat / video.switch). cropdetect is a read-only
+    measurement, registered as a callable Skill+Tool but deliberately not a pipeline edit-op (no video mutation)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.a = fake_media(self.tmp, "a.mp4")
+        self.b = fake_media(self.tmp, "b.mp4")
+
+    def _svc(self, **kw):
+        return make_service(self.tmp, adapter=FakeAdapter(**kw))
+
+    def test_deinterlace_default_approval_is_confirm(self):
+        """ADR-046 correction: deinterlace.py's own --help says it re-encodes the whole file (lossy) even as a
+        no-op, so its *default* policy (before any explicit-requirement waiver) must be CONFIRM like every other
+        edit.* op, not AUTO."""
+        from video_agent.agent.decision import APPROVAL_KEYS
+        self.assertEqual(APPROVAL_KEYS["video.deinterlace"][1], "CONFIRM")
+
+    def test_requirement_vocabulary_and_refusals(self):
+        from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+
+        def parse(**kv):
+            reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in kv.items()]
+            return parse_edit_requirements(requirement_map(reqs))
+
+        rect = {"x": 10, "y": 20, "width": 200, "height": 100}
+        self.assertEqual(parse(**{"edit.redact": rect})["video.redact"]["params"], rect)
+        self.assertEqual(parse(**{"edit.redact": rect, "edit.redact.mode": "pixelate"})["video.redact"]["params"]["mode"], "pixelate")
+        self.assertEqual(parse(**{"edit.crop": rect})["video.crop"]["params"], rect)
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.redact": {"x": 0, "y": 0, "width": 201, "height": 100}})   # width must be even (crop.py's own validation)
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.redact": {"x": 0, "y": 0, "width": 200}})   # rectangle incomplete
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.redact.mode": "blur"})   # refinement without the rectangle itself
+        self.assertTrue(parse(**{"edit.deinterlace": True})["video.deinterlace"]["params"] == {})
+        self.assertEqual(parse(**{"edit.deinterlace": True, "edit.deinterlace.mode": "field", "edit.deinterlace.parity": "tff"})["video.deinterlace"]["params"],
+                         {"mode": "field", "parity": "tff"})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.deinterlace": True, "edit.deinterlace.mode": "bogus"})
+        self.assertEqual(parse(**{"edit.stabilize": True, "edit.stabilize.shakiness": 8, "edit.stabilize.tripod": True})["video.stabilize"]["params"],
+                         {"shakiness": 8, "tripod": True})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.stabilize": True, "edit.stabilize.shakiness": 11})   # out of 1..10
+        self.assertEqual(parse(**{"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})["video.grid"]["params"], {"cols": 2, "rows": 1})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.grid": True, "edit.grid.cols": 2})   # rows missing, grid.py's own required flag
+
+    def test_grid_conflict_and_block_decisions(self):
+        svc = self._svc()
+        # a third programme-builder competing with concat/switch: any two together are refused, not guessed
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True, "edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})
+        blk = {d["subject"] for d in ir.doc["decisions"] if d["approval"] == "BLOCK"}
+        self.assertEqual(blk, {"video.concat", "video.grid"})
+        # a single input cannot be gridded
+        ir2 = svc.plan([self.a], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 1, "edit.grid.rows": 1})
+        self.assertEqual([d["subject"] for d in ir2.doc["decisions"] if d["approval"] == "BLOCK"], ["video.grid"])
+        # cols*rows too small for the inputs is refused, not silently dropping an input
+        ir3 = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 1, "edit.grid.rows": 1})
+        b3 = next(d for d in ir3.doc["decisions"] if d["subject"] == "video.grid")
+        self.assertEqual((b3["type"], b3["approval"]), ("BLOCK", "BLOCK"))
+        self.assertIn("no room for 2", b3["decision"])
+        # audio_from referencing an input beyond the given inputs is refused
+        ir4 = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1, "edit.grid.audio_from": 5})
+        b4 = next(d for d in ir4.doc["decisions"] if d["subject"] == "video.grid")
+        self.assertEqual(b4["approval"], "BLOCK")
+
+    def test_grid_plan_ir_and_render(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})
+        d = ir.doc
+        a_id, b_id = list(d["assets"])
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        dec = next(x for x in d["decisions"] if x["subject"] == "video.grid")
+        self.assertEqual((dec["type"], dec["approval"]), ("TRANSFORM", "AUTO"), "an explicit grid request is its own confirmation, like every other edit.* op")
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_grid")
+        self.assertEqual(step["tool"], "ffmpeg-skill/grid")
+        ops = [op for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual([op["type"] for op in ops], ["video.grid"])
+        grid_op = ops[0]
+        self.assertEqual((grid_op["asset"], grid_op["inputs"], grid_op["output"], grid_op["cols"], grid_op["rows"]), ("programme", [a_id, b_id], "programme", 2, 1))
+        p = str(Path(self.tmp) / "grid.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/grid")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS")
+        self.assertIn(dec["id"], out["artifacts"][0]["decision_ids"])
+
+    def test_single_source_ops_plan_ir_and_render(self):
+        """redact / deinterlace / crop / stabilize apply to a single asset (no programme needed), in the fixed EDIT_ORDER."""
+        svc = self._svc()
+        rect = {"x": 0, "y": 0, "width": 100, "height": 100}
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.deinterlace": True, "edit.stabilize": True, "edit.crop": rect, "edit.redact": rect})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        ops = [op["type"] for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual(ops, ["video.deinterlace", "video.stabilize", "video.crop", "video.redact"], "the fixed EDIT_ORDER, not request order")
+        skills = {s["skill"] for s in d["plan"]["steps"]}
+        self.assertTrue({"video_deinterlace", "video_stabilize", "video_crop", "video_redact"}.issubset(skills))
+        deint_dec = next(x for x in d["decisions"] if x["subject"] == "video.deinterlace")
+        self.assertEqual(deint_dec["approval"], "AUTO", "default is CONFIRM (lossy re-encode); the explicit edit.deinterlace requirement waives it here, same as the other edit.* ops")
+        crop_dec = next(x for x in d["decisions"] if x["subject"] == "video.crop")
+        redact_dec = next(x for x in d["decisions"] if x["subject"] == "video.redact")
+        self.assertEqual(crop_dec["risk"], "MEDIUM")
+        self.assertEqual(redact_dec["risk"], "HIGH")
+        p = str(Path(self.tmp) / "single.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        for tool in ("ffmpeg-skill/deinterlace", "ffmpeg-skill/stabilize", "ffmpeg-skill/crop", "ffmpeg-skill/redact"):
+            r = next(o for o in out["execution"]["results"] if o["tool"] == tool)
+            self.assertTrue(r["ok"], r)
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS")
+
+    def test_redact_and_crop_reject_odd_dimensions(self):
+        """crop.py / redact.py's own validation (width/height must be even) is enforced at planning time, never rounded."""
+        from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+        for bad in ({"x": 0, "y": 0, "width": 101, "height": 100}, {"x": 0, "y": 0, "width": 100, "height": 101}):
+            reqs = [Requirement(key="edit.crop", value=bad, provenance="USER", source="cli")]
+            with self.assertRaises(EditRequirementError):
+                parse_edit_requirements(requirement_map(reqs))
+
+    def test_validator_rejects_tampered_grid_ir(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})
+        op = next(o for o in ir.doc["video"]["operations"] if o["type"] == "video.grid")
+        op["cols"], op["rows"] = 1, 1   # no longer room for 2 inputs
+        self.assertTrue(any("no room for 2" in e for e in svc.validate(ir).errors))
+
+    def test_cropdetect_is_not_a_pipeline_op(self):
+        """ADR-046: cropdetect is a measurement, not an edit.* requirement / EDIT_ORDER entry -- it cannot be requested
+        as a video operation at all (registered as a Skill+Tool, callable directly through the tool adapter, below)."""
+        from video_agent.agent.editing import EDIT_ORDER, OPERATIONS, REQUIREMENT_KEYS
+        self.assertNotIn("video.cropdetect", EDIT_ORDER)
+        self.assertNotIn("video.cropdetect", OPERATIONS)
+        self.assertNotIn("video.cropdetect", REQUIREMENT_KEYS)
+
+    def test_cropdetect_callable_through_the_tool_adapter(self):
+        """cropdetect is a real, callable tool (catalog + fake adapter branch) even though nothing in the pipeline plans it yet."""
+        from video_agent.models import Operation
+        adapter = FakeAdapter()
+        op = Operation(tool="ffmpeg-skill/cropdetect", args={"input": self.a, "seconds": 5.0}, inputs=[self.a], outputs=[])
+        r = adapter.run(op, {self.a: self.a})
+        self.assertTrue(r.ok, r)
+        for k in ("x", "y", "width", "height", "crop_filter"):
+            self.assertIn(k, r.data)
+
+    def test_registry_declares_all_six_scripts(self):
+        from video_agent.skills.registry import default_registry
+        r = default_registry()
+        for name, tool in (("video_grid", "ffmpeg-skill/grid"), ("video_redact", "ffmpeg-skill/redact"), ("video_deinterlace", "ffmpeg-skill/deinterlace"),
+                           ("video_crop", "ffmpeg-skill/crop"), ("video_stabilize", "ffmpeg-skill/stabilize"), ("cropdetect_analysis", "ffmpeg-skill/cropdetect")):
+            spec = r.get(name)
+            self.assertEqual(spec.tools, [tool])
+            self.assertEqual(spec.phase, 1, f"{name} must be phase 1 (actually implemented, not a placeholder)")
+
+    def test_no_speaker_or_face_detection_anywhere(self):
+        """redact / crop never locate anything themselves (ffmpeg-skill's own stated non-goal): the rectangle is always
+        the caller's own explicit {x, y, width, height} -- there is no detection routine anywhere in this vocabulary."""
+        import inspect
+        from video_agent.agent import editing
+        src = inspect.getsource(editing)
+        self.assertNotIn("speaker", src.lower())
+        self.assertNotIn("def detect", src.lower())
 
 
 def fake_audio(tmp, name="voice.wav", duration=16.0, channels=1, video=False):
@@ -5693,7 +5979,7 @@ class SyncObservationTests(unittest.TestCase):
         svc = self._svc()
         self.assertEqual(svc.registry.get("sync_analysis").tools, ["ffmpeg-skill/sync"])
         self.assertTrue(svc.registry.get("sync_analysis").implemented)
-        self.assertEqual(svc.registry.get("multi_source_sync").implemented, False, "the production side (switching) stays declared only")
+        self.assertEqual(svc.registry.get("camera_switch").implemented, True, "ADR-045: the production side (switching) is now implemented")
         with self.assertRaises(Exception):
             AnalysisRequest(inputs=[self.a], kinds=["sync_offsets"])
 

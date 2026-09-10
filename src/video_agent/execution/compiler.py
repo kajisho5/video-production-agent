@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, TOOL as AUDIO_TOOL
-from ..agent.editing import EDIT_ORDER, OPERATIONS, PROGRAMME, delivery_subjects
+from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, delivery_subjects
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, RENDER_TOOL
@@ -65,10 +65,10 @@ def lower_video_edit(tool: str, op: Dict[str, Any], current: str, out_id: str, e
     adapter resolves through the paths map. The compiler never invents a parameter, a filter or a command, and refuses a
     tool that does not belong to the operation (the plan names the tool; the compiler only checks the pairing)."""
     spec = OPERATIONS[op["type"]]
-    if tool != spec["tool"]:
+    if "tool" in spec and tool != spec["tool"]:
         raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {spec['tool']}")
     args: Dict[str, Any] = {}
-    if op["type"] == "video.concat":
+    if op["type"] in ("video.concat", "video.switch", "video.grid"):
         args["inputs"] = list(current if isinstance(current, list) else [current])
     else:
         args["input"] = current
@@ -222,6 +222,8 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         return o
 
     concat = next((op for op in d["video"]["operations"] if op["type"] == "video.concat"), None)
+    switch = next((op for op in d["video"]["operations"] if op["type"] == "video.switch"), None)   # ADR-045: alternative to concat, mutually exclusive
+    grid = next((op for op in d["video"]["operations"] if op["type"] == "video.grid"), None)        # ADR-046: alternative to concat/switch, mutually exclusive
     audio_concat = next((op for op in d["audio"]["operations"] if op["type"] == "audio.concat"), None)
     state: Dict[str, Dict[str, Any]] = {}   # subject → {"current", "gen", "stem", "fp"}
 
@@ -229,7 +231,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         """The single-source editing operations on a subject, chained in IR order (the IR is already in the fixed order)."""
         st = state[subject]
         for op in d["video"]["operations"]:
-            if op["asset"] != subject or op["type"] not in EDIT_ORDER[1:]:
+            if op["asset"] != subject or op["type"] not in SINGLE_SOURCE_ORDER:
                 continue
             name = op["type"].split(".", 1)[1]
             st["gen"] += 1
@@ -439,7 +441,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 audio_edits(asset_id)
                 loudness(asset_id)
                 delivery(asset_id)
-        elif concat is None:
+        elif concat is None and switch is None and grid is None:
             edits(asset_id)
             finishing(asset_id)
             loudness(asset_id)
@@ -467,6 +469,38 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         tool = tool_for("video_concat", subject)
         args = lower_video_edit(tool, concat, inputs, subject)
         add(tool, args, inputs, [subject], list(concat.get("decision_ids") or []), fp, skill="video_concat")
+        edits(subject)
+        finishing(subject)
+        loudness(subject)
+        delivery(subject)
+        thumbnail(subject)
+        qc_gate(subject)
+    if switch is not None:
+        # ADR-045: multicam aligns every (trimmed) input by audio then cuts between them per the decided switch list → one programme
+        subject = switch.get("output") or PROGRAMME
+        inputs = [state[a]["current"] for a in switch["inputs"]]
+        fp = "switch:" + stable_hash([source_fingerprint(d["assets"][a]) for a in switch["inputs"]])[:16]
+        state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
+        paths[subject] = str(job / "ops" / f"{subject}_01_switch" / f"{subject}.mp4")
+        tool = tool_for("camera_switch", subject)
+        args = lower_video_edit(tool, switch, inputs, subject)
+        add(tool, args, inputs, [subject], list(switch.get("decision_ids") or []), fp, skill="camera_switch")
+        edits(subject)
+        finishing(subject)
+        loudness(subject)
+        delivery(subject)
+        thumbnail(subject)
+        qc_gate(subject)
+    if grid is not None:
+        # ADR-046: grid.py composites every (trimmed) input side by side into one COLSxROWS programme
+        subject = grid.get("output") or PROGRAMME
+        inputs = [state[a]["current"] for a in grid["inputs"]]
+        fp = "grid:" + stable_hash([source_fingerprint(d["assets"][a]) for a in grid["inputs"]])[:16]
+        state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
+        paths[subject] = str(job / "ops" / f"{subject}_01_grid" / f"{subject}.mp4")
+        tool = tool_for("video_grid", subject)
+        args = lower_video_edit(tool, grid, inputs, subject)
+        add(tool, args, inputs, [subject], list(grid.get("decision_ids") or []), fp, skill="video_grid")
         edits(subject)
         finishing(subject)
         loudness(subject)

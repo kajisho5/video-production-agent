@@ -1152,6 +1152,105 @@ class MultiSourceSyncRealTests(unittest.TestCase):
         self.assertAlmostEqual([x["data"]["offset_seconds"] for x in doc["observations"] if x["kind"] == "sync"][0], -1.25, delta=0.05)
 
 
+class CameraSwitchRealTests(unittest.TestCase):
+    """ADR-045 through the real ffmpeg-skill 0.9.x CLI: two real 16 s inputs → an explicit `edit.switch` list ("0-6:0,6-16:1")
+    → the real ffmpeg-skill/multicam tool aligns them by audio and cuts between them on the reference timeline. This agent
+    never measures alignment itself and never picks the cut points -- both are the user's own switch list and the Skill's
+    own algorithm; what this test verifies is the plumbing (plan → IR → compiler → real tool → artifact/QA), and that the
+    programme's duration is the reference input's own duration, never a sum like video.concat would give."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_switch_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.a, cls.b = str(src / "a.mp4"), str(src / "b.mp4")
+        make_media(cls.a)
+        make_media(cls.b)
+
+    def test_switch_plan_render_and_duration(self):
+        ws = str(Path(self.tmp) / "run")
+        svc = Service(workspace=ws)
+        self.assertEqual(svc.tools_for(svc.adapter([])).get("camera_switch"), "ffmpeg-skill/multicam")
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.switch": "0-6:0,6-16:1"})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        sw_op = next(op for op in d["video"]["operations"] if op["type"] == "video.switch")
+        a_id = list(d["assets"])[0]
+        self.assertEqual(sw_op["switch"], "0-6:0,6-16:1")
+        # the programme's duration is the reference input's own (trimmed) duration -- not a sum of both inputs like concat would give
+        a_trim = next(op["keep"] for op in d["video"]["operations"] if op["type"] == "video.trim" and op["asset"] == a_id)
+        expected = round(sum(e - s for s, e in a_trim), 3)
+        self.assertAlmostEqual(sw_op["timeline_duration"], expected, delta=0.01, msg=sw_op)
+        self.assertLess(sw_op["timeline_duration"], 32.0, "nowhere near what concat's sum of two ~16s inputs would give")
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "camera_switch")
+        self.assertEqual(step["tool"], "ffmpeg-skill/multicam")
+        p = str(Path(ws) / "switch.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/multicam")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
+        art = out["artifacts"][0]
+        self.assertEqual(art["qa_status"], "PASS", out["qa"])
+        out_path = Path(ws) / "jobs" / out["job"]["id"] / "ops" / "programme_01_switch" / "programme.mp4"
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(out_path)], capture_output=True, text=True, check=True)
+        self.assertAlmostEqual(float(pr.stdout.strip()), expected, delta=0.5, msg="the real multicam output is the reference timeline's own length, not the sum of both inputs")
+        self.assertIn(sw_op["decision_ids"][0], art["decision_ids"])
+
+
+class PriorityAToolsRealTests(unittest.TestCase):
+    """ADR-046 through the real ffmpeg-skill 0.16.x CLI: redact.py and crop.py (chosen as the most impactful, small, fast,
+    deterministic candidates -- see the PR description for why the other three (deinterlace, stabilize, grid) are
+    covered by fake-adapter/unit tests only in this batch). Both are single-source, fixed-pixel-rectangle operations;
+    this test verifies the plumbing (plan -> IR -> compiler -> real tool -> artifact/QA) and, for crop, that the real
+    output frame is exactly the requested rectangle."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_priority_a_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.a = str(src / "a.mp4")
+        make_media(cls.a)
+
+    def test_redact_plan_render_and_qa(self):
+        ws = str(Path(self.tmp) / "run_redact")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.redact": {"x": 100, "y": 100, "width": 200, "height": 100}, "edit.redact.mode": "pixelate"})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_redact")
+        self.assertEqual(step["tool"], "ffmpeg-skill/redact")
+        p = str(Path(ws) / "redact.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/redact")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS", out["qa"])
+
+    def test_crop_plan_render_and_real_output_dimensions(self):
+        ws = str(Path(self.tmp) / "run_crop")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.crop": {"x": 0, "y": 140, "width": 1280, "height": 440}})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_crop")
+        self.assertEqual(step["tool"], "ffmpeg-skill/crop")
+        p = str(Path(ws) / "crop.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/crop")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS", out["qa"])
+        out_path = Path(op_result["output"])
+        pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(out_path)],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(pr.stdout.strip(), "1280x440", "the real crop.py output is exactly the requested rectangle")
+
+
 class VideoEditingRealTests(unittest.TestCase):
     """PR #18 (ADR-028) on the real video-editing-skill and ffmpeg-skill 0.9.x: contract discovery and drift against the pinned
     contract, the Skill's doctor as the capability source, video.trim lowered to video-editing/cut, execution through the CLI

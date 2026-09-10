@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, SKILL_OF as AUDIO_SKILL_OF
-from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF
+from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF, switch_cams
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
@@ -35,7 +35,7 @@ class ValidationReport:
 
 def produced_subjects(d: Dict[str, Any]) -> set:
     """Logical subjects an operation produced (the video / audio concat programmes) that later operations may reference."""
-    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "audio.concat") and op.get("output")}
+    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat") and op.get("output")}
 
 
 def check_audio_operations(d: Dict[str, Any]) -> List[str]:
@@ -167,36 +167,49 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
         if subj in order_seen and order_seen[subj] >= rank:
             errs.append(f"{t} on {subj} is out of the fixed operation order {EDIT_ORDER}")
         order_seen[subj] = rank
-        if t == "video.concat":
+        if t in ("video.concat", "video.switch", "video.grid"):
             if concat_seen:
-                errs.append("more than one video.concat (one programme per plan)")
+                errs.append("more than one multi-source programme operation (video.concat / video.switch / video.grid, one programme per plan)")
             concat_seen = True
             ins = op.get("inputs") or []
             if len(ins) < 2 or len(set(ins)) != len(ins):
-                errs.append("video.concat needs two or more distinct inputs")
+                errs.append(f"{t} needs two or more distinct inputs")
             for i in ins:
                 if i not in assets:
-                    errs.append(f"video.concat input {i!r} is not an asset")
+                    errs.append(f"{t} input {i!r} is not an asset")
                 elif not ((assets[i].get("technical") or {}).get("video")):
-                    errs.append(f"video.concat input {i!r} has no video stream")
+                    errs.append(f"{t} input {i!r} has no video stream")
             if op.get("output") != subj:
-                errs.append("video.concat: output must equal the operation's subject")
+                errs.append(f"{t}: output must equal the operation's subject")
             if subj in assets:
-                errs.append(f"video.concat output {subj!r} collides with an asset id")
-            segs = op.get("segments") or []
-            if [s_.get("input") for s_ in segs] and set(s_.get("input") for s_ in segs) != set(ins):
-                errs.append("video.concat segments do not cover exactly the inputs")
-            for s_ in segs:
-                sr, tr = s_.get("source_range") or [0, 0], s_.get("timeline_range") or [0, 0]
-                if not (sr[0] < sr[1] and tr[0] < tr[1]):
-                    errs.append(f"video.concat segment {s_.get('input')}: empty range")
-                sd = (assets.get(s_.get("input")) or {}).get("technical", {}).get("duration")
-                if sd and sr[1] > float(sd) + 0.01:
-                    errs.append(f"video.concat segment {s_.get('input')}: source range {sr} exceeds duration {sd:.3f}")
+                errs.append(f"{t} output {subj!r} collides with an asset id")
+            if t == "video.concat":
+                segs = op.get("segments") or []
+                if [s_.get("input") for s_ in segs] and set(s_.get("input") for s_ in segs) != set(ins):
+                    errs.append("video.concat segments do not cover exactly the inputs")
+                for s_ in segs:
+                    sr, tr = s_.get("source_range") or [0, 0], s_.get("timeline_range") or [0, 0]
+                    if not (sr[0] < sr[1] and tr[0] < tr[1]):
+                        errs.append(f"video.concat segment {s_.get('input')}: empty range")
+                    sd = (assets.get(s_.get("input")) or {}).get("technical", {}).get("duration")
+                    if sd and sr[1] > float(sd) + 0.01:
+                        errs.append(f"video.concat segment {s_.get('input')}: source range {sr} exceeds duration {sd:.3f}")
+            elif t == "video.switch":   # ADR-045: the switch/audio indices must name one of the given inputs (0 = reference)
+                bad = [c for c in switch_cams(op.get("switch") or "") if c >= len(ins)] + ([op["audio"]] if op.get("audio") is not None and op["audio"] >= len(ins) else [])
+                if bad:
+                    errs.append(f"video.switch references camera index {max(bad)}, only {len(ins)} input(s) given")
+            else:   # video.grid (ADR-046): cols*rows must have room for every input, audio_from must name one of them
+                cols, rows = op.get("cols"), op.get("rows")
+                if not cols or not rows:
+                    errs.append("video.grid needs cols and rows")
+                elif int(cols) * int(rows) < len(ins):
+                    errs.append(f"video.grid {cols}x{rows} has no room for {len(ins)} input(s)")
+                if op.get("audio_from") is not None and op["audio_from"] >= len(ins):
+                    errs.append(f"video.grid audio_from references input index {op['audio_from']}, only {len(ins)} input(s) given")
             known.add(subj)
             continue
         if subj not in known:
-            errs.append(f"{t} references {subj!r} before it exists (the programme exists only after video.concat)")
+            errs.append(f"{t} references {subj!r} before it exists (the programme exists only after video.concat / video.switch / video.grid)")
         if subj in assets and not ((assets[subj].get("technical") or {}).get("video")):
             errs.append(f"{t} on {subj}: no video stream")
         if op.get("input") is None:
@@ -205,8 +218,12 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
             f = op.get("factor")
             if not isinstance(f, (int, float)) or isinstance(f, bool) or not (0.25 <= float(f) <= 4.0) or float(f) == 1.0:
                 errs.append(f"video.speed factor {f!r} must be within 0.25..4 and not 1")
-        if t in ("video.resize", "video.fit", "video.fill", "video.concat") and op.get("width") is not None and (int(op["width"]) % 2 or int(op["width"]) < 16):
+        if t in ("video.resize", "video.fit", "video.fill", "video.concat", "video.crop", "video.redact") and op.get("width") is not None and (int(op["width"]) % 2 or int(op["width"]) < 16):
             errs.append(f"{t}: width {op['width']} must be an even integer ≥ 16")
+        if t in ("video.crop", "video.redact") and op.get("height") is not None and (int(op["height"]) % 2 or int(op["height"]) < 16):
+            errs.append(f"{t}: height {op['height']} must be an even integer ≥ 16")
+        if t in ("video.crop", "video.redact") and (op.get("x") is None or op.get("y") is None or op.get("width") is None or op.get("height") is None):
+            errs.append(f"{t} needs x, y, width and height (an explicit rectangle in source pixels; neither op locates anything itself)")
         if t == "video.resize" and op.get("width") is None:
             errs.append("video.resize needs width")
         if t in ("video.fit", "video.fill") and not op.get("aspect"):
@@ -618,8 +635,10 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                         needed.update(ts.required_capabilities)
         if d["video"]["operations"] or any(t.get("preset") for t in d["delivery"]["targets"]):
             needed.add("encoder:libx264")
-        if any(op["type"] in SKILL_OF for op in d["video"]["operations"]):
+        _REFERENCE_ENGINE_ONLY_OPS = ("video.switch", "video.grid", "video.redact", "video.deinterlace", "video.crop", "video.stabilize")   # ADR-045 / ADR-046: no "tool" key in OPERATIONS
+        if any(op["type"] in SKILL_OF and op["type"] not in _REFERENCE_ENGINE_ONLY_OPS for op in d["video"]["operations"]):
             needed.add("video-editing")   # the editing operations exist only in video-editing-skill (ADR-029): UNKNOWN is not AVAILABLE
+                                           # (the reference-engine-only ops above are the exception -- their own capability need already came from the registry above)
         if any(op["type"] in AUDIO_OPERATIONS and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]):
             needed.add("audio-production")   # the audio production path exists only in audio-production-skill (ADR-030)
         if d["audio"]["operations"]:
