@@ -282,6 +282,30 @@ def default_registry() -> SkillRegistry:
     # timeline per the user's own switch list -- no speaker detection, no automatic cut decision.
     r.register(SkillSpec("camera_switch", "1.0", "Align 2+ cameras/recorders by audio and cut between them per an explicit switch list",
                          {"inputs": "media[]", "switch": "str"}, {"artifact": "video"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/multicam"]))
+    # ---- ADR-046 Priority A batch: five previously-undeclared ffmpeg-skill scripts, wired as real (phase 1) Skills.
+    # video_grid is the third, mutually exclusive way to build PROGRAMME from 2+ video inputs (alongside video_concat /
+    # camera_switch); the other four are single-source filter-style ops that compose freely on top of whichever one ran.
+    r.register(SkillSpec("video_grid", "1.0", "Composite 2+ clips into one COLSxROWS comparison grid (explicit layout, no auto-detection)",
+                         {"inputs": "media[]", "cols": "int", "rows": "int"}, {"artifact": "video"}, ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/grid"]))
+    r.register(SkillSpec("video_redact", "1.0", "Blur / pixelate a caller-supplied pixel rectangle for the whole clip (privacy redaction); no face/plate detection",
+                         {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/redact"]))
+    r.register(SkillSpec("video_deinterlace", "1.0", "Deinterlace (yadif); quality-only, no framing/privacy consequence",
+                         {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/deinterlace"]))
+    r.register(SkillSpec("video_crop", "1.0", "Crop to a caller-supplied exact pixel rectangle; no auto letterbox/aspect detection (that is video_fit/video_fill)",
+                         {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/crop"]))
+    r.register(SkillSpec("video_stabilize", "1.0", "Stabilize shaky footage (vidstab, two-pass analysis + render)",
+                         {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/stabilize"]))
+    # cropdetect is deliberately NOT a pipeline edit op (ADR-046): it is a read-only measurement (reports a crop
+    # rectangle, writes no file) meant to feed video_crop's x/y/width/height, the same "measure, then a separate
+    # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is registered here as a real,
+    # callable Skill+Tool (phase 1) but is not wired into agent/editing.py's OPERATIONS / EDIT_ORDER, and not (yet)
+    # integrated into the media/analysis.py Observation framework that sync_analysis / silence_analysis etc. use --
+    # that integration is real design work of its own (an AnalysisKind, a Decision that proposes video_crop from its
+    # result) left for a follow-up rather than decided unprompted here.
+    r.register(SkillSpec("cropdetect_analysis", "1.0", "Measure black letterbox/pillarbox bars and report the crop rectangle that removes them (measurement only, no output file)",
+                         {"asset": "video"}, {"observation": "crop_rectangle"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/cropdetect"]))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited
     # ffmpeg-skill/caption directly); each Skill is reached only through its own package tool and needs the package capability
     r.register(SkillSpec("subtitle_generation", "1.0", "Transcript cues → SRT / WebVTT sidecar (mapped onto the delivered timeline)", {"transcript": "observation"}, {"artifact": "CAPTIONS"},

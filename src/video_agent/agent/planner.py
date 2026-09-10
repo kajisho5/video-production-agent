@@ -63,6 +63,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     durations = {a.id: float(a.technical.get("duration") or 0.0) for a in analysis.assets}
     concat_dec = next((d for d in decisions if d.subject == "video.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)
     switch_dec = next((d for d in decisions if d.subject == "video.switch" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)   # ADR-045: alternative to concat_dec, mutually exclusive
+    grid_dec = next((d for d in decisions if d.subject == "video.grid" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)         # ADR-046: alternative to concat_dec/switch_dec, mutually exclusive
     # audio production path (ADR-030): explicit `audio.production` puts every asset with audio on it (its audio is the subject, delivered as audio)
     audio_subjects = {a.id for a in analysis.assets if is_audio_capable(a.technical)} if audio_production else set()
     audio_concat_dec = next((d for d in decisions if d.subject == "audio.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if audio_production else None
@@ -438,7 +439,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 audio_steps(asset.id)
                 loudness_steps(asset.id, audio_path=True)
                 delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
-        elif concat_dec is None and switch_dec is None:
+        elif concat_dec is None and switch_dec is None and grid_dec is None:
             edit_steps(asset.id, [asset.id])
             finishing_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
@@ -504,6 +505,31 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope
         durations[PROGRAMME] = total
         summary.append(f"Switch {' + '.join(inputs)} into one programme per {params['switch']} ({total:.2f}s)")
+        edit_steps(PROGRAMME, inputs)
+        finishing_steps(PROGRAMME, inputs)
+        loudness_steps(PROGRAMME)
+        delivery_steps(PROGRAMME, first=True, single=True)
+        thumbnail_steps(PROGRAMME, inputs)
+        qc_steps(PROGRAMME, qc_tolerance_lu)
+    if grid_dec is not None:
+        # ---- explicit comparison grid (ADR-046): unlike concat, the programme's duration is the shortest (trimmed) input's own
+        # duration by default -- grid.py runs only as long as its shortest clip unless --pad holds every shorter cell's last frame
+        # out to the longest clip's duration.
+        inputs = list(grid_dec.params["inputs"])
+        params = {k: v for k, v in grid_dec.params.items() if k in OPERATIONS["video.grid"]["params"]}
+        kept = [kept_duration(video_ops, a, durations.get(a, 0.0)) for a in inputs]
+        total = max(kept) if params.get("pad") else min(kept)
+        scope = {"start": 0.0, "end": total}
+        video_ops.append(ir_operation("video.grid", PROGRAMME, params, [grid_dec.id], scope=scope, inputs=inputs, output=PROGRAMME, timeline_duration=total))
+        order += 1
+        st = ProductionStep(id=f"step_grid_{PROGRAMME}", order=order, skill="video_grid", tool=tool_for("video_grid"), inputs=[current_of[a] for a in inputs],
+                            params={"asset": PROGRAMME, "inputs": inputs, **params}, outputs=[PROGRAMME],
+                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of([grid_dec.id]), decision_ids=[grid_dec.id], decision_id=grid_dec.id,
+                            temporal_scope=scope)
+        steps.append(st)
+        current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope
+        durations[PROGRAMME] = total
+        summary.append(f"Composite {' + '.join(inputs)} into a {params['cols']}x{params['rows']} grid programme ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
         finishing_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)

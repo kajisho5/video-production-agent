@@ -23,7 +23,14 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "delivery_export": ("preset", "target"), "delivery_check": ("platform", "target"),
                    # editing operations (ADR-029): the IR parameter allowlist of each operation plus the subject / references
                    "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color"),
-                   "camera_switch": ("asset", "inputs", "switch", "audio", "fix_drift"), "video_speed": ("asset", "factor"),
+                   "camera_switch": ("asset", "inputs", "switch", "audio", "fix_drift"),
+                   # ADR-046 Priority A batch
+                   "video_grid": ("asset", "inputs", "cols", "rows", "cell_width", "cell_height", "fps", "label", "font", "font_size", "font_color", "pad", "audio_from", "gap", "background"),
+                   "video_redact": ("asset", "x", "y", "width", "height", "mode", "blur_strength", "block_size", "audio_stream", "fps"),
+                   "video_deinterlace": ("asset", "mode", "parity", "only_interlaced", "audio_stream"),
+                   "video_crop": ("asset", "x", "y", "width", "height", "fps"),
+                   "video_stabilize": ("asset", "shakiness", "smoothing", "zoom", "crop_mode", "tripod"),
+                   "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
                    "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
                    # audio production path (ADR-030): the subject's audio through audio-production-skill
@@ -151,7 +158,7 @@ def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str,
     if subject in assets:
         dur = ((assets[subject].get("technical") or {}).get("duration"))
     else:
-        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "video.switch", "audio.concat") and op.get("output") == subject), None)
+        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat") and op.get("output") == subject), None)
     if dur is None:
         return None
     speed = next((op for op in ops if op.get("type") == "video.speed" and op.get("asset") == subject and op.get("factor")), None)

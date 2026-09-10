@@ -16,11 +16,16 @@ SUPPORTED_RANGE = f"{'.'.join(map(str, SUPPORTED_MIN))} <= v < {'.'.join(map(str
 BASE_CAPABILITIES = ["ffmpeg", "ffprobe", "ffmpeg-skill"]
 
 _EXTRA_CAPS = {"loudness": ["filter:loudnorm"], "cut": ["encoder:libx264"], "export": ["encoder:libx264"], "fit": ["encoder:libx264"],
-               "multicam": ["encoder:libx264"], "sync": ["encoder:libx264"]}
+               "multicam": ["encoder:libx264"], "sync": ["encoder:libx264"],
+               "redact": ["encoder:libx264"], "deinterlace": ["encoder:libx264", "filter:yadif"], "crop": ["encoder:libx264"],
+               "stabilize": ["encoder:libx264", "filter:vidstab"], "grid": ["encoder:libx264"]}
 
 _DESCRIPTIONS = {"probe": "Inspect media (duration, streams, HDR, VFR)", "silence": "Detect silences / keep ranges", "loudness": "Measure or normalise loudness (EBU R128)",
                  "cut": "Cut / trim segments (lossless or frame-accurate)", "fit": "Fit duration / aspect", "export": "Encode with a platform preset", "check": "Platform compliance check",
-                 "look": "Contact sheet", "scenes": "Scene / highlight detection", "sync": "Align two sources by audio", "multicam": "Multi-camera switch", "report": "Before/after report"}
+                 "look": "Contact sheet", "scenes": "Scene / highlight detection", "sync": "Align two sources by audio", "multicam": "Multi-camera switch", "report": "Before/after report",
+                 "redact": "Blur / pixelate a fixed rectangle (privacy redaction)", "deinterlace": "Deinterlace (yadif)",
+                 "cropdetect": "Measure black bars and report the crop rectangle (measurement only)", "crop": "Crop to an exact pixel rectangle",
+                 "stabilize": "Stabilize shaky footage (vidstab, two-pass)", "grid": "Composite several clips into a COLSxROWS grid"}
 
 
 def package(version: str = "") -> SkillPackage:

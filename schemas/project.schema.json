@@ -1067,6 +1067,11 @@
       "video.trim",
       "video.concat",
       "video.switch",
+      "video.grid",
+      "video.deinterlace",
+      "video.stabilize",
+      "video.crop",
+      "video.redact",
       "video.speed",
       "video.resize",
       "video.fit",
@@ -1211,7 +1216,11 @@
     "mode": {
      "enum": [
       "pad",
-      "crop"
+      "crop",
+      "blur",
+      "pixelate",
+      "frame",
+      "field"
      ]
     },
     "pad_color": {
@@ -1285,6 +1294,105 @@
     "fade": {
      "type": "number",
      "minimum": 0
+    },
+    "x": {
+     "type": "number",
+     "minimum": 0
+    },
+    "y": {
+     "type": "number",
+     "minimum": 0
+    },
+    "blur_strength": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "block_size": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "audio_stream": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "parity": {
+     "enum": [
+      "auto",
+      "tff",
+      "bff"
+     ]
+    },
+    "only_interlaced": {
+     "type": "boolean"
+    },
+    "shakiness": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 10
+    },
+    "smoothing": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "zoom": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100
+    },
+    "crop_mode": {
+     "enum": [
+      "keep",
+      "black"
+     ]
+    },
+    "tripod": {
+     "type": "boolean"
+    },
+    "cols": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "rows": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "cell_width": {
+     "type": "integer",
+     "minimum": 2
+    },
+    "cell_height": {
+     "type": "integer",
+     "minimum": 2
+    },
+    "label": {
+     "enum": [
+      "auto",
+      "none"
+     ]
+    },
+    "font": {
+     "type": "string"
+    },
+    "font_size": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "font_color": {
+     "type": "string"
+    },
+    "pad": {
+     "type": "boolean"
+    },
+    "audio_from": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "gap": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "background": {
+     "type": "string"
     }
    },
    "additionalProperties": false

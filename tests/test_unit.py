@@ -4863,6 +4863,174 @@ class CameraSwitchTests(unittest.TestCase):
         self.assertNotIn("speaker", inspect.getsource(editing).lower())
 
 
+class PriorityAToolsTests(unittest.TestCase):
+    """ADR-046: five previously-undeclared ffmpeg-skill scripts wired in as real Skills -- redact / deinterlace / crop /
+    stabilize (single-source, apply to whatever PROGRAMME or untouched asset already is) and grid (a third, mutually
+    exclusive way to build PROGRAMME from 2+ inputs, alongside video.concat / video.switch). cropdetect is a read-only
+    measurement, registered as a callable Skill+Tool but deliberately not a pipeline edit-op (no video mutation)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.a = fake_media(self.tmp, "a.mp4")
+        self.b = fake_media(self.tmp, "b.mp4")
+
+    def _svc(self, **kw):
+        return make_service(self.tmp, adapter=FakeAdapter(**kw))
+
+    def test_requirement_vocabulary_and_refusals(self):
+        from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+
+        def parse(**kv):
+            reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in kv.items()]
+            return parse_edit_requirements(requirement_map(reqs))
+
+        rect = {"x": 10, "y": 20, "width": 200, "height": 100}
+        self.assertEqual(parse(**{"edit.redact": rect})["video.redact"]["params"], rect)
+        self.assertEqual(parse(**{"edit.redact": rect, "edit.redact.mode": "pixelate"})["video.redact"]["params"]["mode"], "pixelate")
+        self.assertEqual(parse(**{"edit.crop": rect})["video.crop"]["params"], rect)
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.redact": {"x": 0, "y": 0, "width": 201, "height": 100}})   # width must be even (crop.py's own validation)
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.redact": {"x": 0, "y": 0, "width": 200}})   # rectangle incomplete
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.redact.mode": "blur"})   # refinement without the rectangle itself
+        self.assertTrue(parse(**{"edit.deinterlace": True})["video.deinterlace"]["params"] == {})
+        self.assertEqual(parse(**{"edit.deinterlace": True, "edit.deinterlace.mode": "field", "edit.deinterlace.parity": "tff"})["video.deinterlace"]["params"],
+                         {"mode": "field", "parity": "tff"})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.deinterlace": True, "edit.deinterlace.mode": "bogus"})
+        self.assertEqual(parse(**{"edit.stabilize": True, "edit.stabilize.shakiness": 8, "edit.stabilize.tripod": True})["video.stabilize"]["params"],
+                         {"shakiness": 8, "tripod": True})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.stabilize": True, "edit.stabilize.shakiness": 11})   # out of 1..10
+        self.assertEqual(parse(**{"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})["video.grid"]["params"], {"cols": 2, "rows": 1})
+        with self.assertRaises(EditRequirementError):
+            parse(**{"edit.grid": True, "edit.grid.cols": 2})   # rows missing, grid.py's own required flag
+
+    def test_grid_conflict_and_block_decisions(self):
+        svc = self._svc()
+        # a third programme-builder competing with concat/switch: any two together are refused, not guessed
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True, "edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})
+        blk = {d["subject"] for d in ir.doc["decisions"] if d["approval"] == "BLOCK"}
+        self.assertEqual(blk, {"video.concat", "video.grid"})
+        # a single input cannot be gridded
+        ir2 = svc.plan([self.a], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 1, "edit.grid.rows": 1})
+        self.assertEqual([d["subject"] for d in ir2.doc["decisions"] if d["approval"] == "BLOCK"], ["video.grid"])
+        # cols*rows too small for the inputs is refused, not silently dropping an input
+        ir3 = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 1, "edit.grid.rows": 1})
+        b3 = next(d for d in ir3.doc["decisions"] if d["subject"] == "video.grid")
+        self.assertEqual((b3["type"], b3["approval"]), ("BLOCK", "BLOCK"))
+        self.assertIn("no room for 2", b3["decision"])
+        # audio_from referencing an input beyond the given inputs is refused
+        ir4 = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1, "edit.grid.audio_from": 5})
+        b4 = next(d for d in ir4.doc["decisions"] if d["subject"] == "video.grid")
+        self.assertEqual(b4["approval"], "BLOCK")
+
+    def test_grid_plan_ir_and_render(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})
+        d = ir.doc
+        a_id, b_id = list(d["assets"])
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        dec = next(x for x in d["decisions"] if x["subject"] == "video.grid")
+        self.assertEqual((dec["type"], dec["approval"]), ("TRANSFORM", "AUTO"), "an explicit grid request is its own confirmation, like every other edit.* op")
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_grid")
+        self.assertEqual(step["tool"], "ffmpeg-skill/grid")
+        ops = [op for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual([op["type"] for op in ops], ["video.grid"])
+        grid_op = ops[0]
+        self.assertEqual((grid_op["asset"], grid_op["inputs"], grid_op["output"], grid_op["cols"], grid_op["rows"]), ("programme", [a_id, b_id], "programme", 2, 1))
+        p = str(Path(self.tmp) / "grid.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/grid")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS")
+        self.assertIn(dec["id"], out["artifacts"][0]["decision_ids"])
+
+    def test_single_source_ops_plan_ir_and_render(self):
+        """redact / deinterlace / crop / stabilize apply to a single asset (no programme needed), in the fixed EDIT_ORDER."""
+        svc = self._svc()
+        rect = {"x": 0, "y": 0, "width": 100, "height": 100}
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.deinterlace": True, "edit.stabilize": True, "edit.crop": rect, "edit.redact": rect})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        ops = [op["type"] for op in d["video"]["operations"] if op["type"] != "video.trim"]
+        self.assertEqual(ops, ["video.deinterlace", "video.stabilize", "video.crop", "video.redact"], "the fixed EDIT_ORDER, not request order")
+        skills = {s["skill"] for s in d["plan"]["steps"]}
+        self.assertTrue({"video_deinterlace", "video_stabilize", "video_crop", "video_redact"}.issubset(skills))
+        deint_dec = next(x for x in d["decisions"] if x["subject"] == "video.deinterlace")
+        self.assertEqual(deint_dec["approval"], "AUTO", "deinterlace is quality-only, no destructive framing/privacy consequence")
+        crop_dec = next(x for x in d["decisions"] if x["subject"] == "video.crop")
+        redact_dec = next(x for x in d["decisions"] if x["subject"] == "video.redact")
+        self.assertEqual(crop_dec["risk"], "MEDIUM")
+        self.assertEqual(redact_dec["risk"], "HIGH")
+        p = str(Path(self.tmp) / "single.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        for tool in ("ffmpeg-skill/deinterlace", "ffmpeg-skill/stabilize", "ffmpeg-skill/crop", "ffmpeg-skill/redact"):
+            r = next(o for o in out["execution"]["results"] if o["tool"] == tool)
+            self.assertTrue(r["ok"], r)
+        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS")
+
+    def test_redact_and_crop_reject_odd_dimensions(self):
+        """crop.py / redact.py's own validation (width/height must be even) is enforced at planning time, never rounded."""
+        from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.models import Requirement
+        for bad in ({"x": 0, "y": 0, "width": 101, "height": 100}, {"x": 0, "y": 0, "width": 100, "height": 101}):
+            reqs = [Requirement(key="edit.crop", value=bad, provenance="USER", source="cli")]
+            with self.assertRaises(EditRequirementError):
+                parse_edit_requirements(requirement_map(reqs))
+
+    def test_validator_rejects_tampered_grid_ir(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1})
+        op = next(o for o in ir.doc["video"]["operations"] if o["type"] == "video.grid")
+        op["cols"], op["rows"] = 1, 1   # no longer room for 2 inputs
+        self.assertTrue(any("no room for 2" in e for e in svc.validate(ir).errors))
+
+    def test_cropdetect_is_not_a_pipeline_op(self):
+        """ADR-046: cropdetect is a measurement, not an edit.* requirement / EDIT_ORDER entry -- it cannot be requested
+        as a video operation at all (registered as a Skill+Tool, callable directly through the tool adapter, below)."""
+        from video_agent.agent.editing import EDIT_ORDER, OPERATIONS, REQUIREMENT_KEYS
+        self.assertNotIn("video.cropdetect", EDIT_ORDER)
+        self.assertNotIn("video.cropdetect", OPERATIONS)
+        self.assertNotIn("video.cropdetect", REQUIREMENT_KEYS)
+
+    def test_cropdetect_callable_through_the_tool_adapter(self):
+        """cropdetect is a real, callable tool (catalog + fake adapter branch) even though nothing in the pipeline plans it yet."""
+        from video_agent.models import Operation
+        adapter = FakeAdapter()
+        op = Operation(tool="ffmpeg-skill/cropdetect", args={"input": self.a, "seconds": 5.0}, inputs=[self.a], outputs=[])
+        r = adapter.run(op, {self.a: self.a})
+        self.assertTrue(r.ok, r)
+        for k in ("x", "y", "width", "height", "crop_filter"):
+            self.assertIn(k, r.data)
+
+    def test_registry_declares_all_six_scripts(self):
+        from video_agent.skills.registry import default_registry
+        r = default_registry()
+        for name, tool in (("video_grid", "ffmpeg-skill/grid"), ("video_redact", "ffmpeg-skill/redact"), ("video_deinterlace", "ffmpeg-skill/deinterlace"),
+                           ("video_crop", "ffmpeg-skill/crop"), ("video_stabilize", "ffmpeg-skill/stabilize"), ("cropdetect_analysis", "ffmpeg-skill/cropdetect")):
+            spec = r.get(name)
+            self.assertEqual(spec.tools, [tool])
+            self.assertEqual(spec.phase, 1, f"{name} must be phase 1 (actually implemented, not a placeholder)")
+
+    def test_no_speaker_or_face_detection_anywhere(self):
+        """redact / crop never locate anything themselves (ffmpeg-skill's own stated non-goal): the rectangle is always
+        the caller's own explicit {x, y, width, height} -- there is no detection routine anywhere in this vocabulary."""
+        import inspect
+        from video_agent.agent import editing
+        src = inspect.getsource(editing)
+        self.assertNotIn("speaker", src.lower())
+        self.assertNotIn("def detect", src.lower())
+
+
 def fake_audio(tmp, name="voice.wav", duration=16.0, channels=1, video=False):
     """A self-describing fake media file: the fake ffmpeg-skill probes it as audio-only (or video+audio) with these channels."""
     p = Path(tmp) / "src" / name

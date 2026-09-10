@@ -32,7 +32,27 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                  "produces_output": True, "result_keys": ["offsets_seconds", "confidence", "cuts"]},
     "report": {"positional": [], "flags": {"after": "path_in", "before": "path_in", "platform": "str", "commands": "path_in", "notes": "path_in", "title": "str", "output": "path_out", "no_sheets": "bool"},
                "produces_output": True, "result_keys": ["report", "check"]},
+    # ---- ADR-046 Priority A batch (verified against ffmpeg-skill v0.16.2 --help)
+    "redact": {"positional": ["input"], "flags": {"x": "float", "y": "float", "width": "int", "height": "int", "mode": "str", "blur_strength": "int", "block_size": "int",
+                                                   "audio_stream": "int", "crf": "int", "preset": "str", "fps": "float", "output": "path_out"},
+               "produces_output": True, "result_keys": ["output", "probe"]},
+    "deinterlace": {"positional": ["input"], "flags": {"mode": "str", "parity": "str", "only_interlaced": "bool", "audio_stream": "int", "crf": "int", "preset": "str", "output": "path_out"},
+                    "produces_output": True, "result_keys": ["output", "probe"]},
+    # measurement only (no output file): reports the crop rectangle cropdetect found (assumption -- see ADR-046: no real-media
+    # sample was available to verify the exact JSON shape, so this is the best-informed guess consistent with the tool's stated
+    # purpose ("report the crop rectangle that removes black bars"), not a verified --json capture)
+    "cropdetect": {"positional": ["input"], "flags": {"seconds": "float", "samples": "int", "limit": "float", "round_to": "int"},
+                   "produces_output": False, "result_keys": ["x", "y", "width", "height", "crop_filter"]},
+    "crop": {"positional": ["input"], "flags": {"x": "float", "y": "float", "width": "int", "height": "int", "crf": "int", "preset": "str", "fps": "float", "output": "path_out"},
+             "produces_output": True, "result_keys": ["output", "probe"]},
+    "stabilize": {"positional": ["input"], "flags": {"shakiness": "int", "smoothing": "int", "zoom": "float", "crop_mode": "str", "tripod": "bool", "crf": "int", "preset": "str", "output": "path_out"},
+                  "produces_output": True, "result_keys": ["output", "probe"]},
+    "grid": {"positional": ["inputs"], "flags": {"cols": "int", "rows": "int", "cell_width": "int", "cell_height": "int", "fps": "float", "label": "str", "font": "str", "font_size": "int",
+                                                  "font_color": "str", "pad": "bool", "audio_from": "int", "gap": "int", "background": "str", "crf": "int", "preset": "str", "output": "path_out"},
+             "produces_output": True, "result_keys": ["output", "probe"]},
 }
 
 # flags whose CLI spelling differs from the underscore->dash rule
-FLAG_ALIASES = {("loudness", "lufs"): "-I", ("*", "output"): "-o"}
+FLAG_ALIASES = {("loudness", "lufs"): "-I", ("*", "output"): "-o",
+                 ("cropdetect", "round_to"): "--round",   # --round collides with the python builtin `round`
+                 ("stabilize", "crop_mode"): "--crop"}    # "crop" collides with this vocabulary's own video.crop operation name
