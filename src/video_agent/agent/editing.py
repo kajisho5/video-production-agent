@@ -23,12 +23,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Requirement
 
-PROGRAMME = "programme"      # logical id of the concat output (the multi-source timeline)
-# operation order after the trims: the same for the plan, the IR and the compiler (deterministic, not configurable)
-EDIT_ORDER = ("video.concat", "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay")
+PROGRAMME = "programme"      # logical id of the concat (or switch) output (the multi-source timeline)
+# operation order after the trims: the same for the plan, the IR and the compiler (deterministic, not configurable).
+# video.concat and video.switch are alternative ways to build PROGRAMME from 2+ video inputs (mutually exclusive, ADR-045
+# decides a BLOCK if both are requested); everything after them applies to whichever one actually ran.
+EDIT_ORDER = ("video.concat", "video.switch", "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay")
+# the multi-source entry ops (build PROGRAMME from 2+ inputs; mutually exclusive, handled specially by the planner /
+# compiler) vs. the single-source ops that apply to whatever PROGRAMME (or the untouched asset) already is
+MULTI_SOURCE_OPS = ("video.concat", "video.switch")
+SINGLE_SOURCE_ORDER = EDIT_ORDER[len(MULTI_SOURCE_OPS):]
 # op type → production skill / video-editing tool / IR parameter allowlist (the only keys copied into an IR op besides the references)
 OPERATIONS: Dict[str, Dict[str, Any]] = {
     "video.concat":  {"skill": "video_concat",  "tool": "video-editing/concat",  "params": ("transition", "width", "height", "fps", "mode", "pad_color"), "risk": "MEDIUM"},
+    # no "tool" here (unlike the other entries): camera_switch's sole candidate is ffmpeg-skill/multicam, and this codebase's
+    # own boundary test (test_no_tool_id_literals_outside_tool_layer) refuses an "ffmpeg-skill/..." literal anywhere outside
+    # tools/ or skills/ -- the registry (skills/registry.py) is the only place that names it; lower_video_edit() skips the
+    # tool-pairing sanity check when "tool" is absent, since the generic per-step registry check already guarantees it.
+    "video.switch":  {"skill": "camera_switch", "params": ("switch", "audio", "fix_drift"), "risk": "HIGH"},
     "video.speed":   {"skill": "video_speed",   "tool": "video-editing/speed",   "params": ("factor",), "risk": "MEDIUM"},
     "video.resize":  {"skill": "video_resize",  "tool": "video-editing/resize",  "params": ("width", "fps"), "risk": "LOW"},
     "video.fit":     {"skill": "video_fit",     "tool": "video-editing/fit",     "params": ("aspect", "width", "pad_color", "fps"), "risk": "LOW"},
@@ -40,6 +51,7 @@ OP_OF_SKILL = {v["skill"]: k for k, v in OPERATIONS.items()}
 # requirement keys: edit.<op> switches the operation on (its value is the main parameter), edit.<op>.<param> refines it
 REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     "video.concat": ("edit.concat", "edit.concat.transition", "edit.concat.transition_duration", "edit.concat.width", "edit.concat.height", "edit.concat.fps", "edit.concat.mode", "edit.concat.pad_color"),
+    "video.switch": ("edit.switch", "edit.switch.audio", "edit.switch.fix_drift"),
     "video.speed": ("edit.speed",),
     "video.resize": ("edit.resize", "edit.resize.fps"),
     "video.fit": ("edit.fit", "edit.fit.width", "edit.fit.pad_color", "edit.fit.fps"),
@@ -58,6 +70,23 @@ _COLOR_RE = re.compile(r"^([a-z]{1,16}|0x[0-9A-Fa-f]{6})$")
 _TRANSITIONS = ("fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright",
                 "circleopen", "circleclose", "fadeblack", "fadewhite", "smoothleft", "smoothright", "radial")
 _TRANSITION_RE = re.compile("^(" + "|".join(_TRANSITIONS) + ")$")
+# a switch list segment on the reference timeline: "START-END:CAM" (seconds or mm:ss, CAM = input index, 0 = reference);
+# the same grammar ffmpeg-skill/multicam.py's own --switch flag takes (ADR-045). Bounds against the actual input count
+# are checked in decision.py, once the number of video inputs is known; this only fixes the grammar.
+_TIME_RE = r"[0-9]+(\.[0-9]+)?|[0-9]{1,2}:[0-9]{2}"
+_SWITCH_SEG_RE = re.compile(r"^(?P<s>" + _TIME_RE + r")-(?P<e>" + _TIME_RE + r"):(?P<cam>[0-9]+)$")
+
+
+def _switch_seconds(v: str) -> float:
+    if ":" not in v:
+        return float(v)
+    mm, ss = v.split(":")
+    return float(int(mm) * 60 + int(ss))
+
+
+def switch_cams(switch: str) -> List[int]:
+    """The camera indices a switch list cites (for a bounds check against the actual input count)."""
+    return [int(seg.split(":")[-1]) for seg in switch.split(",")]
 
 
 class EditRequirementError(ValueError):
@@ -138,6 +167,21 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
                 p["mode"] = _token(vals["edit.concat.mode"], "edit.concat.mode", re.compile(r"^(pad|crop)$"), "pad or crop")
             if "edit.concat.pad_color" in vals:
                 p["pad_color"] = _token(vals["edit.concat.pad_color"], "edit.concat.pad_color", _COLOR_RE, "a colour name or 0xRRGGBB")
+        elif op == "video.switch":
+            sw = vals["edit.switch"]
+            if not isinstance(sw, str) or not sw.strip():
+                raise EditRequirementError("edit.switch must be a non-empty switch list \"START-END:CAM,...\" (seconds or mm:ss, CAM = input index)")
+            for seg in sw.split(","):
+                mobj = _SWITCH_SEG_RE.match(seg.strip())
+                if not mobj:
+                    raise EditRequirementError(f"edit.switch segment {seg!r} must be START-END:CAM (seconds or mm:ss, CAM a non-negative integer)")
+                if not _switch_seconds(mobj.group("s")) < _switch_seconds(mobj.group("e")):
+                    raise EditRequirementError(f"edit.switch segment {seg!r}: start must be before end")
+            p["switch"] = sw
+            if "edit.switch.audio" in vals:
+                p["audio"] = int(_number(vals["edit.switch.audio"], "edit.switch.audio", 0, 63))
+            if "edit.switch.fix_drift" in vals:
+                p["fix_drift"] = _bool(vals["edit.switch.fix_drift"], "edit.switch.fix_drift")
         elif op == "video.speed":
             f = _number(vals["edit.speed"], "edit.speed", SPEED_RANGE[0], SPEED_RANGE[1])
             if float(f) == 1.0:
@@ -226,6 +270,8 @@ def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     vops = (doc.get("video") or {}).get("operations") or []
     aops = (doc.get("audio") or {}).get("operations") or []
     concat = next((op for op in vops if op.get("type") == "video.concat"), None)
+    switch = next((op for op in vops if op.get("type") == "video.switch"), None)   # ADR-045: alternative to concat, mutually exclusive
+    programme_op = concat or switch
     rows: List[Dict[str, Any]] = []
     audio_rows = audio_subjects(doc)   # subjects delivered as audio only (ADR-030): their picture is not part of the deliverable
     consumed = {s for r in audio_rows.values() for s in r["sources"]}
@@ -235,10 +281,10 @@ def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         if r.get("channels") is not None:
             tech["audio"] = dict(tech.get("audio") or {}, channels=r["channels"])   # the planned layout (mono / stereo / down-mix), not the source's
         rows.append({"id": sid, "sources": list(r["sources"]), "duration": r["duration"], "technical": tech, "audio_only": True})
-    if concat is not None:
-        rows.append({"id": concat.get("output", PROGRAMME), "sources": list(concat.get("inputs") or []), "duration": float(concat.get("timeline_duration") or 0.0),
-                     "technical": dict((assets.get((concat.get("inputs") or [""])[0]) or {}).get("technical") or {})})
-        # assets that are not part of the programme (none today: concat takes every video asset) would be delivered on their own
+    if programme_op is not None:
+        rows.append({"id": programme_op.get("output", PROGRAMME), "sources": list(programme_op.get("inputs") or []), "duration": float(programme_op.get("timeline_duration") or 0.0),
+                     "technical": dict((assets.get((programme_op.get("inputs") or [""])[0]) or {}).get("technical") or {})})
+        # assets that are not part of the programme (none today: concat/switch take every video asset) would be delivered on their own
     else:
         for aid, a in assets.items():
             if aid in consumed:

@@ -22,7 +22,8 @@ PLANNER_ID = "production_planner@1.0"
 STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), "loudness_normalization": ("asset", "target_lufs", "true_peak"),
                    "delivery_export": ("preset", "target"), "delivery_check": ("platform", "target"),
                    # editing operations (ADR-029): the IR parameter allowlist of each operation plus the subject / references
-                   "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color"), "video_speed": ("asset", "factor"),
+                   "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color"),
+                   "camera_switch": ("asset", "inputs", "switch", "audio", "fix_drift"), "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
                    "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
                    # audio production path (ADR-030): the subject's audio through audio-production-skill
@@ -150,7 +151,7 @@ def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str,
     if subject in assets:
         dur = ((assets[subject].get("technical") or {}).get("duration"))
     else:
-        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "audio.concat") and op.get("output") == subject), None)
+        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "video.switch", "audio.concat") and op.get("output") == subject), None)
     if dur is None:
         return None
     speed = next((op for op in ops if op.get("type") == "video.speed" and op.get("asset") == subject and op.get("factor")), None)

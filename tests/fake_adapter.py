@@ -129,6 +129,18 @@ class FakeAdapter(ToolAdapter):
                 ppm = float(second["sync_drift_ppm"])
                 doc["drift"] = {"residual_at_end_seconds": round(ppm / 1e6 * 100, 4), "measured_over_seconds": 100.0, "drift_ppm": ppm, "meaning": "second file runs %.1f ppm long/slow" % ppm, "confidence": 0.8}
             return ToolResult(op.id, op.tool, True, 0, None, doc, doc["commands"], "", 0.3, attempt, dry_run)
+        if script == "multicam":
+            # a fake camera switch (tests only, ADR-045): output duration is the reference (first input)'s own duration,
+            # never a sum of the inputs -- multicam cuts between already-aligned sources on the reference timeline
+            inputs = op.args["inputs"]
+            ref_meta = _read_fake(inputs[0]) or {}
+            ref_dur = ref_meta.get("duration", self.duration)
+            if out and not dry_run:
+                _write_fake(out, {"duration": ref_dur, "lufs": ref_meta.get("lufs", self.lufs)})
+            doc = {"output": out, "offsets_seconds": [0.0] + [(_read_fake(p) or {}).get("sync_offset", 0.0) for p in inputs[1:]],
+                   "confidence": [1.0] + [(_read_fake(p) or {}).get("sync_confidence", 0.9) for p in inputs[1:]],
+                   "cuts": [{"start": 0.0, "end": ref_dur, "camera": 0}], "commands": ["ffmpeg multicam"], "probe": probe_doc(out or "", ref_dur)}
+            return ToolResult(op.id, op.tool, True, 0, out, doc, doc["commands"], "", 0.3, attempt, dry_run)
         if script == "look":
             if out and not dry_run:
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
