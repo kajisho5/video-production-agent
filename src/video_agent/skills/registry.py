@@ -236,7 +236,7 @@ def default_registry() -> SkillRegistry:
     # video-editing-skill's own TRIM (start/end range, distinct from silence_cleanup's multi-range CUT) is a
     # real, tested, published Capability (video.trim) with no consuming SkillSpec at all until now (found by
     # skills/diagnostics.py's ecosystem-wide run, docs/design decision kajisho5/AI-video-production-OS
-    # WORK_QUEUE.md item 1/8). Declared for the roadmap only, like multi_source_sync/semantic_deletion below:
+    # WORK_QUEUE.md item 1/8). Declared for the roadmap only, like semantic_deletion below:
     # wiring an actual "video.trim" edit request through agent/editing.py's EDIT_OPS and
     # agent/production_plan.py's domain-parameter table is real design work (a new request verb, its exact
     # parameter contract, a risk classification) this addition deliberately does not decide unprompted.
@@ -277,9 +277,11 @@ def default_registry() -> SkillRegistry:
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
                          {"reference": "media", "second": "media"}, {"observation": "sync"}, ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/sync"]))
-    # declared, not implemented in Phase 1 (registry keeps the contract visible): the *production* side (switching) of multi-source work
-    r.register(SkillSpec("multi_source_sync", "0.1", "Align cameras/recorders by audio", {"assets": "media[]"}, {"timeline": "offsets"},
-                         ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/sync", "ffmpeg-skill/multicam"], phase=2))
+    # explicit multi-camera switch (ADR-045): the production side of multi-source work. ffmpeg-skill/multicam aligns every
+    # input to the reference by audio (the same correlation as sync_analysis) then cuts between them on the reference
+    # timeline per the user's own switch list -- no speaker detection, no automatic cut decision.
+    r.register(SkillSpec("camera_switch", "1.0", "Align 2+ cameras/recorders by audio and cut between them per an explicit switch list",
+                         {"inputs": "media[]", "switch": "str"}, {"artifact": "video"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/multicam"]))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited
     # ffmpeg-skill/caption directly); each Skill is reached only through its own package tool and needs the package capability
     r.register(SkillSpec("subtitle_generation", "1.0", "Transcript cues → SRT / WebVTT sidecar (mapped onto the delivered timeline)", {"transcript": "observation"}, {"artifact": "CAPTIONS"},

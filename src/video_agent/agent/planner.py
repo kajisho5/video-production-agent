@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, has_video, ir_audio_operation, is_audio_capable, kept_after_cut
-from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, concat_segments, ir_operation
+from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, concat_segments, ir_operation, kept_duration
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
@@ -62,6 +62,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     order = 0
     durations = {a.id: float(a.technical.get("duration") or 0.0) for a in analysis.assets}
     concat_dec = next((d for d in decisions if d.subject == "video.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)
+    switch_dec = next((d for d in decisions if d.subject == "video.switch" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)   # ADR-045: alternative to concat_dec, mutually exclusive
     # audio production path (ADR-030): explicit `audio.production` puts every asset with audio on it (its audio is the subject, delivered as audio)
     audio_subjects = {a.id for a in analysis.assets if is_audio_capable(a.technical)} if audio_production else set()
     audio_concat_dec = next((d for d in decisions if d.subject == "audio.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if audio_production else None
@@ -243,7 +244,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         """The single-source editing operations decided for `subject` (video.speed → resize → fit / fill → overlay), chained on its
         current output. Each becomes one plan step and one IR operation with allowlisted parameters; nothing is inferred."""
         nonlocal order
-        for op_type in EDIT_ORDER[1:]:
+        for op_type in SINGLE_SOURCE_ORDER:
             d = next((x for x in decisions if x.subject == op_type and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == subject), None)
             if d is None:
                 continue
@@ -437,7 +438,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 audio_steps(asset.id)
                 loudness_steps(asset.id, audio_path=True)
                 delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
-        elif concat_dec is None:
+        elif concat_dec is None and switch_dec is None:
             edit_steps(asset.id, [asset.id])
             finishing_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
@@ -480,6 +481,29 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope
         durations[PROGRAMME] = total
         summary.append(f"Join {' + '.join(inputs)} into one programme ({total:.2f}s)")
+        edit_steps(PROGRAMME, inputs)
+        finishing_steps(PROGRAMME, inputs)
+        loudness_steps(PROGRAMME)
+        delivery_steps(PROGRAMME, first=True, single=True)
+        thumbnail_steps(PROGRAMME, inputs)
+        qc_steps(PROGRAMME, qc_tolerance_lu)
+    if switch_dec is not None:
+        # ---- explicit camera switch (ADR-045): unlike concat, the programme's duration is the (trimmed) reference input's
+        # own duration, not a sum of segments -- multicam cuts between already-aligned sources on the reference timeline.
+        inputs = list(switch_dec.params["inputs"])
+        params = {k: v for k, v in switch_dec.params.items() if k in OPERATIONS["video.switch"]["params"]}
+        total = kept_duration(video_ops, inputs[0], durations.get(inputs[0], 0.0))
+        scope = {"start": 0.0, "end": total}
+        video_ops.append(ir_operation("video.switch", PROGRAMME, params, [switch_dec.id], scope=scope, inputs=inputs, output=PROGRAMME, timeline_duration=total))
+        order += 1
+        st = ProductionStep(id=f"step_switch_{PROGRAMME}", order=order, skill="camera_switch", tool=tool_for("camera_switch"), inputs=[current_of[a] for a in inputs],
+                            params={"asset": PROGRAMME, "inputs": inputs, **params}, outputs=[PROGRAMME],
+                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of([switch_dec.id]), decision_ids=[switch_dec.id], decision_id=switch_dec.id,
+                            temporal_scope=scope)
+        steps.append(st)
+        current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope
+        durations[PROGRAMME] = total
+        summary.append(f"Switch {' + '.join(inputs)} into one programme per {params['switch']} ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
         finishing_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)

@@ -20,7 +20,7 @@ from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
 from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
-from .editing import EDIT_ORDER, OPERATIONS, PROGRAMME, parse_edit_requirements
+from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requirements, switch_cams
 from .requirements import requirement_map
 
 # production-skill intent → decision subjects that would already execute it (measured path)
@@ -42,7 +42,9 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  # audio production path (ADR-030): CONFIRM by default (the picture of a video container is not delivered); explicit USER requirement waives it.
                  # audio.extract is waived only by its own explicit requirement `audio.extract=true` — never by the generic `audio.production` switch (ADR-033)
                  "audio.extract": ("audio.extract.approval", "CONFIRM"), "audio.gain": ("audio.gain.approval", "CONFIRM"), "audio.channels": ("audio.channels.approval", "CONFIRM"),
-                 "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM")}
+                 "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM"),
+                 # explicit camera-switch programme (ADR-045): an explicit switch list waives CONFIRM like any other edit.* op; never AUTO by policy default
+                 "video.switch": ("video.switch.approval", "CONFIRM")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -135,7 +137,11 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     if "video.concat" in edits:
         req = edits["video.concat"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
-        if len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
+        if "video.switch" in edits:
+            eng.decide(subject="video.concat", type="BLOCK", decision="BLOCK: edit.concat and edit.switch requested together",
+                       reason="both build the programme timeline (join vs. camera switch); an ambiguous request is never guessed",
+                       confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
+        elif len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
             eng.decide(subject="video.concat", type="BLOCK", decision="BLOCK: concat needs two or more inputs with a video stream",
                        reason=f"{len(video_assets)} of {len(analysis.assets)} input(s) carry a video stream; an ambiguous or unsupported multi-source request is never guessed",
                        confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"inputs": [a.id for a in analysis.assets]}, requirements=req)
@@ -147,6 +153,37 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                        confidence=1.0, evidence=ev, risk=OPERATIONS["video.concat"]["risk"], approval=approval_for("video.concat", explicit=req[0]), provenance="USER",
                        params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
             cap_block("video_concat", "capability.video_concat")
+    # ---- explicit multi-camera switch (ADR-045): an alternative way to build PROGRAMME from 2+ video inputs, mutually
+    # exclusive with video.concat (both ask "what is the programme timeline?" and cannot both answer it). ffmpeg-skill/
+    # multicam.py aligns every input to the first (reference) by audio and cuts between them on the reference timeline
+    # per the user's own switch list -- no automatic detection of anything, no automatic cut decision; the times are the user's.
+    if "video.switch" in edits:
+        req = edits["video.switch"]["requirements"]
+        ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
+        if "video.concat" in edits:
+            eng.decide(subject="video.switch", type="BLOCK", decision="BLOCK: edit.concat and edit.switch requested together",
+                       reason="both build the programme timeline (join vs. camera switch); an ambiguous request is never guessed",
+                       confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
+        elif len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
+            eng.decide(subject="video.switch", type="BLOCK", decision="BLOCK: switch needs two or more inputs with a video stream",
+                       reason=f"{len(video_assets)} of {len(analysis.assets)} input(s) carry a video stream; an ambiguous or unsupported multi-source request is never guessed",
+                       confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"inputs": [a.id for a in analysis.assets]}, requirements=req)
+        else:
+            p = edits["video.switch"]["params"]
+            bad_cams = [c for c in switch_cams(p["switch"]) if c >= len(video_assets)]
+            if p.get("audio", 0) >= len(video_assets):
+                bad_cams.append(p["audio"])
+            if bad_cams:
+                eng.decide(subject="video.switch", type="BLOCK", decision=f"BLOCK: switch list references camera index {max(bad_cams)}, only {len(video_assets)} input(s) given",
+                           reason="a switch/audio index must name one of the given inputs (0 = reference); an out-of-range index is never guessed at",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
+            else:
+                concat_ok = True   # PROGRAMME now exists, built by switch instead of concat -- every concat_ok-gated block below (loudness, finishing, delivery) applies just the same
+                eng.decide(subject="video.switch", type="TRANSFORM", decision=f"switch {' + '.join(a.id for a in video_assets)} → {PROGRAMME} per {p['switch']}",
+                           reason=f"user asked to cut between the inputs on the reference timeline (their own switch list, {req[0].source}); the registry-selected tool aligns them by audio first",
+                           confidence=1.0, evidence=ev, risk=OPERATIONS["video.switch"]["risk"], approval=approval_for("video.switch", explicit=req[0]), provenance="USER",
+                           params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
+                cap_block("camera_switch", "capability.camera_switch")
     for asset in analysis.assets:
         infs = by_asset.get(asset.id, [])
         dur = asset.technical.get("duration") or 0.0
@@ -366,7 +403,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                    confidence=1.0, evidence=[r.id for r in req], risk="HIGH", approval="BLOCK", provenance="USER", params={"ops": ["video.fit", "video.fill"]}, requirements=req)
         edits = {k: v for k, v in edits.items() if k not in ("video.fit", "video.fill")}
     subjects = [(PROGRAMME, [a.id for a in video_assets])] if concat_ok else [(a.id, [a.id]) for a in analysis.assets]
-    for op in EDIT_ORDER[1:]:
+    for op in SINGLE_SOURCE_ORDER:
         if op not in edits:
             continue
         req = edits[op]["requirements"]

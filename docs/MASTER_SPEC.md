@@ -1649,7 +1649,25 @@ inputs [reference, target…] → AnalysisRequest(kinds += sync) → registry-se
 - A measurement, not a decision: no event, no inference, no decision and no plan operation is derived from it (the plan hash is
   identical with and without the kind). Failures (no audio, too little audio, malformed result) stay in the analysis failure
   domain; `replace_audio` / `trim_second` are never requested (no synced output is written by the agent).
-- Not here: camera / source switching, multicam rendering, speaker identity, automatic offset correction.
+- Not here: camera / source switching (see ADR-045 below), multicam rendering, speaker identity, automatic offset correction.
+
+### Explicit multi-camera switch (implemented, ADR-045)
+
+```
+2+ video inputs + edit.switch="START-END:CAM,..." (explicit) → Decision(video.switch, TRANSFORM, CONFIRM) → ProductionPlan step
+  (camera_switch) → IR video.switch{inputs, output=programme, switch, audio, timeline_duration} → registry-selected
+  ffmpeg-skill/multicam (aligns every input to the first by audio, cuts per the switch list) → programme
+```
+
+- `video.switch` is an alternative to `video.concat` for building `programme` from 2+ video inputs — never both: `edit.concat`
+  and `edit.switch` requested together is a BLOCK on both, an ambiguous request is never guessed. Unlike concat's summed
+  segments, the programme's duration is the (trimmed) reference input's own duration (multicam cuts on the reference
+  timeline, it does not lengthen it).
+- The times are entirely the user's own: no speaker detection, no automatic cut decision, no diarization Skill exists in
+  this ecosystem. `multicam.py`'s `--auto` (alternate cameras every N seconds) is not exposed — only the explicit
+  `--switch` form.
+- Everything downstream that only cares "does `programme` exist" (loudness, finishing, delivery, thumbnail, QC) does not
+  distinguish concat from switch.
 
 ### Production Decision Engine (implemented, ADR-027)
 
