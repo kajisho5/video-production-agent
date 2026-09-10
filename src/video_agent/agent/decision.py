@@ -45,13 +45,14 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM"),
                  # explicit camera-switch programme (ADR-045): an explicit switch list waives CONFIRM like any other edit.* op; never AUTO by policy default
                  "video.switch": ("video.switch.approval", "CONFIRM"),
-                 # ADR-046 Priority A batch: redact and crop are irreversible privacy/framing decisions -- CONFIRM by
-                 # default like every other edit.* op (an explicit USER requirement waives it, same as the rest).
-                 # deinterlace is the one exception: it is a quality-only, idempotent-in-spirit filter (the original
-                 # source is always preserved regardless, per this codebase's engineering principles) with no
-                 # destructive framing/privacy consequence, so it is AUTO by default.
+                 # ADR-046 Priority A batch: CONFIRM by default like every other edit.* op (an explicit USER
+                 # requirement waives it, same as the rest). deinterlace was initially modelled as AUTO on the
+                 # premise that it is a harmless no-op on already-progressive footage -- but deinterlace.py's own
+                 # --help says otherwise ("still re-encodes the whole file, so don't run this by default"), and
+                 # --mode field changes the output frame rate. A lossy re-encode the caller didn't confirm is not
+                 # something this codebase's AUTO tier is for, so it is CONFIRM like the rest (ADR-046 correction).
                  "video.grid": ("video.grid.approval", "CONFIRM"), "video.redact": ("video.redact.approval", "CONFIRM"),
-                 "video.deinterlace": ("video.deinterlace.approval", "AUTO"), "video.crop": ("video.crop.approval", "CONFIRM"),
+                 "video.deinterlace": ("video.deinterlace.approval", "CONFIRM"), "video.crop": ("video.crop.approval", "CONFIRM"),
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM")}
 
 
