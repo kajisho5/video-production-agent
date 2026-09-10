@@ -44,7 +44,15 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "audio.extract": ("audio.extract.approval", "CONFIRM"), "audio.gain": ("audio.gain.approval", "CONFIRM"), "audio.channels": ("audio.channels.approval", "CONFIRM"),
                  "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM"),
                  # explicit camera-switch programme (ADR-045): an explicit switch list waives CONFIRM like any other edit.* op; never AUTO by policy default
-                 "video.switch": ("video.switch.approval", "CONFIRM")}
+                 "video.switch": ("video.switch.approval", "CONFIRM"),
+                 # ADR-046 Priority A batch: redact and crop are irreversible privacy/framing decisions -- CONFIRM by
+                 # default like every other edit.* op (an explicit USER requirement waives it, same as the rest).
+                 # deinterlace is the one exception: it is a quality-only, idempotent-in-spirit filter (the original
+                 # source is always preserved regardless, per this codebase's engineering principles) with no
+                 # destructive framing/privacy consequence, so it is AUTO by default.
+                 "video.grid": ("video.grid.approval", "CONFIRM"), "video.redact": ("video.redact.approval", "CONFIRM"),
+                 "video.deinterlace": ("video.deinterlace.approval", "AUTO"), "video.crop": ("video.crop.approval", "CONFIRM"),
+                 "video.stabilize": ("video.stabilize.approval", "CONFIRM")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -137,9 +145,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     if "video.concat" in edits:
         req = edits["video.concat"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
-        if "video.switch" in edits:
-            eng.decide(subject="video.concat", type="BLOCK", decision="BLOCK: edit.concat and edit.switch requested together",
-                       reason="both build the programme timeline (join vs. camera switch); an ambiguous request is never guessed",
+        if "video.switch" in edits or "video.grid" in edits:
+            eng.decide(subject="video.concat", type="BLOCK", decision="BLOCK: more than one programme-building operation requested (edit.concat / edit.switch / edit.grid)",
+                       reason="each builds the programme timeline its own way (join / camera switch / composite grid); an ambiguous request is never guessed",
                        confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
         elif len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
             eng.decide(subject="video.concat", type="BLOCK", decision="BLOCK: concat needs two or more inputs with a video stream",
@@ -160,9 +168,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     if "video.switch" in edits:
         req = edits["video.switch"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
-        if "video.concat" in edits:
-            eng.decide(subject="video.switch", type="BLOCK", decision="BLOCK: edit.concat and edit.switch requested together",
-                       reason="both build the programme timeline (join vs. camera switch); an ambiguous request is never guessed",
+        if "video.concat" in edits or "video.grid" in edits:
+            eng.decide(subject="video.switch", type="BLOCK", decision="BLOCK: more than one programme-building operation requested (edit.concat / edit.switch / edit.grid)",
+                       reason="each builds the programme timeline its own way (join / camera switch / composite grid); an ambiguous request is never guessed",
                        confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
         elif len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
             eng.decide(subject="video.switch", type="BLOCK", decision="BLOCK: switch needs two or more inputs with a video stream",
@@ -184,6 +192,37 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            confidence=1.0, evidence=ev, risk=OPERATIONS["video.switch"]["risk"], approval=approval_for("video.switch", explicit=req[0]), provenance="USER",
                            params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
                 cap_block("camera_switch", "capability.camera_switch")
+    # ---- explicit comparison grid (ADR-046): a third, mutually exclusive way to build PROGRAMME from 2+ video inputs --
+    # ffmpeg-skill/grid.py composites them side by side (COLSxROWS) instead of joining or cutting between them. Like
+    # video.switch, it has no automatic layout decision: cols/rows are the user's own explicit choice.
+    if "video.grid" in edits:
+        req = edits["video.grid"]["requirements"]
+        ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
+        if "video.concat" in edits or "video.switch" in edits:
+            eng.decide(subject="video.grid", type="BLOCK", decision="BLOCK: more than one programme-building operation requested (edit.concat / edit.switch / edit.grid)",
+                       reason="each builds the programme timeline its own way (join / camera switch / composite grid); an ambiguous request is never guessed",
+                       confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
+        elif len(video_assets) < 2 or len(video_assets) != len(analysis.assets):
+            eng.decide(subject="video.grid", type="BLOCK", decision="BLOCK: grid needs two or more inputs with a video stream",
+                       reason=f"{len(video_assets)} of {len(analysis.assets)} input(s) carry a video stream; an ambiguous or unsupported multi-source request is never guessed",
+                       confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"inputs": [a.id for a in analysis.assets]}, requirements=req)
+        else:
+            p = edits["video.grid"]["params"]
+            if p["cols"] * p["rows"] < len(video_assets):
+                eng.decide(subject="video.grid", type="BLOCK", decision=f"BLOCK: {p['cols']}x{p['rows']} grid has no room for {len(video_assets)} input(s)",
+                           reason="cols*rows must be at least the number of inputs; a layout that drops inputs silently is never guessed at",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
+            elif p.get("audio_from") is not None and p["audio_from"] >= len(video_assets):
+                eng.decide(subject="video.grid", type="BLOCK", decision=f"BLOCK: audio_from references input index {p['audio_from']}, only {len(video_assets)} input(s) given",
+                           reason="audio_from must name one of the given inputs; an out-of-range index is never guessed at",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", requirements=req)
+            else:
+                concat_ok = True   # PROGRAMME now exists, built by grid instead of concat/switch -- every concat_ok-gated block below applies just the same
+                eng.decide(subject="video.grid", type="TRANSFORM", decision=f"grid {' + '.join(a.id for a in video_assets)} → {PROGRAMME} ({p['cols']}x{p['rows']})",
+                           reason=f"user asked to composite the inputs into a {p['cols']}x{p['rows']} grid ({req[0].source})",
+                           confidence=1.0, evidence=ev, risk=OPERATIONS["video.grid"]["risk"], approval=approval_for("video.grid", explicit=req[0]), provenance="USER",
+                           params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
+                cap_block("video_grid", "capability.video_grid")
     for asset in analysis.assets:
         infs = by_asset.get(asset.id, [])
         dur = asset.technical.get("duration") or 0.0

@@ -58,7 +58,7 @@ class FakeAdapter(ToolAdapter):
     def package(self) -> SkillPackage:
         names = self.TOOLS if self.TOOLS is not None else list(CATALOG) + list(self.ALIASES)
         return SkillPackage(skill_id=self.name, name=self.name, version=self.version, description="fake engine (tests only)",
-                            capabilities=[], tools=[ToolSpec(tool_id=f"{self.name}/{n}", skill_id=self.name, version=self.version, produces_output=n not in ("probe", "check", "silence")) for n in names])
+                            capabilities=[], tools=[ToolSpec(tool_id=f"{self.name}/{n}", skill_id=self.name, version=self.version, produces_output=n not in ("probe", "check", "silence", "cropdetect", "scenes")) for n in names])
 
     def supports(self, tool: str) -> bool:
         return tool.startswith("ffmpeg-skill/")
@@ -146,4 +146,28 @@ class FakeAdapter(ToolAdapter):
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
                 Path(out).write_bytes(b"png")
             return ToolResult(op.id, op.tool, True, 0, out, {"outputs": [out]}, [], "", 0.1, attempt, dry_run)
+        if script in ("redact", "deinterlace", "crop", "stabilize"):
+            # ADR-046: single-source filter-style ops -- duration is unchanged (none of these re-time the clip)
+            dur = in_dur
+            if out and not dry_run:
+                _write_fake(out, {"duration": dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", dur)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
+        if script == "cropdetect":
+            # a fake measurement (tests only, ADR-046): no output file. See catalog.py's own comment -- the exact
+            # result_keys shape is a documented assumption (no real-media --json capture was available to verify it).
+            assert "output" not in op.args, op.args
+            meta = _read_fake(op.args["input"]) or {}
+            w, h = int(meta.get("width", 1280)), int(meta.get("height", 720))
+            doc = {"x": 0, "y": 0, "width": w, "height": h, "crop_filter": f"crop={w}:{h}:0:0", "commands": ["ffmpeg cropdetect"]}
+            return ToolResult(op.id, op.tool, True, 0, None, doc, doc["commands"], "", 0.2, attempt, dry_run)
+        if script == "grid":
+            # a fake comparison grid (tests only, ADR-046): duration follows grid.py's own contract -- the shortest
+            # input by default, or the longest input with --pad (each shorter cell holds its last frame)
+            inputs = op.args["inputs"]
+            durs = [(_read_fake(p) or {}).get("duration", self.duration) for p in inputs]
+            total = max(durs) if op.args.get("pad") else min(durs)
+            if out and not dry_run:
+                _write_fake(out, {"duration": total, "lufs": self.lufs})
+            doc = {"output": out, "commands": ["ffmpeg grid"], "probe": probe_doc(out or "", total)}
+            return ToolResult(op.id, op.tool, True, 0, out, doc, doc["commands"], "", 0.3, attempt, dry_run)
         return ToolResult(op.id, op.tool, False, 2, None, {}, [], f"error: unknown tool {script}", 0.0, attempt, dry_run)
