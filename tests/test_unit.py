@@ -5036,8 +5036,10 @@ class PriorityAToolsTests(unittest.TestCase):
         op = Operation(tool="ffmpeg-skill/cropdetect", args={"input": self.a, "seconds": 5.0}, inputs=[self.a], outputs=[])
         r = adapter.run(op, {self.a: self.a})
         self.assertTrue(r.ok, r)
-        for k in ("x", "y", "width", "height", "crop_filter"):
+        for k in ("file", "source_width", "source_height", "crop", "confidence"):
             self.assertIn(k, r.data)
+        for k in ("x", "y", "width", "height"):
+            self.assertIn(k, r.data["crop"])
 
     def test_registry_declares_all_six_scripts(self):
         from video_agent.skills.registry import default_registry

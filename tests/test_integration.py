@@ -1250,6 +1250,33 @@ class PriorityAToolsRealTests(unittest.TestCase):
                              capture_output=True, text=True, check=True)
         self.assertEqual(pr.stdout.strip(), "1280x440", "the real crop.py output is exactly the requested rectangle")
 
+    def test_cropdetect_real_json_shape(self):
+        """Resolves the ADR-046 open item: catalog.py's cropdetect result_keys were originally an unverified guess
+        (flat x/y/width/height + a crop_filter key that doesn't exist). Verified here against a real --json capture
+        on a synthetic letterboxed clip: the rectangle is a nested "crop" object, plus file/source_width/source_height/
+        confidence -- no crop_filter key at all. Calls the tool adapter directly (cropdetect is not a pipeline
+        edit-op, see ADR-046)."""
+        from video_agent.tools.ffmpeg_skill.adapter import FfmpegSkillAdapter
+        from video_agent.models import Operation
+        letterboxed = str(Path(self.tmp) / "letterboxed.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                        "-i", "color=c=black:s=640x480:d=3,drawbox=x=0:y=60:w=640:h=360:color=white@1:t=fill",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-pix_fmt", "yuv420p",
+                        "-c:v", "libx264", "-c:a", "aac", "-shortest", letterboxed], check=True)
+        adapter = FfmpegSkillAdapter(locate_ffmpeg_skill())
+        op = Operation(tool="ffmpeg-skill/cropdetect", args={"input": letterboxed}, inputs=[letterboxed], outputs=[])
+        r = adapter.run(op, {letterboxed: letterboxed})
+        self.assertTrue(r.ok, r)
+        for k in ("file", "source_width", "source_height", "crop", "confidence"):
+            self.assertIn(k, r.data, r.data)
+        self.assertEqual((r.data["source_width"], r.data["source_height"]), (640, 480))
+        crop = r.data["crop"]
+        for k in ("x", "y", "width", "height"):
+            self.assertIn(k, crop, crop)
+        self.assertEqual((crop["x"], crop["width"]), (0, 640), "no horizontal bars in this fixture")
+        self.assertLess(crop["height"], 480, "the top/bottom black bars should be detected and excluded")
+        self.assertNotIn("crop_filter", r.data, "confirms the original catalog assumption's crop_filter key does not exist")
+
 
 class VideoEditingRealTests(unittest.TestCase):
     """PR #18 (ADR-028) on the real video-editing-skill and ffmpeg-skill 0.9.x: contract discovery and drift against the pinned

@@ -153,12 +153,13 @@ class FakeAdapter(ToolAdapter):
                 _write_fake(out, {"duration": dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", dur)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
         if script == "cropdetect":
-            # a fake measurement (tests only, ADR-046): no output file. See catalog.py's own comment -- the exact
-            # result_keys shape is a documented assumption (no real-media --json capture was available to verify it).
+            # a fake measurement (tests only, ADR-046): no output file. Shape verified against a real --json capture
+            # (synthetic letterboxed clip, ffmpeg-skill 0.16.2) -- see catalog.py's comment on the cropdetect entry.
             assert "output" not in op.args, op.args
             meta = _read_fake(op.args["input"]) or {}
             w, h = int(meta.get("width", 1280)), int(meta.get("height", 720))
-            doc = {"x": 0, "y": 0, "width": w, "height": h, "crop_filter": f"crop={w}:{h}:0:0", "commands": ["ffmpeg cropdetect"]}
+            doc = {"file": op.args["input"], "source_width": w, "source_height": h, "crop": {"width": w, "height": h, "x": 0, "y": 0},
+                   "confidence": 1.0, "commands": ["ffmpeg cropdetect"]}
             return ToolResult(op.id, op.tool, True, 0, None, doc, doc["commands"], "", 0.2, attempt, dry_run)
         if script == "grid":
             # a fake comparison grid (tests only, ADR-046): duration follows grid.py's own contract -- the shortest
