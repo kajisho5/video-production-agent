@@ -38,11 +38,12 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                "produces_output": True, "result_keys": ["output", "probe"]},
     "deinterlace": {"positional": ["input"], "flags": {"mode": "str", "parity": "str", "only_interlaced": "bool", "audio_stream": "int", "crf": "int", "preset": "str", "output": "path_out"},
                     "produces_output": True, "result_keys": ["output", "probe"]},
-    # measurement only (no output file): reports the crop rectangle cropdetect found (assumption -- see ADR-046: no real-media
-    # sample was available to verify the exact JSON shape, so this is the best-informed guess consistent with the tool's stated
-    # purpose ("report the crop rectangle that removes black bars"), not a verified --json capture)
+    # measurement only (no output file): reports the crop rectangle cropdetect found. result_keys verified against a
+    # real --json capture (synthetic letterboxed clip, ffmpeg-skill 0.16.2) -- see ADR-046 correction: the crop
+    # rectangle is a nested "crop" object ({width, height, x, y}), not flat top-level x/y/width/height, and there is
+    # no "crop_filter" key (the original catalog entry's shape was an unverified guess and wrong on both counts).
     "cropdetect": {"positional": ["input"], "flags": {"seconds": "float", "samples": "int", "limit": "float", "round_to": "int"},
-                   "produces_output": False, "result_keys": ["x", "y", "width", "height", "crop_filter"]},
+                   "produces_output": False, "result_keys": ["file", "source_width", "source_height", "crop", "confidence"]},
     "crop": {"positional": ["input"], "flags": {"x": "float", "y": "float", "width": "int", "height": "int", "crf": "int", "preset": "str", "fps": "float", "output": "path_out"},
              "produces_output": True, "result_keys": ["output", "probe"]},
     "stabilize": {"positional": ["input"], "flags": {"shakiness": "int", "smoothing": "int", "zoom": "float", "crop_mode": "str", "tripod": "bool", "crf": "int", "preset": "str", "output": "path_out"},
