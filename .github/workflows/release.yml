@@ -1,0 +1,246 @@
+# Release automation: version resolution, pyproject.toml bump, CHANGELOG.md,
+# git tag, GitHub Release, and (conditionally) PyPI publish.
+#
+# Deliberate exception to this repo's minutes-conscious CI policy: unlike
+# tests.yml (workflow_dispatch only, see its header comment), this workflow
+# runs on every push to main, per explicit user request.
+#
+# Deliberately a SINGLE job in a SINGLE workflow with an `on: push: branches:
+# [main]` trigger. This is NOT split into a "bump" workflow plus a
+# tag-triggered "publish" workflow: GitHub's documented anti-recursion rule
+# means a tag or commit pushed using the default GITHUB_TOKEN does not
+# trigger *other* workflows, so an `on: push: tags:` workflow would simply
+# never fire. Everything happens as sequential steps in this one job/run.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Guard against this workflow re-triggering itself pointlessly: the bot's own
+# bump commit (see "Commit bump + changelog" step below) is itself a push to
+# main and WILL cause `on: push: branches: [main]` to fire again. We use a
+# `[skip release]` marker in the bot's commit message (checked via
+# github.event.head_commit.message) rather than checking the commit author,
+# because checking the marker is robust even if a human manually pushes a
+# commit authored as github-actions[bot] for some other reason, and it keeps
+# the guard readable at a glance in the Actions UI ("skipped: ...").
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve next version (release-drafter dry run)
+        id: drafter
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          dry-run: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # release-drafter's dry-run resolves the version its label-based
+      # version-resolver would use (output: resolved_version), but does NOT
+      # publish anything. We compare it against pyproject.toml's own version
+      # to detect and respect a manual bump that already landed on main
+      # ahead of the last tag.
+      - name: Decide effective version
+        id: version
+        run: |
+          set -euo pipefail
+          PYPROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
+          LATEST_TAG_VERSION=${LATEST_TAG#v}
+          RESOLVED_VERSION="${{ steps.drafter.outputs.resolved_version }}"
+
+          echo "pyproject version: $PYPROJECT_VERSION"
+          echo "latest tag version: ${LATEST_TAG_VERSION:-<none>}"
+          echo "release-drafter resolved version: ${RESOLVED_VERSION:-<none>}"
+
+          if [ -z "$LATEST_TAG_VERSION" ]; then
+            # No prior tag at all: trust pyproject.toml as the source of truth,
+            # nothing to auto-bump against.
+            EFFECTIVE_VERSION="$PYPROJECT_VERSION"
+            SHOULD_BUMP_FILE="false"
+          elif [ "$PYPROJECT_VERSION" = "$LATEST_TAG_VERSION" ]; then
+            # pyproject.toml matches the last release: nobody hand-bumped it,
+            # so auto-bump using release-drafter's resolved version.
+            EFFECTIVE_VERSION="$RESOLVED_VERSION"
+            SHOULD_BUMP_FILE="true"
+          else
+            # pyproject.toml is already ahead of the last tag (manual bump):
+            # respect it as-is, skip the resolver's suggestion and the file write.
+            EFFECTIVE_VERSION="$PYPROJECT_VERSION"
+            SHOULD_BUMP_FILE="false"
+          fi
+
+          echo "version=$EFFECTIVE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_bump_file=$SHOULD_BUMP_FILE" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if tag already exists
+        id: tagcheck
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, nothing to release."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Targeted regex substitution on the `version = "..."` line rather than
+      # a full TOML round-trip library (e.g. tomlkit): this repo has no
+      # runtime dependency on a TOML writer today, and a single-line regex
+      # substitution is sufficient and easy to verify (see fixture validation
+      # in the PR description) without adding a new dependency for a CI-only
+      # step.
+      - name: Bump pyproject.toml version
+        if: steps.version.outputs.should_bump_file == 'true' && steps.tagcheck.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          python - "$NEW_VERSION" <<'PYEOF'
+          import re
+          import sys
+
+          new_version = sys.argv[1]
+          path = "pyproject.toml"
+          text = open(path, encoding="utf-8").read()
+          pattern = re.compile(r'(?m)^(version\s*=\s*")[^"]*(")')
+          new_text, count = pattern.subn(rf'\g<1>{new_version}\g<2>', text, count=1)
+          if count != 1:
+              raise SystemExit(f"Expected exactly one version line, found {count}")
+          open(path, "w", encoding="utf-8").write(new_text)
+          PYEOF
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.version }}
+
+      # CHANGELOG generation reads commit subjects via `git log`'s own stdout
+      # rather than interpolating any PR title / commit message into a `run:`
+      # block through ${{ }} templating. Interpolating untrusted strings (PR
+      # titles, commit subjects, branch names) directly into a script body is
+      # GitHub Actions' documented script-injection vulnerability class (e.g.
+      # a PR titled `"; rm -rf / #` executing inside the shell). Here, data
+      # flows only through git's own output capture, never through template
+      # substitution into the script text itself. See PR description for the
+      # adversarial-string fixture proof.
+      - name: Update CHANGELOG.md
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          LATEST_TAG="${{ steps.version.outputs.latest_tag }}"
+          DATE=$(date -u +%Y-%m-%d)
+
+          if [ -n "$LATEST_TAG" ]; then
+            RANGE="$LATEST_TAG..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          {
+            echo "## v$VERSION ($DATE)"
+            echo ""
+            git log --pretty=format:'- %s (%h)' "$RANGE"
+            echo ""
+            echo ""
+          } > /tmp/changelog-entry.md
+
+          if [ -f CHANGELOG.md ]; then
+            cat /tmp/changelog-entry.md CHANGELOG.md > /tmp/changelog-new.md
+            mv /tmp/changelog-new.md CHANGELOG.md
+          else
+            {
+              echo "# Changelog"
+              echo ""
+              cat /tmp/changelog-entry.md
+            } > CHANGELOG.md
+          fi
+
+      - name: Commit bump + changelog
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "chore(release): v${{ steps.version.outputs.version }} [skip release]"
+            git push origin HEAD:main
+          fi
+
+      - name: Create and push tag
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        if: steps.tagcheck.outputs.exists == 'false'
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          publish: true
+          tag: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          version: ${{ steps.version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Conditional PyPI publish. `if: ${{ secrets.PYPI_API_TOKEN != '' }}`
+      # directly on a step is not permitted by GitHub Actions (secrets cannot
+      # be referenced directly in `if:` conditionals in current Actions
+      # syntax); the documented workaround is to pass the secret into an env
+      # var on a prior step and branch on that env var instead.
+      - name: Check PyPI token availability
+        if: steps.tagcheck.outputs.exists == 'false'
+        id: pypi_check
+        env:
+          PYPI_TOKEN_PRESENT: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_TOKEN_PRESENT" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PYPI_API_TOKEN secret not set; skipping PyPI publish. Tag and GitHub Release were still created."
+          fi
+
+      - name: Build distribution
+        if: steps.tagcheck.outputs.exists == 'false' && steps.pypi_check.outputs.has_token == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Publish to PyPI
+        if: steps.tagcheck.outputs.exists == 'false' && steps.pypi_check.outputs.has_token == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade twine
+          python -m twine upload dist/*
