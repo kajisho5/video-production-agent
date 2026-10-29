@@ -15,7 +15,7 @@
     "production plans",
     "template or content selection",
     "arbitrary ffmpeg filters",
-    "arbitrary shapes without a typed delegate tool",
+    "shape elements (not implemented yet, see unsupported_element_types)",
     "position/scale animation (see unsupported_animations)",
     "video editing (video-editing-skill)",
     "color grading (color-grading-skill)",
@@ -42,9 +42,12 @@
         "bug",
         "chapter",
         "countdown",
+        "hook",
         "image_overlay",
         "lower_third",
+        "meme",
         "progress",
+        "sticker",
         "text_overlay",
         "title",
         "video_overlay"
@@ -85,6 +88,12 @@
       "element_type": "countdown"
     },
     {
+      "id": "motion_graphics.hook",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "motion-graphics/run",
+      "element_type": "hook"
+    },
+    {
       "id": "motion_graphics.overlay",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "motion-graphics/run",
@@ -97,10 +106,22 @@
       "element_type": "lower_third"
     },
     {
+      "id": "motion_graphics.meme",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "motion-graphics/run",
+      "element_type": "meme"
+    },
+    {
       "id": "motion_graphics.progress",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "motion-graphics/run",
       "element_type": "progress"
+    },
+    {
+      "id": "motion_graphics.sticker",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "motion-graphics/run",
+      "element_type": "sticker"
     },
     {
       "id": "motion_graphics.overlay",
@@ -516,13 +537,118 @@
         "encoder:libx264"
       ],
       "deterministic": "content_equivalent"
+    },
+    {
+      "type": "sticker",
+      "description": "Filled chip of short text in a corner (e.g. \"NEW\", \"LIVE NOW\") that pops in: the chip fades up while rising 0.25s into place, and fades out over the last 0.3s (ffmpeg-skill/graphics --template sticker); not configurable per element. The text is drawn in the template's fixed dark colour on a primary-colour plate, so only primary_color is exposed -- text_color would have no effect on this template.",
+      "tool": "ffmpeg-skill/graphics",
+      "animation": "builtin_pop",
+      "parameters": {
+        "text": {
+          "type": "string",
+          "required": true,
+          "max_length": 200
+        },
+        "position": {
+          "type": "string",
+          "required": false,
+          "default": "top-right",
+          "enum": [
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right"
+          ]
+        },
+        "primary_color": {
+          "type": "color",
+          "required": false
+        }
+      },
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:drawtext",
+        "encoder:libx264",
+        "graphics-template:sticker"
+      ],
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "hook",
+      "description": "Full-width opening card with a large centered title over a dark band, and a thin bar along the top of the frame that empties across the element's own start/end window so the viewer sees how long the card lasts (ffmpeg-skill/graphics --template hook, the short-form opener). The card stays up for the whole window: this skill passes the window's length as the template's own --duration. No fade.",
+      "tool": "ffmpeg-skill/graphics",
+      "animation": "none",
+      "parameters": {
+        "title": {
+          "type": "string",
+          "required": true,
+          "max_length": 200
+        },
+        "text_color": {
+          "type": "color",
+          "required": false
+        },
+        "primary_color": {
+          "type": "color",
+          "required": false
+        }
+      },
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:drawtext",
+        "filter:drawbox",
+        "filter:overlay",
+        "filter:color",
+        "encoder:libx264",
+        "graphics-template:hook"
+      ],
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "meme",
+      "description": "Classic meme layout: heavy white upper-case lines with a black outline, one at the top margin and one at the bottom margin (ffmpeg-skill/graphics --template meme). At least one of top / bottom is required. Colours, position and size are fixed by the template, and there is no fade.",
+      "tool": "ffmpeg-skill/graphics",
+      "animation": "none",
+      "parameters": {
+        "top": {
+          "type": "string",
+          "required": false,
+          "max_length": 200
+        },
+        "bottom": {
+          "type": "string",
+          "required": false,
+          "max_length": 200
+        }
+      },
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:drawtext",
+        "encoder:libx264",
+        "graphics-template:meme"
+      ],
+      "deterministic": "content_equivalent",
+      "constraints": [
+        {
+          "at_least_one_of": [
+            "top",
+            "bottom"
+          ]
+        }
+      ]
     }
   ],
   "unsupported_element_types": [
     {
       "type": "shape",
       "status": "not_implemented",
-      "reason": "no typed delegate tool draws an arbitrary shape (position/size/color) without a raw ffmpeg filter string; needs a typed shape tool in ffmpeg-skill first"
+      "reason": "not implemented: a rectangle can be composed from ffmpeg-skill's background.py and overlay.py --video (docs/decisions.md ADR-8), but that is two tool calls for one element, which this skill's one-delegate-call-per-element stage model does not cover yet; it needs its own design decision, and building a raw ffmpeg filter string instead is not an option"
     }
   ],
   "animations": [
@@ -565,6 +691,25 @@
       "reason": "arbitrary opacity keyframe curves are not supported; use a fade (2-point in/out/in_out) instead"
     }
   ],
+  "platforms": {
+    "names": [
+      "broadcast",
+      "facebook",
+      "instagram",
+      "linkedin",
+      "podcast",
+      "reels",
+      "shorts",
+      "tiktok",
+      "twitter",
+      "youtube",
+      "youtube-shorts"
+    ],
+    "request_field": "options.platform",
+    "applies_to": "every graphics and overlay stage of the document (one destination per document)",
+    "effect": "an element margin the request does not give explicitly becomes that destination's safe zone (ffmpeg-skill --platform, per edge: e.g. a top-left logo clears TikTok's status bar); a margin the request gives wins -- except that ffmpeg-skill/overlay treats a margin equal to its own default (24) as not given, so the safe zone still applies to an explicit 24; explicit {x,y} positions are unaffected",
+    "requires": "an ffmpeg-skill checkout whose graphics/overlay tools have --platform; otherwise the request is refused before rendering (TOOL_ERROR)"
+  },
   "positions": {
     "named": [
       "top-left",
@@ -638,9 +783,10 @@
   "ffmpeg_skill": {
     "contract_version": "1.0",
     "version_window": {
-      "min": "0.12.1",
-      "max_exclusive": "1.0.0"
+      "min": null,
+      "max_exclusive": null
     },
+    "compatibility": "capability detection, no version window: a checkout of any version is used when every required flag is present in its contract (or --help); doctor reports what was detected (docs/decisions.md ADR-18)",
     "tools_used": [
       "probe",
       "graphics",
@@ -654,46 +800,153 @@
         "input",
         "output",
         "template",
-        "name",
-        "title",
-        "subtitle",
         "start",
         "end",
-        "primary",
-        "text_color",
-        "font",
-        "font_file",
+        "preset",
         "audio_stream",
-        "json"
+        "title",
+        "subtitle",
+        "name",
+        "position",
+        "count_from",
+        "text_color",
+        "primary",
+        "json",
+        "quality",
+        "crf",
+        "overwrite",
+        "platform",
+        "bottom",
+        "duration",
+        "text",
+        "top"
       ],
       "overlay": [
         "input",
         "output",
-        "image",
-        "text",
-        "video",
         "position",
         "margin",
         "start",
         "end",
-        "fade",
         "opacity",
-        "scale",
-        "scale_percent",
-        "font",
-        "font_file",
+        "preset",
+        "audio_stream",
+        "fade",
+        "text",
         "font_size",
         "font_color",
         "border",
         "border_color",
         "box",
         "box_color",
+        "font",
+        "font_file",
+        "image",
+        "scale",
+        "scale_percent",
+        "video",
         "chromakey",
         "chromakey_similarity",
         "chromakey_blend",
+        "json",
+        "quality",
+        "crf",
+        "overwrite",
+        "platform"
+      ]
+    },
+    "required_flags": {
+      "probe": [
+        "inputs"
+      ],
+      "graphics": [
+        "input",
+        "output",
+        "template",
+        "start",
+        "end",
+        "preset",
         "audio_stream",
+        "title",
+        "subtitle",
+        "name",
+        "position",
+        "count_from",
+        "text_color",
+        "primary",
+        "json"
+      ],
+      "overlay": [
+        "input",
+        "output",
+        "position",
+        "margin",
+        "start",
+        "end",
+        "opacity",
+        "preset",
+        "audio_stream",
+        "fade",
+        "text",
+        "font_size",
+        "font_color",
+        "border",
+        "border_color",
+        "box",
+        "box_color",
+        "font",
+        "font_file",
+        "image",
+        "scale",
+        "scale_percent",
+        "video",
+        "chromakey",
+        "chromakey_similarity",
+        "chromakey_blend",
         "json"
       ]
+    },
+    "flag_alternatives": {
+      "graphics": {
+        "encoder_quality": [
+          "quality",
+          "crf"
+        ]
+      },
+      "overlay": {
+        "encoder_quality": [
+          "quality",
+          "crf"
+        ]
+      }
+    },
+    "optional_flags": {
+      "graphics": [
+        "overwrite",
+        "platform"
+      ],
+      "overlay": [
+        "overwrite",
+        "platform"
+      ]
+    },
+    "template_requirements": {
+      "sticker": {
+        "graphics_flags": [
+          "text"
+        ]
+      },
+      "hook": {
+        "graphics_flags": [
+          "duration"
+        ]
+      },
+      "meme": {
+        "graphics_flags": [
+          "top",
+          "bottom"
+        ]
+      }
     }
   },
   "request": {
@@ -731,7 +984,7 @@
       "elements": [
         {
           "id": "id",
-          "type": "bug|chapter|countdown|image_overlay|lower_third|progress|text_overlay|title|video_overlay",
+          "type": "bug|chapter|countdown|hook|image_overlay|lower_third|meme|progress|sticker|text_overlay|title|video_overlay",
           "start": 0,
           "end": 1,
           "parameters": {
@@ -749,7 +1002,8 @@
         "reuse_intermediates?": true,
         "crf?": 18,
         "preset?": "medium",
-        "audio_stream?": 0
+        "audio_stream?": 0,
+        "platform?": "tiktok"
       }
     }
   },

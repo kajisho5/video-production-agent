@@ -198,6 +198,8 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                             if not ok:
                                 rep.incidents.append(Incident(type="LOUDNESS_FAILURE", severity="MEDIUM", evidence=[art], possible_cause="export re-encoded audio after normalisation or the platform trimmed the file",
                                                               recommended_action="normalise after export or check the preset's audio chain"))
+                        elif lufs is None:   # a measurement without a figure is not a pass (ADR-048)
+                            rep.items.append(QAItem("audio", "loudness", "WARN", None, "an integrated loudness figure", artifact=art, fix_hint="the loudness result carried no figure; re-measure"))
                         else:
                             rep.items.append(QAItem("audio", "loudness", "PASS", lufs, "measured only", artifact=art))
                         if tp is not None and tp > 0:

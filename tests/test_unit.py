@@ -118,10 +118,10 @@ class AdapterTests(unittest.TestCase):
         real-Skill integration run against a live 0.12.3 checkout found no failures traced to ffmpeg-skill itself;
         anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit."""
         from video_agent.tools.ffmpeg_skill.locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (1, 0, 0)))
-        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9", "0.11.0", "0.12.2", "0.12.3"):
+        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (3, 0, 0)))
+        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9", "0.11.0", "0.12.2", "0.12.3", "1.10.0", "2.20.0"):
             self.assertTrue(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
-        for v in ("0.8.3", "0.7.9", "1.0.0", "unknown", "", "0.9.x"):
+        for v in ("0.8.3", "0.7.9", "3.0.0", "unknown", "", "0.9.x"):
             self.assertFalse(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
 
     def test_argv_typed_and_catalog_enforced(self):
@@ -132,6 +132,20 @@ class AdapterTests(unittest.TestCase):
             a.build_argv("ffmpeg-skill/cut", {"input": "/x", "crf_hack": "1; rm -rf /"}, {})
         with self.assertRaises(ToolError):
             a.build_argv("ffmpeg-skill/cut", {"input": "/x", "accurate": "yes"}, {})
+
+    def test_crf_spelled_as_the_installed_script_offers_it(self):
+        """ADR-048: ffmpeg-skill 1.10 renamed --crf to --quality on the re-encoding tools (2.x refuses --crf there);
+        export.py keeps --crf. The adapter reads each script's --help instead of trusting a version number."""
+        import tempfile as _tf
+        from video_agent.tools.ffmpeg_skill.locate import FfmpegSkill
+        root = Path(_tf.mkdtemp(dir=self.tmp)) / "ffmpeg-skill"
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "cut.py").write_text("import sys\nprint('usage: cut.py [--quality N] [--preset P]')\n", encoding="utf-8")
+        (root / "scripts" / "export.py").write_text("import sys\nprint('usage: export.py [--crf CRF] [--preset P]')\n", encoding="utf-8")
+        skill = FfmpegSkill(root, "2.20.0", ["cut", "export"])
+        a = FfmpegSkillAdapter(skill)
+        self.assertEqual(a.build_argv("ffmpeg-skill/cut", {"input": "/x/in.mp4", "crf": 20}, {}), ["/x/in.mp4", "--quality", "20"])
+        self.assertEqual(a.build_argv("ffmpeg-skill/export", {"input": "/x/in.mp4", "crf": 20}, {}), ["/x/in.mp4", "--crf", "20"])
 
     def test_multicam_catalog_declares_every_real_flag(self):
         """The catalog's `multicam` entry was missing max_offset/analyze_seconds/width/height/fps/crf (present in the real
@@ -5114,10 +5128,10 @@ class AudioProductionAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.3.0"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "0.4.0"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
         self.assertEqual(len(ad.lowering.supported_types()), 14); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.3.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
         self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         # incompatible contracts are refused, never patched
@@ -5167,7 +5181,7 @@ class AudioProductionAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertEqual(r.output, paths["a_norm"]); self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.3.0"}); self.assertEqual(d["operation_type"], "NORMALIZE")
+        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.0"}); self.assertEqual(d["operation_type"], "NORMALIZE")
         self.assertEqual(d["operation"]["type"], "NORMALIZE"); self.assertEqual(d["operation"]["tool"], "ffmpeg-skill/loudness")
         self.assertEqual(d["operation"]["parameters"], {"target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0})
         self.assertEqual(d["artifact"]["sha256"], hashlib_sha(paths["a_norm"])); self.assertEqual(d["artifact"]["format"], "wav"); self.assertFalse(d["artifact"]["reused"])
@@ -5496,7 +5510,7 @@ class AudioProductionPathTests(unittest.TestCase):
         rows = prov["operations"]
         self.assertEqual([r["skill"] for r in rows], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
         for r in rows:
-            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.3.0"))
+            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.0"))
             self.assertTrue(r["skill_result"]["artifact"]["sha256"]); self.assertEqual(r["skill_result"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["skill_result"]["operation"]["skill"], "audio-production")
         self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 5 + ["loudness"])
         self.assertEqual(prov["skill_observations"][-1]["data"]["target_lufs"], -16.0)

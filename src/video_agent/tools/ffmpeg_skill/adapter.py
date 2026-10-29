@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from ...models import Operation, ToolResult
 from ..base import ToolAdapter, ToolError
-from .catalog import CATALOG, FLAG_ALIASES
+from .catalog import CATALOG, FLAG_ALIASES, QUALITY_FLAG
 from .package import package
 from ...skills.contract import SkillPackage
 from .locate import FfmpegSkill, locate_ffmpeg_skill
@@ -100,6 +100,8 @@ class FfmpegSkillAdapter(ToolAdapter):
             if val is None or val is False:
                 continue
             flag = FLAG_ALIASES.get((script, key)) or FLAG_ALIASES.get(("*", key)) or "--" + key.replace("_", "-")
+            if key == "crf" and self.skill.offers_flag(script, QUALITY_FLAG):
+                flag = QUALITY_FLAG   # ffmpeg-skill 1.10 renamed --crf to --quality (same CRF scale) and 2.x refuses --crf
             if typ == "bool":
                 if val is not True:
                     raise ToolError(f"{tool}: '{key}' must be bool")

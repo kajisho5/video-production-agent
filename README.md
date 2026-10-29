@@ -10,7 +10,9 @@ AI Video Production Orchestrator. `kajisho5/ffmpeg-skill` を **Media Processing
 
 Request → Requirements → Intent → Analysis(probe / silence / loudness) → Inference → Decision → Plan → Project IR → Validation → Execute(cut / loudness / export via ffmpeg-skill) → QA(probe / loudness / check / look) → Report / Provenance。
 
-未実装（設計のみ）: 自然言語理解(AI)、conference パイプライン本体、multicam / captions / scenes、Web UI、job queue。
+未実装（設計のみ）: 依頼文から requirement を作る自然言語理解（`requirements_extraction`）、conference パイプライン本体、Web UI、job queue。
+
+AI（Claude）: `pip install -e '.[ai]'` の上で `VIDEO_AGENT_AI_PROVIDER=anthropic`（資格情報は `ANTHROPIC_API_KEY` か `ant auth login`。モデルは `VIDEO_AGENT_AI_MODEL`、既定 `claude-opus-5-5`）。AI は計測結果と依頼文から制作の推薦を出すだけで、引用の無い推薦は捨てられ、実行の可否は policy と検証が決める（ADR-018 / ADR-049）。未設定なら完全に決定的なパイプラインのまま動く。
 
 ## セットアップ
 

@@ -284,7 +284,7 @@ class Service:
         # situation understanding (ADR-026): events → ProductionContexts (derived, reference-centred) → generic deterministic inferences
         contexts = build_contexts(analysis.timeline.events, analysis.assets, analysis.observations, inferences)
         inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
-        inferences += self._ai_inferences(analysis, rules, prior_ai)
+        inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
@@ -302,9 +302,11 @@ class Service:
                           audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
 
-    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
+    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "") -> List[Inference]:
         """AI reasoning boundary. Recorded AI inferences (a revision) are reused: revising never spends AI calls. A provider
-        failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic."""
+        failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic.
+        The user's own request text and the resolved intent go along as context (ADR-049) so the provider can weigh what
+        was asked for; they inform recommendations only -- explicit requirements still come from extract_requirements()."""
         if prior_ai is not None:
             return list(prior_ai)
         if not self.provider.available():
@@ -312,7 +314,8 @@ class Service:
         intents = [sp.name for sp in self.registry.all() if sp.implemented and ("artifact" in sp.outputs or "qa" in sp.outputs)]
         reasoner = AIReasoner(self.provider, max_calls=int(rules.get("analysis.budget.max_ai_calls", DEFAULT_MAX_AI_CALLS)), calls=self._ai_calls)
         try:
-            resp = reasoner.ask(build_request(analysis, intents, {"strategy": analysis.strategy}))
+            ctx = {"strategy": analysis.strategy, "intent": intent, "request_text": (request_text or "")[:2000]}
+            resp = reasoner.ask(build_request(analysis, intents, ctx))
         except AIProviderError as e:
             analysis.warnings.append(f"ai: provider {self.provider.name} failed ({e.kind}); plan is deterministic only")
             return []

@@ -34,6 +34,28 @@ def make_media(path: str, hdr: bool = False, vfr: bool = False) -> None:
     subprocess.run(cmd, check=True)
 
 
+# ADR-048: ffmpeg-skill 2.x `check.py --platform youtube` warns when a delivery carries no language-tagged subtitle
+# track. That is a true statement about a deliverable these tests did not ask subtitles for, so it is the one
+# non-PASS item they tolerate; any other WARN/FAIL still fails them.
+def _subtitle_track_warn(item):
+    return item.get("status") == "WARN" and item.get("layer") == "delivery" and item.get("name") == "subtitles"
+
+
+def qa_status(out):
+    """The run's QA status, with a missing-subtitle-track WARN on a delivery treated as PASS."""
+    qa = out["qa"]
+    rest = [i for i in qa["items"] if i["status"] != "PASS" and not _subtitle_track_warn(i)]
+    return "PASS" if qa["status"] == "WARN" and not rest else qa["status"]
+
+
+def artifact_qa(out, art):
+    """An artifact's qa_status, with the same single tolerance as qa_status()."""
+    if art["qa_status"] != "WARN":
+        return art["qa_status"]
+    mine = [i for i in out["qa"]["items"] if i["status"] != "PASS" and (i.get("subject_artifact_id") == art.get("id") or i.get("artifact") == art.get("logical_name"))]
+    return "PASS" if mine and all(_subtitle_track_warn(i) for i in mine) else art["qa_status"]
+
+
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class RealMediaTests(unittest.TestCase):
     @classmethod
@@ -59,7 +81,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(rep.ok, rep.errors)
         out = svc.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
-        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(qa_status(out), "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
         art = out["artifacts"][0]
         self.assertTrue(os.path.exists(art["path"]))
         self.assertEqual(art["stage"], "candidate")
@@ -91,7 +113,7 @@ class RealMediaTests(unittest.TestCase):
         pr = router.measure(tools["media_probe"], {"inputs": [self.src]})
         self.assertTrue(pr.ok and set(svc.registry.tool(tools["media_probe"]).result_keys) <= set(pr.data), pr.data.keys())
         lm = router.measure(tools["loudness_analysis"], {"input": self.src, "measure_only": True})
-        self.assertTrue(lm.ok and "input_i" in lm.data)
+        self.assertTrue(lm.ok and "input_i" in (lm.data.get("measured") or lm.data))   # ffmpeg-skill 2.x nests it under `measured`
         from video_agent.models import Operation
         from video_agent.tools import ToolError
         outside = str(Path(self.tmp) / "contract_cut.mp4")
@@ -123,7 +145,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(svc.validate(ir).ok)
         out = svc.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
-        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(qa_status(out), "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
         prov_doc = json.loads((Path(self.ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         self.assertEqual(prov_doc["ai_calls"][0]["provider"], "fake")
         self.assertEqual(len(prov_doc["ai_calls"][0]["response_hash"]), 64)
@@ -164,7 +186,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(svc2.validate(ir2).ok)
         out = svc2.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
-        self.assertEqual(out["qa"]["status"], "PASS")
+        self.assertEqual(qa_status(out), "PASS")
         # CACHED_ONLY is honoured on real media too
         ir3 = Service(workspace=ws).plan([self.src], "youtube", strategy="CACHED_ONLY")
         self.assertEqual((ir3.doc["analysis"]["strategy"], ir3.doc["analysis"]["budget"]["calls"]), ("CACHED_ONLY", 0))
@@ -235,7 +257,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertTrue(svc.validate(ir).ok, svc.validate(ir).errors)
         out = svc.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
-        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(qa_status(out), "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
         self.assertEqual(hashlib.sha256(Path(self.src).read_bytes()).hexdigest(), before, "original unchanged")
         art = out["artifacts"][0]
         got = svc.check(art["path"])["probe"]["duration"]
@@ -258,7 +280,7 @@ class RealMediaTests(unittest.TestCase):
         out2 = svc.render(load_ir(p2), p2, timeout=600)
         self.assertEqual(out2["status"], "COMPLETED")
         self.assertEqual(out2["qa"]["status"], "WARN")
-        self.assertTrue(all("audio" in i["name"] for i in out2["qa"]["items"] if i["status"] != "PASS"))
+        self.assertTrue(all("audio" in i["name"] for i in out2["qa"]["items"] if i["status"] != "PASS" and not _subtitle_track_warn(i)))
         # hostile AI through the whole slice: recommendation becomes evidence, tool / argv / command never reach the plan or execution
         prov_ai = FakeAIProvider(intent="silence_cleanup", params={"tool": "ffmpeg-skill/export", "argv": ["ffmpeg", "-y", "-i", "x"], "command": "rm -rf /"})
         svc3 = Service(workspace=self.ws, provider=prov_ai)
@@ -284,7 +306,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(out["status"], "COMPLETED")
         a = out["artifacts"][0]
         self.assertEqual(a["hash"], hashlib.sha256(Path(a["path"]).read_bytes()).hexdigest())
-        self.assertEqual((a["qa_status"], a["stage"], a["delivery_status"]), ("PASS", "candidate", "READY"))
+        self.assertEqual((artifact_qa(out, a), a["stage"], a["delivery_status"]), ("PASS", "candidate", "READY"))
         self.assertEqual(a["media"].get("video_stream"), "h264")
         self.assertTrue(a["name"].endswith(".mp4"))
         self.assertEqual(hashlib.sha256(Path(self.src).read_bytes()).hexdigest(), before)
@@ -341,7 +363,7 @@ class RealMediaTests(unittest.TestCase):
         os.remove(first["artifacts"][0]["path"])
         second = Service(workspace=self.ws).render(load_ir(ir_path), ir_path, timeout=600, resume=first["job"]["id"])
         self.assertEqual(second["status"], "COMPLETED", second["execution"])
-        self.assertEqual(second["qa"]["status"], "PASS")
+        self.assertEqual(qa_status(second), "PASS")
         self.assertEqual(len(second["execution"]["skipped"]), 2, "cut and loudness reused from the first job's ops/")
         self.assertTrue(all(first["job"]["id"] in p for p in second["execution"]["reused"].values()))
         self.assertTrue(os.path.exists(second["artifacts"][0]["path"]))
@@ -373,7 +395,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertIn("ffmpeg-skill/loudness", tools)
         # the delivered file keeps the full 16 s: the rejected trim really did not run
         self.assertAlmostEqual(svc.check(res["artifacts"][0]["path"])["probe"]["duration"], 16.0, delta=0.3)
-        self.assertEqual(res["qa"]["status"], "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(qa_status(res), "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
         self.assertTrue(Path(str(Path(ir_path).with_name("conf.v1.json"))).exists())
 
     def test_approve_revise_approve_render_real_media(self):
@@ -396,7 +418,7 @@ class RealMediaTests(unittest.TestCase):
         res = svc.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(res["status"], "COMPLETED", res.get("execution"))
         self.assertEqual(res["job"]["plan_version"], 2)
-        self.assertEqual(res["qa"]["status"], "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(qa_status(res), "PASS", [i for i in res["qa"]["items"] if i["status"] != "PASS"])
         self.assertTrue(res["artifacts"] and os.path.isfile(res["artifacts"][0]["path"]))
         self.assertEqual(next(op for op in v2.doc["audio"]["operations"] if op["type"] == "audio.loudness")["true_peak"], -2.0)
         self.assertTrue(Path(str(Path(ir_path).with_name("conf2.v1.json"))).exists())
@@ -479,11 +501,13 @@ class FfmpegSkillContractTests(unittest.TestCase):
 
     def test_help_declares_every_catalog_flag(self):
         skill = locate_ffmpeg_skill()
-        from video_agent.tools.ffmpeg_skill.catalog import FLAG_ALIASES
+        from video_agent.tools.ffmpeg_skill.catalog import FLAG_ALIASES, QUALITY_FLAG
         for name, spec in CATALOG.items():
             out = subprocess.run([sys.executable, str(skill.script(name)), "--help"], capture_output=True, text=True).stdout
             for flag in spec["flags"]:
                 cli = FLAG_ALIASES.get((name, flag)) or FLAG_ALIASES.get(("*", flag)) or "--" + flag.replace("_", "-")
+                if flag == "crf" and skill.offers_flag(name, QUALITY_FLAG):
+                    cli = QUALITY_FLAG   # ADR-048: the adapter emits --quality where the installed script offers it
                 self.assertIn(cli, out, f"{name}.py --help does not mention {cli}")
             for common in ("--dry-run", "--json"):
                 self.assertIn(common, out)
@@ -647,7 +671,7 @@ class MediaAnalysisRealTests(unittest.TestCase):
         self.assertTrue(svc.validate(ir).ok, svc.validate(ir).errors)
         out = svc.render(load_ir(ir_path), ir_path, timeout=600)
         self.assertEqual(out["status"], "COMPLETED", out.get("execution"))
-        self.assertEqual(out["qa"]["status"], "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
+        self.assertEqual(qa_status(out), "PASS", [i for i in out["qa"]["items"] if i["status"] != "PASS"])
         ms = out["qa"]["measurements"]
         self.assertTrue(any(m["tool"] == "media-analysis/probe" and m["args"]["kind"] == "media_probe" for m in ms))
         self.assertTrue(any(m["tool"] == "media-analysis/loudness" and m["args"]["kind"] == "loudness" for m in ms))
@@ -696,7 +720,7 @@ class TranscriptionRealTests(unittest.TestCase):
         ad = self.adapter
         self.assertEqual(check_contract(ad.contract), [])
         self.assertEqual((ad.contract["id"], ad.version[:4], ad.contract["schemas"]["transcript"]), ("transcription-skill", "0.2.", "transcription-skill/transcript/0.1"))
-        self.assertEqual(sorted(ad.tools), ["transcription/check", "transcription/export", "transcription/segments", "transcription/transcribe"])
+        self.assertLessEqual({"transcription/check", "transcription/export", "transcription/segments", "transcription/transcribe"}, set(ad.tools))   # 0.7 added transcription/batch
         self.assertTrue(ad.supports("transcription/transcribe") and not ad.supports("transcription/export"))
         eng = {e["id"]: e for e in ad.engine_status()}
         self.assertEqual((eng["faster_whisper"]["execution_mode"], eng["faster_whisper"]["requires_network"]), ("local", False), "the only implemented engine is local")
@@ -1193,7 +1217,7 @@ class CameraSwitchRealTests(unittest.TestCase):
         self.assertTrue(op_result["ok"], op_result)
         self.assertEqual(len(out["artifacts"]), 1, out["artifacts"])
         art = out["artifacts"][0]
-        self.assertEqual(art["qa_status"], "PASS", out["qa"])
+        self.assertEqual(artifact_qa(out, art), "PASS", out["qa"])
         out_path = Path(ws) / "jobs" / out["job"]["id"] / "ops" / "programme_01_switch" / "programme.mp4"
         pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(out_path)], capture_output=True, text=True, check=True)
         self.assertAlmostEqual(float(pr.stdout.strip()), expected, delta=0.5, msg="the real multicam output is the reference timeline's own length, not the sum of both inputs")
@@ -1228,7 +1252,7 @@ class PriorityAToolsRealTests(unittest.TestCase):
         self.assertEqual(out["status"], "COMPLETED", out)
         op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/redact")
         self.assertTrue(op_result["ok"], op_result)
-        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS", out["qa"])
+        self.assertEqual(artifact_qa(out, out["artifacts"][0]), "PASS", out["qa"])
 
     def test_crop_plan_render_and_real_output_dimensions(self):
         ws = str(Path(self.tmp) / "run_crop")
@@ -1244,7 +1268,7 @@ class PriorityAToolsRealTests(unittest.TestCase):
         self.assertEqual(out["status"], "COMPLETED", out)
         op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/crop")
         self.assertTrue(op_result["ok"], op_result)
-        self.assertEqual(out["artifacts"][0]["qa_status"], "PASS", out["qa"])
+        self.assertEqual(artifact_qa(out, out["artifacts"][0]), "PASS", out["qa"])
         out_path = Path(op_result["output"])
         pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(out_path)],
                              capture_output=True, text=True, check=True)
@@ -1459,7 +1483,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         if not self.ve:
             self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
         svc, p, out, res = self._run("fit", {"edit.concat": True, "edit.speed": 2, "edit.resize": 640, "edit.fit": "1:1", "edit.overlay": self.png, "edit.overlay.position": "top-right", "edit.overlay.scale": 80},
-                                     ["video.concat", "video.speed", "video.resize", "video.fit", "video.overlay"], (640, 640))
+                                     ["video.concat", "video.speed", "video.resize", "video.fit", "video.overlay"], (360, 360))   # 640x360 → 1:1 never upscales (ffmpeg-skill fit.py fix)
         # resume: every completed editing operation is reused by the agent's idempotency key (no Skill call)
         out2 = svc.render(load_ir(p), p, resume=out["job"]["id"])
         self.assertEqual(out2["execution"]["status"], "COMPLETED")
@@ -1470,7 +1494,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
             self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
         self._run("fill", {"edit.concat": True, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.5, "edit.speed": 2, "edit.resize": 640, "edit.fill": "1:1",
                            "edit.overlay": self.png, "edit.overlay.position": {"x": 10, "y": 10}, "edit.overlay.opacity": 0.6},
-                  ["video.concat", "video.speed", "video.resize", "video.fill", "video.overlay"], (640, 640))
+                  ["video.concat", "video.speed", "video.resize", "video.fill", "video.overlay"], (360, 360))   # same bound for fill
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
@@ -1541,7 +1565,7 @@ class AudioProductionRealTests(unittest.TestCase):
         rows = [e for e in prov["operations"] if e["tool"] == "audio-production/run"]
         self.assertEqual([e["skill"] for e in rows], expect_skills)
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.3.0" and e["skill_package"] == "audio-production")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.0" and e["skill_package"] == "audio-production")
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] in ("TRANSFORM", "REMOVE") for e in rows for i in e["decision"]))
         return svc, p, out, res, prov
@@ -1628,7 +1652,7 @@ class AudioProductionRealTests(unittest.TestCase):
         # intermediate is the deliverable, and it is a registered MASTER artifact (video-production-agent#32) —
         # citing every real decision behind it (video-production-agent#33), not the pre-fix "artifacts: []"
         art = out["artifacts"][0]
-        self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
+        self.assertEqual((art["type"], art["format"], artifact_qa(out, art)), ("MASTER", "source", "PASS"))
         self.assertTrue(art["operations"], "the real audio-production operation must be credited")
         self.assertTrue(art["path"].endswith("programme_audio_loudnorm.wav"))
         self.assertTrue(out["paths"]["programme_audio_delivery_main"].endswith("programme_audio_loudnorm.wav"))

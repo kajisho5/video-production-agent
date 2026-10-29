@@ -36,7 +36,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy, run_process_group
-from ..skill_process import breaking_drift
+from ..skill_process import breaking_drift, engine_compat, engine_compat_errors
 from .locate import AudioProductionSkill, locate_audio_production
 from .lowering import OPERATION_ID, OUTPUT_ID, TOOL_ID, Lowering
 
@@ -46,7 +46,9 @@ CONTRACT_SCHEMA = "audio-production/contract@1"
 REQUEST_SCHEMA = "audio-production/request@1"
 RESPONSE_SCHEMA = "audio-production/response@1"
 DOCTOR_SCHEMA = "audio-production/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.")  # 0.3.0 (audio-production-skill #8): audio_stream added to
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.0: engine compatibility by capability detection (no
+                                               # version window, ADR-048); operations/request/response unchanged.
+                                               # 0.3.0 (audio-production-skill #8): audio_stream added to
                                                # GAIN/FADE_IN/FADE_OUT/MONO/STEREO/DOWNMIX/NOISE_REDUCTION/DYNAMICS.
                                                # 0.2.0 (audio-production-skill #7): loudness result read from the
                                                # NORMALIZE call directly, requires ffmpeg-skill >= 0.12.0; additive
@@ -100,9 +102,7 @@ def check_contract(contract: Any) -> List[str]:
         errs.append(f"execution.stdin {ex.get('stdin')!r} != {REQUEST_SCHEMA}")
     if (contract.get("schema_versions") or {}) != SCHEMA_VERSIONS:
         errs.append(f"schema_versions {contract.get('schema_versions')!r} != {SCHEMA_VERSIONS}")
-    fs = contract.get("ffmpeg_skill") or {}
-    if str(fs.get("contract_version")) != "1.0" or not isinstance(fs.get("version_window"), dict):
-        errs.append("ffmpeg_skill.contract_version / version_window missing (the Skill must declare the engine window it verified)")
+    errs.extend(engine_compat_errors(contract.get("ffmpeg_skill") or {}))
     ops = {str(o.get("type")): o for o in contract.get("operations") or [] if isinstance(o, dict)}
     if not ops:
         errs.append("no operations declared")
@@ -172,7 +172,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic audio production (typed operation graph, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -193,7 +193,10 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # mutates_input / delegates_to invariants that `tools` could otherwise catch drifting are independently
 # hard-validated by check_contract() against the live contract on every fetch, so dropping `tools` from the fatal
 # set loses no real coverage.
-FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools"))
+# ADR-048: `ffmpeg_skill` (how the Skill stays compatible with its engine) is the Skill's own business -- it detects
+# every tool/flag it uses against the installed ffmpeg-skill and reports that in its doctor, which gates availability
+# already; check_contract() still refuses a contract that declares no compatibility at all.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
 
 
@@ -352,7 +355,7 @@ class AudioProductionAdapter(ToolAdapter):
     def describe(self) -> Dict[str, Any]:
         return {"name": self.name, "version": self.version, "skill": self.skill.describe(), "contract": self.contract.get("schema"), "tools": sorted(self.tools),
                 "operations": self.lowering.supported_types(), "unsupported": list(self.lowering.unsupported), "formats": sorted(self.lowering.formats),
-                "engine": {"id": ENGINE_ID, "window": (self.contract.get("ffmpeg_skill") or {}).get("version_window")}, "workspace": self.workspace, "allowed_inputs": list(self.allowed_inputs)}
+                "engine": {"id": ENGINE_ID, "window": engine_compat(self.contract.get("ffmpeg_skill") or {})}, "workspace": self.workspace, "allowed_inputs": list(self.allowed_inputs)}
 
     def package(self) -> SkillPackage:
         return package_from_contract(self.contract)

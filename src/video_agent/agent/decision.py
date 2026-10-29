@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..capabilities.resolver import Capability
+from ..media.analysis import loudness_facts
 from ..media.analyzer import AnalysisResult
 from ..models import Alternative, Decision, Inference, Intent, Requirement
 from ..policy.rules import RuleSet
@@ -309,6 +310,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         amb = next((i for i in infs if i.kind == "ambience_not_programme"), None)
         silent = next((i for i in infs if i.kind == "audio_silent"), None)
         loud_obs = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "loudness"]
+        loud_measured = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "loudness" and loudness_facts(o.data)["lufs"] is not None]
         tol = resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)
         if want_norm and want_norm.value in (True, "auto") and target is not None and not asset.technical.get("audio"):
             eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=f"{asset.id} has no audio stream; loudness normalization needs one (unsupported input, not guessed)",
@@ -336,9 +338,13 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            params={"asset_id": asset.id, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0, **extra},
                            settings=[tol], requirements=[want_norm, target] + ([tp] if tp else []) + (audio["requirements"] if on_audio_path else []), serves_intent=_serves(intent, "audio.loudness"))
                 cap_block("audio_normalize" if on_audio_path else "loudness_normalization", "capability.audio_normalize" if on_audio_path else "capability.loudness_normalization")
-            elif loud_obs:   # no measurement (analysis failed) → no claim about loudness; the analysis warning records the failure
+            elif loud_measured:   # a real integrated-loudness figure, within tolerance (no loudness_off_target inference)
                 eng.decide(subject="audio.loudness", type="KEEP", decision="keep", reason=f"measured loudness within tolerance of {float(target.value):g} LUFS", confidence=0.95,
-                           evidence=loud_obs, risk="LOW", approval="AUTO", provenance="OBSERVED", settings=[tol], requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
+                           evidence=loud_measured, risk="LOW", approval="AUTO", provenance="OBSERVED", settings=[tol], requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
+            elif loud_obs:   # a loudness observation without a figure in it is never claimed as "within tolerance" (ADR-048)
+                eng.decide(subject="audio.loudness", type="KEEP", decision="keep", reason="loudness could not be read from the measurement; not normalised -- re-measure before delivery",
+                           confidence=0.3, evidence=loud_obs, risk="MEDIUM", approval="CONFIRM", provenance="OBSERVED", settings=[tol], requirements=[want_norm, target],
+                           serves_intent=_serves(intent, "audio.loudness"))
         # ---- VFR / HDR facts that change tool behaviour are surfaced as decisions too
         v = (asset.technical.get("video") or {})
         probe_ids = [o.id for o in analysis.observations if o.asset_id == asset.id and o.kind in ("media_probe", "probe")]

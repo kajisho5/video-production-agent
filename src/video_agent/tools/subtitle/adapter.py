@@ -42,7 +42,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
                              remove_fresh, same_file, scan_forbidden, scrub)
 from .locate import locate_subtitle
 
@@ -124,6 +124,23 @@ def check_contract(contract: Any) -> List[str]:
 
 def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
     return drift_report(live, pinned or pinned_contract(), DRIFT_KEYS)
+
+
+# ADR-048: `version` moves within the range check_contract() accepts, and an operation's prose `description` is
+# documentation for humans; neither can change a call this adapter builds. Every other key (operations' formats,
+# inputs, outputs, delegates_to included) stays fatal.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k != "version")
+
+
+def _without_descriptions(contract: Dict[str, Any]) -> Dict[str, Any]:
+    ops = contract.get("operations")
+    if not isinstance(ops, dict):
+        return contract
+    return {**contract, "operations": {k: ({kk: vv for kk, vv in v.items() if kk != "description"} if isinstance(v, dict) else v) for k, v in ops.items()}}
+
+
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(_without_descriptions(live), _without_descriptions(pinned or pinned_contract()), FATAL_DRIFT_KEYS)
 
 
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
@@ -217,6 +234,10 @@ class SubtitleAdapter(ToolAdapter):
         if self._drift is None:
             self._drift = contract_drift(self.contract)
         return self._drift
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-048: the subset of drift() that gates availability (see FATAL_DRIFT_KEYS)."""
+        return contract_breaking_drift(self.contract)
 
     # ---- ToolAdapter
     def describe(self) -> Dict[str, Any]:

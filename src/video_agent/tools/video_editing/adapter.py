@@ -195,7 +195,9 @@ DRIFT_TOOL_KEYS = ("tool_id", "skill_id", "version", "operation_type", "capabili
 # know about yet -- request building re-validates every parameter against the *live* contract on every call, so a
 # stale pinned snapshot here can never cause a wrong call, only a once-per-bump refusal of a call this adapter
 # doesn't yet exercise. A tool disappearing from the live contract stays fatal via the per-tool membership check.
-FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "operations", "unsupported"))
+# ADR-048: `engine` (ffmpeg-skill version range / compatibility) is the Skill's own business -- its doctor detects the
+# installed ffmpeg-skill's tools and flags and gates availability; check_contract() still hard-checks engine.id.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "operations", "unsupported", "engine"))
 FATAL_DRIFT_TOOL_KEYS = tuple(k for k in DRIFT_TOOL_KEYS if k not in ("version", "parameters"))
 
 

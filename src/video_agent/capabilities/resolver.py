@@ -246,6 +246,16 @@ class CapabilityResolver:
         caps["asr:whisper"] = Capability("asr:whisper", "AVAILABLE" if asr else "MISSING", asr or "no local whisper engine")
         for prov, var in AI_ENV.items():
             caps[f"ai:{prov}"] = Capability(f"ai:{prov}", "AVAILABLE" if self.env.get(var) else "MISSING", f"{var} {'set' if self.env.get(var) else 'not set'}")
+        # ADR-049: the bundled Anthropic provider authenticates the way the SDK does (API key, auth token or an
+        # `ant auth login` profile) and needs the `ai` extra installed; report exactly that, never a credential value.
+        from ..providers.claude import AnthropicProvider
+        try:
+            ap = AnthropicProvider(env=dict(self.env))
+            ok = ap.available()
+            detail = f"{ap.model}, effort {ap.effort}" + ("" if ok else " (needs `pip install 'video-production-agent[ai]'` and ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile)")
+            caps["ai:anthropic"] = Capability("ai:anthropic", "AVAILABLE" if ok else "MISSING", detail, {"model": ap.model, "effort": ap.effort})
+        except ValueError as e:
+            caps["ai:anthropic"] = Capability("ai:anthropic", "MISSING", str(e))
         configured = (self.env.get("VIDEO_AGENT_AI_PROVIDER") or "null").lower()
         caps["ai:provider"] = Capability("ai:provider", "AVAILABLE" if configured not in ("", "null", "none") else "MISSING",
                                          f"VIDEO_AGENT_AI_PROVIDER={configured} (deterministic pipeline; AI recommendations are proposals only)", {"provider": configured})

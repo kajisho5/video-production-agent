@@ -53,6 +53,11 @@ CATALOG: Dict[str, Dict[str, Any]] = {
              "produces_output": True, "result_keys": ["output", "probe"]},
 }
 
+# The catalog's `crf` key is the encoder quality on the CRF scale. ffmpeg-skill 1.10 renamed the flag to --quality
+# on every re-encoding tool except export.py (whose preset picks the encoder and keeps --crf) and 2.x refuses --crf
+# there; the adapter emits --quality wherever the installed script's --help offers it, else --crf (ADR-048).
+QUALITY_FLAG = "--quality"
+
 # flags whose CLI spelling differs from the underscore->dash rule
 FLAG_ALIASES = {("loudness", "lufs"): "-I", ("*", "output"): "-o",
                  ("cropdetect", "round_to"): "--round",   # --round collides with the python builtin `round`

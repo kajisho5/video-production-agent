@@ -13,6 +13,10 @@ dependencies = [
   "jsonschema>=4.17",
 ]
 
+[project.optional-dependencies]
+# The bundled Anthropic (Claude) provider, ADR-049. Without it the pipeline stays fully deterministic.
+ai = ["anthropic>=2.3; python_version >= '3.10'"]
+
 [project.scripts]
 video-agent = "video_agent.cli:main"
 
@@ -20,4 +24,4 @@ video-agent = "video_agent.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-video_agent = ["../../schemas/*.json", "../../profiles/*.json"]
+video_agent = ["../../schemas/*.json", "../../profiles/*.json", "tools/*/contract_*.json"]   # pinned Skill contracts (read at import time)
