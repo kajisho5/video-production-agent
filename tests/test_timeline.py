@@ -161,10 +161,14 @@ class TimelinePlanTests(unittest.TestCase):
         ir = svc.plan([self.a], "youtube", user_requirements={"delivery.timeline": "otio"})
         tl = ir.doc["delivery"]["timelines"][0]
         tl["clips"][0]["out"] = 99.0
-        tl["format"] = "aaf"
         errs = svc.validate(ir).errors
         self.assertTrue(any("not inside its source" in e for e in errs), errs)
-        self.assertTrue(any("unknown format 'aaf'" in e for e in errs), errs)
+        tl["clips"][0]["out"] = ir.doc["delivery"]["timelines"][0]["clips"][0]["in"] + 1.0
+        tl["format"] = "aaf"
+        errs = svc.validate(ir).errors
+        # with jsonschema installed the schema's enum refuses it first; without it the validator's own check does
+        self.assertTrue(any("unknown format 'aaf'" in e or "'aaf' is not one of" in e for e in errs), errs)
+        tl["format"] = "otio"
         ir.doc["plan"]["steps"] = [s for s in ir.doc["plan"]["steps"] if s["skill"] != "timeline_export"]
         self.assertTrue(any("timeline.export on" in e and "has no plan step" in e for e in svc.validate(ir).errors))
 
