@@ -350,3 +350,34 @@
 - サイドカー SRT: 新しい仕組みは足さない。既存の `--set subtitle=srt` の sidecar は transcript の cue を delivered timeline（trim → concat → speed）に写像しており、speed も transition も無ければこれはタイムラインの record time と同じなので、`--set subtitle=srt --set delivery.timeline=otio` で両方がそろう（タイムラインはフレームに丸められるので最大半フレームずれる）。タイムラインに字幕トラックとして埋め込むこと、speed / transition がある場合にタイムライン基準の SRT を作ることは次の段階。
 - 検証: `tests/test_timeline.py`（15件、偽エンジン: 既定・none では何も計画しない、未知の値・サブキーの拒否、trim の keep 範囲がそのまま clips になる、trim 無しは全長1本、concat は入力順で transition の欠落を名指し、switch / audio path / video 無しの BLOCK、capability 欠落の BLOCK、compiler の path と引数、render で TIMELINE Artifact の sha256・step・decision・QA、provenance に command が無い、自分の decision と cut の decision の REJECTED 引用、改ざんした IR の拒否、adapter の argv / project 文書 / path policy / `--help` による supports）。`evals/cases/100`–`102`（102/102）。`tests/test_integration.py::TimelineExportRealTests`（実 ffmpeg-skill 2.21.0）: `delivery.timeline=otio` の render で TIMELINE Artifact ができ、opentimelineio 0.18.1 で読み戻した clip が IR の keep 範囲（2.85–13.868 秒）と1フレーム以内で一致し（30 fps で 2.867–13.867 秒）、media の参照先は元の source。2入力の concat でも2 clip が入力順に読み戻せることを確認した。opentimelineio は依存にせず、無ければ読み戻しの assert だけ飛ばす。
 - 対象外: Resolve / Premiere での読み込み確認（どちらもまだ無い）。render.py の otio は Video トラックだけを書く（音声は NLE 側のリンクに任せる。ffmpeg-skill 側の仕様）。speed（render.py は clip の speed を書けるが未接続）・transition・chapter marker・music bed の受け渡し、switch / grid の programme、AAF。
+
+## ADR-053 同じセリフの複数テイクから最良テイクを測定値だけで選び、セリフ順に組み、音楽のビートにつなぎ目を合わせる（take selection、2026-10-30）
+- 事実: 同じセリフを何度か撮ると、似たクリップが入力に並ぶ。agent はこれまで、入力をすべて（`edit.concat`）か入力ごとに扱うだけで、どのテイクを使うかを決める decision が無かった。使える測定は transcript（transcription-skill の segments / text）、loudness（integrated LUFS / true peak）、silence の3つ。sharpness / exposure を測る adapter は無い（media-analysis-skill 0.1 に該当 tool が無い）。顔検出も無い（detection-skill は agent に接続されていない）。ffmpeg-skill 2.21 の `scenes.py --beats --json` は `beats`（時刻）と `beat_grid`（tempo_bpm / interval / phase / confidence / supported_beats / usable …）を返す。120 BPM のクリックトラックの実測で、`supported_beats` は 0.5 秒刻みの 20 点、confidence 0.979 だった。食い違いが2つある。(1) `scenes.py` は video stream の無い入力を `input has no video stream` で拒否するので、wav / m4a の音楽はそのまま測れない。(2) `cut.py --snap beats --snap-source` は cut する source の時刻を grid に寄せる。複数テイクを並べた programme では、つなぎ目の位置は programme 上の時刻（それまでの pick の長さの和）なので、source の時刻を寄せてもつなぎ目はビートに乗らない。
+- 決定: 次の requirement を足す（明示の `--set` だけ）。
+  - `edit.takes`（true: 音楽以外の video 入力はすべて、どれかのセリフのテイク）
+  - `edit.takes.similarity`（0.3–1.0、既定 0.6）
+  - `edit.takes.music`（音楽の入力 index。その入力の beat grid を測り、つなぎ目を合わせる）
+  - `edit.takes.snap_max_shift`（秒、0.01–2.0、既定 0.5）
+  refinement だけの指定、範囲外の値、存在しない index は解析前（index は decision 時）に拒否する。`agent/takes.py` は次を決定的に行う（AI は使わない）。
+  - **グループ化**: segments を連結し、NFKC・小文字化・つなぎ言葉の除去・非単語文字の除去をした文字列どうしの `difflib.SequenceMatcher` ratio（autojunk off）を比べる。入力順に、各セリフの最初のテイクとの ratio が閾値以上で最大のセリフに入れる（同点は先のセリフ）。どれにも届かなければ新しいセリフにする。セリフ順は入力に最初に現れた順。
+  - **採点**: 100 から減点する。どの減点も、読んだ observation の id と値を残す。
+    - つなぎ言葉: 8 × 個数（transcript）。日本語は「えーと / えっと / えー / あのー / そのー / うーん / んー」、英語は um / uh / er / erm / ah / hmm。あの / その / まあ は普通の語でもあるので数えない。
+    - 言い直し: 15 × 回数。直後に同じものを繰り返した箇所を数える。単語の文は 1–3 語、CJK は 3–10 文字。つなぎ言葉は無視する。
+    - 欠け: 50 ×（セリフの代表テイク〔他のテイクとの類似の和が最大のもの〕のうち、言っていない割合）。
+    - クリップ: true peak が -0.1 dBTP 以上なら 30。
+    - 間: 4 × 話している区間の中の無音の秒数。
+    - 音量: 2 ×（セリフの中央値から 3 LU を超えて離れた LU）。
+    sharpness / exposure / faces は採点しない（測る adapter が無い）。その旨と理由を pick ごとに `unmeasured` として残す。
+  - **選択**: 得点の高い順、同点は入力の早い順。decision は `takes.pick`（TRANSFORM、セリフごとに1つ、policy `takes.pick.approval`、既定 CONFIRM。どのテイクを捨てるかは編集判断なので、`edit.takes` で waive しない）。params には全テイクの得点・要因・順位、`deterministic_pick`、`keep`（話している区間 ± 0.15 秒、source の中に収める）、`unmeasured` を入れる。
+  - **AI**: AI 推薦（intent `take_selection`。`edit.takes` があるときだけ allowed_intents に入る。ADR-018 の検証を通り、記録済みの observation を引用したものだけ）がセリフ内の1テイクを名指しした場合は、それを pick にする。得点は測ったまま変えず、理由に両方を書き、provenance を AI_GENERATED、承認を CONFIRM 以上にし、推論 id を evidence に足す。引用の無い推薦は ai_reasoning で捨てられる。1つのセリフで複数のテイクが名指しされた場合は採点順を使い、名指しは REVIEW 項目に残る。
+  - **組み立て**: pick をセリフ順に入力とする `video.concat`（`edit.concat` と同じ操作・同じ plan 経路）を作る。concat の step と operation は pick も引用するので、pick を REJECT すると組み立ては rejected-cited になる。選ばれなかったテイクと音楽には decision も step も作らない。pick には silence.leading / trailing / internal の削除を作らない（範囲は pick 自身が決め、間は減点に入れる）。
+  - **ビート合わせ**: 解析 kind `beats`（SkillSpec `beat_analysis` → `ffmpeg-skill/scenes --beats`、catalog に `beats` フラグ）を足す。`beat_input` で指定した入力だけを測り、他は SKIPPED にする。decision は `takes.beat_snap`（TRANSFORM、policy `takes.beat_snap.approval` 既定 CONFIRM、`edit.takes.music` が明示なので AUTO）。音楽を programme 時刻 0 から敷く前提で、各 pick の out 点を `snap_max_shift` 以内で最も近い supported beat に動かす（同距離なら早い方）。最後の語の 0.05 秒後より前と、source の終わりより後には動かさない（届かない out 点はそのまま残し、理由を書く）。計算は agent が programme 時刻で行う（上の食い違い (2) のため、`cut --snap` は使わない）。合わせた trim は frame-accurate にする。測定が無い場合（音声だけの音楽を `scenes.py` が拒否した場合を含む）、usable が偽の場合、confidence 0.5 未満の場合は BLOCK。
+  - validator は次を検査する。pick の範囲が source の中にあること。pick が自分の採点表にあること。concat の入力が pick のセリフ順と一致すること。合わせたつなぎ目が、記録済みの beat 測定の supported beat にあり、trim の長さの累積（実際の cut list）もそこで終わること。
+  タイムライン書き出し（ADR-052）は、この cut list から変更なしで動く。
+- 検証: `tests/test_takes.py`（19件）。つなぎ言葉 / 言い直し / 類似 / 欠けの計算、入力が交互でもセリフ順にまとまること、要因ごとの evidence と同点の順、測定の無い要因を作らないこと、programme 時刻でのビート合わせ（語を切らない、source を越えない、同距離は早い方）、requirement の拒否を確かめる。plan 側では、2セリフ × 3テイクで期待どおりの pick になり、選ばれなかったテイクに step が無く、concat がセリフ順で、render と OTIO の clip が pick と一致すること、ビートの測定が音楽だけにあり、つなぎ目が beat 上に乗り、改ざんした trim / join を validator が拒否すること、音声だけの音楽と低 confidence の BLOCK、concat 併用と無音テイクの BLOCK、1セリフなら pick 単体で納品されること、pick の REJECT で組み立てが rejected-cited になること、AI の上書きでは得点が変わらず CONFIRM / AI_GENERATED になること、引用の無い AI・名指しが割れた AI では何も変わらないこと、`scenes --beats` の argv を確かめる。`evals/cases/103`–`107`（107/107）。103 は1テイク目が言い直し、2テイク目がクリップで、3テイク目が選ばれる。104 は2つのつなぎ目が実測ビート上に乗る。`tests/test_integration.py::BeatGridRealTests`（実 ffmpeg-skill 2.21）: 黒画面 mp4 に入れたクリックトラックを tempo 120 ± 1 BPM、confidence 0.5 以上、0.5 秒格子上の supported beat 15 点以上と測り、テイク側の入力は SKIPPED になる。
+- 対象外（次の段階）:
+  - つなぎ目の音声クロスフェード。audio-production の `concat` crossfade は音声だけの経路で、n 本をつなぐと音声が (n-1)·d 短くなる。hard cut の絵と合わせるには、音声側に重なり分の handle を足すことと、音声を絵に mux する工程が必要で、どちらもまだ無い。
+  - 音楽をミックスに入れることと、タイムラインに音楽トラックとして載せること（render.py の project は music を持てるが未接続）。
+  - 音声だけの音楽ファイルの beat 測定（ffmpeg-skill 側で `scenes.py --beats` が音声入力を受けること）。
+  - sharpness / exposure / 顔の採点（測る adapter ができてから）。
+  - pick の手動差し替え（今は REJECT すると組み立てが止まる）。

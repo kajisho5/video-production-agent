@@ -277,6 +277,10 @@ def default_registry() -> SkillRegistry:
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
                          {"reference": "media", "second": "media"}, {"observation": "sync"}, ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/sync"]))
+    # the beat grid of a music bed (ADR-053): ffmpeg-skill/scenes --beats, measurement only (no output). Feeds the beat snap of a
+    # take assembly; the agent places a join only on a beat this measurement reports as supported.
+    r.register(SkillSpec("beat_analysis", "1.0", "Beat grid of a music track (tempo, beat times, confidence, supported grid points); measurement only",
+                         {"asset": "media"}, {"observation": "beats"}, ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/scenes"]))
     # explicit multi-camera switch (ADR-045): the production side of multi-source work. ffmpeg-skill/multicam aligns every
     # input to the reference by audio (the same correlation as sync_analysis) then cuts between them on the reference
     # timeline per the user's own switch list -- no speaker detection, no automatic cut decision.

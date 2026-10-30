@@ -19,7 +19,7 @@ Python orchestrator (`video-agent`). 10 adapters (ffmpeg-skill, video-editing, a
 
 ## Wiring
 
-Uses 16 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, scenes, report unreachable). Does not read ffmpeg-skill's `contract --json` / `doctor --json`. NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052).
+Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Does not read ffmpeg-skill's `contract --json` / `doctor --json`. NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052).
 
 ## Steps
 
@@ -44,6 +44,7 @@ Uses 16 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
   - Done when: one PR per skill: plan -> run -> provenance, handoff when absent
 - [ ] **10. Take selection and beat-synced assembly** — group takes of the same line by transcript similarity (transcription-skill); score each take on measured facts (sharpness / exposure / loudness from media-analysis, flubs and fillers from the transcript, faces from detection) and let the AI pick with the evidence recorded as a decision; assemble the picks with cuts snapped to a measured beat grid (ffmpeg-skill `scenes --beats`, `cut --snap beats`) and audio crossfades at the joins (audio-production `concat` crossfade); export OTIO for finishing in an NLE
   - Done when: an eval with several takes per line picks the expected take, every pick carries its scores, and the cuts land on measured beats
+  - Partly done (ADR-053): grouping by transcript similarity, scores from measured facts with their evidence (sharpness / exposure / faces left out: no adapter measures them), `takes.pick` per line (an AI `take_selection` recommendation may override, scores kept), concat of the picks in line order, out points snapped to the music bed's measured beat grid (`scenes --beats`, computed in programme time), OTIO export of the result; evals 103-107. Remaining: audio crossfades at the joins (audio-production `concat` crossfade needs audio handles + a mux under the hard-cut picture), the music bed in the mix / timeline, beat measurement of an audio-only bed (ffmpeg-skill `scenes.py` needs a video stream)
 
 ## Boundaries
 

@@ -23,8 +23,11 @@ CATALOG: Dict[str, Dict[str, Any]] = {
               "produces_output": False, "result_keys": ["platform", "checks", "failed", "warnings", "ok"], "exit_code_means_fail": True},
     "look": {"positional": ["input"], "flags": {"at": "list[str]", "tiles": "str", "width": "int", "output": "path_out"},
              "produces_output": True, "result_keys": ["outputs"]},
-    "scenes": {"positional": ["input"], "flags": {"threshold": "float", "min_scene": "float", "highlights": "int", "target": "float", "edl": "path_out"},
-               "produces_output": False, "result_keys": ["scenes", "audio_peaks", "highlights"]},
+    # `beats` (ADR-053, verified against ffmpeg-skill 2.21.0 --help and a real --json capture of a 120 BPM click track): adds `beats`
+    # (times) and `beat_grid` {tempo_bpm, interval, phase, confidence, supported_beats, onsets, supported, unsupported, method, usable}.
+    # scenes.py refuses an input without a video stream ("input has no video stream"), so a music bed is measured in a video container.
+    "scenes": {"positional": ["input"], "flags": {"threshold": "float", "min_scene": "float", "highlights": "int", "target": "float", "edl": "path_out", "beats": "bool"},
+               "produces_output": False, "result_keys": ["scenes", "audio_peaks", "highlights", "beats", "beat_grid"]},
     "sync": {"positional": ["reference", "second"], "flags": {"max_offset": "float", "analyze_seconds": "float", "fix_drift": "bool", "replace_audio": "bool", "trim_second": "bool", "output": "path_out"},
              "produces_output": True, "result_keys": ["offset_seconds", "confidence", "drift"]},
     "multicam": {"positional": ["inputs"], "flags": {"switch": "str", "auto": "float", "audio": "int", "offsets_only": "bool", "max_offset": "float", "analyze_seconds": "float", "fix_drift": "bool",

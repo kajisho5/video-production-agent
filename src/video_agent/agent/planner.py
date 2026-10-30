@@ -15,6 +15,7 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_S
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
+from .takes import PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 
 
@@ -396,7 +397,16 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                     if first:
                         summary.append(f"Deliver '{t['id']}' as processed (no platform preset)")
 
+    # take selection (ADR-053): every pick decision lists its line's takes; the takes not picked and the music bed get no step. A pick's
+    # trim is its decided keep range (speech span + handles, out point on the beat when snapped), cut frame-accurately when snapped.
+    pick_decs = [d for d in decisions if d.subject == PICK_SUBJECT and d.type == "TRANSFORM"]
+    snap_dec = next((d for d in decisions if d.subject == SNAP_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"), None)
+    take_left_out = ({t["asset_id"] for d in pick_decs for t in d.params.get("takes") or []} - {d.params["asset_id"] for d in pick_decs}) \
+        | {d.params["music_bed"] for d in pick_decs if d.params.get("music_bed")}
     for asset in analysis.assets:
+        if asset.id in take_left_out:
+            summary.append(f"{asset.path.split('/')[-1]}: not used (a take that was not picked, or the music bed)")
+            continue
         if asset.id in extract_refused:
             summary.append(f"{asset.path.split('/')[-1]}: audio extraction was rejected; nothing is planned for it on the audio path")
             continue
@@ -413,6 +423,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if d.subject == "silence.trailing":
                 end, dec_ids = min(end, d.params["start"]), dec_ids + [d.id]
                 removed.append([round(d.params["start"], 3), round(dur, 3)])
+            if d.subject == PICK_SUBJECT and d.type == "TRANSFORM":
+                start, end = max(start, float(d.params["keep"][0])), min(end, float(d.params["keep"][1]))
+                dec_ids = dec_ids + [d.id] + ([snap_dec.id] if snap_dec is not None else [])
+                removed += [r for r in ([0.0, round(start, 3)], [round(end, 3), round(dur, 3)]) if r[1] > r[0]]
         internal = sorted(([round(d.params["start"], 3), round(d.params["end"], 3)], d.id) for d in decisions
                           if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
         current = asset.id
@@ -445,9 +459,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     decision_id=dec_ids[0], temporal_scope={"start": 0.0, "end": kept_after_cut(dur, remove)})
                 scope_of[asset.id] = {"start": 0.0, "end": kept_after_cut(dur, remove)}
             else:
-                video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": bool(frame_accurate), "decision_ids": dec_ids})
+                accurate = bool(frame_accurate or (snap_dec is not None and snap_dec.id in dec_ids))   # a beat-snapped join must land on its frame, not a keyframe
+                video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids})
                 st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill="silence_cleanup", tool=tool_for("silence_cleanup"), inputs=[current],
-                                    params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": bool(frame_accurate)}, outputs=[f"{asset.id}_trim"],
+                                    params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate}, outputs=[f"{asset.id}_trim"],
                                     depends_on=[], evidence=evidence_of(dec_ids), decision_ids=dec_ids, decision_id=dec_ids[0],
                                     temporal_scope={"start": keep[0][0], "end": keep[-1][1]})
                 scope_of[asset.id] = {"start": 0.0, "end": round(kept_total, 3)}
@@ -497,11 +512,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         params = {k: v for k, v in concat_dec.params.items() if k in OPERATIONS["video.concat"]["params"]}
         segments, total = concat_segments(inputs, video_ops, durations, params.get("transition"))
         scope = {"start": 0.0, "end": total}
-        video_ops.append(ir_operation("video.concat", PROGRAMME, params, [concat_dec.id], scope=scope, inputs=inputs, output=PROGRAMME, segments=segments, timeline_duration=total))
+        # a concat assembled from take picks (ADR-053) cites them too: a rejected pick makes the assembly rejected-cited, a pending one keeps it PROPOSED
+        known_ids = {x.id for x in decisions}
+        cat_ids = [concat_dec.id] + [x for x in concat_dec.params.get("picks") or [] if x in known_ids]
+        video_ops.append(ir_operation("video.concat", PROGRAMME, params, cat_ids, scope=scope, inputs=inputs, output=PROGRAMME, segments=segments, timeline_duration=total))
         order += 1
         st = ProductionStep(id=f"step_concat_{PROGRAMME}", order=order, skill="video_concat", tool=tool_for("video_concat"), inputs=[current_of[a] for a in inputs],
                             params={"asset": PROGRAMME, "inputs": inputs, **params}, outputs=[PROGRAMME],
-                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of([concat_dec.id]), decision_ids=[concat_dec.id], decision_id=concat_dec.id,
+                            depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of(cat_ids), decision_ids=cat_ids, decision_id=concat_dec.id,
                             temporal_scope=scope)
         steps.append(st)
         current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope

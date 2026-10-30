@@ -87,13 +87,19 @@ class FakeAdapter(ToolAdapter):
             return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], dur, self.audio, self.vfr, self.hdr, video=bool((meta or {}).get("video", True)),
                                                                         channels=int((meta or {}).get("channels", 2))), [], "", 0.1, attempt, dry_run)
         if script == "silence":
+            silences = in_meta.get("silences", self.silences) if in_meta else self.silences   # a self-describing fake file may carry its own silences (ADR-053 takes)
             keep = [[max(0.0, (s[1] or self.duration) - 0.15) if i == 0 and s[0] == 0 else 0.0, 0.0] for i, s in enumerate(self.silences[:1])]
-            data = {"silences": self.silences, "keep": [[2.85, 13.85]], "input_duration": self.duration, "kept_duration": 11.0, "removed_seconds": 5.0}
+            data = {"silences": silences, "keep": [[2.85, 13.85]], "input_duration": self.duration, "kept_duration": 11.0, "removed_seconds": 5.0}
+            if in_meta and "silences" in in_meta:   # the file's own silences: a keep range consistent with them (lead-out of the first, lead-in of the last)
+                lead = next((float(x[1]) for x in silences if float(x[0]) == 0.0 and x[1] is not None), 0.0)
+                tail = next((float(x[0]) for x in silences if x[1] is None), in_dur)
+                data.update({"keep": [[round(lead, 3), round(tail, 3)]], "input_duration": in_dur, "kept_duration": round(tail - lead, 3), "removed_seconds": round(in_dur - (tail - lead), 3)})
             return ToolResult(op.id, op.tool, True, 0, out, data, [], "", 0.1, attempt, dry_run)
         if script == "loudness":
             if op.args.get("measure_only"):
                 lufs = in_meta.get("lufs", self.lufs) if in_meta else self.lufs
-                return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(lufs), "input_tp": str(self.true_peak), "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
+                tp = in_meta.get("true_peak", self.true_peak) if in_meta else self.true_peak
+                return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(lufs), "input_tp": str(tp), "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
             self.lufs = float(op.args["lufs"])
             if out and not dry_run:
                 _write_fake(out, {"duration": in_dur, "lufs": self.lufs})
@@ -172,6 +178,22 @@ class FakeAdapter(ToolAdapter):
                 _write_fake(out, {"duration": total, "lufs": self.lufs})
             doc = {"output": out, "commands": ["ffmpeg grid"], "probe": probe_doc(out or "", total)}
             return ToolResult(op.id, op.tool, True, 0, out, doc, doc["commands"], "", 0.3, attempt, dry_run)
+        if script == "scenes":
+            # a fake beat measurement (tests only, ADR-053): the grid a self-describing fake file declares ("beat_interval", "beat_phase",
+            # "beat_confidence", "beat_usable"), shaped like a real ffmpeg-skill 2.21.0 scenes --beats --json capture. No video → refused, as the real script does.
+            assert op.args.get("beats") and "output" not in op.args, op.args
+            meta = _read_fake(op.args["input"]) or {}
+            if not meta.get("video", True):
+                return ToolResult(op.id, op.tool, False, 1, None, {"status": "failed", "error": {"kind": "input", "message": "input has no video stream"}}, [], "error: input has no video stream", 0.1, attempt, dry_run)
+            dur = float(meta.get("duration", self.duration))
+            step, phase = float(meta.get("beat_interval", 0.5)), float(meta.get("beat_phase", 0.0))
+            beats = [round(phase + i * step, 4) for i in range(int((dur - phase) / step) + 1)]
+            conf = float(meta.get("beat_confidence", 0.95))
+            grid = {"supported_beats": beats, "tempo_bpm": round(60.0 / step, 2), "interval": step, "confidence": conf, "phase": phase, "onsets": len(beats), "supported": len(beats),
+                    "unsupported": 0, "method": "rms-flux-autocorrelation", "step_s": 0.01, "range_bpm": [60.0, 200.0], "usable": bool(meta.get("beat_usable", conf >= 0.5))}
+            doc = {"status": "completed", "output": None, "dry_run": False, "commands": ["ffmpeg scdet", "ffmpeg -f s16le"], "file": op.args["input"], "duration": dur, "scene_count": 1,
+                   "scenes": [{"start": 0.0, "end": dur}], "audio_peaks": [], "beats": beats, "beat_grid": grid}
+            return ToolResult(op.id, op.tool, True, 0, None, doc, doc["commands"], "", 0.2, attempt, dry_run)
         if script == "render":
             # a fake timeline export (tests only, ADR-052): only the --export-timeline use of render.py is catalogued. The typed clips
             # become a minimal document of the output's format (an OTIO Timeline with one Clip per cut-list range); the JSON shape

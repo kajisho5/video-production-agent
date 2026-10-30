@@ -45,6 +45,10 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # the registry-selected sync tool (audio cross-correlation in the Skill). Pairwise: one observation per (reference, target); the agent never correlates itself.
     # `max_offset` / `analyze_seconds` / `fix_drift` go to the tool; `min_confidence` is the agent's gate for applying the result to the TimelineMap
     "sync": {"skill": "sync_analysis", "needs_audio": True, "params": ("max_offset", "analyze_seconds", "fix_drift", "min_confidence"), "pairwise": True},
+    # the beat grid of a music bed (ADR-053): ffmpeg-skill scenes --beats (tempo, beat times, confidence, which grid points have a
+    # measured onset). Measured on one input only, the one named by the request parameter `beat_input` (edit.takes.music); every
+    # other input is SKIPPED. A measurement, never a proposal: the agent places nothing on a beat the tool did not report.
+    "beats": {"skill": "beat_analysis", "needs_audio": True, "params": (), "only_input_param": "beat_input"},
 }
 SYNC_TOOL_PARAMS = ("max_offset", "analyze_seconds", "fix_drift")   # the only sync parameters forwarded to the tool (never replace_audio / trim_second / output)
 SYNC_MIN_CONFIDENCE_DEFAULT = 0.3   # below this the offset is recorded but not applied to the TimelineMap (the sync Skill's own benchmark flags misses at < 0.3)

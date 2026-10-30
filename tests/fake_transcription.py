@@ -51,6 +51,13 @@ def transcript(params: dict, fp: str) -> dict:
     if os.environ.get("FAKE_TS_SEGMENTS"):   # [[start, end, text], ...] → canned segments with a fixed confidence (temporal-structure tests)
         segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7, "words": None, "speaker_id": None}
                 for i, (a, b, t) in enumerate(json.loads(os.environ["FAKE_TS_SEGMENTS"]), 1)]
+    try:   # a self-describing fake media file may carry its own segments [[start, end, text], ...] (ADR-053 takes: one transcript per take)
+        meta = json.loads(Path(params["input"]).read_bytes().decode("utf-8"))
+    except (OSError, ValueError, KeyError, UnicodeDecodeError):
+        meta = None
+    if isinstance(meta, dict) and meta.get("fake") and isinstance(meta.get("segments"), list):
+        segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7, "words": None, "speaker_id": None}
+                for i, (a, b, t) in enumerate(meta["segments"], 1)]
     tid = "tr_" + hashlib.sha256((fp + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:12]
     prov_params = {"language": params.get("language"), "word_timestamps": bool(params.get("word_timestamps")), "temperature": params.get("temperature", 0.0),
                    "initial_prompt": params.get("initial_prompt"), "beam_size": params.get("beam_size", 5)}

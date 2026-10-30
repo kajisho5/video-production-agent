@@ -1308,6 +1308,40 @@ class PriorityAToolsRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class BeatGridRealTests(unittest.TestCase):
+    """ADR-053 on the real ffmpeg-skill: the `beats` analysis kind (scenes.py --beats) measures the music bed named by
+    `beat_input` only, and its grid is the one the beat snap reads (tempo, confidence, supported beat times)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_beats_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        click = str(Path(cls.tmp) / "click.wav")
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.05,apad=pad_dur=0.45", "-t", "0.5", click], check=True)
+        bed = str(Path(cls.tmp) / "bed.wav")
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-stream_loop", "19", "-i", click, "-c", "copy", bed], check=True)
+        cls.bed = str(src / "bed.mp4")   # scenes.py needs a video stream: the bed in a video container (black picture)
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=black:s=320x240:r=30", "-i", bed, "-shortest", "-c:v", "libx264", "-c:a", "aac", cls.bed], check=True)
+        cls.take = str(src / "take.mp4")
+        make_media(cls.take)
+
+    def test_beat_grid_of_the_named_input_only(self):
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        _, _, an = svc.analyze([self.take, self.bed], "generic", kinds=["beats"], params={"beat_input": 1})
+        beats = [o for o in an.observations if o.kind == "beats"]
+        self.assertEqual([o.asset_id for o in beats], [an.assets[1].id], "measured on the music bed only")
+        g = beats[0].data
+        self.assertAlmostEqual(g["tempo_bpm"], 120.0, delta=1.0)
+        self.assertGreaterEqual(g["confidence"], 0.5)
+        self.assertTrue(g["usable"])
+        self.assertGreaterEqual(len(g["supported_beats"]), 15)
+        self.assertTrue(all(abs((b / 0.5) - round(b / 0.5)) < 0.05 for b in g["supported_beats"]), g["supported_beats"])
+        self.assertEqual(beats[0].tool, "ffmpeg-skill/scenes")
+        row = next(r for r in an.analyses[0]["rows"] if r["kind"] == "beats" and r["asset_id"] == an.assets[0].id)
+        self.assertEqual(row["status"], "SKIPPED")
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class TimelineExportRealTests(unittest.TestCase):
     """ADR-052 on the real ffmpeg-skill: `delivery.timeline=otio` → render.py --export-timeline writes the IR's cut list as an
     OpenTimelineIO document, registered as a TIMELINE Artifact; opentimelineio (when installed) reads it back with the same cuts."""

@@ -1,0 +1,228 @@
+{
+ "name": "pipe_takes_pick_best_per_line",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.8,
+      2.0,
+      "本日はお集まり"
+     ],
+     [
+      2.2,
+      4.4,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.7
+     ],
+     [
+      4.6,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.0,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.2,
+      null
+     ]
+    ],
+    "true_peak": 0.4
+   },
+   {
+    "name": "l1_take3.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.7,
+      4.1,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.6
+     ],
+     [
+      4.3,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      4.0,
+      "えーと、これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      4.2,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      3.7,
+      "これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      3.9,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take3.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      2.2,
+      "これから新しい製品"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      2.4,
+      null
+     ]
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "delivery.timeline": "otio"
+ },
+ "expect": {
+  "blocked": false,
+  "lines": [
+   [
+    "l1_take1.mp4",
+    "l1_take2.mp4",
+    "l1_take3.mp4"
+   ],
+   [
+    "l2_take1.mp4",
+    "l2_take2.mp4",
+    "l2_take3.mp4"
+   ]
+  ],
+  "picks": [
+   "l1_take3.mp4",
+   "l2_take2.mp4"
+  ],
+  "every_pick_scored": true,
+  "take_factors": {
+   "l1_take1.mp4": {
+    "restarts": 1
+   },
+   "l1_take2.mp4": {
+    "clipping": 0.4
+   },
+   "l2_take1.mp4": {
+    "fillers": 1
+   },
+   "l2_take3.mp4": {
+    "coverage": 0.4737
+   }
+  },
+  "timeline_clips": [
+   [
+    "l1_take3.mp4",
+    0.55,
+    4.25
+   ],
+   [
+    "l2_take2.mp4",
+    0.35,
+    3.85
+   ]
+  ],
+  "decisions": {
+   "takes.pick": {
+    "type": "TRANSFORM",
+    "approval": "CONFIRM",
+    "provenance": "INFERRED"
+   },
+   "video.concat": {
+    "type": "TRANSFORM",
+    "approval": "AUTO",
+    "provenance": "USER"
+   }
+  },
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "qa_status": "PASS",
+   "artifacts": {
+    "YOUTUBE": "candidate",
+    "TIMELINE": "candidate"
+   },
+   "resume": true
+  }
+ },
+ "engine": {
+  "basis": {
+   "takes.pick": {
+    "approval_key": "takes.pick.approval",
+    "evidence_classes": [
+     "observation",
+     "requirement"
+    ]
+   }
+  },
+  "explain": "takes.pick",
+  "explain_kinds": [
+   "observation",
+   "requirement"
+  ]
+ }
+}
