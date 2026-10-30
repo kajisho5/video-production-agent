@@ -439,9 +439,9 @@ class Service:
             d["qa"]["qc"] = plan["qc"]
         else:
             d["qa"].pop("qc", None)
-        # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image / QC reference, the file's directory (all named by the user)
+        # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") == "video.overlay" and op.get("image")]
-        images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op["image"] for op in plan.get("graphics_ops") or [] if op.get("image")]
+        images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)]
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
@@ -1158,9 +1158,9 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
 # ADR-061: the keys a brief (`plan --brief`) may yield, derived from the --set vocabulary above rather than listed by hand: every key
 # `_check_edit_requirements` recognises as a switch / refinement (surface (1)), plus delivery.timeline -- so not (1') the policy-default
 # surface (approval policies, qc.warn.promotion, tolerance / ratio defaults: a brief never sets how much review a decision gets) -- minus (2) keys whose value
-# is a file path (overlay / LUT / graphics image / QC master: only the user names a file the agent may read) and (3) job.* and
+# is a file path (overlay / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
-_PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "color.lut", "motion.image", "qc.reference_video"})
+_PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "color.lut", "motion.image", "motion.video", "qc.reference_video"})
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 
 

@@ -292,6 +292,15 @@ def main() -> int:
                 return err("UNSUPPORTED_FORMAT", f"{where}.parameters.image_path extension", {"element_id": el["id"]})
             assets[el["id"]] = {"path": img, "sha256": sha(img), "size": os.path.getsize(img)}
             full["image_path"] = {"sha256": assets[el["id"]]["sha256"], "size": assets[el["id"]]["size"]}
+        if t == "video_overlay":   # like the real Skill: the clip is an input under the path policy, recorded by hash
+            clip, rc = resolve_input(full["video_path"], f"{where}.parameters.video_path")
+            if rc is not None:
+                return rc
+            assets[el["id"]] = {"path": clip, "sha256": sha(clip), "size": os.path.getsize(clip)}
+            full["video_path"] = {"sha256": assets[el["id"]]["sha256"], "size": assets[el["id"]]["size"]}
+        for c in TYPES[t].get("constraints") or []:
+            if c.get("at_least_one_of") and not any(n in params for n in c["at_least_one_of"]):
+                return err("INVALID_REQUEST", f"{where}: at least one of {c['at_least_one_of']} is required", {"field": f"{where}.parameters"})
         anim = None
         if "animation" in el and el["animation"] is not None:
             a = el["animation"]

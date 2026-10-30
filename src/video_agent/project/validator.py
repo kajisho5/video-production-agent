@@ -8,7 +8,8 @@ from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS,
                            PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
 from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF, switch_cams
-from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL
+from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
+                               VIDEO_EXTENSIONS, picture_size, placement_problems)
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
@@ -329,6 +330,12 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                 sc = {"start": 0.0, "end": float(dur)}
         return sc
 
+    def planned_size(subj: str) -> Optional[Tuple[int, int]]:
+        """The subject's picture after its edits, from the IR itself: an asset's own probe, or a programme's first input's."""
+        src = subj if subj in assets else next((op["inputs"][0] for op in d["video"]["operations"] if op.get("output") == subj and op.get("inputs")), None)
+        tech = (assets.get(src) or {}).get("technical") or {} if src else {}
+        return picture_size(tech, d["video"]["operations"], subj)
+
     for op in (d.get("color") or {}).get("operations") or []:
         t, subj = op.get("type"), op.get("asset")
         if t not in COLOR_OPERATIONS:
@@ -376,14 +383,19 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"graphics.render element {e.get('id')}: start must be before end")
                 if sc and float(e.get("end", 0)) > float(sc["end"]) + 0.01:
                     errs.append(f"graphics.render element {e.get('id')}: ends at {e.get('end')} after the subject's timeline ({sc['end']:.3f})")
-                if e.get("type") == "image_overlay":
-                    img = (e.get("parameters") or {}).get("image")
-                    if not isinstance(img, str) or Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg") or any(part == ".." for part in img.replace("\\", "/").split("/")):
-                        errs.append(f"graphics.render element {e.get('id')}: image must be a PNG / JPEG path without traversal")
-                    elif allowed_roots and not any(_under(img, r) for r in allowed_roots):
-                        errs.append(f"graphics.render element {e.get('id')}: image is outside the allowed input roots")
-                if e.get("animation") and e.get("type") not in ("text_overlay", "image_overlay"):
-                    errs.append(f"graphics.render element {e.get('id')}: a fade applies to text / image overlays only")
+                for typ, ref, exts, what in (("image_overlay", "image", (".png", ".jpg", ".jpeg"), "a PNG / JPEG"), ("video_overlay", "video", VIDEO_EXTENSIONS, "a video")):
+                    if e.get("type") != typ:
+                        continue
+                    f = (e.get("parameters") or {}).get(ref)
+                    if not isinstance(f, str) or Path(f).suffix.lower() not in exts or any(part == ".." for part in f.replace("\\", "/").split("/")):
+                        errs.append(f"graphics.render element {e.get('id')}: {ref} must be {what} path without traversal")
+                    elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
+                        errs.append(f"graphics.render element {e.get('id')}: {ref} is outside the allowed input roots")
+                if e.get("animation") and e.get("type") not in FADE_TYPES:
+                    errs.append(f"graphics.render element {e.get('id')}: a fade applies to {' / '.join(FADE_TYPES)} only")
+                if e.get("type") in ELEMENT_TYPES:   # ADR-064: an explicit placement inside the picture the plan delivers to this point
+                    for why in placement_problems(str(e["type"]), dict(e.get("parameters") or {}), planned_size(subj)):
+                        errs.append(f"graphics.render element {e.get('id')}: {why}")
         elif t == "graphics.thumbnail":
             if seen.get(("thumbnail", subj)):
                 errs.append(f"more than one graphics.thumbnail on {subj}")

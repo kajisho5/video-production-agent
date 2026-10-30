@@ -100,7 +100,7 @@ class ContractTests(Base):
         self.assertEqual(pkg.repository, "kajisho5/motion-graphics-skill")
         self.assertIn("motion-graphics", pkg.capabilities)
         self.assertEqual(PACKAGE.version, "0.2.3")
-        self.assertEqual(PACKAGE.tool(TOOL_ID).inputs, ["input", "output", "image"])
+        self.assertEqual(PACKAGE.tool(TOOL_ID).inputs, ["input", "output", "image", "video"])
         self.assertTrue(PACKAGE.tool(TOOL_ID).produces_output)
         self.assertTrue(a.retryable["TOOL_ERROR"]); self.assertTrue(a.retryable["CANCELLED"]); self.assertFalse(a.retryable["INVALID_REQUEST"])
         self.assertEqual(a.exit_codes["CANCELLED"], 15)

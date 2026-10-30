@@ -23,7 +23,8 @@ from ..models import Decision, Requirement
 from ..policy.rules import RuleSet
 from .decision_engine import DecisionEngine, resolve_setting
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
-                        parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, qc_requested)
+                        element_label, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, placement_problems,
+                        planned_picture_size, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, parse_subtitle_requirements, valid_language
 
@@ -33,8 +34,8 @@ APPROVAL_KEYS = {"subtitle.generate": ("subtitle.generate.approval", "CONFIRM"),
                  "color.strip_dovi": ("color.strip_dovi.approval", "CONFIRM"), "color.hdr_to_sdr": ("color.hdr_to_sdr.approval", "CONFIRM"),
                  "color.primary_correction": ("color.primary_correction.approval", "CONFIRM"),
                  "color.lut": ("color.lut.approval", "CONFIRM"), "color.retag": ("color.retag.approval", "CONFIRM"),
-                 "graphics.title": ("graphics.title.approval", "CONFIRM"), "graphics.lower_third": ("graphics.lower_third.approval", "CONFIRM"),
-                 "graphics.text_overlay": ("graphics.text_overlay.approval", "CONFIRM"), "graphics.image_overlay": ("graphics.image_overlay.approval", "CONFIRM")}
+                 # one approval key per motion-graphics element type (ADR-031; every element type of the contract since ADR-064)
+                 **{f"graphics.{t}": (f"graphics.{t}.approval", "CONFIRM") for t in ELEMENT_TYPES}}
 FINISHING_SUBJECTS = ("subtitle.", "thumbnail.", "color.", "graphics.", "qc.")
 
 
@@ -106,6 +107,16 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                            confidence=1.0, evidence=[f"capability:motion-graphics:{typ}"] + [r.id for r in req], risk="HIGH", approval="BLOCK", provenance="SYSTEM",
                            params={"skill": GRAPHICS_SKILL, "missing": [f"motion-graphics:{typ}"]}, requirements=req)
                 continue
+            # ADR-064: an explicit placement must land on the picture the element is drawn on -- the size after this subject's edits
+            # (crop / rotate / resize / fit / grid ...), not the source's. What is certainly off the frame is BLOCKED, never moved
+            size = planned_picture_size((assets[sources[0]].technical or {}) if sources and sources[0] in assets else {}, eng.decisions, subject)
+            off = placement_problems(typ, el["params"], size)
+            if off:
+                eng.decide(subject=subj_key, type="BLOCK", decision=f"BLOCK: {typ} on {subject} would be drawn outside the picture",
+                           reason="; ".join(off) + " (the picture after the edits; an element is never moved or clipped by guessing)",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER",
+                           params={"asset_id": subject, "type": typ, "picture": list(size) if size else None}, requirements=req)
+                continue
             settings: List[Dict[str, Any]] = []
             start = el.get("start")
             if start is None:
@@ -118,9 +129,10 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             gparams: Dict[str, Any] = {"asset_id": subject, "type": typ, "start": round(float(start), 3), "end": (round(float(end), 3) if end is not None else None), "parameters": dict(el["params"])}
             if el.get("fade") is not None:
                 gparams["fade"] = float(el["fade"])
-            label = el["params"].get("title") or el["params"].get("name") or el["params"].get("text") or Path(el["params"].get("image", "")).name
-            eng.decide(subject=subj_key, type="TRANSFORM", decision=f"{typ} '{label}' on {subject} from {gparams['start']:g}s to {'the end' if end is None else f'{end:g}s'}",
-                       reason=f"user asked for a {typ.replace('_', ' ')} ({req[0].source}); rendered on the finished picture" + (" (start / duration from policy defaults)" if settings else ""),
+            label = element_label(typ, el["params"])
+            eng.decide(subject=subj_key, type="TRANSFORM", decision=f"{typ} {label} on {subject} from {gparams['start']:g}s to {'the end' if end is None else f'{end:g}s'}",
+                       reason=f"user asked for a {typ.replace('_', ' ')} ({req[0].source}); rendered on the finished picture" + (f" ({size[0]}x{size[1]})" if size else "")
+                       + (" (start / duration from policy defaults)" if settings else ""),
                        confidence=1.0, evidence=ev, risk="MEDIUM", approval=approval_for(subj_key, explicit=req[0], keys=APPROVAL_KEYS), provenance="USER", params=gparams,
                        settings=settings, requirements=req, serves_intent=None)
             finished[subject] = True

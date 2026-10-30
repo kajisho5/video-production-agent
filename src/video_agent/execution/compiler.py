@@ -135,15 +135,17 @@ def lower_color_op(tool: str, op: Dict[str, Any], current: str, out_id: str, lut
     return args
 
 
-def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None) -> Dict[str, Any]:
-    """IR graphics.render → motion-graphics/run arguments: the element list as planned (image paths become artifact ids)."""
+def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None, video_id: Optional[str] = None) -> Dict[str, Any]:
+    """IR graphics.render → motion-graphics/run arguments: the element list as planned (image / video overlay paths become artifact ids)."""
     if tool != GRAPHICS_TOOL:
         raise CompileError(f"graphics.render cannot be executed by {tool}; the only tool of this operation is {GRAPHICS_TOOL}")
     elements = []
     for e in op.get("elements") or []:
-        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k != "image"}}
+        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k not in ("image", "video")}}
         if e["type"] == "image_overlay" and image_id:
             el["parameters"]["image"] = image_id
+        if e["type"] == "video_overlay" and video_id:
+            el["parameters"]["video"] = video_id
         if e.get("animation"):
             el["animation"] = {"kind": e["animation"]["kind"], "parameters": dict(e["animation"]["parameters"])}
         elements.append(el)
@@ -342,13 +344,14 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_graphics" / f"{st['stem']}_graphics.mp4")
             tool = tool_for(GRAPHICS_SKILL, subject)
             inputs = [st["current"]]
-            image_id = None
-            if op.get("image"):
-                image_id = f"{subject}_graphics_image"
-                paths[image_id] = op["image"]
-                keys[image_id] = ""
-                inputs.append(image_id)
-            add(tool, lower_graphics_render(tool, op, st["current"], out_id, image_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
+            refs: Dict[str, Optional[str]] = {"image": None, "video": None}
+            for ref in refs:   # the composited files (named by the user) are inputs by path, like a LUT
+                if op.get(ref):
+                    refs[ref] = f"{subject}_graphics_{ref}"
+                    paths[refs[ref]] = op[ref]
+                    keys[refs[ref]] = ""
+                    inputs.append(refs[ref])
+            add(tool, lower_graphics_render(tool, op, st["current"], out_id, refs["image"], refs["video"]), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
             st["current"] = out_id
         gen = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.generate"), None)
         if gen is not None:

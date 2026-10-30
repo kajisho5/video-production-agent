@@ -35,7 +35,7 @@ FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tone
            "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"],
            # filters the Phase 3 finishing Skills' operations need (ADR-031): motion-graphics elements, LUTs, subtitle burn-in, qc measurements
            "subtitles": ["subtitles"], "drawtext": ["drawtext"], "drawbox": ["drawbox"], "overlay": ["overlay"], "color": ["color"], "scale": ["scale"],
-           "colorchannelmixer": ["colorchannelmixer"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"]}
+           "colorchannelmixer": ["colorchannelmixer"], "chromakey": ["chromakey"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"]}
 AI_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 

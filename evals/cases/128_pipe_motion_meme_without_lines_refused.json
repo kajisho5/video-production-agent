@@ -1,0 +1,11 @@
+{
+ "name": "pipe_motion_meme_without_lines_refused",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "motion.meme": true
+ },
+ "expect": {
+  "plan_error": "at least one of motion.meme.top / motion.meme.bottom"
+ }
+}

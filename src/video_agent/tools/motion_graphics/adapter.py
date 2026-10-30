@@ -21,7 +21,8 @@ observed are recorded as provenance only.
 Contract discrepancies absorbed here (documented, never patched into either project):
 - `image_overlay.image_path` is a `path` parameter. The agent never accepts a path from a plan: the element carries "image": <artifact
   id>, resolved through `paths`, required to be an existing .png/.jpg/.jpeg under the allowed roots / workspace, and emitted as
-  `image_path` (absolute). "image_path" itself is refused from the agent.
+  `image_path` (absolute). "image_path" itself is refused from the agent. `video_overlay.video_path` likewise (ADR-064): "video":
+  <artifact id> → an existing file under the allowed roots / workspace → `video_path` (the Skill probes it for a video stream).
 - `font` parameters are `{font_id}` | `{font_file}` objects on the wire. The agent accepts only a registry font id (`fonts.registry`)
   as a string and sends `{"font_id": …}`; a custom font file is not accepted from the agent (it would be a path from a plan).
 - The x264 preset enum is not published by the contract (request.shape shows "medium" only); the Skill's own list is pinned here
@@ -185,11 +186,11 @@ def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
     ver = str(contract.get("version") or "")
     tools = [ToolSpec(tool_id=TOOL_ID, skill_id=SKILL_ID, version=ver, description=str(t.get("description", "")), required_capabilities=[SKILL_ID],
-                      inputs=["input", "output", "image"], produces_output=True, deterministic=True,
+                      inputs=["input", "output", "image", "video"], produces_output=True, deterministic=True,
                       result_keys=["operation_type", "artifact", "timeline", "operations", "engine", "observation", "provenance", "commands"]) for t in contract.get("tools") or []]
     return SkillPackage(skill_id=SKILL_ID, name=str(contract.get("name") or SKILL_ID), version=ver, description=str(contract.get("description", ""))[:200],
                         capabilities=["ffmpeg", "ffprobe", "ffmpeg-skill", SKILL_ID], tools=tools, repository="kajisho5/motion-graphics-skill",
-                        role="deterministic motion graphics rendering (titles, lower thirds, text / image overlays) through ffmpeg-skill")
+                        role="deterministic motion graphics rendering (titles, lower thirds, text / image / video overlays, corner bugs, chapters, progress, countdowns, stickers, hooks, memes) through ffmpeg-skill")
 
 
 PACKAGE = package_from_contract(pinned_contract())
@@ -346,12 +347,19 @@ class MotionGraphicsAdapter(ToolAdapter):
                 self._check_input(image, what=f"{where} image")
                 out["image_path"] = str(Path(image).resolve())
                 continue
+            if k == "video" and "video_path" in schema:   # ADR-064: video_overlay's clip, an artifact id like the image (the Skill probes it)
+                clip = paths.get(str(v), str(v))
+                if not os.path.isfile(clip):
+                    raise ToolError(f"motion-graphics: {where}: video must be an existing file: {clip}")
+                self._check_input(clip, what=f"{where} video")
+                out["video_path"] = str(Path(clip).resolve())
+                continue
             if k not in schema or str(schema[k].get("type")) == "path":
                 raise ToolError(f"motion-graphics: {where}: parameter {k!r} is not declared for {et} (contract: {sorted(x for x in schema if schema[x].get('type') != 'path')})")
             out[k] = self._typed(f"{where}.parameters.{k}", v, schema[k])
         for k, ps in schema.items():
             if ps.get("required") and k not in out:
-                raise ToolError(f"motion-graphics: {where}: {et} requires parameter {'image' if k == 'image_path' else k!r}")
+                raise ToolError(f"motion-graphics: {where}: {et} requires parameter {({'image_path': 'image', 'video_path': 'video'}).get(k, k)!r}")
         return out
 
     def animation_for(self, et: str, raw: Any, where: str) -> Dict[str, Any]:
