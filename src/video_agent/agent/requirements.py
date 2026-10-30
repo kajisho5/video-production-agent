@@ -37,6 +37,9 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
     # explicit CLI arguments are USER requirements
     for key, value in (args.get("requirements") or {}).items():
         reqs.append(Requirement(key=key, value=value, provenance="USER", source="cli"))
+    # the brief's keys (ADR-061): validated like --set when the plan was made; an explicit --set key wins
+    from .brief import requirements_of
+    reqs += requirements_of(args.get("brief") or {}, (args.get("requirements") or {}).keys())
     # keyword pass on the raw text (only unambiguous phrases)
     seen = {r.key for r in reqs}
     for rx, key, value in KEYWORDS:

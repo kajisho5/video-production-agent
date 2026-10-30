@@ -16,6 +16,8 @@ a situation calls for; this module states *how* a decision is allowed to exist:
   unknown value to CONFIRM, honours BLOCK, applies a floor (CONFIRM for content-adjacent edits) and never lowers BLOCK.
   The one downward step that exists — CONFIRM → AUTO when the user asked for exactly this edit explicitly — is
   recorded as a note and never applies to a CONSTRAINT.
+- **An AI reading of the brief is not the user's word** (ADR-061): a REMOVE / TRANSFORM / DELIVER decision citing a requirement
+  with provenance AI_GENERATED (or consulting one) is CONFIRM at least, with the reason in the basis notes.
 - **Confidence ≠ risk ≠ approval.** Confidence is inherited from the inference; risk and approval are set by policy and
   by the kind of change, never derived from confidence.
 - **BLOCK and REJECTED are never executable**; a BLOCK approval always carries status BLOCKED.
@@ -153,6 +155,11 @@ class DecisionEngine:
             raise DecisionError(f"decision {subject}: risk {risk!r} is not one of {RISKS}")
         resolved = approval if isinstance(approval, dict) else {"approval": approval, "setting": None,
                                                                 "notes": [f"fixed {approval} for a {type} decision (no policy key consulted; it creates no operation)" if type not in EXECUTABLE_TYPES else f"fixed {approval}"]}
+        ai_reqs = [e for e in list(evidence) + [r.id for r in (requirements or []) if r is not None]
+                   if e in self.requirements and self.requirements[e].provenance == "AI_GENERATED"]
+        if ai_reqs and type in EXECUTABLE_TYPES:   # ADR-061: what an AI read from the brief is never a confirmation by the user
+            resolved = raise_approval(dict(resolved, notes=list(resolved.get("notes") or [])), "CONFIRM",
+                                      f"rests on requirement(s) an AI read from the brief ({', '.join(sorted({self.requirements[e].key for e in ai_reqs}))})")
         appr = resolved["approval"]
         if appr not in APPROVALS:
             raise DecisionError(f"decision {subject}: approval {appr!r} is not one of {APPROVALS}")

@@ -118,8 +118,9 @@ class AnthropicProviderTests(unittest.TestCase):
                 with self.assertRaises(AIProviderError) as cm:
                     AnthropicProvider(client=FakeClient(lambda kw, a=answer: a), env={}).complete(request())
                 self.assertEqual(cm.exception.kind, kind)
-        with self.assertRaises(AIProviderError):
-            AnthropicProvider(client=FakeClient(), env={}).complete(AIRequest(task_type="requirements_extraction", inputs={}))
+        with self.assertRaises(AIProviderError) as cm:   # ADR-061: a brief answer must carry a requirements list
+            AnthropicProvider(client=FakeClient(lambda kw: message({"recommendations": []})), env={}).complete(AIRequest(task_type="requirements_extraction", inputs={"brief": "x"}))
+        self.assertEqual(cm.exception.kind, "MALFORMED")
 
     @unittest.skipIf(anthropic is None, "the `ai` extra (anthropic SDK) is not installed")
     def test_sdk_errors_map_to_failure_kinds(self):

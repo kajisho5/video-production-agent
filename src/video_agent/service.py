@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import __version__
 from .agent import build_plan, decide, extract_requirements, infer, resolve_intent
 from .agent.ai_reasoning import AIReasoner, build_request, to_inferences
+from .agent import brief as brief_task
 from .agent.decision_engine import basis_rows
 from .agent.production_plan import plan_status
 from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
@@ -277,12 +278,16 @@ class Service:
 
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
-             kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None) -> ProjectIR:
-        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
-        if bad:
-            raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
-        _check_edit_requirements(user_requirements or {})
-        self._check_provider_requirements(user_requirements or {})
+             kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None,
+             brief: str = "", brief_answer: Any = None, ai_model: str = "host-chat") -> ProjectIR:
+        """brief (ADR-061): the user's brief in their own words, read into `--set` keys by the AI provider (or the chat model's
+        answer `brief_answer`, host provider) or, with neither, by the rule-based reader; explicit `user_requirements` win."""
+        explicit = dict(user_requirements or {})
+        _check_requirement_keys(explicit)
+        self._check_provider_requirements(explicit)
+        self._ai_calls = []   # provenance.ai_calls of this project: the brief's call (if any) and the recommendation call share the budget
+        brief_record = self.extract_brief(brief, explicit, profile_name, answer=brief_answer, ai_model=ai_model) if (brief or "").strip() else None
+        user_requirements = {**brief_task.values_of(brief_record), **explicit}   # explicit wins (ADR-061)
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         takes = _takes_requested(user_requirements or {})
@@ -292,11 +297,53 @@ class Service:
                 params = dict(params or {}, beat_input=takes["music"])
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records)
-        request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
+        request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {})})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
-        self._ai_calls = []
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
         return ir
+
+    def extract_brief(self, text: str, explicit: Optional[Dict[str, Any]] = None, profile_name: str = "generic",
+                      answer: Any = None, ai_model: str = "host-chat") -> Dict[str, Any]:
+        """ADR-061 `requirements_extraction`: brief → validated `--set` keys. Who reads it: the chat model's `answer` (host
+        provider) if given, else the configured AI provider if available, else the rule-based reader (agent/brief.parse_brief);
+        an AI failure or a host that has not answered yet falls back to the rules with the reason recorded. Whoever read it,
+        every key is validated like `--set` (unknown keys / invalid values refused with the reason) and explicit keys win.
+        Returns the record stored in the request (`request.args.brief`) and printed by `plan --brief` / `brief`."""
+        from .providers.host import HOST_BRIEF_RULES, HostProvider, load_brief_answer
+        explicit = dict(explicit or {})
+        text = (text or "").strip()[:brief_task.MAX_BRIEF_CHARS]
+        if answer is not None:
+            answered, answered_unmapped = load_brief_answer(answer)
+            provider: AIProvider = HostProvider(requirements=answered, unmapped=answered_unmapped, model=ai_model)
+        else:
+            provider = self.provider
+        request = brief_task.build_request(text, BRIEF_REQUIREMENT_KEYS, explicit)
+        record: Dict[str, Any] = {"text": text, "method": "rules", "provider": None, "model": None, "fallback": None, "warnings": []}
+        candidates: Optional[List[Dict[str, Any]]] = None
+        unmapped: List[Dict[str, Any]] = []
+        if isinstance(provider, HostProvider) and provider.requirements is None:
+            record["fallback"] = "the chat model has not answered the brief yet (host provider): rule-based reading until it does"
+            record["host_request"] = {"task_type": request.task_type, "rules": HOST_BRIEF_RULES, "result_shape": request.schema, "inputs": request.inputs,
+                                      "context": request.context, "next": "answer as JSON, then plan again with --brief-requirements <file> (MCP: brief_requirements)"}
+        elif provider.available():
+            profile = load_profile(profile_name)
+            rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(explicit))
+            reasoner = AIReasoner(provider, max_calls=int(rules.get("analysis.budget.max_ai_calls", DEFAULT_MAX_AI_CALLS)), calls=self._ai_calls)
+            try:
+                resp = reasoner.ask(request)
+                candidates, unmapped, record["warnings"] = brief_task.candidates_from_response(resp, text)
+                record.update(method="ai", provider=resp.provider, model=resp.model)
+            except AIProviderError as e:
+                record["fallback"] = f"AI provider {provider.name} failed ({e.kind}): rule-based reading"
+        else:
+            record["fallback"] = "no AI provider configured: rule-based reading"
+        if candidates is None:
+            candidates, unmapped = brief_task.parse_brief(text)
+        source = f"{brief_task.SOURCE_AI}:{record['provider']}/{record['model']}" if record["method"] == "ai" else brief_task.SOURCE_RULES
+        provenance = "AI_GENERATED" if record["method"] == "ai" else "USER"
+        accepted, refused, overridden = brief_task.validate_candidates(candidates, BRIEF_REQUIREMENT_KEYS, explicit, _check_requirement_keys)
+        record.update(accepted=[{**c, "provenance": provenance, "source": source} for c in accepted.values()], refused=refused, overridden=overridden, unmapped=unmapped)
+        return record
 
     def _reason(self, request: Request, profile, rules, analysis: AnalysisResult, suppressed: Optional[List[Dict[str, Any]]] = None, prior_ai=None,
                 project_id: str = "", plan_version: int = 1):
@@ -433,10 +480,7 @@ class Service:
         keeps every asset / observation / event id the brief named, which is why this is a revision and not a new plan."""
         who = who or _default_who()
         old = json.loads(json.dumps(ir.doc))
-        bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
-        if bad:
-            raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
-        _check_edit_requirements(user_requirements or {})
+        _check_requirement_keys(user_requirements or {})
         self._check_provider_requirements(user_requirements or {})
         fb_ids: List[str] = []
         duplicate_feedback = False
@@ -452,16 +496,20 @@ class Service:
         # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
         prev_req = dict((old["request"].get("args") or {}).get("requirements") or {})
         prev_req.update(user_requirements or {})
+        brief_record = (old["request"].get("args") or {}).get("brief")
+        rejected_brief = any(d["status"] == "REJECTED" and d["subject"] == brief_task.SUBJECT for d in old["decisions"])
+        if brief_record and rejected_brief and not brief_record.get("rejected"):
+            brief_record = {**brief_record, "rejected": True}   # ADR-061: a rejected reading of the brief contributes no keys from v(n+1) on
         raw = (old["request"].get("raw") or "")
         if feedback:
             raw = (raw + "\n" + feedback).strip()
         profile = load_profile(old["project"]["profile"]["name"])
-        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(prev_req))
+        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**brief_task.values_of(brief_record), **prev_req}))
         analysis = AnalysisResult.from_ir(old)
         rejected = [d for d in old["decisions"] if d["status"] == "REJECTED"]
         suppressed = [{"subject": d["subject"], "asset_id": (d.get("params") or {}).get("asset_id")} for d in rejected]
         request = Request(raw=raw, received_at=old["request"]["received_at"], channel=old["request"]["channel"],
-                          args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso()})
+                          args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso(), **({"brief": brief_record} if brief_record else {})})
         new_version = ir.version + 1
         fresh = ProjectIR.new(old["project"]["name"], old["project"]["profile"], self.workspace)
         fresh.doc["project"] = dict(old["project"])   # same project identity: sessions / events keep their deterministic ids across versions
@@ -1093,7 +1141,7 @@ _FINISHING_PREFIXES = ("edit.", "audio.", "subtitle", "thumbnail", "color.", "mo
 _MOTION_DEFAULT_KEYS = {f"motion.{typ}.{field}" for typ in ELEMENT_TYPES for field in ("start", "duration")}
 _APPROVAL_REQUIREMENT_KEYS = {v[0] for v in list(_DECISION_APPROVAL_KEYS.values()) + list(_FINISHING_APPROVAL_KEYS.values()) if v[0].startswith(_FINISHING_PREFIXES)}
 _POLICY_DEFAULT_KEYS = {"audio.loudness.tolerance_lu", "thumbnail.at_ratio", WARN_PROMOTION_KEY} | _MOTION_DEFAULT_KEYS | _APPROVAL_REQUIREMENT_KEYS
-_FINISHING_REQUIREMENT_KEYS = frozenset(
+_SWITCH_REQUIREMENT_KEYS = frozenset(   # surface (1): what a request asks for
     {k for keys in _EDIT_REQUIREMENT_KEYS.values() for k in keys}
     | {"edit.trim_leading_silence", "edit.trim_trailing_silence", "edit.precision"}
     | set(_AUDIO_REQUIREMENT_KEYS)
@@ -1105,8 +1153,41 @@ _FINISHING_REQUIREMENT_KEYS = frozenset(
     | {"qc"}
     | set(QC_REFERENCE_KEYS)   # ADR-058: qc.reference_video / qc.reference_metrics / qc.min_*
     | set(_TAKES_REQUIREMENT_KEYS)
-    | _POLICY_DEFAULT_KEYS
 )
+_FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
+# ADR-061: the keys a brief (`plan --brief`) may yield, derived from the --set vocabulary above rather than listed by hand: every key
+# `_check_edit_requirements` recognises as a switch / refinement (surface (1)), plus delivery.timeline -- so not (1') the policy-default
+# surface (approval policies, qc.warn.promotion, tolerance / ratio defaults: a brief never sets how much review a decision gets) -- minus (2) keys whose value
+# is a file path (overlay / LUT / graphics image / QC master: only the user names a file the agent may read) and (3) job.* and
+# provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
+_PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "color.lut", "motion.image", "qc.reference_video"})
+BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
+
+
+def _check_requirement_keys(user_requirements: Dict[str, Any]) -> None:
+    """The --set gate shared by plan / revise / a brief's keys: a known prefix, not a dead key, then the per-key checks."""
+    bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
+    if bad:
+        raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")
+    _check_edit_requirements(user_requirements or {})
+
+
+_SWITCH_OR_AUTO = (True, False, "auto")
+_CORE_VALUE_CHECKS = {   # the six keys older than ADR-029's REQUIREMENT_KEYS constants, read directly by decision.py / intent.py
+    "edit.trim_leading_silence": lambda v: v in _SWITCH_OR_AUTO, "edit.trim_trailing_silence": lambda v: v in _SWITCH_OR_AUTO,
+    "audio.normalize": lambda v: v in _SWITCH_OR_AUTO, "edit.precision": lambda v: v in ("frame", "keyframe-ok"),
+    "audio.loudness.target_lufs": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -70.0 <= float(v) <= -5.0,
+    "audio.loudness.true_peak": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -9.0 <= float(v) <= 0.0,
+}
+_CORE_VALUE_HINTS = {"edit.trim_leading_silence": "true / false / auto", "edit.trim_trailing_silence": "true / false / auto", "audio.normalize": "true / false / auto",
+                     "edit.precision": "frame / keyframe-ok", "audio.loudness.target_lufs": "a number of LUFS from -70 to -5", "audio.loudness.true_peak": "a number of dBTP from -9 to 0"}
+
+
+def _check_core_values(user_requirements: Dict[str, Any]) -> None:
+    """ADR-061: a value one of these keys cannot use is refused before analysis, not read as `nothing asked` (or a float() crash)."""
+    for k, ok in _CORE_VALUE_CHECKS.items():
+        if k in user_requirements and not ok(user_requirements[k]):
+            raise ValueError(f"{k} must be {_CORE_VALUE_HINTS[k]}, got {user_requirements[k]!r}")
 
 
 def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
@@ -1120,6 +1201,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     unknown += sorted(k for k in user_requirements if k.startswith(TIMELINE_KEY) and k != TIMELINE_KEY)   # ADR-052: e.g. delivery.timeline.format is not a key
     if unknown:
         raise ValueError(f"unknown requirement key(s): {', '.join(unknown)} (matches a recognised namespace but is not a real key there)")
+    _check_core_values(user_requirements)
     reqs = [Requirement(key=k, value=user_requirements[k], provenance="USER", source="cli") for k in keys]
     rm = requirement_map(reqs)
     parse_edit_requirements(rm)

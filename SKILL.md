@@ -25,6 +25,8 @@ You are the brain; `video-agent` measures, validates, executes and records. Run 
 
 Explicit requirements go in as `--set key=value` on plan or revise (e.g. `audio.loudness.target_lufs=-16`, `edit.trim_leading_silence=true`).
 
+**A brief in the user's words** ("60 s vertical, captions, -14 LUFS") goes in as `--brief "<the user's words>"` on plan. With `--ai-brief` the result's `brief.host_request` is yours to answer: keys from `host_request.context.allowed_keys` only, each with the exact `phrase` of the brief it comes from, values as `--set` takes them, and what no key expresses (a target length) under `unmapped`. Write `brief.json` (`{"requirements": [{"key": "edit.fit", "value": "9:16", "phrase": "vertical", "confidence": 0.9}], "unmapped": [{"phrase": "60 s", "reason": "no key for a target length"}]}`) and plan again with `--brief "<same words>" --brief-requirements brief.json --ai-model claude-code` (`video-agent --json brief "<words>" --brief-requirements brief.json` checks it without analysing media). Report `brief.accepted`, `brief.refused` (with reasons), `brief.overridden` (explicit `--set` wins) and `brief.unmapped` honestly; the `requirements.brief` decision and every change resting on your keys are CONFIRM for the user.
+
 ## When a skill is missing (handoff)
 
 Every skill is optional; the plan uses the ones installed here. `plan --json` lists steps no installed skill can run under `handoff` (job, reason, which package provides it, how to install it); those steps are BLOCKED. Tell the user, and either install the skill (`/plugin install <skill>@ai-video-production-os`, or `./install.sh`) and plan again, or — only if the user agrees and it is safe — do that job with another installed skill or a standard tool. Say plainly that such a step is outside the agent: no contract, no provenance, no approval record, no QA by the agent. Then verify its output with `video-agent --json check <file>`.
@@ -44,4 +46,4 @@ A job the agent has no adapter for at all (another package of the ecosystem owns
 
 ## MCP
 
-The same tools are served over MCP by `video-agent-mcp` (Claude Desktop / Claude Code: see README). With MCP, pass the answer object directly as `ai_recommendations` to the `revise` tool.
+The same tools are served over MCP by `video-agent-mcp` (Claude Desktop / Claude Code: see README). With MCP, pass the answer object directly as `ai_recommendations` to the `revise` tool, and a brief answer as `brief_requirements` to `plan` (or the `brief` tool).

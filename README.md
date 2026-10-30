@@ -24,7 +24,9 @@ AI Video Production Orchestrator. `kajisho5/ffmpeg-skill` を **Media Processing
 
 Request → Requirements → Intent → Analysis(probe / silence / loudness) → Inference → Decision → Plan → Project IR → Validation → Execute(cut / loudness / export via ffmpeg-skill) → QA(probe / loudness / check / look) → Report / Provenance。
 
-未実装（設計のみ）: 依頼文から requirement を作る自然言語理解（`requirements_extraction`）、conference パイプライン本体、Web UI、job queue。
+未実装（設計のみ）: conference パイプライン本体、Web UI、job queue。
+
+依頼文（brief）から requirement を作る（ADR-061、`requirements_extraction`）: `video-agent plan talk.mp4 --brief "60 s vertical, captions, -14 LUFS"` は brief を `--set` と同じ key（`edit.fit=9:16` / `subtitle=true` / `audio.loudness.target_lufs=-14` / `audio.normalize=true`）に読む。読み手は AI provider（Claude provider、またはチャットのモデルが `--brief-requirements answer.json` で答える host provider）、どちらも無ければ決定的な規則（英語と日本語:「縦型」「字幕」「-14LUFS」など。範囲は `agent/brief.py` と ADR-061）。許可される key は `--set` を検証するコードから導かれ、未知の key・不正な値は理由付きで拒否、key の無いもの（「60秒」のような長さ）は適用せず理由を表示する。明示の `--set` が常に勝つ。AI が読んだ key は AI_GENERATED として記録され、それに基づく変更は CONFIRM になる。解析せずに読みだけ見るなら `video-agent brief "縦型で字幕つき、-14LUFS"`。
 
 AI（Claude）: `pip install -e '.[ai]'` の上で `VIDEO_AGENT_AI_PROVIDER=anthropic`（資格情報は `ANTHROPIC_API_KEY` か `ant auth login`。モデルは `VIDEO_AGENT_AI_MODEL`、既定 `claude-opus-5-5`）。AI は計測結果と依頼文から制作の推薦を出すだけで、引用の無い推薦は捨てられ、実行の可否は policy と検証が決める（ADR-018 / ADR-049）。未設定なら完全に決定的なパイプラインのまま動く。
 

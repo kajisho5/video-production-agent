@@ -146,6 +146,45 @@ def _takes_checks(d: dict, exp: dict) -> list:
     return failures
 
 
+def _brief_case(case: dict, provider) -> dict:
+    """ADR-061: a brief in the user's words → validated `--set` keys (rules without a provider, the fake AI's answer with one), the
+    refused / overridden / unmapped parts with their reasons, the recorded reading decision and the decisions resting on the keys."""
+    from pipeline_harness import clear_modes, fake_media, pipeline_service
+    clear_modes()
+    ptmp = tempfile.mkdtemp()
+    svc = pipeline_service(ptmp)
+    if provider is not None:
+        svc.provider = provider
+    exp = case["expect"]
+    ir = svc.plan([fake_media(ptmp)], case.get("profile", "youtube"), user_requirements=case.get("requirements"), params={"language": "ja"}, brief=case["brief"])
+    d = ir.doc
+    rec = d["request"]["args"]["brief"]
+    failures = []
+    got = {"method": rec["method"], "accepted": {a["key"]: a["value"] for a in rec["accepted"]}, "refused": sorted(r["key"] for r in rec["refused"]),
+           "overridden": sorted(o["key"] for o in rec["overridden"]), "unmapped_seconds": [u["seconds"] for u in rec["unmapped"] if "seconds" in u]}
+    for k in ("method", "accepted", "refused", "overridden", "unmapped_seconds"):
+        if k in exp and got[k] != exp[k]:
+            failures.append(f"brief {k} {got[k]!r} != {exp[k]!r}")
+    prov = {r["key"]: r["provenance"] for r in d["requirements"]}
+    for key, want in (exp.get("requirement_provenance") or {}).items():
+        if prov.get(key) != want:
+            failures.append(f"requirement {key} provenance {prov.get(key)!r} != {want!r}")
+    subjects = {x["subject"]: x for x in d["decisions"]}
+    for subj, want in (exp.get("decisions") or {}).items():
+        x = subjects.get(subj)
+        if x is None:
+            failures.append(f"missing decision {subj}")
+            continue
+        for k, v in want.items():
+            if x.get(k) != v:
+                failures.append(f"decision {subj}.{k} {x.get(k)!r} != {v!r}")
+    failures += _engine_checks(d, subjects, {"basis": {}})   # every decision typed, grounded, basis = approval; IR invariants
+    rep = svc.validate(ir)
+    if not rep.ok:
+        failures.append(f"IR invalid: {rep.errors}")
+    return {"case": case["name"], "ok": not failures, "failures": failures}
+
+
 def run_case(case: dict) -> dict:
     tmp = tempfile.mkdtemp()
     fake = case.get("fake", {})
@@ -231,6 +270,8 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    if case.get("brief") is not None:
+        return _brief_case(case, provider)
     pipe = case.get("pipeline")
     if pipe is not None:
         # ADR-031 / ADR-032: the integrated pipeline on the fake engine + fake Skills (tests/pipeline_harness.py): requirements → decisions → plan →

@@ -1193,7 +1193,9 @@ Do not hard-wire core deterministic media functions to an AI API.
 `AIRequest` (task_type ∈ {production_recommendation, requirements_extraction}, inputs = system-produced evidence summaries,
 schema, context), `AIResponse` (task_type, structured result, confidence, evidence ids, short reasoning, provider, model,
 `AIUsage`, latency, response_hash), `AIProviderError` (TIMEOUT / RATE_LIMIT / MALFORMED / UNAVAILABLE / AUTH / BUDGET).
-`NullProvider` is the default; no real provider is bundled.
+`NullProvider` is the default; no real provider is bundled. (Since ADR-049 / ADR-050 the Claude provider and the host provider are bundled; ADR-061 implements
+`requirements_extraction`: a brief → `--set` keys derived from the `--set` validator, validated like `--set`, with a
+rule-based fallback and explicit `--set` precedence — see `agent/brief.py`.)
 
 `agent/ai_reasoning.py` is the only consumer: it builds the request from observations / events (never media, never
 credentials), validates the response into `Inference`s with provenance `AI_GENERATED` (intent must be a registered,
@@ -1449,7 +1451,7 @@ remote registry, arbitrary code loading. A package becomes known through its ada
   stdout). The agent never imports the package, never runs ffprobe / ffmpeg for it, never forwards commands, argv,
   executable paths or credentials; the Skill's own `--workspace` / `--allowed-input` policy is passed through, not bypassed.
 - Contract is the source of truth: tools, analysis kinds, kind → tool, capabilities, versions and schemas come from
-  `contract --json` (`package_from_contract`); a pinned snapshot (`tools/media_analysis/contract_0.1.3.json`) gives the
+  `contract --json` (`package_from_contract`); a pinned snapshot (`tools/media_analysis/contract_0.1.5.json`) gives the
   package its identity when no installation is present. `check_contract` refuses another skill id, contract / schema
   version, execution mode, tool ownership, a tool that writes media, or a provenance other than OBSERVED.
 - Selection stays in the registry: `media-analysis/probe|silence|loudness` are second candidates for the core

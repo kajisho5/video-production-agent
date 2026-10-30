@@ -9,10 +9,15 @@ The host cannot be called from here, so reasoning is two steps of the same plan:
      agent/ai_reasoning.py validation as any provider's (cited ids must exist, unknown intents and forbidden params
      are dropped, policy decides risk and approval). The answer is always recorded as a new version.
 The MCP server (mcp_server.py) exposes the same two steps as the `plan` and `revise` tools.
+
+The brief (ADR-061, task `requirements_extraction`) needs no recorded ids, so its two steps are two plans (or the cheap
+`brief` command): `plan --brief TEXT --ai-brief` returns `host_request` (the brief, the allowed keys, the result shape and
+HOST_BRIEF_RULES) and reads the brief with the rules meanwhile; `plan --brief TEXT --brief-requirements FILE` validates the chat
+model's answer like any provider's (allowed keys only, a quoted phrase of the brief, the same checks as `--set`).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import AIProvider, AIRequest, AIResponse, AIUsage
 
@@ -24,12 +29,24 @@ HOST_RULES = (
     "asked for). Return {\"recommendations\": [{\"intent\", \"asset_id\", \"statement\", \"confidence\" (0-1), "
     "\"evidence\": [ids], \"params\": {}}]}; an empty list is a valid answer.")
 
+HOST_BRIEF_RULES = (
+    "Read the user's brief (inputs.brief, any language) into production requirements. Use only keys from context.allowed_keys; "
+    "any other key is refused. value is what `--set key=value` would take (true / false, a number, or text such as 9:16). "
+    "phrase must quote, exactly, the words of the brief the requirement comes from; one without such a phrase is dropped. "
+    "Keys in context.explicit_keys were set by the user and keep their value. Every value is checked like --set and refused "
+    "with the reason when invalid. Do not guess what the brief does not say; put what no allowed key expresses (for example "
+    "a target length) in unmapped with the reason. Return {\"requirements\": [{\"key\", \"value\", \"phrase\", \"confidence\" (0-1)}], "
+    "\"unmapped\": [{\"phrase\", \"reason\"}]}.")
+
 
 class HostProvider(AIProvider):
     name = "host"
 
-    def __init__(self, recommendations: Optional[List[Dict[str, Any]]] = None, model: str = "host-chat", reasoning: str = ""):
+    def __init__(self, recommendations: Optional[List[Dict[str, Any]]] = None, model: str = "host-chat", reasoning: str = "",
+                 requirements: Optional[List[Dict[str, Any]]] = None, unmapped: Optional[List[Dict[str, Any]]] = None):
         self.recommendations = recommendations   # None: brief step (no answer yet); a list: the chat model's answer
+        self.requirements = requirements         # requirements_extraction (ADR-061): None until the chat model answered the brief
+        self.unmapped = unmapped or []
         self.model = model
         self.reasoning = reasoning
         self.requests: List[AIRequest] = []
@@ -42,6 +59,10 @@ class HostProvider(AIProvider):
 
     def complete(self, request: AIRequest, timeout: Optional[float] = None) -> AIResponse:
         self.requests.append(request)
+        if request.task_type == "requirements_extraction":
+            reqs = list(self.requirements or [])
+            return AIResponse(task_type=request.task_type, result={"requirements": reqs, "unmapped": list(self.unmapped)}, confidence=1.0 if reqs else 0.0,
+                              provider=self.name, model=self.model, reasoning=self.reasoning[:1000], usage=AIUsage(), metadata={"step": "answer"})
         recs = list(self.recommendations or [])
         return AIResponse(task_type=request.task_type, result={"recommendations": recs}, confidence=1.0 if recs else 0.0, provider=self.name, model=self.model,
                           reasoning=self.reasoning[:1000], usage=AIUsage(), metadata={"step": "brief" if self.recommendations is None else "recommend"})
@@ -53,6 +74,15 @@ class HostProvider(AIProvider):
         r = self.requests[-1]
         return {"task_type": r.task_type, "rules": HOST_RULES, "result_shape": r.schema, "inputs": r.inputs, "context": r.context,
                 "next": "write the answer as JSON, then revise the project with --ai-recommendations <file>"}
+
+
+def load_brief_answer(doc: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """The chat model's answer to a brief: a bare list of requirements or {"requirements": [...], "unmapped": [...]}."""
+    reqs = doc.get("requirements") if isinstance(doc, dict) else doc
+    if not isinstance(reqs, list):
+        raise ValueError("the brief answer must be a list of requirements, or an object with a requirements list")
+    unmapped = doc.get("unmapped") if isinstance(doc, dict) and isinstance(doc.get("unmapped"), list) else []
+    return [r for r in reqs if isinstance(r, dict)], [u for u in unmapped if isinstance(u, dict)]
 
 
 def load_recommendations(doc: Any) -> List[Dict[str, Any]]:

@@ -2711,7 +2711,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         from video_agent.tools.media_analysis import PACKAGE, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.3", "media-analysis/contract@1"))
+        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.5", "media-analysis/contract@1"))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual(set(pkg.tool_ids()), set(ad.contract["kind_to_tool"].values()), "every kind maps to a declared tool (timing serves two kinds)")
@@ -2764,7 +2764,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         ad = self._adapter()
         r = ad.measure("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "kind": "silence"})
         self.assertTrue(r.ok and r.exit_code == 0)
-        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.3")
+        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.5")
         self.assertEqual(r.data["cache"]["status"], "miss")
         self.assertEqual(r.commands, ["ffprobe: metadata"], "the Skill reports what it ran; the agent never built it")
         # through the analyzer: lifted Observation keeps the external identity and provenance; agent cache is not used
@@ -2777,10 +2777,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["duration", "loudness", "media_probe", "scene_detection", "silence"])
         sil = obs["silence"]
-        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.3", "media-analysis/silence", "media-analysis/silence@0.1.3"))
+        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.5", "media-analysis/silence", "media-analysis/silence@0.1.5"))
         self.assertTrue(sil.external_id.startswith("obs_") and sil.external_id != sil.id)
         self.assertEqual(sil.fingerprint, "f" * 64)
-        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.3")
+        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.5")
         self.assertEqual(sil.cache["status"], "miss")
         self.assertEqual(sil.data["segments"][0]["type"], "leading", "facts as measured; no interpretation added")
         rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
@@ -2840,7 +2840,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(tools["scene_analysis"], "media-analysis/scenes")
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["implemented"] and rows["media-analysis"]["available"])
-        self.assertEqual(rows["media-analysis"]["version"], "0.1.3")
+        self.assertEqual(rows["media-analysis"]["version"], "0.1.5")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
         # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
@@ -2854,7 +2854,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"])
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=["duration"])
         d = next(o for o in an.observations if o.kind == "duration")
-        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.3"))
+        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.5"))
         self.assertNotEqual(svc.registry.tool("media-analysis/timing").version, "", "tool version recorded separately from the skill version")
 
     # boundaries: no import, no engine invocation, no event → command; observation ≠ inference
