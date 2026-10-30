@@ -30,7 +30,7 @@ Uses 15 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
 - [ ] **3. Contract-backed ffmpeg-skill catalog check** — at locate time read `_contract.py --json --static`, assert contract_version 1.0 and every catalogued flag in input_schema; surface doctor's missing capabilities
   - Done when: a renamed flag makes the tool unavailable with a reason instead of an argparse error
 - [ ] **4. Timeline export (OTIO first)** — SkillSpec `timeline_export` -> ffmpeg-skill/render `--export-timeline` (.otio, .fcpxml, .edl) from the IR cut list, plus a sidecar SRT; ADR amending ADR-002
-  - Done when: `--set delivery.timeline=otio` produces a timeline Artifact that opens in Resolve and Premiere (manual check recorded)
+  - Done when: `--set delivery.timeline=otio` produces a timeline Artifact that `opentimelineio` reads back with the same cuts. Neither NLE is available yet (owner, 2026-10-30): the Resolve / Premiere import check is recorded when they are
 - [ ] **5. NL brief -> requirements (requirements_extraction)** — AI task that returns only known `--set` keys, through the host (MCP) or Claude provider; unknown keys refused
   - Done when: "60 s vertical, captions, -14 LUFS" yields valid keys; no provider = deterministic
 - [ ] **6. Wire what the satellites already offer** — color gamma/lift/gain/levels/curves; all 12 motion-graphics elements; subtitle mux; audio MIX / NOISE_REDUCTION / DYNAMICS; qc delivery_package gate; video-editing trim/rotate
@@ -44,7 +44,7 @@ Uses 15 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
 
 ## Boundaries
 
-URL download (yt-dlp, `agent/ingest.py`) has no owner in ecosystem.json; ingest-skill owns card offload. Decide in an ADR whether URL ingest moves to ingest-skill.
+URL download (yt-dlp, `agent/ingest.py`) belongs to ingest-skill since 2026-10-30 (owner decision, URL素材取得). The agent keeps its call until ingest-skill's `fetch` ships, then hands over (ADR-051 handoff when ingest-skill is missing).
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (42 tools, treated as complete). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
