@@ -230,6 +230,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         for d in [x for x in decisions if x.subject == "qc.check" and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
             qc_plan["enabled"] = True
             qc_plan["decision_ids"].append(d.id)
+            if d.params.get("reference"):   # ADR-058: the master the video deliverables are compared against (written only when asked)
+                qc_plan["reference"] = dict(d.params["reference"])
             preset_targets = set()
             for exp in [s_ for s_ in steps if s_.skill == "delivery_export" and (s_.params or {}).get("target") and s_.outputs and s_.outputs[0].startswith(f"{subject}_delivery_")]:
                 target = exp.params["target"]

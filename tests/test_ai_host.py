@@ -92,7 +92,7 @@ class HandoffTests(unittest.TestCase):
 # AI-video-production-OS ecosystem.json and each repository's README, independently of skills/ecosystem.py.
 _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
-    "media_ingest": ("ingest", "ingest-skill", f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill'"),
+    "media_ingest": ("ingest", "ingest-skill", f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill[fetch]'"),   # [fetch]: URL download (ADR-059)
     "voice_enhancement": ("voice-enhance", "voice-enhance-skill", f"none yet: voice-enhance-skill is a scaffold repository with no released package ({_GH}voice-enhance-skill)"),
     "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),

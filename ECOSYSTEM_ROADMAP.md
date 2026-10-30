@@ -19,7 +19,7 @@ Python orchestrator (`video-agent`). 10 adapters (ffmpeg-skill, video-editing, a
 
 ## Wiring
 
-Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052).
+Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052). qc-skill pinned at 0.2.3; its opt-in VMAF / SSIM / PSNR against a master the user names (`qc.reference_video` + `qc.reference_metrics`, ADR-058, [#77](https://github.com/kajisho5/video-production-agent/pull/77)).
 
 ## Steps
 
@@ -51,7 +51,7 @@ Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
 
 ## Boundaries
 
-URL download (yt-dlp, `agent/ingest.py`) belongs to ingest-skill since 2026-10-30 (owner decision, URL素材取得). The agent keeps its call until ingest-skill's `fetch` ships, then hands over (ADR-051 handoff when ingest-skill is missing).
+URL download belongs to ingest-skill since 2026-10-30 (owner decision, URL素材取得), and is handed over: `agent/ingest.py` runs `ingest fetch <url> --dest <workspace>/downloads --json` (ingest-skill #9, its ADR-005) instead of yt-dlp, records ingest-skill's redacted fetch record, reports yt-dlp from `ingest doctor`, and prints an ADR-051 handoff naming ingest-skill (`[fetch]` extra) when it is missing (ADR-059, [#77](https://github.com/kajisho5/video-production-agent/pull/77)). `VIDEO_AGENT_YTDLP` is gone.
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (42 tools, treated as complete). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).

@@ -73,8 +73,9 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("media-analysis", "media-analysis-skill", "verify", "pip", "active", plugin=True, owns=("メディア計測",), package_install=_clone_pip("media-analysis-skill")),
     # ---- ADR-057: every other job of the ecosystem, declared so a handoff names its owner (no adapter here yet; roadmap step 9)
     Component("ingest", "ingest-skill", "ingest", "pip", "scaffold", plugin=True, owns=("素材取り込み(検証付きコピー)", "二重バックアップ", "素材台帳", "URL素材取得"),
-              package_install=_clone_pip("ingest-skill"),
-              note="ecosystem.json still says scaffold, but offload / verify / inventory ship (README); URL fetch does not yet"),
+              package_install=_clone_pip("ingest-skill", "fetch"),
+              note="ecosystem.json still says scaffold, but offload / verify / inventory ship (README); `ingest fetch` (URL download, ingest-skill #9) "
+                   "needs the fetch extra (yt-dlp), and the agent hands URL inputs to it (ADR-059)"),
     Component("voice-enhance", "voice-enhance-skill", "audio", "pip", "scaffold", owns=("声の分離(AI)", "残響除去", "マイク被り低減")),
     Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説")),
     Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),

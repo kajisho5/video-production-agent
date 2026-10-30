@@ -55,6 +55,7 @@ from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_r
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
+from .agent.finishing import QC_REFERENCE_KEYS, parse_qc_reference
 from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
@@ -391,9 +392,10 @@ class Service:
             d["qa"]["qc"] = plan["qc"]
         else:
             d["qa"].pop("qc", None)
-        # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image, the file's directory (all named by the user)
+        # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") == "video.overlay" and op.get("image")]
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op["image"] for op in plan.get("graphics_ops") or [] if op.get("image")]
+        images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
@@ -1101,6 +1103,7 @@ _FINISHING_REQUIREMENT_KEYS = frozenset(
     | {k for keys in MOTION_KEYS.values() for k in keys}
     | set(_THUMBNAIL_REQUIREMENT_KEYS)
     | {"qc"}
+    | set(QC_REFERENCE_KEYS)   # ADR-058: qc.reference_video / qc.reference_metrics / qc.min_*
     | set(_TAKES_REQUIREMENT_KEYS)
     | _POLICY_DEFAULT_KEYS
 )
@@ -1126,6 +1129,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_motion_requirements(rm)
     parse_thumbnail_requirements(rm)
     qc_requested(rm)
+    parse_qc_reference(rm)   # ADR-058: the master file exists, metrics are named, thresholds in range, the qc gate is on
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs

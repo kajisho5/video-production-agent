@@ -43,7 +43,9 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/color-grading-skill ../color-grading-skill
       - run: git clone --depth 1 https://github.com/kajisho5/motion-graphics-skill ../motion-graphics-skill
       - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill
-      - run: pip install -e . Pillow opentimelineio   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
+      # ingest-skill (ADR-059): URL inputs go through `ingest fetch`; its fetch extra installs yt-dlp. The test downloads from 127.0.0.1 only
+      - run: git clone --depth 1 https://github.com/kajisho5/ingest-skill ../ingest-skill
+      - run: pip install -e . Pillow opentimelineio -e "../ingest-skill[fetch]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - run: python -m unittest -v tests/test_integration.py
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
@@ -55,4 +57,9 @@ jobs:
           VIDEO_AGENT_THUMBNAIL_DIR: "${{ github.workspace }}/../thumbnail-skill"
           VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
           VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
+          VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
+          VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
+      # ADR-058: the qc adapter against qc-skill main (contract drift, reference metrics SSIM / PSNR); the fake-based tests of the same file run in the unit job
+      - run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
+        env:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"

@@ -76,13 +76,13 @@ class QcAdapterTests(unittest.TestCase):
     # ---- contract
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.2.2"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "0.2.3"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
         self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery", "delivery_package"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 14)
         self.assertEqual(sorted(ad.rules), ["audio", "delivery", "delivery_package", "delivery_package_artifact", "delivery_package_cross_artifact", "delivery_package_dependency",
                                             "delivery_package_duration_consistency", "subtitle", "text_region", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video"]); self.assertTrue(ad.owns_cache)
         self.assertIn("qc/check", ad.describe()["tools"]); self.assertEqual(ad.describe()["drift"], [])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "0.2.2", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "0.2.3", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
         self.assertEqual(pk.validate(), []); self.assertTrue(all(not t.produces_output and t.kind == "measure" for t in pk.tools)); self.assertIn("verdict", pk.tools[0].result_keys)
         self.assertEqual(PACKAGE.tool_ids(), [TOOL_CHECK, TOOL_INSPECT]); self.assertIn("never a production decision", PACKAGE.role)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
@@ -118,7 +118,7 @@ class QcAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertIsNone(r.output); self.assertEqual(r.commands, []); self.assertEqual(r.tool, TOOL_CHECK)
         d = r.data
-        self.assertEqual(d["skill"], {"id": "qc", "version": "0.2.2"}); self.assertEqual((d["status"], d["operation_type"], d["kind"], d["verdict"]), ("completed", "check", "video", "PASS"))
+        self.assertEqual(d["skill"], {"id": "qc", "version": "0.2.3"}); self.assertEqual((d["status"], d["operation_type"], d["kind"], d["verdict"]), ("completed", "check", "video", "PASS"))
         self.assertTrue(d["report_id"].startswith("qcreport_")); self.assertTrue(d["admitted"]); self.assertEqual(d["fingerprint"], sha(self.src))
         self.assertEqual(sorted(d), sorted(["skill", "status", "operation_type", "kind", "verdict", "report_id", "checks", "findings", "measurements", "fingerprint", "companions", "provenance", "cache", "reused", "admitted", "commands", "warnings"]))
         self.assertTrue(d["checks"] and all(set(c) == {"check_id", "category", "status", "finding_codes", "measurement_ids"} for c in d["checks"]))
@@ -136,8 +136,8 @@ class QcAdapterTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.ws, ".qc-cache")), "the Skill's cache lives under the workspace")
         # lifting: the admitted report becomes an agent Observation (provenance only)
         obs = lift_report(r, "clip")
-        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.tool, obs.fingerprint, obs.asset_id), ("qc.report", "OBSERVED", "qc", "0.2.2", TOOL_CHECK, sha(self.src), "clip"))
-        self.assertEqual(obs.source, "qc/check@0.2.2"); self.assertEqual(obs.data["verdict"], "PASS"); self.assertEqual(obs.external_id, d["report_id"]); self.assertEqual(obs.parameters["kind"], "video")
+        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.tool, obs.fingerprint, obs.asset_id), ("qc.report", "OBSERVED", "qc", "0.2.3", TOOL_CHECK, sha(self.src), "clip"))
+        self.assertEqual(obs.source, "qc/check@0.2.3"); self.assertEqual(obs.data["verdict"], "PASS"); self.assertEqual(obs.external_id, d["report_id"]); self.assertEqual(obs.parameters["kind"], "video")
         # a FAIL or WARN verdict is a successful measurement (the gate decides, never the adapter)
         for mode, verdict, code in (("verdict_fail", "FAIL", "VIDEO_STREAM_MISSING"), ("verdict_warn", "WARN", "AUDIO_LEADING_SILENCE_EXCEEDED")):
             os.environ["FAKE_QC_MODE"] = mode
@@ -152,7 +152,7 @@ class QcAdapterTests(unittest.TestCase):
         ri = ad.run(self._op(TOOL_INSPECT, kind="audio", rules=None), paths)
         self.assertTrue(ri.ok, ri.data.get("error")); self.assertEqual((ri.data["operation_type"], ri.data["checks"], ri.data["verdict"]), ("inspect", [], "PASS"))
         self.assertTrue(all(m["id"].split(".")[0] in ("audio", "container") for m in ri.data["measurements"]), "kind audio measures audio only")
-        self.assertEqual(lift_report(ri).source, "qc/inspect@0.2.2")
+        self.assertEqual(lift_report(ri).source, "qc/inspect@0.2.3")
         # companions: subtitle kind with reference_video, delivery kind with a subtitle; their fingerprints are recomputed and reported
         rs = ad.run(self._op(input="sub", kind="subtitle", reference_video="clip", rules={"subtitle": {"max_line_length": 42, "min_coverage_ratio": 0.5}}), paths)
         self.assertTrue(rs.ok, rs.data.get("error")); self.assertEqual(rs.data["companions"], {"subtitle": None, "reference_video": sha(self.src)}); self.assertEqual(rs.data["fingerprint"], sha(self.srt))
@@ -229,7 +229,9 @@ class QcAdapterTests(unittest.TestCase):
                ({"rules": {"video": {"expected_codec": "h264\n--shell"}}}, "plain string"), ({"rules": {"audio": {"require_audio_stream": 1}}}, "boolean"), ({"rules": {"video": {"expected_width": float("nan")}}}, "finite"),
                ({"rules": {"delivery": {"video": {"nope": 1}}}}, "not a declared rule field"), ({"rules": {"delivery": {"video": 3}}}, "must be an object"), ({"rules": []}, "rules must be"),
                ({"parameters": {"gain": 1}}, "not declared"), ({"parameters": {"max_gap_sec": "1"}}, "finite number"), ({"parameters": {"max_gap_sec": float("inf")}}, "finite number"), ({"parameters": 1}, "parameters must"),
-               ({"subtitle": "sub"}, "only accepted with kind delivery"), ({"reference_video": "clip"}, "only accepted with kind subtitle"), ({"kind": "delivery", "subtitle": "missing"}, "not found"),
+               ({"subtitle": "sub"}, "only accepted with kind delivery"), ({"reference_video": "clip"}, "needs the video rule's reference_metrics"), ({"kind": "audio", "reference_video": "clip"}, "only accepted with kind subtitle, video, delivery"),
+               ({"rules": {"video": {"reference_metrics": ["ssim"]}}}, "needs a reference_video companion"), ({"rules": {"video": {"min_vmaf": None}}}, "not null"),
+               ({"rules": {"video": {"reference_metrics": "vmaf"}}, "reference_video": "clip"}, "must be a list"), ({"kind": "delivery", "subtitle": "missing"}, "not found"),
                ({"cache_policy": "only"}, "cache_policy"), ({"cache_policy": "never"}, "cache_policy"), ({"input": ""}, "required")]
         for extra, msg in bad:
             args = {"input": "clip", "kind": "video", **extra}
@@ -259,6 +261,68 @@ class QcAdapterTests(unittest.TestCase):
         self.assertFalse(r.ok); self.assertIn("outside allowed roots", r.data["error"]["message"])
         self.assertTrue(strict.run(self._op(input="inws"), paths).ok)
         self.assertFalse(os.path.exists(log) and any(json.loads(l)["cmd"] == "run" and "far" in json.dumps(l) for l in Path(log).read_text().splitlines()))
+
+    def test_reference_metrics_request_shape(self):
+        """qc-skill #23 (0.2.3, its ADR-021): VMAF / SSIM / PSNR against `reference_video` for kind video and delivery, opt-in through the
+        video rule's `reference_metrics` (List[str]) and `min_vmaf` / `min_ssim` / `min_psnr_db` (float) — typed by the contract like every
+        other rule field. The reference goes through the same path policy as the input, is fingerprinted by the adapter and admitted only
+        when the Skill reports the same digest."""
+        ad = self._adapter(); paths = self._paths()
+        master = fake_media(self.src_dir, "master.mov"); paths["master"] = master
+        rule = {"reference_metrics": ["vmaf", "ssim"], "min_vmaf": 90, "min_ssim": 0.97, "min_psnr_db": 35.5}
+        b = ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video", "reference_video": "master", "rules": {"video": rule}}, paths)
+        req = b["request"]
+        self.assertEqual(req["reference_video"], str(Path(master).resolve())); self.assertEqual(b["companions"], {"reference_video": str(Path(master).resolve())})
+        self.assertEqual(req["rules"]["video"], {"reference_metrics": ["vmaf", "ssim"], "min_vmaf": 90.0, "min_ssim": 0.97, "min_psnr_db": 35.5})
+        self.assertIn(str(Path(master).parent), b["input_dirs"])
+        # kind delivery: the rule is the one delivery nests (rules.delivery.video)
+        bd = ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "delivery", "reference_video": "master", "rules": {"delivery": {"require_video": True, "video": {"reference_metrics": ["psnr"]}}}}, paths)
+        self.assertEqual(bd["request"]["reference_video"], str(Path(master).resolve())); self.assertEqual(bd["request"]["rules"]["delivery"]["video"], {"reference_metrics": ["psnr"]})
+        # the metrics of one section never license a reference for another: rules.video does not apply to kind delivery
+        with self.assertRaises(ToolError) as cm:
+            ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "delivery", "reference_video": "master", "rules": {"video": {"reference_metrics": ["psnr"]}}}, paths)
+        self.assertIn("needs the video rule's reference_metrics", str(cm.exception))
+        # the reference is a path like the input: outside the allowed roots → refused before the Skill runs
+        far = fake_media(os.path.realpath(tempfile.mkdtemp()), "far.mov"); paths["far"] = far
+        with self.assertRaises(ToolError) as cm:
+            ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video", "reference_video": "far", "rules": {"video": rule}}, paths)
+        self.assertIn("outside the allowed roots", str(cm.exception))
+        strict = self._adapter(path_policy=PathPolicy([str(Path(self.tmp) / "elsewhere")], self.ws)); inws = fake_media(self.ws, "in_ws.mp4"); paths["inws"] = inws
+        r = strict.run(self._op(input="inws", reference_video="master", rules={"video": rule}), paths)
+        self.assertFalse(r.ok); self.assertIn("outside allowed roots", r.data["error"]["message"])
+        # end to end through the fake Skill: the reference fingerprint is admitted, the metric checks and measurements come back
+        for kind, rules in (("video", {"video": rule}), ("delivery", {"delivery": {"video": rule}})):
+            r = ad.run(self._op(kind=kind, reference_video="master", rules=rules), paths)
+            self.assertTrue(r.ok, r.data.get("error")); self.assertTrue(r.data["admitted"])
+            self.assertEqual(r.data["companions"], {"subtitle": None, "reference_video": sha(master)}); self.assertEqual(r.data["fingerprint"], sha(self.src))
+            self.assertEqual({c["check_id"] for c in r.data["checks"]} & {"video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"},
+                             {"video.vmaf_meets_minimum", "video.ssim_meets_minimum"}, kind)
+            self.assertEqual({m["id"]: m["value"] for m in r.data["measurements"] if m["id"] in ("video.vmaf", "video.ssim", "video.psnr_db")}, {"video.vmaf": 96.5, "video.ssim": 0.99}, kind)
+        # without the opt-in nothing changes: no metric checks, no reference
+        r = ad.run(self._op(), paths)
+        self.assertTrue(r.ok); self.assertFalse(any(c["check_id"] in ("video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum") for c in r.data["checks"]))
+
+    def test_pinned_contract_is_qc_0_2_3(self):
+        """The pin is qc-skill main after #23 (released 0.2.3): the reference-metric checks, rules, measurements, optional filters and the
+        widened reference_video input are part of it, so a live 0.2.3 contract shows no drift."""
+        c = pinned_contract()
+        self.assertEqual(c["version"], "0.2.3")
+        for cid in ("video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"):
+            self.assertIn(cid, c["checks"])
+        self.assertEqual({k: c["rules"]["video"][k]["type"] for k in ("reference_metrics", "min_vmaf", "min_ssim", "min_psnr_db")},
+                         {"reference_metrics": "Optional[List[str]]", "min_vmaf": "float", "min_ssim": "float", "min_psnr_db": "float"})
+        for kind in ("video", "delivery"):
+            self.assertTrue({"video.reference_alignment", "video.vmaf", "video.ssim", "video.psnr_db"} <= set(c["measurements"][kind]), kind)
+        self.assertTrue({"filter:libvmaf", "filter:ssim", "filter:psnr"} <= set(c["capabilities"]["optional"]))
+        self.assertIn("kind=video/delivery", c["inputs"]["reference_video"])
+        self.assertEqual(check_contract(c), []); self.assertEqual(contract_drift(c), [])
+        from video_agent.tools.qc.adapter import contract_breaking_drift
+        self.assertEqual(contract_breaking_drift(c), [])
+        # the 0.2.2 pin (no reference metrics) against this one is fatal drift — what re-pinning removed
+        old = json.loads(json.dumps(c)); old["version"] = "0.2.2"; old["checks"] = [x for x in c["checks"] if not x.endswith(("vmaf_meets_minimum", "ssim_meets_minimum", "psnr_meets_minimum"))]
+        for k in ("reference_metrics", "min_vmaf", "min_ssim", "min_psnr_db"):
+            old["rules"]["video"].pop(k)
+        self.assertTrue({d.split(":")[0] for d in contract_breaking_drift(c, old)} >= {"checks", "rules"})
 
     # ---- security
     def test_list_and_map_rule_types(self):
@@ -378,6 +442,13 @@ class QcRealSkillTests(unittest.TestCase):
         self.assertTrue(r4.ok, r4.data.get("error")); self.assertEqual(r4.data["companions"]["reference_video"], sha(self.src)); self.assertEqual(r4.data["fingerprint"], sha(self.srt))
         r5 = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "delivery", "subtitle": "sub", "rules": {"delivery": {"require_subtitle": True, "audio": {"max_true_peak_dbfs": 0.0}}}}, inputs=["clip"], outputs=[], kind="qa", id="op_r5"), paths)
         self.assertTrue(r5.ok, r5.data.get("error")); self.assertEqual(r5.data["companions"]["subtitle"], sha(self.srt)); self.assertTrue(any(c["category"] == "subtitle" for c in r5.data["checks"]))
+        # qc-skill #23: SSIM / PSNR of the fixture against itself (libvmaf is optional in the Skill and absent from most ffmpeg builds)
+        rr = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "reference_video": "clip", "rules": {"video": {"reference_metrics": ["ssim", "psnr"], "min_ssim": 0.9, "min_psnr_db": 30.0}}},
+                              inputs=["clip"], outputs=[], kind="qa", id="op_rr"), paths)
+        self.assertTrue(rr.ok, rr.data.get("error")); self.assertEqual(rr.data["companions"]["reference_video"], sha(self.src))
+        st = {c["check_id"]: c["status"] for c in rr.data["checks"]}
+        self.assertEqual((st.get("video.ssim_meets_minimum"), st.get("video.psnr_meets_minimum")), ("PASS", "PASS"), rr.data["findings"]); self.assertNotIn("video.vmaf_meets_minimum", st)
+        self.assertGreaterEqual(next(m["value"] for m in rr.data["measurements"] if m["id"] == "video.ssim"), 0.99)
         r6 = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"expected_width": 640, "expected_height": 360, "expected_frame_rate": 25}}}, inputs=["clip"], outputs=[], kind="qa", id="op_r6"), paths)
         self.assertTrue(r6.ok and r6.data["reused"]); self.assertEqual(r6.data["cache"]["status"], "hit")
         rb = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"expected_bitrate": 1}}}, inputs=["clip"], outputs=[], kind="qa", id="op_rb"), paths)

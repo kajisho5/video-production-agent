@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "qc" / "contract_0.2.2.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "qc" / "contract_0.2.3.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_QC_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_QC_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -222,7 +222,11 @@ def main() -> int:
     if bad:
         return bad
     companions = {}
+    vrule = (rules.get("video") if kind == "video" else (rules.get("delivery") or {}).get("video") if kind == "delivery" else None) or {}
+    metrics = [m for m in ("vmaf", "ssim", "psnr") if m in (vrule.get("reference_metrics") or [])]   # canonical order, like the Skill
     for k in ("subtitle", "reference_video"):
+        if k == "reference_video" and kind != "subtitle" and not metrics:
+            continue   # qc-skill ADR-021: kind video / delivery read the reference only when the video rule opts in
         if req.get(k) is not None:
             p, bad = resolve(req[k], roots, k)
             if bad:
@@ -244,6 +248,11 @@ def main() -> int:
     if kind in ("audio", "delivery"):
         ms += [measurement("audio.stream_present", f["channels"] > 0), measurement("audio.channels", f["channels"]), measurement("audio.sample_rate", 48000, "Hz"),
                measurement("audio.integrated_loudness_lufs", f["lufs"], "LUFS", "ffmpeg:ebur128"), measurement("audio.leading_silence_sec", 0.0, "sec", "ffmpeg:silencedetect")]
+    ref_ids = {"vmaf": "video.vmaf", "ssim": "video.ssim", "psnr": "video.psnr_db"}
+    if metrics:
+        ms += [measurement("video.reference_alignment", "aligned" if "reference_video" in companions else "not_performed", None, "ffmpeg")]
+        if "reference_video" in companions:
+            ms += [measurement(ref_ids[m], {"vmaf": 96.5, "ssim": 0.99, "psnr": 42.0}[m], "dB" if m == "psnr" else None, f"ffmpeg:{'libvmaf' if m == 'vmaf' else m}") for m in metrics]
     if kind == "subtitle" or "subtitle" in companions:
         ms += [measurement("subtitle.exists", True, None, "OBSERVED"), measurement("subtitle.format", "srt", None, "parser"), measurement("subtitle.cue_count", 2, None, "parser")]
     if kind == "delivery":
@@ -251,8 +260,9 @@ def main() -> int:
     prefixes = {"video": ("video.",), "audio": ("audio.",), "subtitle": ("subtitle.",), "delivery": ("video.", "audio.", "subtitle.", "delivery.")}[kind]
     checks, findings = [], []
     if operation in ("check", "validate"):
+        opted = {f"video.{m}_meets_minimum" for m in metrics}
         for cid in CONTRACT["checks"]:
-            if cid.startswith(prefixes):
+            if cid.startswith(prefixes) and (cid not in {"video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"} or cid in opted):
                 checks.append({"check_id": cid, "category": cid.split(".")[0], "status": "PASS", "measurement_ids": [m["id"] for m in ms if m["category"] == cid.split(".")[0]][:2], "finding_codes": [], "evidence": {}})
         if MODE == "verdict_fail" or (kind in ("video", "delivery") and not f["video"]):
             checks[0].update(status="FAIL", finding_codes=["VIDEO_STREAM_MISSING"])

@@ -1,6 +1,7 @@
 """Integration + real-media tests: need ffmpeg and an ffmpeg-skill checkout (VIDEO_AGENT_FFMPEG_SKILL_DIR)."""
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import shutil
@@ -465,6 +466,83 @@ class RealMediaTests(unittest.TestCase):
         self.assertIn("evidence", r.stdout)
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "doctor"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0)
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+class _QuietServer(http.server.ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        pass   # yt-dlp may close a connection once it has the headers: a broken pipe here is expected
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class IngestFetchRealTests(unittest.TestCase):
+    """ADR-059 on the real ingest-skill (main, with its `fetch` extra): a URL input is downloaded by `ingest fetch` from a fixture
+    served on 127.0.0.1 (no internet; yt-dlp's generic extractor takes the direct media link, as in ingest-skill's own loopback
+    test), lands in <workspace>/downloads/<extractor>-<id>/ with ingest-skill's manifest, and flows through plan like a local
+    file with an OBSERVED `ingest` observation whose URLs carry no credentials."""
+
+    @classmethod
+    def setUpClass(cls):
+        import functools
+        import threading
+        from video_agent.agent.ingest import locate_ingest, yt_dlp_capability
+        if not locate_ingest():
+            raise unittest.SkipTest("needs ingest-skill (VIDEO_AGENT_INGEST_DIR)")
+        status, detail, _ = yt_dlp_capability()
+        if status != "AVAILABLE":
+            raise unittest.SkipTest(f"needs ingest-skill's fetch extra: {detail}")
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_fetch_"))
+        www = Path(cls.tmp) / "www"
+        www.mkdir()
+        make_media(str(www / "talk.mp4"))
+        cls.server = _QuietServer(("127.0.0.1", 0), functools.partial(_QuietHandler, directory=str(www)))
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls._no_proxy = {k: os.environ.get(k) for k in ("NO_PROXY", "no_proxy")}
+        os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        for k, v in cls._no_proxy.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_url_input_is_fetched_by_ingest_skill_and_planned(self):
+        import hashlib
+        from video_agent.agent.ingest import IngestError, locate_ingest
+        from video_agent.cli import _resolve_url_inputs
+        from video_agent.tools.skill_process import invoke, one_json_document
+        port = self.server.server_address[1]
+        url = f"http://user:pa55@127.0.0.1:{port}/talk.mp4?token=s3cr3t-token"
+        ws = str(Path(self.tmp) / "ws")
+        inputs = [url]
+        records = _resolve_url_inputs(inputs, ws)
+        rec = records[inputs[0]]
+        root = Path(ws).resolve() / "downloads" / "generic-talk"
+        self.assertEqual(Path(rec.path), root / "talk.mp4")
+        self.assertEqual(rec.sha256, hashlib.sha256((Path(self.tmp) / "www" / "talk.mp4").read_bytes()).hexdigest(), "the served bytes, verified")
+        self.assertEqual(rec.source_url, f"http://127.0.0.1:{port}/talk.mp4?token=REDACTED"); self.assertEqual(rec.redacted, ["token", "userinfo"])
+        self.assertEqual((rec.extractor, rec.video_id, rec.is_live, rec.live_from_start), ("generic", "talk", False, False)); self.assertTrue(rec.yt_dlp_version)
+        manifest = (root / "ingest-manifest.json").read_text(encoding="utf-8")
+        self.assertNotIn("s3cr3t-token", manifest); self.assertNotIn("pa55", manifest)
+        code, out, _ = invoke(locate_ingest(), ["verify", str(root), "--json"], timeout=120)
+        self.assertEqual(code, 0); self.assertTrue(one_json_document(out, "ingest verify")["ok"], "ingest verify works on the agent's download folder")
+        ir = Service(workspace=ws).plan(inputs, "youtube", ingest_records=records)
+        obs = [o for o in ir.doc["analysis"]["observations"] if o["kind"] == "ingest"]
+        self.assertEqual(len(obs), 1); self.assertEqual(obs[0]["provenance"], "OBSERVED"); self.assertTrue(obs[0]["source"].startswith("ingest/fetch@"))
+        self.assertNotIn("s3cr3t-token", json.dumps(ir.doc)); self.assertNotIn("pa55", json.dumps(ir.doc))
+        # a missing file on the server: ingest-skill's FETCH_FAILED, mapped to DOWNLOAD_FAILED, the secret not echoed
+        with self.assertRaises(IngestError) as cm:
+            _resolve_url_inputs([f"http://127.0.0.1:{port}/missing.mp4?sig=SIGVALUE"], ws)
+        self.assertEqual(cm.exception.kind, "DOWNLOAD_FAILED"); self.assertNotIn("SIGVALUE", str(cm.exception))
 
 
 @unittest.skipUnless(locate_ffmpeg_skill(), "needs ffmpeg-skill")

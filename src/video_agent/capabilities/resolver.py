@@ -118,13 +118,12 @@ class CapabilityResolver:
         caps["ffmpeg"] = Capability("ffmpeg", "AVAILABLE" if ver else "MISSING", (ver or "").splitlines()[0] if ver else "not on PATH", {"path": ffmpeg})
         pver = _run([ffprobe, "-version"]) if ffprobe else None
         caps["ffprobe"] = Capability("ffprobe", "AVAILABLE" if pver else "MISSING", (pver or "").splitlines()[0] if pver else "not on PATH", {"path": ffprobe})
-        # yt-dlp (URL ingestion, ADR pending / issue #50 Task 1): an external engine dependency exactly like ffmpeg
-        # itself -- a bare versioned binary, no Skill contract -- so it is optional here (never in cli.py's "hard"
-        # doctor list): a deployment that never points `plan`/`analyze` at a URL needs nothing from it.
-        from ..agent.ingest import locate_yt_dlp   # here, not at module top: agent/ imports this module (import cycle)
-        yt = locate_yt_dlp(env=self.env)
-        caps["yt-dlp"] = Capability("yt-dlp", "AVAILABLE" if yt else "MISSING", yt.version if yt else f"not on PATH (set VIDEO_AGENT_YTDLP, or install yt-dlp)",
-                                    {"path": yt.command[0] if yt else None, "version": yt.version if yt else None})
+        # yt-dlp (URL ingestion, ADR-059): URL download belongs to ingest-skill (`ingest fetch`, yt-dlp as its optional `fetch`
+        # extra), so availability is what ingest-skill's own doctor reports (`checks["yt-dlp"]`), never a binary looked up here.
+        # Optional (never in cli.py's "hard" doctor list): a deployment that never points `plan`/`analyze` at a URL needs none of it.
+        from ..agent.ingest import yt_dlp_capability   # here, not at module top: agent/ imports this module (import cycle)
+        yt_status, yt_detail, yt_ev = yt_dlp_capability(env=self.env)
+        caps["yt-dlp"] = Capability("yt-dlp", yt_status, yt_detail, yt_ev)
         enc_txt = _run([ffmpeg, "-hide_banner", "-encoders"]) if ffmpeg else None
         dec_txt = _run([ffmpeg, "-hide_banner", "-decoders"]) if ffmpeg else None
         flt_txt = _run([ffmpeg, "-hide_banner", "-filters"]) if ffmpeg else None
