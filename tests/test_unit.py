@@ -5128,10 +5128,10 @@ class AudioProductionAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.4.1"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "0.4.2"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
         self.assertEqual(len(ad.lowering.supported_types()), 14); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.1", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.2", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
         self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         # incompatible contracts are refused, never patched
@@ -5181,7 +5181,7 @@ class AudioProductionAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertEqual(r.output, paths["a_norm"]); self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.1"}); self.assertEqual(d["operation_type"], "NORMALIZE")
+        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.2"}); self.assertEqual(d["operation_type"], "NORMALIZE")
         self.assertEqual(d["operation"]["type"], "NORMALIZE"); self.assertEqual(d["operation"]["tool"], "ffmpeg-skill/loudness")
         self.assertEqual(d["operation"]["parameters"], {"target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0})
         self.assertEqual(d["artifact"]["sha256"], hashlib_sha(paths["a_norm"])); self.assertEqual(d["artifact"]["format"], "wav"); self.assertFalse(d["artifact"]["reused"])
@@ -5510,7 +5510,7 @@ class AudioProductionPathTests(unittest.TestCase):
         rows = prov["operations"]
         self.assertEqual([r["skill"] for r in rows], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
         for r in rows:
-            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.1"))
+            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.2"))
             self.assertTrue(r["skill_result"]["artifact"]["sha256"]); self.assertEqual(r["skill_result"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["skill_result"]["operation"]["skill"], "audio-production")
         self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 5 + ["loudness"])
         self.assertEqual(prov["skill_observations"][-1]["data"]["target_lufs"], -16.0)
