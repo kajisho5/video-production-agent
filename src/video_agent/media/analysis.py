@@ -161,6 +161,8 @@ def loudness_facts(data: Dict[str, Any]) -> Dict[str, Any]:
     `silent` is True only when the tool measured no programme level (a `silent` flag, or an integrated loudness that is
     unmeasurable or below the BS.1770 absolute gate)."""
     d = data or {}
+    if isinstance(d.get("measured"), dict) and "silent" not in d:
+        d = {**d["measured"], **{k: v for k, v in d.items() if k != "measured"}}   # ffmpeg-skill 2.x nests the loudnorm figures (ADR-048)
     lufs = _num(d.get("lufs", d.get("input_i", d.get("integrated_lufs"))))
     tp = _num(d.get("true_peak", d.get("input_tp", d.get("true_peak_dbtp"))))
     lra = _num(d.get("lra", d.get("input_lra", d.get("loudness_range_lu", d.get("loudness_range")))))

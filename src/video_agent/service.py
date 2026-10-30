@@ -165,6 +165,24 @@ class Service:
     def skills(self) -> List[Dict[str, Any]]:
         return self.registry.availability(self.caps.resolve(), self.adapter([]).supports, default=default_providers(self.workspace))
 
+    def handoffs(self, ir: ProjectIR) -> List[Dict[str, Any]]:
+        """Plan steps no installed skill can execute here (ADR-051). Each names the job, why no tool was selected and which
+        packages would do it, so the chat model the agent runs in can tell the user, install the skill, or do the step
+        with what it has -- outside the OS: the agent never runs, records or verifies a handoff as its own work."""
+        caps, supports = self.caps.resolve(), self.adapter([]).supports
+        out = []
+        for st in ir.doc["plan"]["steps"]:
+            if st.get("tool") or st.get("skill") not in self.registry.names():
+                continue
+            spec = self.registry.get(st["skill"])
+            _, reason = self.registry.select_tool(spec.name, caps, supports)
+            pkgs = sorted({t.split("/", 1)[0] for t in spec.tools})
+            repos = [p if p.endswith("-skill") else p + "-skill" for p in pkgs]
+            out.append({"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
+                        "reason": reason, "provided_by": pkgs,
+                        "install": [f"/plugin install {r}@ai-video-production-os" for r in repos] + ["or ./install.sh from AI-video-production-OS (packages and CLIs)"]})
+        return out
+
     def packages(self) -> List[Dict[str, Any]]:
         """Skill packages known to this codebase and whether they are usable here (ecosystem view for `video-agent skills`)."""
         router = self.adapter([])
@@ -284,7 +302,7 @@ class Service:
         # situation understanding (ADR-026): events → ProductionContexts (derived, reference-centred) → generic deterministic inferences
         contexts = build_contexts(analysis.timeline.events, analysis.assets, analysis.observations, inferences)
         inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
-        inferences += self._ai_inferences(analysis, rules, prior_ai)
+        inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
@@ -302,9 +320,11 @@ class Service:
                           audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
 
-    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None) -> List[Inference]:
+    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "") -> List[Inference]:
         """AI reasoning boundary. Recorded AI inferences (a revision) are reused: revising never spends AI calls. A provider
-        failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic."""
+        failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic.
+        The user's own request text and the resolved intent go along as context (ADR-049) so the provider can weigh what
+        was asked for; they inform recommendations only -- explicit requirements still come from extract_requirements()."""
         if prior_ai is not None:
             return list(prior_ai)
         if not self.provider.available():
@@ -312,7 +332,8 @@ class Service:
         intents = [sp.name for sp in self.registry.all() if sp.implemented and ("artifact" in sp.outputs or "qa" in sp.outputs)]
         reasoner = AIReasoner(self.provider, max_calls=int(rules.get("analysis.budget.max_ai_calls", DEFAULT_MAX_AI_CALLS)), calls=self._ai_calls)
         try:
-            resp = reasoner.ask(build_request(analysis, intents, {"strategy": analysis.strategy}))
+            ctx = {"strategy": analysis.strategy, "intent": intent, "request_text": (request_text or "")[:2000]}
+            resp = reasoner.ask(build_request(analysis, intents, ctx))
         except AIProviderError as e:
             analysis.warnings.append(f"ai: provider {self.provider.name} failed ({e.kind}); plan is deterministic only")
             return []
@@ -384,9 +405,13 @@ class Service:
         return {"rejected": done, "reason": reason, "by": who, "plan_version": ir.version, "cited_operations": len(ir.rejected_cited()),
                 "hint": "run `video-agent revise <project>` to produce the next plan version without the rejected operations"}
 
-    def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None) -> Dict[str, Any]:
+    def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None,
+               ai_recommendations: Optional[List[Dict[str, Any]]] = None, ai_model: str = "host-chat") -> Dict[str, Any]:
         """Plan v(n) → v(n+1): re-plan from the recorded analysis with the rejections and feedback applied. v(n) is snapshotted
-        first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations)."""
+        first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations).
+        ai_recommendations (ADR-050): the answer of the chat model the agent runs in to the brief `plan --ai-brief` returned.
+        It replaces the recorded AI inferences and goes through the same validation as any provider's; the recorded analysis
+        keeps every asset / observation / event id the brief named, which is why this is a revision and not a new plan."""
         who = who or _default_who()
         old = json.loads(json.dumps(ir.doc))
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
@@ -423,7 +448,19 @@ class Service:
         fresh.doc["project"] = dict(old["project"])   # same project identity: sessions / events keep their deterministic ids across versions
         prior_ai = [Inference.from_dict(i) for i in old["analysis"].get("inferences") or [] if i.get("provenance") == "AI_GENERATED"]
         self._ai_calls = list(old["provenance"].get("ai_calls") or [])
-        dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed, prior_ai=prior_ai)
+        saved_provider, ai_warn_from = self.provider, len(analysis.warnings)
+        if ai_recommendations is not None:
+            from .providers.host import HostProvider
+            self.provider, prior_ai = HostProvider(recommendations=ai_recommendations, model=ai_model), None
+        try:
+            dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed, prior_ai=prior_ai)
+        finally:
+            self.provider = saved_provider
+        ai_report = None
+        if ai_recommendations is not None:
+            ai_report = {"accepted": [{"id": i["id"], "kind": i["kind"], "asset_id": i["asset_id"], "statement": i["statement"]}
+                                      for i in fresh.doc["analysis"]["inferences"] if i.get("provenance") == "AI_GENERATED"],
+                         "dropped": [w for w in analysis.warnings[ai_warn_from:] if str(w).startswith("ai:")], "model": ai_model}
         nd = fresh.doc
         # carry identity, history and the audit trail
         nd["project"] = old["project"]
@@ -448,11 +485,12 @@ class Service:
             diff["summary"].insert(0, f"REJECTED {d['subject']}: {d['decision']} — {(old['execution'].get('reviews') or {}).get(d['id'], {}).get('reason', '')}")
         # a new version exists only when the plan actually changed or a new rejection was applied. Feedback that produces no
         # plan change is kept in revision.feedback (once) but never creates an empty version.
-        if diff["empty"] and not new_rejections:
+        if diff["empty"] and not new_rejections and ai_recommendations is None:   # an AI answer is always recorded as a version (ADR-050)
             if fb_ids and not duplicate_feedback:
                 save_ir(ir, ir_path)   # persist the recorded feedback without a version bump
             reason = ("feedback recorded but it changed nothing in the plan" + ("; the proposal it would re-enable was rejected earlier" if dropped else "")) if fb_ids else "no new feedback or rejections since the last revision"
-            return {"version": ir.version, "created": False, "diff": diff, "reason": reason, "dropped_proposals": dropped, "feedback_ids": fb_ids}
+            return {"version": ir.version, "created": False, "diff": diff, "reason": reason, "dropped_proposals": dropped, "feedback_ids": fb_ids,
+                    **({"ai": ai_report} if ai_report is not None else {})}
         snap = snapshot_path(ir_path, ir.version)
         if not Path(snap).exists():
             Path(snap).write_text(json.dumps(old, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
@@ -463,7 +501,7 @@ class Service:
         ir.doc = nd
         save_ir(ir, ir_path)
         return {"version": new_version, "created": True, "snapshot": snap, "diff": diff, "dropped_proposals": dropped, "pending": [d["id"] for d in ir.pending_confirmations()],
-                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering"}
+                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering", **({"ai": ai_report} if ai_report is not None else {})}
 
     def validate(self, ir: ProjectIR, check_paths: bool = True):
         return validate_ir(ir, self.caps.resolve(), check_paths=check_paths, registry=self.registry, supports=self.adapter([]).supports)

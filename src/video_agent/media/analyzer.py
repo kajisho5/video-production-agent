@@ -345,7 +345,9 @@ class MediaAnalyzer(Analyzer):
         if kind == "loudness":
             d = {"silent": bool(data.get("silent"))}
             if not d["silent"]:
-                d.update({"lufs": _f(data.get("input_i")), "true_peak": _f(data.get("input_tp")), "lra": _f(data.get("input_lra"))})
+                # ffmpeg-skill 2.x nests the loudnorm figures under `measured`; earlier releases put them at the top level
+                m = data.get("measured") if isinstance(data.get("measured"), dict) else data
+                d.update({"lufs": _f(m.get("input_i")), "true_peak": _f(m.get("input_tp")), "lra": _f(m.get("input_lra"))})
             return d
         if kind == "sync":
             # the tool's measurement keys, verbatim (offset sign and drift meaning are the tool's); paths and commands are not facts

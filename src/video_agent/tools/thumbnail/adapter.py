@@ -44,7 +44,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
                              remove_fresh, same_file, scan_forbidden, scrub, strip_sha_prefix)
 from .locate import locate_thumbnail
 
@@ -164,6 +164,15 @@ def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None
     return drift_report(live, pinned or pinned_contract(), DRIFT_KEYS, "tools", "tool_id", DRIFT_TOOL_KEYS)
 
 
+# ADR-048: `version` moves within the range check_contract() accepts and `ffmpeg_skill` is the Skill's own
+# engine-compatibility business (capability detection, gated by its doctor); everything else stays fatal.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "ffmpeg_skill"))
+
+
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "tools", "tool_id", DRIFT_TOOL_KEYS)
+
+
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
     ver = str(contract.get("version") or "")
     descs = {str(t.get("tool_id")): str(t.get("description", "")) for t in contract.get("tools") or [] if isinstance(t, dict)}
@@ -256,6 +265,10 @@ class ThumbnailAdapter(ToolAdapter):
         if self._drift is None:
             self._drift = contract_drift(self.contract)
         return self._drift
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-048: the subset of drift() that gates availability (see FATAL_DRIFT_KEYS)."""
+        return contract_breaking_drift(self.contract)
 
     # ---- ToolAdapter
     def describe(self) -> Dict[str, Any]:

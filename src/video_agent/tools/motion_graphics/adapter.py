@@ -42,7 +42,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, engine_compat_errors, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
                              remove_fresh, same_file, scan_forbidden, scrub)
 from .locate import locate_motion_graphics
 
@@ -99,9 +99,7 @@ def check_contract(contract: Any) -> List[str]:
         errs.append(f"canonical_invocation {ex.get('canonical_invocation')!r} != {CANONICAL_INVOCATION}")
     if ex.get("stdin") != REQUEST_SCHEMA:
         errs.append(f"execution.stdin {ex.get('stdin')!r} != {REQUEST_SCHEMA}")
-    fs = contract.get("ffmpeg_skill") or {}
-    if str(fs.get("contract_version")) != "1.0" or not isinstance(fs.get("version_window"), dict):
-        errs.append("ffmpeg_skill.contract_version / version_window missing")
+    errs.extend(engine_compat_errors(contract.get("ffmpeg_skill") or {}))
     types = {str(o.get("type")): o for o in contract.get("element_types") or [] if isinstance(o, dict)}
     if not types:
         errs.append("no element_types declared")
@@ -167,6 +165,21 @@ def check_contract(contract: Any) -> List[str]:
 
 def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
     return drift_report(live, pinned or pinned_contract(), DRIFT_KEYS, "element_types", "type", DRIFT_ELEMENT_KEYS)
+
+
+# ADR-048 (ADR-047's classification, extended here): `version` moves within the range check_contract() accepts,
+# `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, gated by its doctor), and
+# the unsupported_* lists only say what the Skill refuses. `tools` (here the single run tool, whose element_types
+# list grows when the Skill adds an element) and `request` (its documented example shape, which grows with each
+# new optional field) are additive in practice, and the parts the adapter depends on -- the tool's role /
+# produces_output / deterministic / input_type, request.schema / id_pattern / forbidden_fields -- are hard-checked
+# by check_contract() on every fetch. None of these can make a call this adapter builds go wrong. Every other key
+# stays fatal, as do the keys of every element type already pinned (a new element type appearing is not).
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "ffmpeg_skill", "unsupported_element_types", "unsupported_animations", "tools", "request"))
+
+
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "element_types", "type", DRIFT_ELEMENT_KEYS)
 
 
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
@@ -262,6 +275,10 @@ class MotionGraphicsAdapter(ToolAdapter):
         if self._drift is None:
             self._drift = contract_drift(self.contract)
         return self._drift
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-048: the subset of drift() that gates availability (see FATAL_DRIFT_KEYS)."""
+        return contract_breaking_drift(self.contract)
 
     # ---- ToolAdapter
     def describe(self) -> Dict[str, Any]:

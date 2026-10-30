@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 SUPPORTED_MIN = (0, 8, 4)
 # 0.10.0 (2026-09-06): per-tool `doctor --json` usable fields, `contract --json` reencodes_video/reencodes_audio,
@@ -15,7 +18,10 @@ SUPPORTED_MIN = (0, 8, 4)
 # 0.9.x-0.10.x are accepted. Widened to 0.12.3 (2026-09-08): the full real-Skill integration suite was re-run
 # against a live 0.12.3 checkout (this session), including every satellite Skill's own real-media tests, with no
 # failures traced to ffmpeg-skill itself. Widening this needs a verified integration run, not a silent edit.
-SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
+# Widened to 2.x (2026-10-29, ADR-048): ffmpeg-skill 1.10 renamed --crf to --quality on the re-encoding tools and
+# 2.x refuses --crf there; the adapter now picks the spelling from the installed script's --help. The full
+# real-Skill integration suite was re-run against a live 2.20.0 checkout with every satellite Skill at origin/main.
+SUPPORTED_MAX_EXCLUSIVE = (3, 0, 0)
 
 
 @dataclass
@@ -37,6 +43,22 @@ class FfmpegSkill:
         except ValueError:
             return False
         return SUPPORTED_MIN <= v < SUPPORTED_MAX_EXCLUSIVE
+
+    def offers_flag(self, name: str, flag: str) -> bool:
+        """Whether `<name>.py --help` lists `flag` (capability detection, ADR-048): flags renamed across ffmpeg-skill
+        releases are chosen by what the installed checkout actually takes, never by its version number. Read once
+        per (checkout, script); an unreadable --help answers False, so callers keep the older spelling."""
+        key = (str(self.root), name)
+        if key not in _HELP_CACHE:
+            try:
+                out = subprocess.run([sys.executable, str(self.script(name)), "--help"], capture_output=True, text=True, timeout=60).stdout
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+            _HELP_CACHE[key] = out
+        return re.search(re.escape(flag) + r"(?![\w-])", _HELP_CACHE[key]) is not None
+
+
+_HELP_CACHE: Dict[Tuple[str, str], str] = {}
 
 
 def _candidate(p: Path) -> Optional[FfmpegSkill]:

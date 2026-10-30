@@ -28,7 +28,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, fingerprint_matches, invoke,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, engine_compat_errors, error_table, failed_result, fingerprint_matches, invoke,
                              one_json_document, remove_fresh, same_file, scan_forbidden, scrub)
 from .locate import locate_color_grading
 
@@ -63,7 +63,8 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # / deterministic / input_type invariants that `tools` could otherwise catch drifting are independently
 # hard-validated by check_contract() against the live contract on every fetch, so dropping `tools` from the fatal
 # set loses no real coverage.
-FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools"))
+# ADR-048: `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, reported by its doctor).
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
 PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
@@ -97,9 +98,7 @@ def check_contract(contract: Any) -> List[str]:
         errs.append(f"canonical_invocation {ex.get('canonical_invocation')!r} != {CANONICAL_INVOCATION}")
     if ex.get("stdin") != REQUEST_SCHEMA:
         errs.append(f"execution.stdin {ex.get('stdin')!r} != {REQUEST_SCHEMA}")
-    fs = contract.get("ffmpeg_skill") or {}
-    if str(fs.get("contract_version")) != "1.0" or not isinstance(fs.get("version_window"), dict):
-        errs.append("ffmpeg_skill.contract_version / version_window missing")
+    errs.extend(engine_compat_errors(contract.get("ffmpeg_skill") or {}))
     ops = {str(o.get("type")): o for o in contract.get("operations") or [] if isinstance(o, dict)}
     if not ops:
         errs.append("no operations declared")

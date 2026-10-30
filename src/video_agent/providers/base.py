@@ -106,7 +106,12 @@ class NullProvider(AIProvider):
 
 
 def get_provider(name: Optional[str] = None) -> AIProvider:
-    """Provider by name (default $VIDEO_AGENT_AI_PROVIDER, else null). Real providers (anthropic / openai / gemini /
-    local) are future adapters behind this contract; none is bundled, so any other name falls back to NullProvider."""
+    """Provider by name (default $VIDEO_AGENT_AI_PROVIDER, else null). `anthropic` is bundled (providers/claude.py,
+    ADR-049; needs the `ai` extra); openai / gemini / local remain future adapters, so any other name falls back to
+    NullProvider. A configured provider that is not available (SDK or credentials missing) is still returned: the
+    service checks available() and stays deterministic, and doctor reports why."""
     name = (name or os.environ.get("VIDEO_AGENT_AI_PROVIDER", "null")).lower()
+    if name == "anthropic":
+        from .claude import AnthropicProvider
+        return AnthropicProvider()
     return NullProvider()

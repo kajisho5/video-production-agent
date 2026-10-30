@@ -217,6 +217,28 @@ def breaking_drift(live: Dict[str, Any], pinned: Dict[str, Any], fatal_keys: Tup
     return out
 
 
+def engine_compat_errors(fs: Dict[str, Any], field: str = "ffmpeg_skill") -> List[str]:
+    """A satellite Skill's declaration of how it stays compatible with ffmpeg-skill (ADR-048). Two shapes are valid:
+    the older fixed `version_window` dict, or the `compatibility` declaration of the capability-detection model the
+    satellites moved to (each checks every tool and flag it uses against the installed ffmpeg-skill and reports the
+    result in its own doctor, which the resolver already requires to be ok). Either way the Skill, not this adapter,
+    owns the engine check; what is refused is a contract that declares neither."""
+    if str(fs.get("contract_version")) != "1.0":
+        return [f"{field}.contract_version {fs.get('contract_version')!r} != '1.0'"]
+    if isinstance(fs.get("version_window"), dict) or fs.get("compatibility"):
+        return []
+    return [f"{field}: neither version_window nor compatibility declared (the Skill must say how it stays compatible with its engine)"]
+
+
+def engine_compat(fs: Dict[str, Any]) -> Any:
+    """What a satellite declares about its engine compatibility, for describe()/provenance: the window when it pins one,
+    otherwise its capability-detection statement."""
+    window = fs.get("version_window")
+    if isinstance(window, dict) and any(v is not None for v in window.values()):
+        return window
+    return fs.get("compatibility") or window
+
+
 def error_table(contract: Dict[str, Any]) -> Tuple[Dict[str, bool], Dict[str, int]]:
     """(code → retryable, code → exit code) from a contract's `errors` block. Two shapes exist in the ecosystem: a `retryable`
     map (audio-production family) or a `non_retryable` list (subtitle-skill); both are read, nothing is assumed."""

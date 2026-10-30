@@ -43,7 +43,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, drift_report, error_table, failed_result, invoke, one_json_document, scan_forbidden,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, invoke, one_json_document, scan_forbidden,
                              scrub, sha256_file, strip_sha_prefix)
 from .locate import locate_qc
 
@@ -167,6 +167,14 @@ def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None
     return drift_report(live, pinned or pinned_contract(), DRIFT_KEYS, "findings", "code", DRIFT_FINDING_KEYS)
 
 
+# ADR-048: `version` moves within the range check_contract() accepts; everything else stays fatal.
+FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k != "version")
+
+
+def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "findings", "code", DRIFT_FINDING_KEYS)
+
+
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
     ver = str(contract.get("version") or "")
     keys = ["verdict", "report_id", "checks", "findings", "measurements", "fingerprint", "provenance"]
@@ -251,6 +259,10 @@ class QcAdapter(ToolAdapter):
         if self._drift is None:
             self._drift = contract_drift(self.contract)
         return self._drift
+
+    def breaking_drift(self) -> List[str]:
+        """ADR-048: the subset of drift() that gates availability (see FATAL_DRIFT_KEYS)."""
+        return contract_breaking_drift(self.contract)
 
     # ---- ToolAdapter
     def describe(self) -> Dict[str, Any]:
