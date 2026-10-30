@@ -25,9 +25,10 @@ from .decision_engine import DecisionEngine, resolve_setting
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
                         parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
-from .subtitles import BURN_SKILL, GENERATE_SKILL, parse_subtitle_requirements, valid_language
+from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, parse_subtitle_requirements, valid_language
 
 APPROVAL_KEYS = {"subtitle.generate": ("subtitle.generate.approval", "CONFIRM"), "subtitle.burn_in": ("subtitle.burn_in.approval", "CONFIRM"),
+                 "subtitle.mux": ("subtitle.mux.approval", "CONFIRM"),   # ADR-063: a soft subtitle track in the deliverable
                  "thumbnail.render": ("thumbnail.render.approval", "CONFIRM"), "qc.check": ("qc.check.approval", "AUTO"),
                  "color.strip_dovi": ("color.strip_dovi.approval", "CONFIRM"), "color.hdr_to_sdr": ("color.hdr_to_sdr.approval", "CONFIRM"),
                  "color.primary_correction": ("color.primary_correction.approval", "CONFIRM"),
@@ -160,7 +161,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                                **({"constraints": sub["constraints"]} if sub["constraints"] else {})},
                        settings=[fmt_setting] if fmt_setting else [], requirements=req, serves_intent=None)
             if sub["burn_in"]:
-                br = m["subtitle.burn_in"]
+                br = m["subtitle.burn_in"] if "subtitle.burn_in" in m else m["subtitle.mode"]   # ADR-063: subtitle.mode=burn asks for the same
                 if not finished.get(subject):
                     eng.decide(subject="subtitle.burn_in", type="BLOCK", decision=f"BLOCK: burn-in on {subject} without an intermediate",
                                reason="subtitle-skill burns into inputs inside the agent workspace only; without a trim / concat / edit / colour / graphics step the input would be the untouched source (never rewritten)",
@@ -169,9 +170,32 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                     eng.decide(subject="subtitle.burn_in", type="TRANSFORM", decision=f"burn the subtitles into the picture of {subject}", reason=f"user asked for a burn-in ({br.source}); the sidecar is still produced",
                                confidence=1.0, evidence=ev + [br.id], risk="MEDIUM", approval=approval_for("subtitle.burn_in", explicit=br, keys=APPROVAL_KEYS), provenance="USER",
                                params={"asset_id": subject, "format": "srt"}, requirements=req + [br], serves_intent=None)
+            if sub["mux"]:   # ADR-063: subtitle-skill render mode "mux" — the cues as a soft track; picture and audio stream-copied
+                mr = m["subtitle.mode"]
+                targets_req = m.get("delivery.targets")
+                presets = sorted({str(t.get("preset")) for t in ((targets_req.value if targets_req else None) or []) if isinstance(t, dict) and t.get("preset")})
+                if presets:
+                    # measured on the real Skills (tests/test_integration.py::SubtitleMuxRealTests): the platform export re-encodes the picture
+                    # and the audio only and leaves every subtitle stream behind, so the track would never reach the deliverable
+                    eng.decide(subject="subtitle.mux", type="BLOCK", decision=f"BLOCK: soft subtitle track on {subject} with an export preset ({', '.join(presets)})",
+                               reason="the delivery export of this profile writes the picture and the audio only and drops subtitle streams: a muxed track would not reach "
+                                      "the deliverable (use a profile without a preset, e.g. generic, or a burn-in); handed over to the engine, not worked around here",
+                               confidence=1.0, evidence=ev + [mr.id, targets_req.id], risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "presets": presets},
+                               requirements=req + [mr, targets_req])
+                elif not finished.get(subject):
+                    eng.decide(subject="subtitle.mux", type="BLOCK", decision=f"BLOCK: soft subtitle track on {subject} without an intermediate",
+                               reason="subtitle-skill renders (burns or muxes) inputs inside the agent workspace only; without a trim / concat / edit / colour / graphics step the input would be the untouched source (never rewritten)",
+                               confidence=1.0, evidence=ev + [mr.id], risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=req + [mr])
+                else:
+                    eng.decide(subject="subtitle.mux", type="TRANSFORM", decision=f"mux the subtitles into {subject} as a soft (player-toggleable) track",
+                               reason=f"user asked for a soft subtitle track ({mr.source}); the picture and the audio are stream-copied, the sidecar is still produced",
+                               confidence=1.0, evidence=ev + [mr.id], risk="LOW", approval=approval_for("subtitle.mux", explicit=mr, keys=APPROVAL_KEYS), provenance="USER",
+                               params={"asset_id": subject, "format": "srt", "mode": "mux"}, requirements=req + [mr], serves_intent=None)
         cap_block(GENERATE_SKILL, f"capability.{GENERATE_SKILL}")
         if sub["burn_in"]:
             cap_block(BURN_SKILL, f"capability.{BURN_SKILL}")
+        if sub["mux"]:
+            cap_block(MUX_SKILL, f"capability.{MUX_SKILL}")
     # ---- thumbnail
     if th["enabled"]:
         req = th["requirements"]

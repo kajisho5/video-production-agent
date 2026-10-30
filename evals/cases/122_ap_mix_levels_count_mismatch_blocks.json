@@ -1,0 +1,26 @@
+{
+ "name": "ap_mix_levels_count_mismatch_blocks",
+ "profile": "generic",
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2
+   },
+   {
+    "channels": 2
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.mix": true,
+  "audio.mix.levels": "0,-6,-6"
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "audio.mix"
+  ],
+  "plan_status": "BLOCKED"
+ }
+}

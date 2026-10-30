@@ -305,6 +305,10 @@ def default_registry() -> SkillRegistry:
         ("audio_fade_in", "FADE_IN", "Linear fade in", {"asset": "audio", "duration": "float"}, "LOW"),
         ("audio_fade_out", "FADE_OUT", "Linear fade out", {"asset": "audio", "duration": "float"}, "LOW"),
         ("audio_concat", "CONCAT", "Join two or more audio subjects in order (optional crossfade)", {"assets": "audio[]"}, "MEDIUM"),
+        # ADR-063: what the pinned contract (0.4.2) already offers and nothing planned before
+        ("audio_mix", "MIX", "Sum 2..8 audio inputs (per-input gain / mute); the first input sets the length", {"assets": "audio[]", "levels": "list"}, "MEDIUM"),
+        ("audio_noise_reduction", "NOISE_REDUCTION", "FFT noise reduction (strength in dB)", {"asset": "audio", "strength_db": "float"}, "MEDIUM"),
+        ("audio_dynamics", "DYNAMICS", "Gate → compressor → limiter (typed stage parameters)", {"asset": "audio", "stages": "object"}, "MEDIUM"),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production", f"audio-production:{typ}"],
                              risk, True, "CONFIRM", ["audio-production/run"]))
@@ -369,6 +373,9 @@ def default_registry() -> SkillRegistry:
                          ["subtitle"], "LOW", True, "CONFIRM", ["subtitle/generate"]))
     r.register(SkillSpec("subtitle_burn_in", "1.0", "Burn the subtitle document into the picture (subtitle-skill render → ffmpeg-skill/caption)", {"asset": "video", "captions": "artifact"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "subtitle", "encoder:libx264", "filter:subtitles"], "MEDIUM", True, "CONFIRM", ["subtitle/render"]))
+    # ADR-063: the same render with mode "mux" (subtitle-skill owns it; ffmpeg-skill/caption --mode mux underneath): no re-encode, no subtitles filter
+    r.register(SkillSpec("subtitle_mux", "1.0", "Mux the subtitle document into the video as a soft, player-toggleable track (subtitle-skill render mode mux → ffmpeg-skill/caption)",
+                         {"asset": "video", "captions": "artifact"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "subtitle"], "LOW", True, "CONFIRM", ["subtitle/render"]))
     # ADR-052 (amends ADR-002): the IR's cut list as an editor timeline. ffmpeg-skill/render --export-timeline reads only the
     # sources (probing their durations / rates) and writes a text document; nothing is encoded, so no encoder capability.
     r.register(SkillSpec("timeline_export", "1.0", "The cut list (kept source ranges in programme order) as an editor timeline: OpenTimelineIO, FCPXML or CMX 3600 EDL",

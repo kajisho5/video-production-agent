@@ -5,12 +5,16 @@ the *delivered* timeline.
     → Decision `subtitle.generate` (explicit `subtitle` requirement) → ProductionPlan step → IR `captions.generate`
     (the cues, mapped onto the output timeline) → compiler → subtitle-skill `generate` (SRT / WebVTT sidecar)
     → optional Decision `subtitle.burn_in` → IR `captions.burn` → subtitle-skill `render` (the engine's caption tool)
+    → or Decision `subtitle.mux` (ADR-063) → IR `captions.mux` → subtitle-skill `render` with `mode: "mux"` (a soft, player-toggleable
+      subtitle track; the picture and the audio are stream-copied)
 
 Vocabulary and arithmetic only, no execution and no recognition:
 
 - **Requirements** (`subtitle.*` keys, explicit USER / PROFILE only; DEFAULT never switches subtitles on): `subtitle` (true, or the
   format name), `subtitle.format` (srt | vtt), `subtitle.burn_in` (bool; the burnt-in picture is the deliverable, the sidecar is
-  still produced), `subtitle.max_chars_per_line` / `subtitle.max_lines` (constraints the Skill checks; it never rewrites cues).
+  still produced), `subtitle.mode` (ADR-063, subtitle-skill render's own `mode` parameter: `mux` adds the cues as a soft subtitle
+  track of the deliverable, `burn` is the same as `subtitle.burn_in=true`), `subtitle.max_chars_per_line` / `subtitle.max_lines`
+  (constraints the Skill checks; it never rewrites cues).
 - **Timeline mapping** (deterministic, from IR content only): a transcript is measured on the *source*; the deliverable is the
   source after the trim (kept ranges), the concat (timeline offsets) and the speed factor. Every cue is mapped through exactly
   those operations — a cue inside a removed range is dropped, one overlapping a cut edge is clipped — so the sidecar is in sync
@@ -28,7 +32,12 @@ from ..models import Requirement
 from .editing import EditRequirementError, _bool, _number
 
 FORMATS = ("srt", "vtt")
-REQUIREMENT_KEYS = ("subtitle", "subtitle.format", "subtitle.burn_in", "subtitle.max_chars_per_line", "subtitle.max_lines")
+REQUIREMENT_KEYS = ("subtitle", "subtitle.format", "subtitle.burn_in", "subtitle.mode", "subtitle.max_chars_per_line", "subtitle.max_lines")
+# subtitle-skill render's `mode` (contract capabilities.render_modes, pinned 0.2.0): burn into the picture, or mux a soft track. Muxing is
+# subtitle-skill's job (ecosystem.json: 字幕生成・検証 / 字幕焼き込み; the contract's render delegates to ffmpeg-skill/caption --mode mux),
+# so the agent asks subtitle-skill for it and never calls the engine's caption tool itself (ADR-063)
+RENDER_MODES = ("burn", "mux")
+MUX_SKILL = "subtitle_mux"
 CONSTRAINT_KEYS = ("max_chars_per_line", "max_lines")
 GENERATE_TOOL = "subtitle/generate"
 RENDER_TOOL = "subtitle/render"
@@ -44,7 +53,7 @@ def parse_subtitle_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
     without the switch is refused (ambiguous request); values are range-checked; nothing is corrected."""
     main = m.get("subtitle")
     refinements = [m[k] for k in REQUIREMENT_KEYS[1:] if k in m and m[k].provenance != "DEFAULT"]
-    out: Dict[str, Any] = {"enabled": False, "format": None, "burn_in": False, "constraints": {}, "requirements": []}
+    out: Dict[str, Any] = {"enabled": False, "format": None, "burn_in": False, "mux": False, "constraints": {}, "requirements": []}
     if main is None or main.provenance == "DEFAULT":
         if refinements:
             raise EditRequirementError(f"{refinements[0].key} is set but subtitle is not: refusing an ambiguous request")
@@ -70,12 +79,21 @@ def parse_subtitle_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
             raise EditRequirementError("subtitle names one format and subtitle.format another: refusing an ambiguous request")
         fmt = f.strip().lower()
     burn = _bool(vals["subtitle.burn_in"], "subtitle.burn_in") if "subtitle.burn_in" in vals else False
+    mode: Optional[str] = None
+    if "subtitle.mode" in vals:
+        mv = vals["subtitle.mode"]
+        if not isinstance(mv, str) or mv.strip().lower() not in RENDER_MODES:
+            raise EditRequirementError(f"subtitle.mode must be one of {RENDER_MODES} (subtitle-skill render's mode), got {mv!r}")
+        mode = mv.strip().lower()
+        if "subtitle.burn_in" in vals and burn != (mode == "burn"):
+            raise EditRequirementError(f"subtitle.burn_in={str(burn).lower()} and subtitle.mode={mode} contradict each other: refusing an ambiguous request")
+        burn = burn or mode == "burn"
     cons: Dict[str, int] = {}
     if "subtitle.max_chars_per_line" in vals:
         cons["max_chars_per_line"] = int(_number(vals["subtitle.max_chars_per_line"], "subtitle.max_chars_per_line", 8, 200))
     if "subtitle.max_lines" in vals:
         cons["max_lines"] = int(_number(vals["subtitle.max_lines"], "subtitle.max_lines", 1, 4))
-    return {"enabled": True, "format": fmt, "burn_in": burn, "constraints": cons, "requirements": reqs}
+    return {"enabled": True, "format": fmt, "burn_in": burn, "mux": mode == "mux", "constraints": cons, "requirements": reqs}
 
 
 # ---- timeline mapping (source time → delivered time)
@@ -152,8 +170,10 @@ def ir_captions_generate(subject: str, output: str, fmt: str, language: str, cue
     return rec
 
 
-def ir_captions_burn(subject: str, input_id: str, sidecar: str, output: str, decision_ids: List[str], scope: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-    rec: Dict[str, Any] = {"type": "captions.burn", "asset": subject, "input": input_id, "sidecar": sidecar, "output": output}
+def ir_captions_burn(subject: str, input_id: str, sidecar: str, output: str, decision_ids: List[str], scope: Optional[Dict[str, float]] = None,
+                     op_type: str = "captions.burn") -> Dict[str, Any]:
+    """IR captions.burn, or (ADR-063) captions.mux: the same references; the compiler asks subtitle-skill render for the mode."""
+    rec: Dict[str, Any] = {"type": op_type, "asset": subject, "input": input_id, "sidecar": sidecar, "output": output}
     if scope is not None:
         rec["temporal_scope"] = {"start": round(float(scope["start"]), 3), "end": round(float(scope["end"]), 3)}
     rec["decision_ids"] = list(decision_ids)

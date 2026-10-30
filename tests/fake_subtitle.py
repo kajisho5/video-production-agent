@@ -248,8 +248,12 @@ def main() -> int:
             return err("DEPENDENCY_ERROR", f"ffmpeg-skill install not found (checked {ENGINE_DIR_ENV})")
         if MODE == "tool_error":
             return err("TOOL_ERROR", "ffmpeg-skill/caption failed (ffmpeg): fake encoder failure")
+        mode = req.get("mode", "burn")   # the contract's render modes (burn | mux); mux adds a soft subtitle stream, the picture is untouched
+        if mode not in CONTRACT["capabilities"]["render_modes"]:
+            return err("INVALID_INPUT", f"request.mode must be one of {sorted(CONTRACT['capabilities']['render_modes'])}, got {mode!r}")
         engine = ("ffmpeg-skill", "0.9.1-fake")
-        payload = json.dumps({"fake": True, "duration": in_dur(video), "video": True, "channels": 2, "captions": True, "cues": len(cues)}).encode()
+        payload = json.dumps({"fake": True, "duration": in_dur(video), "video": True, "channels": 2, "captions": mode == "burn", "cues": len(cues),
+                              "subtitle_streams": 1 if mode == "mux" else 0}).encode()
     else:
         if MODE == "tool_error":
             return err("OUTPUT_ERROR", "output file is missing or empty after execution")
@@ -269,6 +273,7 @@ def main() -> int:
             "timeline": {"cue_count": len(cues) + 1 if MODE == "cue_count_mismatch" else len(cues)}, "duration_ms": 1.0}
     if engine and MODE != "no_engine":
         resp["engine"], resp["engine_version"] = engine
+        resp["mode"] = ("burn" if req.get("mode") == "mux" else "mux") if MODE == "wrong_mode" else req.get("mode", "burn")
     emit(resp)
     if MODE == "two_docs":
         emit(resp)

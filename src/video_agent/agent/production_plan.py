@@ -39,13 +39,15 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "audio_cut": ("asset", "remove"), "audio_normalize": ("asset", "target_lufs", "true_peak", "tolerance_lu", "sample_rate"), "audio_gain": ("asset", "gain_db"),
                    "audio_mono": ("asset",), "audio_stereo": ("asset",), "audio_downmix": ("asset",), "audio_fade_in": ("asset", "duration"), "audio_fade_out": ("asset", "duration"),
                    "audio_concat": ("asset", "inputs", "crossfade"),
+                   # ADR-063: the mix (levels aligned with the inputs), noise reduction and dynamics, by the contract's parameter names
+                   "audio_mix": ("asset", "inputs", "levels"), "audio_noise_reduction": ("asset", "mode", "strength_db"), "audio_dynamics": ("asset", "gate", "compressor", "limiter"),
                    # take assembly crossfades (ADR-054): the programme audio replaces the assembled picture's hard-cut audio
                    "audio_mux": ("asset", "video", "audio"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)
                    "color_strip_dovi": ("asset",), "color_hdr_to_sdr": ("asset",), "color_lut": ("asset", "lut", "lut_strength"), "color_retag": ("asset", "target"),
                    "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
                                                 "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves"),
-                   "motion_graphics": ("asset", "elements"), "subtitle_generation": ("asset", "format", "language", "cues"), "subtitle_burn_in": ("asset",),
+                   "motion_graphics": ("asset", "elements"), "subtitle_generation": ("asset", "format", "language", "cues"), "subtitle_burn_in": ("asset",), "subtitle_mux": ("asset",),
                    "thumbnail_frame": ("asset", "at", "format"), "thumbnail_render": ("asset", "at", "format", "text"), "qc_check": ("asset", "target", "kind", "artifact"),
                    # timeline export (ADR-052): the subject, the editor format and how many clips its cut list has
                    "timeline_export": ("asset", "format", "clips")}
@@ -165,7 +167,7 @@ def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str,
     if subject in assets:
         dur = ((assets[subject].get("technical") or {}).get("duration"))
     else:
-        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat") and op.get("output") == subject), None)
+        dur = next((op.get("timeline_duration") for op in ops + aops if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat", "audio.mix") and op.get("output") == subject), None)
     if dur is None:
         return None
     speed = next((op for op in ops if op.get("type") == "video.speed" and op.get("asset") == subject and op.get("factor")), None)

@@ -62,7 +62,7 @@ REQUIRED_ERROR_CODES = ("CANCELLED", "DEPENDENCY_ERROR", "INTERNAL_ERROR", "INVA
                         "PATH_NOT_ALLOWED", "TOOL_ERROR", "UNSUPPORTED_FORMAT", "UNSUPPORTED_OPERATION", "VALIDATION_ERROR")
 REQUIRED_OUT_OF_SCOPE = ("speech_recognition", "transcription", "speaker_diarization", "ai_editing_decisions", "arbitrary_ffmpeg_execution")
 COMMON_ARGS = ("operation", "format", "document_id", "language", "cues", "constraints", "video_duration", "output")
-RENDER_ARGS = COMMON_ARGS + ("input", "sidecar")
+RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode")   # mode: the contract's render parameter (burn | mux, ADR-063); absent = the Skill's default (burn)
 CUE_KEYS = ("id", "start", "end", "text")
 INTEGER_CONSTRAINTS = ("max_chars_per_line", "max_lines")
 MAX_CUE_TEXT = 2000
@@ -187,6 +187,8 @@ class SubtitleAdapter(ToolAdapter):
         self.forbidden = tuple(sorted(set(FORBIDDEN_ARG_KEYS) | set(SKILL_FORBIDDEN_KEYS)))
         self.retryable, self.exit_codes = error_table(self.contract)
         self.tools = {TOOL_GENERATE, TOOL_RENDER}
+        # ADR-063: the render modes the installed contract declares (capabilities.render_modes; pinned 0.2.0: burn, mux)
+        self.render_modes = tuple(str(x) for x in as_dict(self.contract.get("capabilities")).get("render_modes") or ())
         self._drift: Optional[List[str]] = None
 
     # ---- transport
@@ -342,6 +344,11 @@ class SubtitleAdapter(ToolAdapter):
         if op_type == "generate" and Path(out).suffix.lower().lstrip(".") != fmt:
             raise ToolError(f"subtitle-skill: the output extension must match the format ({fmt}): {out}")
         src: Optional[str] = None
+        mode: Optional[str] = None
+        if "mode" in args:   # ADR-063: only what the contract declares, and only for render (ALLOWED above)
+            mode = str(args["mode"])
+            if mode not in self.render_modes:
+                raise ToolError(f"subtitle-skill: render mode {mode!r} is not one the contract declares ({list(self.render_modes)})")
         if op_type == "render":
             src_id = str(args.get("input") or "")
             if not src_id:
@@ -390,6 +397,8 @@ class SubtitleAdapter(ToolAdapter):
                                "subtitle": {"id": did, "version": 1, "language": language, "cues": cues}}
         if src:
             req["video_input"] = os.path.relpath(os.path.realpath(src), ws_real).replace(os.sep, "/")
+        if mode is not None:
+            req["mode"] = mode
         if constraints:
             req["constraints"] = constraints
         if video_duration is not None:
@@ -397,7 +406,7 @@ class SubtitleAdapter(ToolAdapter):
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("workspace",)), "request")
         if hit:
             raise ToolError(f"subtitle-skill: refusing to send a request carrying {hit}")
-        return {"request": req, "output": out, "input": src, "type": op_type, "format": fmt, "workspace": self.workspace, "cue_count": len(cues)}
+        return {"request": req, "output": out, "input": src, "type": op_type, "format": fmt, "workspace": self.workspace, "cue_count": len(cues), "mode": mode}
 
     @staticmethod
     def _under(path: str, root: str) -> bool:
@@ -480,6 +489,8 @@ class SubtitleAdapter(ToolAdapter):
         if b["type"] == "render":
             if doc.get("engine") != ENGINE_ID or not isinstance(doc.get("engine_version"), str) or not doc.get("engine_version"):
                 errs.append(f"render must report engine {ENGINE_ID} with a version, got {doc.get('engine')!r} / {doc.get('engine_version')!r}")
+            if b.get("mode") is not None and doc.get("mode") != b["mode"]:   # ADR-063: a burn reported for a requested mux (or the reverse) is not admitted
+                errs.append(f"render mode {doc.get('mode')!r} != requested {b['mode']!r}")
         return errs
 
     def _success_data(self, doc: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
@@ -492,6 +503,7 @@ class SubtitleAdapter(ToolAdapter):
                                 "commands": []}
         if b["type"] == "render":
             data["engine"] = {"id": str(doc.get("engine")), "version": str(doc.get("engine_version"))}
+            data["mode"] = str(doc.get("mode") or "burn")
             data["observation"] = None   # the Skill reports no probe of the rendered file; the agent's QA probes it itself
         return data
 
