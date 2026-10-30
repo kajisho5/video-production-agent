@@ -55,6 +55,7 @@ from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lif
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
 from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
+from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
 from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, stage_for
@@ -279,6 +280,11 @@ class Service:
         self._check_provider_requirements(user_requirements or {})
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
+        takes = _takes_requested(user_requirements or {})
+        if takes is not None:   # ADR-053: takes are grouped by what is said in them; a named music bed's beat grid is measured on that input only
+            kinds = list(kinds or []) + [k for k in ("transcript",) + ((BEAT_KIND,) if takes["music"] is not None else ()) if k not in (kinds or [])]
+            if takes["music"] is not None:
+                params = dict(params or {}, beat_input=takes["music"])
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": user_requirements or {}})
@@ -303,7 +309,8 @@ class Service:
         # situation understanding (ADR-026): events → ProductionContexts (derived, reference-centred) → generic deterministic inferences
         contexts = build_contexts(analysis.timeline.events, analysis.assets, analysis.observations, inferences)
         inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
-        inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary)
+        inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary,
+                                          extra_intents=[TAKE_AI_INTENT] if parse_takes_requirements(rm) is not None else [])
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
@@ -321,7 +328,7 @@ class Service:
                           audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
 
-    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "") -> List[Inference]:
+    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "", extra_intents: Optional[List[str]] = None) -> List[Inference]:
         """AI reasoning boundary. Recorded AI inferences (a revision) are reused: revising never spends AI calls. A provider
         failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic.
         The user's own request text and the resolved intent go along as context (ADR-049) so the provider can weigh what
@@ -331,6 +338,7 @@ class Service:
         if not self.provider.available():
             return []
         intents = [sp.name for sp in self.registry.all() if sp.implemented and ("artifact" in sp.outputs or "qa" in sp.outputs)]
+        intents += [x for x in (extra_intents or []) if x not in intents]   # ADR-053: `take_selection` (prefer one take of a line) while takes are being picked
         reasoner = AIReasoner(self.provider, max_calls=int(rules.get("analysis.budget.max_ai_calls", DEFAULT_MAX_AI_CALLS)), calls=self._ai_calls)
         try:
             ctx = {"strategy": analysis.strategy, "intent": intent, "request_text": (request_text or "")[:2000]}
@@ -1087,6 +1095,7 @@ _FINISHING_REQUIREMENT_KEYS = frozenset(
     | {k for keys in MOTION_KEYS.values() for k in keys}
     | set(_THUMBNAIL_REQUIREMENT_KEYS)
     | {"qc"}
+    | set(_TAKES_REQUIREMENT_KEYS)
     | _POLICY_DEFAULT_KEYS
 )
 
@@ -1111,8 +1120,15 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_motion_requirements(rm)
     parse_thumbnail_requirements(rm)
     qc_requested(rm)
+    parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
+
+
+def _takes_requested(user_requirements: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    from .models import Requirement
+    reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith("edit.takes")]
+    return parse_takes_requirements(requirement_map(reqs))
 
 
 def _subtitles_requested(user_requirements: Dict[str, Any]) -> bool:

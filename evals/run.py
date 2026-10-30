@@ -69,6 +69,50 @@ def _engine_checks(d: dict, subjects: dict, eng) -> list:
     return failures
 
 
+def _takes_checks(d: dict, exp: dict) -> list:
+    """ADR-053: the expected take per line (by input file name, in line order), every pick carrying the scores of every take of its
+    line with the measurement each factor was read from, and the joins on supported beats of the recorded beat measurement."""
+    failures = []
+    name = {aid: Path(a["path"]).name for aid, a in d["assets"].items()}
+    picks = sorted((x for x in d["decisions"] if x["subject"] == "takes.pick" and x["type"] == "TRANSFORM"), key=lambda x: x["params"]["line"])
+    if "picks" in exp and [name[x["params"]["asset_id"]] for x in picks] != exp["picks"]:
+        failures.append(f"picks {[name[x['params']['asset_id']] for x in picks]} != {exp['picks']}")
+    if "lines" in exp and [sorted(name[t["asset_id"]] for t in x["params"]["takes"]) for x in picks] != [sorted(ln) for ln in exp["lines"]]:
+        failures.append(f"lines {[[name[t['asset_id']] for t in x['params']['takes']] for x in picks]} != {exp['lines']}")
+    if exp.get("every_pick_scored"):
+        obs = {o["id"] for o in d["analysis"]["observations"]}
+        for x in picks:
+            for t in x["params"]["takes"]:
+                if "score" not in t or not t.get("factors") or any(not f.get("evidence") or not set(f["evidence"]) <= obs for f in t["factors"]):
+                    failures.append(f"take {name[t['asset_id']]} of line {x['params']['line']} lacks a score or a measured basis for a factor")
+            if not set(x["evidence"]) & obs or not x["params"].get("unmeasured"):
+                failures.append(f"pick of line {x['params']['line']} does not cite its measurements / name the unmeasured factors")
+    for want_name, factors in (exp.get("take_factors") or {}).items():
+        t = next((t for x in picks for t in x["params"]["takes"] if name[t["asset_id"]] == want_name), None)
+        got = {f["factor"]: f["value"] for f in (t or {}).get("factors") or []}
+        for k, v in factors.items():
+            if got.get(k) != v:
+                failures.append(f"take {want_name}: factor {k} {got.get(k)!r} != {v!r}")
+    if "joins_on_beats" in exp:
+        sn = next((x for x in d["decisions"] if x["subject"] == "takes.beat_snap" and x["type"] == "TRANSFORM"), None)
+        if sn is None:
+            failures.append("no beat snap decision")
+        else:
+            o = next((o for o in d["analysis"]["observations"] if o["kind"] == "beats" and o["asset_id"] == sn["params"]["music"]), None)
+            beats = (o or {}).get("data", {}).get("supported_beats") or []
+            snapped = [j for j in sn["params"]["joins"] if j["snapped"]]
+            if len(snapped) != exp["joins_on_beats"] or any(not any(abs(j["to"] - b) <= 0.001 for b in beats) for j in snapped):
+                failures.append(f"joins {sn['params']['joins']} are not {exp['joins_on_beats']} join(s) on measured beats")
+            if o is None or o["id"] not in sn["evidence"]:
+                failures.append("the beat snap does not cite the beat measurement")
+    if "timeline_clips" in exp:
+        tl = next(iter((d.get("delivery") or {}).get("timelines") or []), None)
+        got = [[name[c["asset"]], c["in"], c["out"]] for c in (tl or {}).get("clips") or []]
+        if got != exp["timeline_clips"]:
+            failures.append(f"timeline clips {got} != {exp['timeline_clips']}")
+    return failures
+
+
 def run_case(case: dict) -> dict:
     tmp = tempfile.mkdtemp()
     fake = case.get("fake", {})
@@ -161,7 +205,10 @@ def run_case(case: dict) -> dict:
         from video_agent.project import load_ir, save_ir
         clear_modes()
         ptmp = tempfile.mkdtemp()
-        inputs = [fake_media(ptmp, spec.get("name", f"in{n}.mp4"), duration=spec.get("duration", 16.0), video=spec.get("video", True), channels=spec.get("channels", 2), hdr=spec.get("hdr", False))
+        # per-file facts of a take (ADR-053): its transcript segments, silences, true peak, and a music bed's beat grid
+        take_facts = ("segments", "silences", "true_peak", "lufs", "beat_interval", "beat_phase", "beat_confidence", "beat_usable")
+        inputs = [fake_media(ptmp, spec.get("name", f"in{n}.mp4"), duration=spec.get("duration", 16.0), video=spec.get("video", True), channels=spec.get("channels", 2), hdr=spec.get("hdr", False),
+                             **{k: spec[k] for k in take_facts if k in spec})
                   for n, spec in enumerate(pipe.get("inputs") or [{}])]
         for k, v in (pipe.get("modes") or {}).items():
             os.environ[k] = v
@@ -208,6 +255,7 @@ def run_case(case: dict) -> dict:
                     failures.append(f"decision {subj}.{k} {got.get(k)!r} != {v!r}")
         if "plan_status" in exp and d["plan"]["status"] != exp["plan_status"]:
             failures.append(f"plan status {d['plan']['status']} != {exp['plan_status']}")
+        failures += _takes_checks(d, exp)
         rep = svc.validate(ir)
         if not rep.ok and not exp.get("blocked"):
             failures.append(f"IR invalid: {rep.errors}")

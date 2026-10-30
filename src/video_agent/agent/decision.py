@@ -23,11 +23,13 @@ from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AU
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requirements, switch_cams
 from .requirements import requirement_map
+from .takes import AI_INTENT as TAKE_AI_INTENT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
-                   "delivery_export": ("delivery.",), "delivery_check": ("delivery.",)}
+                   "delivery_export": ("delivery.",), "delivery_check": ("delivery.",),
+                   TAKE_AI_INTENT: (PICK_SUBJECT,)}   # ADR-053: an AI take preference is evidence on the pick of that take (or a review item)
 # user / profile intent (agent/intent.py vocabulary) → decision subjects that serve it (recorded in basis.intent)
 SERVING_SUBJECTS = {"clean_and_deliver": ("silence.leading", "silence.trailing", "silence.internal.", "audio.loudness", "delivery."),
                     "clean_only": ("silence.leading", "silence.trailing", "silence.internal.", "audio.loudness"),
@@ -57,7 +59,10 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.deinterlace": ("video.deinterlace.approval", "CONFIRM"), "video.crop": ("video.crop.approval", "CONFIRM"),
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
                  # ADR-052: an editor timeline changes no media (it references the sources and is written next to the deliverables), so AUTO
-                 TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO")}
+                 TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO"),
+                 # ADR-053: choosing which take of a line is used is editorial (the others are left out), so CONFIRM; the beat snap
+                 # moves out points the user asked to put on the music (its explicit edit.takes.music waives CONFIRM)
+                 PICK_SUBJECT: ("takes.pick.approval", "CONFIRM"), SNAP_SUBJECT: ("takes.beat_snap.approval", "CONFIRM")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -146,8 +151,19 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            approval=approval_for("audio.concat", explicit=m["audio.concat"]),   # the concat's own explicit requirement; the switch enables the path only (ADR-033 / ADR-034)
                            provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": [a.id for a in audio_assets], "crossfade": cf}, requirements=audio["requirements"], serves_intent=None)
                 cap_block("audio_concat", "capability.audio_concat")
+    # ---- take selection (ADR-053): explicit `edit.takes`; the picks (one per line, in line order) become the concat inputs, the other
+    # takes and the music bed get no decision and no step of their own
+    takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX)
     concat_ok = False
-    if "video.concat" in edits:
+    excluded: set = set()
+    take_picks: set = set()
+    if takes is not None:
+        excluded, take_picks = set(takes["excluded"]), set(takes["picks"])
+        if takes["ok"]:
+            by_id = {a.id: a for a in analysis.assets}
+            video_assets = [by_id[a] for a in takes["picks"]]
+            concat_ok = len(video_assets) >= 2
+    if "video.concat" in edits and takes is None:
         req = edits["video.concat"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
         if "video.switch" in edits or "video.grid" in edits:
@@ -170,7 +186,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # exclusive with video.concat (both ask "what is the programme timeline?" and cannot both answer it). ffmpeg-skill/
     # multicam.py aligns every input to the first (reference) by audio and cuts between them on the reference timeline
     # per the user's own switch list -- no automatic detection of anything, no automatic cut decision; the times are the user's.
-    if "video.switch" in edits:
+    if "video.switch" in edits and takes is None:
         req = edits["video.switch"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
         if "video.concat" in edits or "video.grid" in edits:
@@ -200,7 +216,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- explicit comparison grid (ADR-046): a third, mutually exclusive way to build PROGRAMME from 2+ video inputs --
     # ffmpeg-skill/grid.py composites them side by side (COLSxROWS) instead of joining or cutting between them. Like
     # video.switch, it has no automatic layout decision: cols/rows are the user's own explicit choice.
-    if "video.grid" in edits:
+    if "video.grid" in edits and takes is None:
         req = edits["video.grid"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
         if "video.concat" in edits or "video.switch" in edits:
@@ -229,6 +245,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
                 cap_block("video_grid", "capability.video_grid")
     for asset in analysis.assets:
+        if asset.id in excluded:
+            continue   # ADR-053: a take that was not picked, or the music bed: not part of the programme, nothing is decided for it
         infs = by_asset.get(asset.id, [])
         dur = asset.technical.get("duration") or 0.0
         # ---- silence trimming
@@ -238,6 +256,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         lead = next((i for i in infs if i.kind == "leading_silence_unwanted"), None)
         tail = next((i for i in infs if i.kind == "trailing_silence_unwanted"), None)
         conflicts = [i for i in infs if i.kind == "speech_silence_conflict"]
+        if asset.id in take_picks:
+            lead = tail = None   # ADR-053: a pick keeps its speech span (+ handles) as one range; its own decision trims it
 
         def disputed(start: float, end: float) -> List[Inference]:
             """Speech / silence conflicts overlapping a trim range: recognised speech inside a 'technical' silence. The trim then
@@ -278,7 +298,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             eng.decide(subject="speech.continuity", type="KEEP", decision=f"keep all {activity.data['intervals']} speech interval(s)", reason=activity.statement + "; recognised speech is never removed by an automatic edit",
                        confidence=activity.confidence, evidence=[activity.id] + activity.evidence, risk="LOW", approval="AUTO", provenance="INFERRED",
                        params={"asset_id": asset.id, "intervals": activity.data["intervals"], "speech_seconds": activity.data["speech_seconds"]})
-        removable = [i for i in infs if i.kind == "internal_silence_removable"]
+        removable = [i for i in infs if i.kind == "internal_silence_removable" and asset.id not in take_picks]   # a pick's pauses are scored, not cut (ADR-053)
         covered = {(i.data["silence"]["start"], i.data["silence"]["end"]) for i in removable}
         for inf in removable:
             appr = approval_for("silence.internal", floor="CONFIRM")
@@ -451,7 +471,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         eng.decide(subject="video.fit", type="BLOCK", decision="BLOCK: fit and fill both requested", reason="edit.fit (letterbox) and edit.fill (crop) contradict each other; a conflicting request is never resolved by guessing",
                    confidence=1.0, evidence=[r.id for r in req], risk="HIGH", approval="BLOCK", provenance="USER", params={"ops": ["video.fit", "video.fill"]}, requirements=req)
         edits = {k: v for k, v in edits.items() if k not in ("video.fit", "video.fill")}
-    subjects = [(PROGRAMME, [a.id for a in video_assets])] if concat_ok else [(a.id, [a.id]) for a in analysis.assets]
+    subjects = [(PROGRAMME, [a.id for a in video_assets])] if concat_ok else [(a.id, [a.id]) for a in analysis.assets if a.id not in excluded]
     for op in SINGLE_SOURCE_ORDER:
         if op not in edits:
             continue

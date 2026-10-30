@@ -52,11 +52,13 @@ def clear_modes() -> None:
         os.environ.pop(k, None)
 
 
-def fake_media(tmp: str, name: str = "talk.mp4", duration: float = 16.0, video: bool = True, channels: int = 2, hdr: bool = False, lufs: float = -11.0) -> str:
-    """A self-describing fake media file every fake process and the fake engine probe consistently."""
+def fake_media(tmp: str, name: str = "talk.mp4", duration: float = 16.0, video: bool = True, channels: int = 2, hdr: bool = False, lufs: float = -11.0, **extra: Any) -> str:
+    """A self-describing fake media file every fake process and the fake engine probe consistently. `extra` facts (ADR-053 takes):
+    segments [[start, end, text]] (fake transcription), silences / true_peak (fake engine measurements), beat_interval /
+    beat_phase / beat_confidence / beat_usable (fake scenes --beats)."""
     p = Path(tmp) / "src" / name
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(json.dumps({"fake": True, "duration": duration, "lufs": lufs, "video": video, "channels": channels, "hdr": hdr, "name": name}).encode())
+    p.write_bytes(json.dumps({"fake": True, "duration": duration, "lufs": lufs, "video": video, "channels": channels, "hdr": hdr, "name": name, **extra}, ensure_ascii=False).encode())
     return str(p)
 
 

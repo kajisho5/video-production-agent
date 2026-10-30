@@ -11,6 +11,7 @@ from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELE
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL
+from ..agent.takes import BEAT_KIND, PICK_SUBJECT, SNAP_SUBJECT
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -436,6 +437,55 @@ def check_timeline_exports(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def check_take_assembly(d: Dict[str, Any]) -> List[str]:
+    """ADR-053: every pick keeps a forward range inside its source and lists its own take among the scored takes; a concat assembled
+    from picks joins exactly those picks in line order; every snapped join lies on a supported beat of the music bed's recorded beat
+    measurement, and the trims really end there in programme time (the cut list, not only the decision, is on the beat)."""
+    errs: List[str] = []
+    assets = d.get("assets") or {}
+    decs = {x["id"]: x for x in d.get("decisions") or []}
+    picks = [x for x in decs.values() if x.get("subject") == PICK_SUBJECT and x.get("type") == "TRANSFORM"]
+    for x in picks:
+        p = x.get("params") or {}
+        a = assets.get(p.get("asset_id"))
+        if a is None:
+            errs.append(f"takes.pick {x['id']} names {p.get('asset_id')!r}, which is not a source asset")
+            continue
+        dur = (a.get("technical") or {}).get("duration")
+        k = p.get("keep") or []
+        if len(k) != 2 or not 0.0 <= float(k[0]) < float(k[1]) or (dur is not None and float(k[1]) > float(dur) + 0.001):
+            errs.append(f"takes.pick {x['id']}: keep {k} is not a forward range inside its source (0..{dur})")
+        if p.get("asset_id") not in [t.get("asset_id") for t in p.get("takes") or []]:
+            errs.append(f"takes.pick {x['id']}: the picked take is not among its scored takes")
+        if any("score" not in t or not t.get("factors") for t in p.get("takes") or []):
+            errs.append(f"takes.pick {x['id']}: a take lacks its score / factors")
+    ops = (d.get("video") or {}).get("operations") or []
+    for c in (x for x in decs.values() if x.get("subject") == "video.concat" and (x.get("params") or {}).get("picks")):
+        want = [decs[i]["params"]["asset_id"] for i in c["params"]["picks"] if i in decs]
+        op = next((o for o in ops if o.get("type") == "video.concat" and c["id"] in (o.get("decision_ids") or [])), None)
+        if op is not None and list(op.get("inputs") or []) != want:
+            errs.append(f"video.concat {c['id']}: inputs {op.get('inputs')} are not the picks in line order {want}")
+    for sn in (x for x in decs.values() if x.get("subject") == SNAP_SUBJECT and x.get("type") == "TRANSFORM"):
+        p = sn.get("params") or {}
+        obs = next((o for o in (d.get("analysis") or {}).get("observations") or [] if o.get("asset_id") == p.get("music") and o.get("kind") == BEAT_KIND), None)
+        if obs is None:
+            errs.append(f"takes.beat_snap {sn['id']}: no recorded beat measurement of the music bed {p.get('music')}")
+            continue
+        beats = [float(b) for b in (obs.get("data") or {}).get("supported_beats") or []]
+        t = 0.0
+        for j in p.get("joins") or []:
+            trim = next((o for o in ops if o.get("type") == "video.trim" and o.get("asset") == j.get("asset_id")), None)
+            if trim is not None:
+                t += sum(float(e) - float(s_) for s_, e in trim["keep"])
+            if not j.get("snapped"):
+                continue
+            if not any(abs(float(j["to"]) - b) <= 0.001 for b in beats):
+                errs.append(f"takes.beat_snap {sn['id']}: join after {j.get('asset_id')} at {j.get('to')}s is not a supported beat of the measurement")
+            elif trim is not None and abs(t - float(j["to"])) > 0.002:
+                errs.append(f"takes.beat_snap {sn['id']}: the cut list ends {j.get('asset_id')} at {t:.3f}s in the programme, not on its beat {j.get('to')}s")
+    return errs
+
+
 def check_plan_dependencies(d: Dict[str, Any]) -> List[str]:
     """Every step input that is not a source asset must be produced by a step the consuming step (transitively) depends on:
     the plan's dependency graph, not the listing order, is what makes a multi-Skill chain executable in order (ADR-031)."""
@@ -515,6 +565,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
     rep.errors += check_timeline_exports(d)
+    rep.errors += check_take_assembly(d)
     rep.errors += check_plan_dependencies(d)
     for op in timelines:
         for did in op.get("decision_ids") or []:

@@ -1,0 +1,73 @@
+{
+ "name": "pipe_takes_with_concat_blocks",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.8,
+      2.0,
+      "本日はお集まり"
+     ],
+     [
+      2.2,
+      4.4,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.7
+     ],
+     [
+      4.6,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.0,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.2,
+      null
+     ]
+    ],
+    "true_peak": 0.4
+   }
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "edit.concat": true
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "takes.group"
+  ],
+  "plan_status": "BLOCKED",
+  "decisions": {
+   "takes.group": {
+    "type": "BLOCK",
+    "provenance": "USER"
+   }
+  }
+ }
+}

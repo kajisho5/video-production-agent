@@ -111,7 +111,7 @@ class MediaAnalyzer(Analyzer):
         meter = BudgetMeter(req.budget)
         started = now_iso()
         params = {"threshold_db": float(req.params.get("threshold_db", self.threshold)), "min_silence": float(req.params.get("min_silence", self.min_silence))}
-        for p in req.inputs:
+        for n_input, p in enumerate(req.inputs):
             if not os.path.exists(p):
                 raise FileNotFoundError(p)
             asset = Asset(path=str(Path(p).resolve()), provenance="USER")
@@ -134,6 +134,10 @@ class MediaAnalyzer(Analyzer):
             dur = probe.get("duration") or 0.0
             has_audio = bool(probe.get("audio"))
             for kind in [k for k in req.kinds if k != "media_probe" and not ANALYSIS_KINDS[k].get("pairwise")]:
+                only = ANALYSIS_KINDS[kind].get("only_input_param")
+                if only and req.params.get(only) != n_input:
+                    rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": f"not the input named by {only}"})
+                    continue
                 if ANALYSIS_KINDS[kind]["needs_audio"] and not has_audio:
                     rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no audio stream"})
                     continue
@@ -146,6 +150,8 @@ class MediaAnalyzer(Analyzer):
                     args = {"input": asset.path, "list": True, "threshold": params["threshold_db"], "min_silence": params["min_silence"]}
                 elif kind == "loudness":
                     args, kp = {"input": asset.path, "measure_only": True}, {}
+                elif kind == "beats":
+                    args = {"input": asset.path, "beats": True}
                 else:
                     args = {"input": asset.path}
                 o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
@@ -348,6 +354,16 @@ class MediaAnalyzer(Analyzer):
                 # ffmpeg-skill 2.x nests the loudnorm figures under `measured`; earlier releases put them at the top level
                 m = data.get("measured") if isinstance(data.get("measured"), dict) else data
                 d.update({"lufs": _f(m.get("input_i")), "true_peak": _f(m.get("input_tp")), "lra": _f(m.get("input_lra"))})
+            return d
+        if kind == "beats":
+            # ffmpeg-skill scenes --beats: the grid as measured (beat_grid) and the beat times; scene cuts / peaks are not this kind's facts
+            g = data.get("beat_grid")
+            if not isinstance(g, dict) or _f(g.get("tempo_bpm")) is None or _f(g.get("confidence")) is None:
+                raise ToolError("beat result lacks beat_grid.tempo_bpm / confidence")
+            d = {k: g.get(k) for k in ("tempo_bpm", "interval", "phase", "confidence", "usable", "onsets", "supported", "unsupported", "method")}
+            d["supported_beats"] = [round(float(x), 4) for x in g.get("supported_beats") or []]
+            d["beats"] = [round(float(x), 4) for x in data.get("beats") or []]
+            d["duration"] = _f(data.get("duration"))
             return d
         if kind == "sync":
             # the tool's measurement keys, verbatim (offset sign and drift meaning are the tool's); paths and commands are not facts

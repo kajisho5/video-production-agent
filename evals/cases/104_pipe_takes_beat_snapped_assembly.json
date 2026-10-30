@@ -1,0 +1,193 @@
+{
+ "name": "pipe_takes_beat_snapped_assembly",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.8,
+      2.0,
+      "本日はお集まり"
+     ],
+     [
+      2.2,
+      4.4,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.7
+     ],
+     [
+      4.6,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.0,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.2,
+      null
+     ]
+    ],
+    "true_peak": 0.4
+   },
+   {
+    "name": "l1_take3.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.7,
+      4.1,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.6
+     ],
+     [
+      4.3,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      4.0,
+      "えーと、これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      4.2,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      3.7,
+      "これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      3.9,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take3.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      2.2,
+      "これから新しい製品"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      2.4,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "music_bed.mp4",
+    "duration": 20.0,
+    "beat_interval": 0.5,
+    "beat_phase": 0.25,
+    "beat_confidence": 0.96
+   }
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "edit.takes.music": 6,
+  "delivery.timeline": "otio"
+ },
+ "expect": {
+  "blocked": false,
+  "picks": [
+   "l1_take3.mp4",
+   "l2_take2.mp4"
+  ],
+  "every_pick_scored": true,
+  "joins_on_beats": 2,
+  "decisions": {
+   "takes.beat_snap": {
+    "type": "TRANSFORM",
+    "approval": "AUTO",
+    "provenance": "USER"
+   }
+  },
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "qa_status": "PASS",
+   "artifacts": {
+    "YOUTUBE": "candidate",
+    "TIMELINE": "candidate"
+   }
+  }
+ },
+ "engine": {
+  "basis": {
+   "takes.beat_snap": {
+    "approval_key": "takes.beat_snap.approval",
+    "evidence_classes": [
+     "observation",
+     "requirement"
+    ]
+   }
+  },
+  "explain": "takes.beat_snap",
+  "explain_kinds": [
+   "observation",
+   "requirement"
+  ]
+ }
+}
