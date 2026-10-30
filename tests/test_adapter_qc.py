@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -395,7 +396,8 @@ class QcAdapterTests(unittest.TestCase):
         self.assertEqual((doc["status"], doc["exit_code"]), ("fail", 1)); self.assertEqual(QcAdapter.capability_status(doc)["ffprobe"], "MISSING")
         self.assertEqual(QcAdapter.capability_status({}), {})
         # locate: the env var points at a checkout, otherwise nothing is guessed
-        self.assertIsNone(locate_qc(env={"PATH": self.tmp}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_qc(env={"PATH": self.tmp}))
         fake_root = Path(self.tmp) / "qc-skill" / "src" / "qc_skill"; fake_root.mkdir(parents=True); (fake_root / "cli.py").write_text("", encoding="utf-8")
         sk = locate_qc(env={ENV_DIR: str(Path(self.tmp) / "qc-skill"), "PATH": self.tmp})
         self.assertIsNotNone(sk); self.assertEqual(sk.command[1:], ["-m", "qc_skill.cli"]); self.assertEqual(sk.env, {"PYTHONPATH": str(Path(self.tmp) / "qc-skill" / "src")})

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -177,7 +178,8 @@ class ContractTests(Base):
         self.assertEqual(b.operation_status(b.doctor())["render"], "unsupported")
 
     def test_locate(self):
-        self.assertIsNone(locate_subtitle(env={"PATH": self.tmp}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_subtitle(env={"PATH": self.tmp}))
         root = Path(self.tmp) / "checkout"
         (root / "src" / "subtitle_skill").mkdir(parents=True)
         (root / "src" / "subtitle_skill" / "__init__.py").write_text("")

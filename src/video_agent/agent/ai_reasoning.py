@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..media.analysis import safe_observation_summary
+from ..media.analysis import safe_observation_summary, scrub_for_ai
 from ..temporal.events import safe_event_summary
 from ..media.analyzer import AnalysisResult
 from ..models import Inference, now_iso
@@ -30,9 +30,10 @@ RESULT_SCHEMA = {"recommendations": [{"intent": "<production skill name>", "asse
 
 def build_request(analysis: AnalysisResult, skills: List[str], context: Optional[Dict[str, Any]] = None) -> AIRequest:
     """Evidence summary for the provider: assets (id, type, technical facts), observations (id, kind, data) and timeline
-    events (id, type, range). Paths are reduced to basenames; nothing executable or secret is included."""
+    events (id, type, range). Paths are reduced to basenames (the asset name, and every path-like key in technical facts,
+    observation data and event metadata: ADR-069); nothing executable or secret is included."""
     inputs = {
-        "assets": [{"id": a.id, "name": a.path.replace("\\", "/").split("/")[-1], "type": a.type, "technical": a.technical} for a in analysis.assets],
+        "assets": [{"id": a.id, "name": a.path.replace("\\", "/").split("/")[-1], "type": a.type, "technical": scrub_for_ai(a.technical or {})} for a in analysis.assets],
         "observations": [x for x in (safe_observation_summary(o.to_dict()) for o in analysis.observations) if x],   # real tool measurements only, scrubbed
         "events": [x for x in (safe_event_summary(e.to_dict()) for e in analysis.timeline.events) if x],   # validated existing events, never AI_GENERATED ones
     }

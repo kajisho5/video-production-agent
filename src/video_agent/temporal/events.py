@@ -198,9 +198,9 @@ def validate_event(e: Event, assets: Dict[str, Optional[float]], known_evidence:
 def safe_event_summary(e: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """What an AI provider may see of an event: identity, classification, range, provenance and evidence ids, scrubbed
     metadata. AI_GENERATED events are never offered back as evidence."""
-    from ..media.analysis import _scrub
+    from ..media.analysis import scrub_for_ai
     if not e.get("id") or e.get("provenance") == "AI_GENERATED" or e.get("kind") not in ("OBSERVED", "INFERRED", "USER"):
         return None
     return {"id": e["id"], "type": e.get("type"), "event_type": e.get("event_type"), "subtype": e.get("subtype"), "asset_id": e.get("asset_id"),
             "timeline_id": e.get("timeline_id"), "range": e.get("range"), "provenance": e.get("provenance") or e.get("kind"), "evidence": list(e.get("evidence") or []),
-            "metadata": _scrub(e.get("metadata") or {})}
+            "metadata": scrub_for_ai(e.get("metadata") or {})}

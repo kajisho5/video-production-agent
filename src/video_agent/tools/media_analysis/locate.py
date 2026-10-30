@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ..discovery import default_skill_dirs
+
 ENV_DIR = "VIDEO_AGENT_MEDIA_ANALYSIS_DIR"
 
 
@@ -39,7 +41,7 @@ def locate_media_analysis(explicit: Optional[str] = None, env: Optional[Dict[str
         authoritative.append(Path(env[ENV_DIR]))
     # An explicit dir or the env var names exactly where to look; if there is no checkout there, that is the
     # answer (MISSING), not a cue to keep guessing sibling directories that happen to exist here too.
-    cands = authoritative or [Path.home() / ".claude" / "skills" / "media-analysis-skill", Path.cwd() / "vendor" / "media-analysis-skill", Path.cwd().parent / "media-analysis-skill"]
+    cands = authoritative or default_skill_dirs("media-analysis-skill")
     for c in cands:
         found = _from_checkout(c)
         if found:

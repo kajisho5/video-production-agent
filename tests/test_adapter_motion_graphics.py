@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -140,7 +141,8 @@ class ContractTests(Base):
         self.assertEqual(MotionGraphicsAdapter.element_status(a.doctor())["image_overlay"], "unavailable")
 
     def test_locate_env(self):
-        self.assertIsNone(locate_motion_graphics(env={"PATH": ""}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_motion_graphics(env={"PATH": ""}))
         root = os.path.join(self.tmp, "motion-graphics-skill")
         os.makedirs(os.path.join(root, "src", "motion_graphics"))
         Path(root, "src", "motion_graphics", "cli.py").write_text("", encoding="utf-8")

@@ -261,12 +261,36 @@ def leak_scan(data: Any, path: str = "data") -> List[str]:
 
 
 def safe_observation_summary(obs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """What an AI provider may see of an observation: id, kind, asset, source and data with leak-like material removed.
+    """What an AI provider may see of an observation: id, kind, asset, source and data with leak-like material removed and
+    file-system locations reduced to basenames.
     Returns None for anything that is not a tool measurement (AI evidence is built from real observations only)."""
     src = str(obs.get("source") or "")
     if not obs.get("id") or not SOURCE_RE.match(src) or src.startswith("ai") or obs.get("provenance", "OBSERVED") != "OBSERVED":
         return None
-    return {"id": obs["id"], "kind": obs.get("kind"), "asset_id": obs.get("asset_id"), "source": src, "data": _scrub(obs.get("data") or {})}
+    return {"id": obs["id"], "kind": obs.get("kind"), "asset_id": obs.get("asset_id"), "source": src, "data": scrub_for_ai(obs.get("data") or {})}
+
+
+# keys whose values are file-system locations (media_probe `file`, an ingest `path`, `output_path`, `cache_dir`, ...): an AI
+# provider or the MCP host sees only the basename, never where the user keeps their media (ADR-069)
+_PATH_KEYS = re.compile(r"^(file|path|dir|filename|.*_(path|dir|file))s?$", re.I)
+
+
+def _basename(v: Any) -> Any:
+    if isinstance(v, str):
+        return _scrub(v.replace("\\", "/").rstrip("/").split("/")[-1])
+    if isinstance(v, list):
+        return [_basename(x) for x in v]
+    return scrub_for_ai(v)
+
+
+def scrub_for_ai(v: Any) -> Any:
+    """`_scrub`, and every value under a path-like key (`file`, `path`, `*_path`, `*_dir`, ...) reduced to its basename:
+    what leaves the process for an AI provider or the MCP host brief (ADR-069)."""
+    if isinstance(v, dict):
+        return {k: (_basename(x) if _PATH_KEYS.match(str(k)) else scrub_for_ai(x)) for k, x in v.items() if not _LEAK_KEYS.search(str(k))}
+    if isinstance(v, list):
+        return [scrub_for_ai(x) for x in v]
+    return _scrub(v)
 
 
 def _scrub(v: Any) -> Any:

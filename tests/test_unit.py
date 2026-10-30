@@ -6371,15 +6371,18 @@ class LocateAuthoritativeOverrideTests(unittest.TestCase):
     checkout -- exactly backwards from what an explicit override is for."""
 
     def setUp(self):
+        # ADR-069: the guessed sibling is the sibling of the agent's own source checkout (never of the current directory);
+        # the checkout is pretended to live in a temporary parent and the home directory is empty, so no real checkout is found
+        from unittest import mock
         self.tmp = tempfile.mkdtemp()
         self.parent = Path(self.tmp)
         self.cwd_dir = self.parent / "video-production-agent"
         self.cwd_dir.mkdir()
-        self._old_cwd = os.getcwd()
-        os.chdir(self.cwd_dir)
-
-    def tearDown(self):
-        os.chdir(self._old_cwd)
+        (self.parent / "home").mkdir()
+        for target, value in (("source_checkout_root", self.cwd_dir), ("_home", self.parent / "home")):
+            patcher = mock.patch(f"video_agent.tools.discovery.{target}", return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _checkout(self, name: str, package_dir: str) -> Path:
         root = self.parent / name
@@ -6435,6 +6438,83 @@ class LocateAuthoritativeOverrideTests(unittest.TestCase):
         from video_agent.tools.media_analysis.locate import locate_media_analysis
         self._checkout("media-analysis-skill", "media_analysis")
         self.assertIsNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": "/nonexistent"}))
+
+
+class CwdIndependentDiscoveryTests(unittest.TestCase):
+    """ADR-069: Skill discovery never depends on the current directory (a folder the agent is merely started in must not
+    supply the code it runs), and a Skill child process never receives the AI provider credentials."""
+
+    def setUp(self):
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp())
+        self.untrusted = self.tmp / "parent" / "untrusted"
+        for name, marker in (("ffmpeg-skill", "scripts/probe.py"), ("media-analysis-skill", "src/media_analysis/cli.py"), ("transcription-skill", "src/transcription_skill/cli.py"),
+                             ("video-editing-skill", "src/video_editing_skill/cli.py"), ("audio-production-skill", "src/audio_production/cli.py"),
+                             ("subtitle-skill", "src/subtitle_skill/cli.py")):
+            for base in (self.untrusted / "vendor", self.tmp / "parent"):   # ./vendor/<name> and ../<name> of the current directory
+                f = base / name / marker
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("raise SystemExit('planted')\n", encoding="utf-8")
+        (self.tmp / "home").mkdir()
+        self._old_cwd = os.getcwd()
+        os.chdir(self.untrusted)
+        self.addCleanup(os.chdir, self._old_cwd)
+        for target, value in (("source_checkout_root", None), ("_home", self.tmp / "home")):
+            patcher = mock.patch(f"video_agent.tools.discovery.{target}", return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_vendor_and_parent_of_cwd_are_never_searched(self):
+        from video_agent.tools.audio_production.locate import locate_audio_production
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        from video_agent.tools.skill_process import locate_cli_skill
+        from video_agent.tools.transcription.locate import locate_transcription
+        from video_agent.tools.video_editing.locate import locate_video_editing
+        env = {"PATH": ""}
+        for locate in (locate_ffmpeg_skill, locate_media_analysis, locate_transcription, locate_video_editing, locate_audio_production):
+            self.assertIsNone(locate(env=env), locate.__name__)
+        self.assertIsNone(locate_cli_skill("subtitle", "subtitle_skill", "subtitle_skill", "subtitle-skill", "VIDEO_AGENT_SUBTITLE_DIR", env=env, checkout_names=("subtitle-skill",)))
+        # the explicit dir, the env var and ~/.claude/skills/<name> still work
+        self.assertIsNotNone(locate_ffmpeg_skill(str(self.untrusted / "vendor" / "ffmpeg-skill"), env=env))
+        self.assertIsNotNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": str(self.tmp / "parent" / "media-analysis-skill")}))
+        installed = self.tmp / "home" / ".claude" / "skills" / "ffmpeg-skill" / "scripts"
+        installed.mkdir(parents=True)
+        (installed / "probe.py").write_text("", encoding="utf-8")
+        self.assertEqual(locate_ffmpeg_skill(env=env).root, installed.parent.resolve())
+
+    def test_sibling_of_the_source_checkout(self):
+        from unittest import mock
+        from video_agent.tools import discovery
+        repo = Path(__file__).resolve().parents[1]
+        mock.patch.stopall()   # the real answers, not setUp's
+        self.assertEqual(discovery.source_checkout_root(), repo, "the tests import the package from this checkout's src/")
+        self.assertEqual(discovery.default_skill_dirs("qc-skill"), [Path.home() / ".claude" / "skills" / "qc-skill", repo.parent / "qc-skill"])
+        with mock.patch.object(discovery, "source_checkout_root", return_value=self.tmp / "parent" / "video-production-agent"):
+            from video_agent.tools.media_analysis.locate import locate_media_analysis
+            with mock.patch.object(discovery, "_home", return_value=self.tmp / "home"):
+                found = locate_media_analysis(env={"PATH": ""})
+            self.assertEqual(found.root, self.tmp / "parent" / "media-analysis-skill", "the sibling of the agent's own checkout, wherever the command starts")
+
+    def test_child_env_drops_provider_credentials(self):
+        from video_agent.tools.discovery import child_env
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        env = child_env({"PYTHONPATH": "x"}, base={"PATH": "/bin", "ANTHROPIC_API_KEY": "sk-1", "anthropic_auth_token": "t", "ANTHROPIC_PROFILE": "p", "OPENAI_API_KEY": "sk-2", "HOME": "/h"})
+        self.assertEqual(env, {"PATH": "/bin", "HOME": "/h", "PYTHONPATH": "x"})
+        keys = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ[k] = "sk-must-not-leak"
+            code, out, _ = run_process_group([sys.executable, "-c", "import json, os; print(json.dumps(sorted(k for k in os.environ if 'API_KEY' in k or 'AUTH_TOKEN' in k)))"], timeout=60)
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [], "a Skill child process sees no provider credential")
 
 
 class UnrecognizedFinishingKeyTests(unittest.TestCase):
@@ -6547,12 +6627,10 @@ class UrlIngestTests(unittest.TestCase):
         self.assertEqual((sk.command[1:], sk.env), (["-m", "ingest_skill.cli"], {"PYTHONPATH": str(Path(root) / "src")}))
         bin_dir = Path(self.tmp) / "bin"
         fake_ingest.install(bin_dir)
-        cwd = Path(self.tmp) / "nested" / "cwd"; cwd.mkdir(parents=True)
-        here = os.getcwd(); os.chdir(str(cwd))   # no ../ingest-skill sibling checkout to find first
-        try:
+        from unittest import mock
+        # no guessed checkout (~/.claude/skills, the sibling of this source checkout: ADR-069) to find first
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):
             sk = locate_ingest(env={"PATH": str(bin_dir)})
-        finally:
-            os.chdir(here)
         self.assertEqual(Path(sk.command[0]).stem, "ingest")   # ingest.cmd on Windows
         self.assertIsNone(locate_ingest(env={INGEST_ENV_DIR: str(Path(self.tmp) / "nothing"), "PATH": ""}))
 

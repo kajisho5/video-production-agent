@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..tools.discovery import child_env
 from ..tools.ffmpeg_skill.catalog import CATALOG
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from ..tools.ffmpeg_skill.package import PREFIX as FFMPEG_SKILL_PREFIX
@@ -86,7 +87,7 @@ def ffmpeg_skill_capabilities(skill: Any) -> Dict[str, Capability]:
 
 def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, env=child_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.stdout if p.returncode == 0 else None

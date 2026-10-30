@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -143,7 +144,8 @@ class ContractTests(FakeBase):
         self.assertTrue(any("thumbnail/render.produces_output" in d for d in rep))
 
     def test_locate(self):
-        self.assertIsNone(locate_thumbnail(env={"PATH": self.tmp}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_thumbnail(env={"PATH": self.tmp}))
         root = os.path.join(self.tmp, "thumbnail-skill")
         os.makedirs(os.path.join(root, "src", "thumbnail_skill"))
         Path(root, "src", "thumbnail_skill", "cli.py").write_text("", encoding="utf-8")
