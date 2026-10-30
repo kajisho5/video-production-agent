@@ -226,6 +226,13 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
             errs.append(f"{t}: height {op['height']} must be an even integer ≥ 16")
         if t in ("video.crop", "video.redact") and (op.get("x") is None or op.get("y") is None or op.get("width") is None or op.get("height") is None):
             errs.append(f"{t} needs x, y, width and height (an explicit rectangle in source pixels; neither op locates anything itself)")
+        if t == "video.rotate":   # ADR-062: video-editing ROTATE takes a clockwise turn and / or a mirror, at least one
+            if op.get("degrees") is not None and op["degrees"] not in (90, 180, 270):
+                errs.append(f"video.rotate degrees {op['degrees']!r} must be 90, 180 or 270")
+            if op.get("flip") is not None and op["flip"] not in ("h", "v"):
+                errs.append(f"video.rotate flip {op['flip']!r} must be h or v")
+            if op.get("degrees") is None and op.get("flip") is None:
+                errs.append("video.rotate needs degrees and / or flip")
         if t == "video.resize" and op.get("width") is None:
             errs.append("video.resize needs width")
         if t in ("video.fit", "video.fill") and not op.get("aspect"):
@@ -722,7 +729,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     # every executable operation must have a step (otherwise the compiler cannot know its tool)
     step_keys = {(s["skill"], (s.get("params") or {}).get("asset") or (s.get("params") or {}).get("target")) for s in d["plan"]["steps"]}
     for op in d["video"]["operations"]:
-        if op["type"] == "video.trim" and ("silence_cleanup", op["asset"]) not in step_keys:
+        if op["type"] == "video.trim" and ("silence_cleanup", op["asset"]) not in step_keys and ("video_trim", op["asset"]) not in step_keys:   # ADR-062: either skill runs it
             rep.errors.append(f"video.trim on {op['asset']} has no plan step")
         if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")

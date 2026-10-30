@@ -7,7 +7,10 @@ Everything here is vocabulary and arithmetic, no execution:
   decision compares it with the probe: an SDR source is KEEP, never tone-mapped by guessing), `color.lut` (a .cube file →
   LUT_APPLY; `color.lut.strength` 0..1), `color.strip_dovi` (true → STRIP_DOVI), `color.exposure` / `color.contrast` /
   `color.saturation` / `color.temperature` / `color.tint` (→ PRIMARY_CORRECTION; five independent, optional, range-checked
-  values — none of them is a creative "look" chosen by this agent, only numbers the caller supplied). Fixed order:
+  values — none of them is a creative "look" chosen by this agent, only numbers the caller supplied), and since
+  color-grading-skill 0.4.0 the same operation's `color.gamma` / `color.lift` / `color.gain` / `color.levels_in_black` /
+  `color.levels_in_white` / `color.levels_out_black` / `color.levels_out_white` / `color.curves` (a curves preset name) —
+  each named after the contract parameter it sets (ADR-062). Fixed order:
   strip_dovi → hdr_to_sdr → primary_correction → lut → retag (technical correction runs on the tone-mapped picture, before
   a creative LUT; color-grading-skill's own ADR-15 documents this as guidance, not something either side enforces).
 - **Motion graphics** (`motion.*`): one element per type — `motion.title` (+ `.subtitle`, `.start`, `.end`), `motion.lower_third`
@@ -38,19 +41,31 @@ COLOR_OPERATIONS: Dict[str, Dict[str, Any]] = {
     "color.strip_dovi": {"skill": "color_strip_dovi", "type": "STRIP_DOVI", "params": (), "risk": "LOW"},
     "color.hdr_to_sdr": {"skill": "color_hdr_to_sdr", "type": "HDR_TO_SDR", "params": (), "risk": "MEDIUM"},
     "color.primary_correction": {"skill": "color_primary_correction", "type": "PRIMARY_CORRECTION",
-                                  "params": ("exposure", "contrast", "saturation", "temperature", "tint"), "risk": "MEDIUM"},
+                                  "params": ("exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
+                                             "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves"), "risk": "MEDIUM"},
     "color.lut":        {"skill": "color_lut",        "type": "LUT_APPLY",  "params": ("lut_strength",), "risk": "MEDIUM"},
     "color.retag":      {"skill": "color_retag",      "type": "RETAG",      "params": ("target",), "risk": "LOW"},
 }
 COLOR_SKILL_OF = {k: v["skill"] for k, v in COLOR_OPERATIONS.items()}
 COLOR_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
 COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi",
-              "color.exposure", "color.contrast", "color.saturation", "color.temperature", "color.tint")
-# PRIMARY_CORRECTION's own safe ranges (color-grading-skill's guaranteed subset, docs/ffmpeg-skill.md there): key -> (lo, hi)
+              "color.exposure", "color.contrast", "color.saturation", "color.temperature", "color.tint",
+              "color.gamma", "color.lift", "color.gain", "color.levels_in_black", "color.levels_in_white", "color.levels_out_black",
+              "color.levels_out_white", "color.curves")
+# PRIMARY_CORRECTION's own safe ranges (color-grading-skill's guaranteed subset, docs/ffmpeg-skill.md there): key -> (lo, hi).
+# gamma / lift / gain / levels_* (ADR-062): the ranges color-grading-skill 0.4.0's contract declares for the same parameter names
 COLOR_CORRECTION_RANGES: Dict[str, Tuple[float, float]] = {
     "color.exposure": (-3.0, 3.0), "color.contrast": (0.0, 2.0), "color.saturation": (0.0, 2.0),
     "color.temperature": (2000.0, 12000.0), "color.tint": (-1.0, 1.0),
+    "color.gamma": (0.1, 10.0), "color.lift": (-1.0, 1.0), "color.gain": (-1.0, 1.0),
+    "color.levels_in_black": (0, 255), "color.levels_in_white": (0, 255), "color.levels_out_black": (0, 255), "color.levels_out_white": (0, 255),
 }
+# colorlevels points are integers in 8-bit units (the contract types them `integer`); unset ones keep the Skill's default
+COLOR_LEVELS_DEFAULTS: Dict[str, int] = {"levels_in_black": 0, "levels_in_white": 255, "levels_out_black": 0, "levels_out_white": 255}
+# the curves filter's built-in presets color-grading-skill 0.4.0 accepts (its contract's enum; the filter's own "none" is not one:
+# leaving color.curves unset adds no curves term)
+COLOR_CURVES_PRESETS = ("color_negative", "cross_process", "darker", "increase_contrast", "lighter", "linear_contrast", "medium_contrast",
+                        "negative", "strong_contrast", "vintage")
 
 # ---- motion graphics
 GRAPHICS_TOOL = "motion-graphics/run"
@@ -129,12 +144,28 @@ def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, A
     # color.exposure / color.contrast / color.saturation / color.temperature / color.tint: five independent, optional
     # parameters (no single "main" key the way color.lut/color.target have) -- any one of them, explicitly set, asks
     # for PRIMARY_CORRECTION; unset ones are left for the Skill's own defaults (unchanged), never guessed here.
-    active = [k for k in COLOR_CORRECTION_RANGES if k in m and m[k].provenance != "DEFAULT"]
+    # ADR-062: gamma / lift / gain / levels_* / curves are more parameters of the same operation, read the same way.
+    active = [k for k in list(COLOR_CORRECTION_RANGES) + ["color.curves"] if k in m and m[k].provenance != "DEFAULT"]
     if active:
         p = {}
         for k in active:
+            name = k.split(".", 1)[1]
+            if k == "color.curves":
+                p[name] = _token(m[k].value, k, re.compile("^(" + "|".join(COLOR_CURVES_PRESETS) + ")$"), "one of " + ", ".join(COLOR_CURVES_PRESETS))
+                continue
             lo, hi = COLOR_CORRECTION_RANGES[k]
-            p[k.split(".", 1)[1]] = float(_number(m[k].value, k, lo, hi))
+            v = _number(m[k].value, k, lo, hi)
+            if name in COLOR_LEVELS_DEFAULTS:
+                if float(v) != int(v):
+                    raise EditRequirementError(f"{k} must be an integer from {lo} to {hi} (8-bit units), got {m[k].value!r}")
+                p[name] = int(v)
+            else:
+                p[name] = float(v)
+        # the Skill refuses black >= white (its own colorlevels ordering check); unset points count with their defaults
+        lv = {n: p.get(n, d) for n, d in COLOR_LEVELS_DEFAULTS.items()}
+        for side in ("in", "out"):
+            if any(f"levels_{side}_{x}" in p for x in ("black", "white")) and not lv[f"levels_{side}_black"] < lv[f"levels_{side}_white"]:
+                raise EditRequirementError(f"color.levels_{side}_black ({lv[f'levels_{side}_black']}) must be below color.levels_{side}_white ({lv[f'levels_{side}_white']})")
         out["color.primary_correction"] = {"params": p, "requirements": [m[k] for k in active]}
     return out
 
@@ -270,7 +301,7 @@ def parse_qc_reference(m: Dict[str, Requirement]) -> Optional[Dict[str, Any]]:
 # ---- IR arithmetic
 def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], subject: str) -> Optional[Tuple[int, int]]:
     """The subject's picture size after its editing operations (resize keeps the aspect; fit / fill change it; concat may set
-    width / height). None when the source size is unknown — nothing is guessed."""
+    width / height; a 90 / 270 rotation swaps them). None when the source size is unknown — nothing is guessed."""
     v = (technical or {}).get("video") or {}
     w, h = v.get("width"), v.get("height")
     if not w or not h:
@@ -282,6 +313,8 @@ def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], sub
         t = op.get("type")
         if t == "video.concat" and op.get("width") and op.get("height"):
             w, h = int(op["width"]), int(op["height"])
+        elif t == "video.rotate" and op.get("degrees") in (90, 270):   # ADR-062: a quarter turn swaps width and height
+            w, h = h, w
         elif t == "video.resize" and op.get("width"):
             nw = int(op["width"])
             h = max(2, int(round(h * nw / w / 2.0)) * 2)

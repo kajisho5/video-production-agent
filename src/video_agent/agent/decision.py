@@ -22,7 +22,7 @@ from .decision_engine import DecisionEngine, raise_approval, resolve_approval, r
 from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
-from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requirements, switch_cams
+from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
 from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
@@ -61,6 +61,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.grid": ("video.grid.approval", "CONFIRM"), "video.redact": ("video.redact.approval", "CONFIRM"),
                  "video.deinterlace": ("video.deinterlace.approval", "CONFIRM"), "video.crop": ("video.crop.approval", "CONFIRM"),
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
+                 # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
+                 TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-052: an editor timeline changes no media (it references the sources and is written next to the deliverables), so AUTO
                  TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO"),
                  # ADR-053: choosing which take of a line is used is editorial (the others are left out), so CONFIRM; the beat snap
@@ -263,6 +265,28 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            confidence=1.0, evidence=ev, risk=OPERATIONS["video.grid"]["risk"], approval=approval_for("video.grid", explicit=req[0]), provenance="USER",
                            params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
                 cap_block("video_grid", "capability.video_grid")
+    # ---- explicit trim (ADR-062): the user's in / out range on the one input. It narrows that input's video.trim (silence decisions
+    # still apply inside it); never clamped to the duration, never spread over several inputs by guessing which one was meant
+    if TRIM_OP in edits:
+        req = edits[TRIM_OP]["requirements"]
+        p = edits[TRIM_OP]["params"]
+        ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
+        a0 = analysis.assets[0] if len(analysis.assets) == 1 else None
+        dur0 = float((a0.technical.get("duration") or 0.0) if a0 is not None else 0.0)
+        why = (f"{TRIM_KEY} names one in / out range and this plan has {len(analysis.assets)} inputs: which one it is meant for is not guessed" if a0 is None
+               else f"{a0.id} has no video stream; {TRIM_KEY} is a video operation (unsupported input, not guessed)" if not a0.technical.get("video")
+               else f"{TRIM_KEY} ends at {p['end']:g}s, after the end of {a0.id} ({dur0:.3f}s): the range is not clamped" if dur0 and p["end"] > dur0 + 0.001
+               else None)
+        if why is not None:
+            eng.decide(subject=TRIM_OP, type="BLOCK", decision=f"BLOCK: {TRIM_KEY} {p['start']:g}-{p['end']:g}s", reason=why, confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK",
+                       provenance="USER", params={"asset_id": a0.id if a0 is not None else None, **p}, requirements=req)
+        else:
+            eng.decide(subject=TRIM_OP, type="TRANSFORM", decision=f"video.trim on {a0.id}: keep {p['start']:.3f}-{p['end']:.3f}s",
+                       reason=f"user asked for this in / out range ({req[0].source}); cut frame-accurately at the times given, before every other edit"
+                       + "; silence decisions on the input apply inside it",
+                       confidence=1.0, evidence=ev, risk="MEDIUM", approval=approval_for(TRIM_OP, explicit=req[0]), provenance="USER",
+                       params={"asset_id": a0.id, **p}, requirements=req, serves_intent=None)
+            cap_block(TRIM_SKILL, f"capability.{TRIM_SKILL}")
     for asset in analysis.assets:
         if asset.id in excluded:
             continue   # ADR-053: a take that was not picked, or the music bed: not part of the programme, nothing is decided for it
@@ -515,7 +539,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- finishing (ADR-031 / ADR-032): subtitles, colour, motion graphics, thumbnail, QC gate — on the programme or each asset, after the edits
     def has_edit(subject: str) -> bool:
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]
-        return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and d.subject in OPERATIONS and d.params.get("asset_id") == subject for d in decs) \
+        return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and (d.subject in OPERATIONS or d.subject == TRIM_OP) and d.params.get("asset_id") == subject for d in decs) \
             or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- timeline export (ADR-052): the cut list of each video subject as an editor timeline

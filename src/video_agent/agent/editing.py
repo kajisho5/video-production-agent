@@ -1,5 +1,6 @@
 """Editing operations vocabulary (ADR-029): the video-editing-skill operations the agent can plan — concat, speed, resize,
-fit, fill, overlay — as explicit Requirements → Decisions → ProductionPlan steps → Project IR operations.
+fit, fill, overlay, rotate (ADR-062) and an explicit trim (`edit.trim`, ADR-062) — as explicit Requirements → Decisions →
+ProductionPlan steps → Project IR operations.
 
 Everything here is vocabulary and arithmetic, no execution:
 
@@ -30,9 +31,11 @@ PROGRAMME = "programme"      # logical id of the concat (or switch / grid) outpu
 # one actually ran. The single-source ops (ADR-046) compose freely with each other and with whichever programme was built:
 # deinterlace / stabilize (quality / motion fixes) run first, then the fixed-pixel-rectangle ops (crop, then redact --
 # redact's rectangle is expressed in whatever frame crop already produced, matching the order they are declared here),
-# then the pre-existing speed / resize / fit / fill / overlay chain.
+# then the pre-existing speed / resize / fit / fill / overlay chain. video.rotate (ADR-062) runs after crop / redact (their
+# rectangles are in source pixels, before any turn) and before speed / resize / fit / fill / overlay (a width, an aspect and an
+# overlay position are meant on the upright picture).
 EDIT_ORDER = ("video.concat", "video.switch", "video.grid", "video.deinterlace", "video.stabilize", "video.crop", "video.redact",
-              "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay")
+              "video.rotate", "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay")
 # the multi-source entry ops (build PROGRAMME from 2+ inputs; mutually exclusive, handled specially by the planner /
 # compiler) vs. the single-source ops that apply to whatever PROGRAMME (or the untouched asset) already is
 MULTI_SOURCE_OPS = ("video.concat", "video.switch", "video.grid")
@@ -53,6 +56,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "video.deinterlace": {"skill": "video_deinterlace",  "params": ("mode", "parity", "only_interlaced", "audio_stream"), "risk": "LOW"},
     "video.crop":        {"skill": "video_crop",         "params": ("x", "y", "width", "height", "fps"), "risk": "MEDIUM"},
     "video.stabilize":   {"skill": "video_stabilize",    "params": ("shakiness", "smoothing", "zoom", "crop_mode", "tripod"), "risk": "MEDIUM"},
+    # ADR-062: video-editing-skill ROTATE (0.3.0): a clockwise turn of 90 / 180 / 270 and / or a mirror; nothing scaled or cut
+    "video.rotate":  {"skill": "video_rotate",  "tool": "video-editing/rotate",  "params": ("degrees", "flip"), "risk": "LOW"},
     "video.speed":   {"skill": "video_speed",   "tool": "video-editing/speed",   "params": ("factor",), "risk": "MEDIUM"},
     "video.resize":  {"skill": "video_resize",  "tool": "video-editing/resize",  "params": ("width", "fps"), "risk": "LOW"},
     "video.fit":     {"skill": "video_fit",     "tool": "video-editing/fit",     "params": ("aspect", "width", "pad_color", "fps"), "risk": "LOW"},
@@ -61,6 +66,10 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
 }
 SKILL_OF = {k: v["skill"] for k, v in OPERATIONS.items()}
 OP_OF_SKILL = {v["skill"]: k for k, v in OPERATIONS.items()}
+# ADR-062: the explicit trim -- decision subject / IR type, requirement key, the production skill that runs it alone
+TRIM_OP = "video.trim"
+TRIM_KEY = "edit.trim"
+TRIM_SKILL = "video_trim"
 # requirement keys: edit.<op> switches the operation on (its value is the main parameter), edit.<op>.<param> refines it
 REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     "video.concat": ("edit.concat", "edit.concat.transition", "edit.concat.transition_duration", "edit.concat.width", "edit.concat.height", "edit.concat.fps", "edit.concat.mode", "edit.concat.pad_color"),
@@ -73,12 +82,18 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     "video.deinterlace": ("edit.deinterlace", "edit.deinterlace.mode", "edit.deinterlace.parity", "edit.deinterlace.only_interlaced", "edit.deinterlace.audio_stream"),
     "video.crop": ("edit.crop", "edit.crop.fps"),
     "video.stabilize": ("edit.stabilize", "edit.stabilize.shakiness", "edit.stabilize.smoothing", "edit.stabilize.zoom", "edit.stabilize.crop_mode", "edit.stabilize.tripod"),
+    "video.rotate": ("edit.rotate", "edit.rotate.flip"),
     "video.speed": ("edit.speed",),
     "video.resize": ("edit.resize", "edit.resize.fps"),
     "video.fit": ("edit.fit", "edit.fit.width", "edit.fit.pad_color", "edit.fit.fps"),
     "video.fill": ("edit.fill", "edit.fill.width", "edit.fill.fps"),
     "video.overlay": ("edit.overlay", "edit.overlay.position", "edit.overlay.margin", "edit.overlay.scale", "edit.overlay.opacity", "edit.overlay.start", "edit.overlay.end", "edit.overlay.fade"),
+    # ADR-062: an explicit in / out range ("START-END", seconds or mm:ss). Not an OPERATIONS entry: it narrows the asset's one
+    # video.trim (the same IR record the silence decisions produce), executed by video-editing/trim when one range remains
+    TRIM_OP: (TRIM_KEY,),
 }
+ROTATIONS = (90, 180, 270)   # video-editing-skill ROTATE.degrees, clockwise
+FLIPS = ("h", "v")           # ROTATE.flip: mirror horizontally / vertically
 SPEED_RANGE = (0.25, 4.0)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 NAMED_POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center", "top", "bottom", "left", "right")
@@ -154,6 +169,23 @@ def _token(v: Any, key: str, rx: "re.Pattern[str]", what: str) -> str:
 
 def _fps(v: Any, key: str) -> Any:
     return _number(v, key, 1, 240, allow_ratio=True)
+
+
+def parse_trim(v: Any) -> Dict[str, float]:
+    """`edit.trim`: "START-END" (seconds or mm:ss, the switch-list time grammar) or {start, end} in seconds → {start, end}.
+    The range is checked against the input's duration by the decision, once the probe is known; here only its shape and order."""
+    if isinstance(v, dict):
+        if set(v) != {"start", "end"}:
+            raise EditRequirementError(f"{TRIM_KEY} must be \"START-END\" or {{start, end}} in seconds")
+        s_, e_ = float(_number(v["start"], TRIM_KEY + ".start", 0, 86400)), float(_number(v["end"], TRIM_KEY + ".end", 0, 86400))
+    else:
+        mobj = re.match(r"^\s*(?P<s>" + _TIME_RE + r")\s*-\s*(?P<e>" + _TIME_RE + r")\s*$", v) if isinstance(v, str) else None
+        if not mobj:
+            raise EditRequirementError(f"{TRIM_KEY} must be \"START-END\" (seconds or mm:ss, e.g. 2.5-14 or 0:05-1:30), got {v!r}")
+        s_, e_ = _switch_seconds(mobj.group("s")), _switch_seconds(mobj.group("e"))
+    if not s_ < e_:
+        raise EditRequirementError(f"{TRIM_KEY}: start {s_:g}s must be before end {e_:g}s")
+    return {"start": round(s_, 3), "end": round(e_, 3)}
 
 
 def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, Any]]:
@@ -280,6 +312,19 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
                 p["crop_mode"] = _token(vals["edit.stabilize.crop_mode"], "edit.stabilize.crop_mode", re.compile(r"^(keep|black)$"), "keep or black")
             if "edit.stabilize.tripod" in vals:
                 p["tripod"] = _bool(vals["edit.stabilize.tripod"], "edit.stabilize.tripod")
+        elif op == "video.rotate":
+            deg = vals["edit.rotate"]
+            deg = _number(deg, "edit.rotate", 0, 270)
+            if float(deg) not in (0.0,) + tuple(float(r) for r in ROTATIONS):
+                raise EditRequirementError(f"edit.rotate must be 90, 180 or 270 (degrees clockwise; 0 with edit.rotate.flip for a mirror only), got {vals['edit.rotate']!r}")
+            if int(deg):
+                p["degrees"] = int(deg)
+            if "edit.rotate.flip" in vals:
+                p["flip"] = _token(vals["edit.rotate.flip"], "edit.rotate.flip", re.compile("^(h|v)$"), "h (mirror left-right) or v (mirror top-bottom)")
+            if not p:
+                raise EditRequirementError("edit.rotate=0 without edit.rotate.flip changes nothing; leave it unset")
+        elif op == TRIM_OP:
+            p.update(parse_trim(vals[TRIM_KEY]))
         elif op == "video.speed":
             f = _number(vals["edit.speed"], "edit.speed", SPEED_RANGE[0], SPEED_RANGE[1])
             if float(f) == 1.0:

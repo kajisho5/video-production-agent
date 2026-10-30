@@ -1340,8 +1340,10 @@ class EcosystemContractTests(unittest.TestCase):
     def test_future_skills_never_available(self):
         svc = make_service(self.tmp)
         rows = {r["skill"]: r for r in svc.skills()}
-        for name in ("semantic_deletion", "video_trim"):
+        for name in ("semantic_deletion",):
             self.assertEqual((rows[name]["status"], rows[name]["implemented"]), ("NOT_IMPLEMENTED", False))
+        # ADR-062: video_trim (video-editing/trim) is wired now: implemented, unavailable without the Skill installed
+        self.assertEqual((rows["video_trim"]["status"], rows["video_trim"]["implemented"]), ("UNAVAILABLE", True))
         self.assertNotIn("caption_generation", rows, "the former caption_generation declaration (ffmpeg-skill/caption) is replaced by subtitle_generation / subtitle_burn_in (ADR-031)")
         self.assertEqual((rows["subtitle_generation"]["implemented"], rows["subtitle_generation"]["status"]), (True, "UNAVAILABLE"), "implemented; no installation in unit tests")
         src = Path(__file__).resolve().parents[1] / "src" / "video_agent"
@@ -4136,10 +4138,13 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.4.0", "video-editing", "video-editing/contract@1"))
         self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "freeze", "overlay", "resize", "reverse", "rotate", "speed", "trim")])
         self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.4.0 contract")
-        # 0.4.0 + video-editing-skill #20: FREEZE / REVERSE are declared, but this adapter has no lowering for them yet: contract-visible,
-        # never executable (supports() is False), and named as contract-only so the gap is reported rather than silently offered
-        self.assertEqual(ad.lowering.contract_only(), ["FREEZE", "REVERSE", "ROTATE"])
-        self.assertFalse(ad.supports("video-editing/freeze")); self.assertFalse(ad.supports("video-editing/reverse"))
+        # ADR-062: ROTATE / FREEZE / REVERSE are lowered now: nothing the contract declares is contract-only; a type a later contract adds
+        # without a lowering here would be listed here and never executable (supports() is False)
+        self.assertEqual(ad.lowering.contract_only(), [])
+        self.assertTrue(ad.supports("video-editing/freeze")); self.assertTrue(ad.supports("video-editing/reverse")); self.assertTrue(ad.supports("video-editing/rotate"))
+        grown = dict(ad.contract, operations=dict(ad.contract["operations"], MIRROR={}))
+        from video_agent.tools.video_editing.lowering import Lowering
+        self.assertEqual(Lowering(grown).contract_only(), ["MIRROR"])
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.4.0", "kajisho5/video-editing-skill"))
@@ -4372,12 +4377,10 @@ class VideoEditingAdapterTests(unittest.TestCase):
         svc2.registry.get("silence_cleanup").tools = ["video-editing/cut"]
         self.assertEqual(svc2.tools_for().get("silence_cleanup"), "video-editing/cut")
         pk = next(p for p in svc2.packages() if p["skill_id"] == "video-editing")
-        # video-editing/rotate (0.3.0, ADR-011 there) is declared by the contract but this adapter's lowering.ARGS
-        # has no ROTATE entry yet (AI-video-production-OS follow-up) -- a contract that grew a type this adapter
-        # cannot lower never becomes usable by accident (adapter.supports()), so it is contract-visible but not
-        # yet in usable_tools; every other tool remains usable. FREEZE / REVERSE (0.4.0, video-editing-skill #20) are the same case.
+        # ADR-062: ROTATE (0.3.0) and FREEZE / REVERSE (0.4.0, video-editing-skill #20) are lowered now, so every tool the contract
+        # declares is usable (a type a later contract adds without a lowering here stays out: adapter.supports())
         self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.4.0")
-        self.assertEqual(sorted(pk["usable_tools"]), sorted(t for t in ad.tools if t not in ("video-editing/rotate", "video-editing/freeze", "video-editing/reverse")))
+        self.assertEqual(sorted(pk["usable_tools"]), sorted(ad.tools))
         # a tool-level capability the resolver knows and reports missing blocks the tool; names it does not resolve are the Skill's doctor's business
         svc3 = make_service(self.tmp, caps=FakeCaps(missing=["encoder:libx264"], extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
         svc3.registry.get("silence_cleanup").tools = ["video-editing/cut"]

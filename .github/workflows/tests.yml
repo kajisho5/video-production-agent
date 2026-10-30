@@ -20,8 +20,8 @@ jobs:
       # Phase 3 (ADR-031 / ADR-032): the five finishing-Skill adapters against their fake processes, and the integrated pipeline on the fake engine + fake Skills
       - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
       - run: python -m unittest -v tests/test_pipeline.py
-      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements
-      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py
+      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters
+      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py
       - run: python evals/run.py
   integration:
     runs-on: ubuntu-latest

@@ -587,7 +587,7 @@ class Service:
         needed = sorted({c for step in ir.doc["plan"]["steps"] for c in self.registry.get(step["skill"]).required_capabilities}) if ir.doc["plan"]["steps"] else []
         caps = self.caps.resolve()
         total = sum((a.get("technical") or {}).get("duration") or 0 for a in ir.doc["assets"].values())
-        reencodes = sum(1 for op in ops if op.skill == "delivery_export") + sum(1 for op in ops if op.skill == "silence_cleanup" and op.args.get("accurate"))
+        reencodes = sum(1 for op in ops if op.skill == "delivery_export") + sum(1 for op in ops if (op.skill == "silence_cleanup" and op.args.get("accurate")) or (op.skill == "video_trim" and op.args.get("precision") == "frame"))
         return {"operations": previews, "required_capabilities": {c: caps[c].status if c in caps else "UNKNOWN" for c in needed},
                 "expected_outputs": [paths[o] for op in ops for o in op.outputs], "risks": [d["subject"] + ": " + d["risk"] for d in ir.doc["decisions"] if d["risk"] != "LOW"],
                 "warnings": self.validate(ir).warnings + ir.doc["analysis"].get("warnings", []), "pending_confirmations": [d["id"] for d in ir.pending_confirmations()], "blocked": [d["id"] for d in ir.blocked()],
