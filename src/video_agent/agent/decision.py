@@ -25,6 +25,7 @@ from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requ
 from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
+from .handoffs import decide_jobs
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -511,6 +512,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- timeline export (ADR-052): the cut list of each video subject as an editor timeline
     decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
+    # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here
+    decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")

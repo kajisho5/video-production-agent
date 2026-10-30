@@ -211,6 +211,51 @@ def _with_reason(cap: str, caps: Dict[str, Any]) -> str:
     return f"{cap}: {reason}" if reason else cap
 
 
+def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], package: str, tool: str, risk: str, approval: str = "CONFIRM",
+         deterministic: bool = True) -> SkillSpec:
+    return SkillSpec(name, "0.1", desc, inputs, outputs, [package], risk, deterministic, approval, [f"{package}/{tool}"], phase=2)
+
+
+# ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
+# (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages.
+ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
+    _job("media_ingest", "Verified offload of camera cards / recorders: checksum read-back copies, dual backup, clip inventory",
+         {"source": "card|folder"}, {"artifact": "media"}, "ingest", "offload", "MEDIUM"),
+    _job("voice_enhancement", "AI voice isolation, dereverberation and mic-bleed reduction of recorded speech",
+         {"asset": "audio|video"}, {"artifact": "INTERMEDIATE"}, "voice-enhance", "enhance", "MEDIUM", deterministic=False),
+    _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
+         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "dub", "HIGH", deterministic=False),
+    _job("sound_design", "Generate a music bed (BGM) or sound effects",
+         {"brief": "text"}, {"artifact": "audio"}, "sound-design", "generate", "MEDIUM", deterministic=False),
+    _job("speaker_diarization", "Speaker diarization: who spoke when, filling the Transcript speaker_id that transcription leaves null",
+         {"asset": "media", "transcript": "observation"}, {"observation": "diarization"}, "diarization", "diarize", "LOW", approval="AUTO", deterministic=False),
+    _job("visual_detection", "Face, text (OCR) and object detection on the picture",
+         {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
+    _job("slide_sync", "Import a slide deck, detect slide changes in the recording and match each segment to its slide",
+         {"asset": "video", "deck": "pdf|pptx|key"}, {"observation": "slide_segments"}, "slide-sync", "match", "LOW", approval="AUTO"),
+    _job("platform_publish", "Upload a QC-passed deliverable with its metadata to a delivery platform",
+         {"artifact": "delivery", "platform": "str"}, {"receipt": "upload"}, "publish", "upload", "HIGH"),
+    _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
+         {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, "imagemagick", "edit", "LOW"),
+    _job("render_3d", "3D assets with headless Blender: inspect, convert, optimise and render",
+         {"model": "gltf|glb|fbx|obj|usd|blend"}, {"artifact": "image|video|model"}, "blender", "render", "MEDIUM"),
+    _job("measured_motion_graphics", "Remotion motion graphics on the footage, timed from ffmpeg-skill measurements (captions, jump cuts, beat-synced motion)",
+         {"asset": "video"}, {"artifact": "video"}, "remotion-ffmpeg", "pipeline", "MEDIUM"),
+    _job("html_scene_render", "Render HTML scenes to verified video with HyperFrames",
+         {"scene": "html"}, {"artifact": "video"}, "hyperframes", "render", "MEDIUM"),
+    _job("document_verification", "Verify an AI-generated document (script, captions, report) and issue an evidence-backed receipt",
+         {"document": "file"}, {"receipt": "verification"}, "artifacts", "verify", "LOW", approval="AUTO"),
+    _job("bluray_authoring", "Author a Blu-ray (BDMV): titles, chapters, menus, subtitles",
+         {"asset": "video"}, {"artifact": "BDMV"}, "bdmvkit", "build", "MEDIUM"),
+    _job("dvd_authoring", "Author a DVD-Video (VIDEO_TS): titles, menus, subtitles",
+         {"asset": "video"}, {"artifact": "VIDEO_TS"}, "vtskit", "author", "MEDIUM"),
+    _job("disc_image", "Write a UDF disc image (.iso) of an authored DVD-Video or Blu-ray folder",
+         {"disc": "VIDEO_TS|BDMV"}, {"artifact": "iso"}, "udfkit", "image", "LOW"),
+    _job("dvd_line21_captions", "Insert line-21 closed captions (CEA-608) into DVD MPEG-2 video without re-encoding",
+         {"video": "m2v", "captions": "scc|srt"}, {"artifact": "m2v"}, "dvdcc", "caption", "MEDIUM"),
+)
+
+
 def default_registry() -> SkillRegistry:
     r = SkillRegistry()
     r.register(SkillSpec("media_probe", "1.0", "Inspect media (duration, codecs, fps, HDR, audio)", {"asset": "media"}, {"observation": "probe"},
@@ -347,6 +392,11 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "motion-graphics"], "MEDIUM", True, "CONFIRM", ["motion-graphics/run"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
+    # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)
+    # shows an ADR-051 handoff naming the owning package and its install command (skills/ecosystem.py). No adapter here: never selected.
+    # Tool ids are named after the job until an adapter catalogs the package's real tools (roadmap step 9).
+    for spec in ECOSYSTEM_JOB_SKILLS:
+        r.register(spec)
     r.register(SkillSpec("semantic_deletion", "0.1", "Remove content based on meaning", {"asset": "video", "ranges": "ranges"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill"], "HIGH", False, "CONFIRM", ["ffmpeg-skill/cut"], phase=4))
     return r
