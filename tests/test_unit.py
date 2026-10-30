@@ -5135,10 +5135,10 @@ class AudioProductionAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.4.2"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
-        self.assertEqual(len(ad.lowering.supported_types()), 14); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])
+        self.assertEqual(ad.version, "0.4.3"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(len(ad.lowering.supported_types()), 15); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.2", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.3", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
         self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         # incompatible contracts are refused, never patched
@@ -5188,7 +5188,7 @@ class AudioProductionAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertEqual(r.output, paths["a_norm"]); self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.2"}); self.assertEqual(d["operation_type"], "NORMALIZE")
+        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.3"}); self.assertEqual(d["operation_type"], "NORMALIZE")
         self.assertEqual(d["operation"]["type"], "NORMALIZE"); self.assertEqual(d["operation"]["tool"], "ffmpeg-skill/loudness")
         self.assertEqual(d["operation"]["parameters"], {"target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0})
         self.assertEqual(d["artifact"]["sha256"], hashlib_sha(paths["a_norm"])); self.assertEqual(d["artifact"]["format"], "wav"); self.assertFalse(d["artifact"]["reused"])
@@ -5252,6 +5252,30 @@ class AudioProductionAdapterTests(unittest.TestCase):
         paths["missing"] = str(Path(self.src).parent / "missing.wav")
         r = ad.run(Operation(tool="audio-production/run", args={"operation": "GAIN", "input": "missing", "gain_db": -3, "output": "a_norm"}, inputs=["missing"], outputs=["a_norm"], id="op_m"), paths)
         self.assertEqual((r.data["error"]["code"], classify_error(r)), ("INVALID_REQUEST", "INVALID_ARGS"))
+
+    def test_voice_cleanup_levels(self):
+        """ADR-068 (audio-production-skill 0.4.3): VOICE_CLEANUP lowers with its one typed level (enum light / medium / strong, required).
+        With an ffmpeg-skill older than 1.13 the Skill runs medium only and refuses light / strong (dry run included) with TOOL_ERROR
+        voice_level_unsupported, retryable false: never retried, BLOCKed with the levels the engine offers named in the message."""
+        from video_agent.execution.recovery import classify_error, next_attempt
+        ad = self._adapter(); paths = self._paths()
+        for lvl in ("light", "medium", "strong"):
+            r = ad.run(Operation(tool="audio-production/run", args={"operation": "VOICE_CLEANUP", "input": "a", "level": lvl, "output": "a_norm"}, inputs=["a"], outputs=["a_norm"], id=f"op_v_{lvl}"), paths)
+            self.assertTrue(r.ok, (lvl, r.data.get("error"))); self.assertEqual((r.data["operation_type"], r.data["operation"]["parameters"]["level"]), ("VOICE_CLEANUP", lvl))
+            os.remove(paths["a_norm"])
+        for bad in ({"level": "loud"}, {}):
+            r = ad.run(Operation(tool="audio-production/run", args=dict({"operation": "VOICE_CLEANUP", "input": "a", "output": "a_norm"}, **bad), inputs=["a"], outputs=["a_norm"], id="op_vb"), paths)
+            self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST", bad)
+        os.environ["FAKE_AP_MODE"] = "voice_engine_old"
+        self.assertTrue(ad.run(Operation(tool="audio-production/run", args={"operation": "VOICE_CLEANUP", "input": "a", "level": "medium", "output": "a_norm"}, inputs=["a"], outputs=["a_norm"], id="op_vm"), paths).ok)
+        os.remove(paths["a_norm"])
+        for dry in (False, True):
+            r = ad.run(Operation(tool="audio-production/run", args={"operation": "VOICE_CLEANUP", "input": "a", "level": "strong", "output": "a_norm"}, inputs=["a"], outputs=["a_norm"], id="op_vs"), paths, dry_run=dry)
+            err = r.data["error"]
+            self.assertFalse(r.ok); self.assertEqual((err["code"], err["retryable"], err["details"]["reason"], err["details"]["available_levels"]), ("TOOL_ERROR", False, "voice_level_unsupported", ["medium"]))
+            self.assertIn("set audio.voice_cleanup to one of ['medium'] or install ffmpeg-skill >= 1.13", err["message"])
+            self.assertEqual((classify_error(r), next_attempt(r, 1, 2, 60)["action"]), ("SKILL_ERROR", "BLOCK"), "never retried: the engine cannot run that level")
+            self.assertFalse(os.path.exists(paths["a_norm"]))
 
     def test_security_boundary_and_path_policy(self):
         ad = self._adapter(); paths = self._paths()
@@ -5517,7 +5541,7 @@ class AudioProductionPathTests(unittest.TestCase):
         rows = prov["operations"]
         self.assertEqual([r["skill"] for r in rows], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
         for r in rows:
-            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.2"))
+            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.3"))
             self.assertTrue(r["skill_result"]["artifact"]["sha256"]); self.assertEqual(r["skill_result"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["skill_result"]["operation"]["skill"], "audio-production")
         self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 5 + ["loudness"])
         self.assertEqual(prov["skill_observations"][-1]["data"]["target_lufs"], -16.0)

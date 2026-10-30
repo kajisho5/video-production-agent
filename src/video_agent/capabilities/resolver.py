@@ -33,7 +33,7 @@ FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tone
            "blackdetect": ["blackdetect"], "freezedetect": ["freezedetect"], "astats": ["astats"], "xfade": ["xfade"], "acrossfade": ["acrossfade"],
            # core audio filters audio-production-skill's operations need; ffmpeg-skill's doctor does not probe them, this resolver measures `ffmpeg -filters` itself
            "volume": ["volume"], "afade": ["afade"], "amix": ["amix"], "pan": ["pan"], "aformat": ["aformat"], "afftdn": ["afftdn"],
-           "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"],
+           "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"], "highpass": ["highpass"], "deesser": ["deesser"],   # highpass / deesser: VOICE_CLEANUP (ADR-068)
            # filters the Phase 3 finishing Skills' operations need (ADR-031): motion-graphics elements, LUTs, subtitle burn-in, qc measurements
            "subtitles": ["subtitles"], "drawtext": ["drawtext"], "drawbox": ["drawbox"], "overlay": ["overlay"], "color": ["color"], "scale": ["scale"],
            "colorchannelmixer": ["colorchannelmixer"], "chromakey": ["chromakey"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"]}

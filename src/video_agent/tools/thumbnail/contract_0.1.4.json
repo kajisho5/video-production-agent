@@ -1,0 +1,617 @@
+{
+  "schema": "thumbnail-skill/contract@1",
+  "skill_id": "thumbnail-skill",
+  "id": "thumbnail-skill",
+  "name": "thumbnail-skill",
+  "package": "thumbnail-skill",
+  "version": "0.1.4",
+  "kind": "execution",
+  "role": "thumbnail rendering (deterministic execution); not decision, not selection, not design",
+  "description": "Renders a typed ThumbnailDocument (canvas + still-image/video-frame assets + positioned image/text elements) into a validated PNG/JPEG with provenance. Never decides what a thumbnail should show: no best-frame search, no face detection, no OCR, no automatic layout or title generation, no click-through prediction, no A/B or publish decisions. Not an AI agent.",
+  "repository": "https://github.com/kajisho5/thumbnail-skill",
+  "not_provided": [
+    "AI reasoning",
+    "decisions",
+    "production plans",
+    "automatic frame selection",
+    "face/object detection",
+    "OCR",
+    "automatic title or layout generation",
+    "click-through-rate prediction",
+    "A/B testing",
+    "publish decisions",
+    "video editing",
+    "color grading",
+    "subtitle rendering",
+    "arbitrary ffmpeg filters",
+    "shell execution",
+    "network access"
+  ],
+  "tools": [
+    {
+      "tool_id": "thumbnail/validate",
+      "role": "validation",
+      "description": "Validate a ThumbnailDocument (canvas + assets + elements) structurally. Touches no file system, no font, no ffmpeg-skill; renders nothing.",
+      "input": {
+        "document": "ThumbnailDocument"
+      },
+      "output": {
+        "ok": "bool",
+        "document_id": "str",
+        "canvas": "ThumbnailCanvas",
+        "assets": "int",
+        "elements": "int"
+      },
+      "produces_output": false,
+      "writes_media": false,
+      "deterministic": true,
+      "mutates_input": false,
+      "side_effects": []
+    },
+    {
+      "tool_id": "thumbnail/render",
+      "role": "execution",
+      "description": "Render a typed ThumbnailDocument (still image and/or an explicit video frame, positioned image and text elements) into a validated PNG/JPEG artifact with provenance. Never decides what to show: frame timestamps, layout, text and fonts are exactly what the caller specified.",
+      "input": {
+        "document": "ThumbnailDocument",
+        "output": "OutputSpec",
+        "options": "RenderOptions"
+      },
+      "output": {
+        "output": "path",
+        "format": "png|jpeg",
+        "width": "int",
+        "height": "int",
+        "size": "int",
+        "sha256": "str",
+        "reused": "bool",
+        "provenance": "object"
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "mutates_input": false,
+      "idempotency_hint": "same document + same asset/font content + same skill/engine version reuses the cached artifact",
+      "delegates_to": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/look"
+      ],
+      "side_effects": [
+        "writes the output file",
+        "writes a reuse cache entry under the workspace"
+      ]
+    },
+    {
+      "tool_id": "thumbnail/extract_frame",
+      "role": "execution",
+      "description": "Extract exactly the video frame at a caller-given timestamp as a PNG/JPEG. No scene detection, no scoring, no 'best frame' search: one timestamp in, one frame out.",
+      "input": {
+        "source": {
+          "path": "file",
+          "timestamp": "seconds >= 0"
+        },
+        "output": "OutputSpec",
+        "options": "RenderOptions"
+      },
+      "output": {
+        "output": "path",
+        "format": "png|jpeg",
+        "width": "int",
+        "height": "int",
+        "size": "int",
+        "sha256": "str",
+        "reused": "bool",
+        "provenance": "object"
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "mutates_input": false,
+      "idempotency_hint": "same source content + same timestamp + same skill/engine version reuses the cached artifact",
+      "delegates_to": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/look"
+      ],
+      "side_effects": [
+        "writes the output file",
+        "writes a reuse cache entry under the workspace"
+      ]
+    }
+  ],
+  "provides": [
+    {
+      "id": "thumbnail.render",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "thumbnail/render"
+    },
+    {
+      "id": "thumbnail.extract_frame",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "thumbnail/extract_frame"
+    }
+  ],
+  "document": {
+    "schema": "thumbnail-skill/request@1",
+    "id_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    "forbidden_fields": [
+      "af",
+      "args",
+      "argv",
+      "cmd",
+      "command",
+      "commands",
+      "css",
+      "cwd",
+      "env",
+      "eval",
+      "exec",
+      "executable",
+      "ffmpeg",
+      "filter",
+      "filter_complex",
+      "filters",
+      "html",
+      "javascript",
+      "script",
+      "shell",
+      "vf"
+    ],
+    "canvas": {
+      "width": "16..7680",
+      "height": "16..7680",
+      "background": "#RRGGBB(AA), default #000000"
+    },
+    "assets": {
+      "kinds": [
+        "image",
+        "video_frame"
+      ],
+      "max_assets": 32,
+      "video_frame": "explicit timestamp only; this skill never searches for a 'best frame'"
+    },
+    "elements": {
+      "types": [
+        "image",
+        "text"
+      ],
+      "max_elements": 64,
+      "stacking": "z_index, ties broken by document order",
+      "image": {
+        "description": "A still image or an extracted video frame, placed and sized on the canvas.",
+        "fields": {
+          "asset_id": "ref to a declared asset",
+          "position": {
+            "x": "number",
+            "y": "number"
+          },
+          "size": {
+            "width": "int",
+            "height": "int"
+          },
+          "fit": [
+            "cover",
+            "contain",
+            "fill",
+            "none"
+          ],
+          "crop": {
+            "x": "int",
+            "y": "int",
+            "width": "int",
+            "height": "int (optional; source-pixel space)"
+          },
+          "opacity": "0..1",
+          "rotation": [
+            0,
+            90,
+            180,
+            270
+          ]
+        }
+      },
+      "text": {
+        "description": "Literal text (explicit '\\n' for line breaks; no automatic word-wrap or layout decisions).",
+        "fields": {
+          "text": "string, max 2000 chars, max 50 lines",
+          "font_id": "one of ['cjk', 'mono', 'sans', 'sans-bold', 'serif']",
+          "font_size": "6..400",
+          "color": "#RRGGBB(AA)",
+          "position": {
+            "x": "number",
+            "y": "number"
+          },
+          "align": {
+            "horizontal": [
+              "left",
+              "center",
+              "right"
+            ],
+            "vertical": [
+              "top",
+              "middle",
+              "bottom"
+            ]
+          },
+          "line_spacing": "0.5..5.0",
+          "opacity": "0..1",
+          "background": {
+            "color": "#RRGGBB(AA)",
+            "padding": "0..200 (optional)"
+          },
+          "stroke": {
+            "color": "#RRGGBB(AA)",
+            "width": "0..40 (optional)"
+          },
+          "shadow": {
+            "color": "#RRGGBB(AA)",
+            "offset_x": "-200..200",
+            "offset_y": "-200..200 (optional)"
+          }
+        }
+      }
+    }
+  },
+  "output_formats": {
+    "png": {
+      "extensions": [
+        ".png"
+      ],
+      "lossless": true
+    },
+    "jpeg": {
+      "extensions": [
+        ".jpg",
+        ".jpeg"
+      ],
+      "lossless": false
+    }
+  },
+  "platform_presets": {
+    "field": "output.preset",
+    "tools": [
+      "thumbnail/render",
+      "thumbnail/extract_frame"
+    ],
+    "precedence": "explicit document.canvas width+height win over the preset's size; with a preset both may be omitted (the preset's size is used); giving only one of the two is INVALID_REQUEST. The preset's limits are checked either way.",
+    "check": "after rendering, the written artifact's real dimensions (min/max width/height and aspect-ratio range), format and byte size are checked against the preset before it is cached or placed at the output path; a cache hit is checked the same way",
+    "failure": {
+      "code": "VALIDATION_ERROR",
+      "reason": "preset_limit_exceeded",
+      "details": [
+        "preset",
+        "violations [{check, limit?, expected, got}]"
+      ]
+    },
+    "response": "on success, `preset` {name, platform, checked, ok} in the response and `preset` (name) in provenance; absent without a preset",
+    "bytes": "max_bytes in bytes, decimal megabytes (1 MB = 1,000,000 bytes)",
+    "presets": {
+      "youtube": {
+        "platform": "YouTube",
+        "surface": "video custom thumbnail",
+        "width": 1280,
+        "height": 720,
+        "aspect_ratio": {
+          "min": "16:9",
+          "max": "16:9"
+        },
+        "min_width": 640,
+        "min_height": null,
+        "max_width": null,
+        "max_height": null,
+        "formats": [
+          "png",
+          "jpeg"
+        ],
+        "max_bytes": 2000000,
+        "unverified": [],
+        "sources": [
+          "https://support.google.com/youtube/answer/72431"
+        ]
+      },
+      "youtube-shorts": {
+        "platform": "YouTube",
+        "surface": "Shorts custom thumbnail",
+        "width": 1080,
+        "height": 1920,
+        "aspect_ratio": {
+          "min": "9:16",
+          "max": "9:16"
+        },
+        "min_width": null,
+        "min_height": 640,
+        "max_width": null,
+        "max_height": null,
+        "formats": [
+          "png",
+          "jpeg"
+        ],
+        "max_bytes": 50000000,
+        "unverified": [],
+        "sources": [
+          "https://support.google.com/youtube/answer/72431"
+        ]
+      },
+      "tiktok": {
+        "platform": "TikTok",
+        "surface": "video cover (vertical)",
+        "width": 1080,
+        "height": 1920,
+        "aspect_ratio": {
+          "min": "9:16",
+          "max": "9:16"
+        },
+        "min_width": null,
+        "min_height": null,
+        "max_width": 1080,
+        "max_height": 1920,
+        "formats": [
+          "jpeg"
+        ],
+        "max_bytes": 2000000,
+        "unverified": [
+          "width",
+          "height",
+          "aspect_ratio",
+          "max_width",
+          "max_height",
+          "formats",
+          "max_bytes"
+        ],
+        "sources": [
+          "https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide",
+          "https://www.tiktok.com/creator-academy/article/video-covers-thumbnails"
+        ]
+      },
+      "instagram-reels": {
+        "platform": "Instagram",
+        "surface": "Reels cover (vertical)",
+        "width": 1080,
+        "height": 1920,
+        "aspect_ratio": {
+          "min": "9:16",
+          "max": "9:16"
+        },
+        "min_width": 720,
+        "min_height": null,
+        "max_width": null,
+        "max_height": null,
+        "formats": [
+          "png",
+          "jpeg"
+        ],
+        "max_bytes": 2000000,
+        "unverified": [
+          "width",
+          "height",
+          "formats",
+          "max_bytes"
+        ],
+        "sources": [
+          "https://help.instagram.com/1038071743007909"
+        ]
+      },
+      "instagram-feed": {
+        "platform": "Instagram",
+        "surface": "feed photo (square)",
+        "width": 1080,
+        "height": 1080,
+        "aspect_ratio": {
+          "min": "4:5",
+          "max": "1.91:1"
+        },
+        "min_width": 320,
+        "min_height": null,
+        "max_width": null,
+        "max_height": null,
+        "formats": [
+          "png",
+          "jpeg"
+        ],
+        "max_bytes": 2000000,
+        "unverified": [
+          "max_bytes"
+        ],
+        "sources": [
+          "https://help.instagram.com/1631821640426723",
+          "https://www.facebook.com/business/ads-guide/update/image/instagram-feed"
+        ]
+      },
+      "x": {
+        "platform": "X (Twitter)",
+        "surface": "post image (landscape)",
+        "width": 1600,
+        "height": 900,
+        "aspect_ratio": {
+          "min": "16:9",
+          "max": "16:9"
+        },
+        "min_width": null,
+        "min_height": null,
+        "max_width": null,
+        "max_height": null,
+        "formats": [
+          "png",
+          "jpeg"
+        ],
+        "max_bytes": 5000000,
+        "unverified": [
+          "width",
+          "height",
+          "aspect_ratio"
+        ],
+        "sources": [
+          "https://docs.x.com/x-api/media/quickstart/best-practices"
+        ]
+      }
+    }
+  },
+  "fonts": {
+    "font_ids": [
+      "cjk",
+      "mono",
+      "sans",
+      "sans-bold",
+      "serif"
+    ],
+    "resolution": "font_id -> the first existing file among this skill's registered per-platform candidate paths (fonts.py); never an arbitrary caller-supplied path; a font_id with no resolvable file fails MISSING_INPUT, never a silent substitution",
+    "registry": {
+      "sans": {
+        "display_name": "Sans",
+        "role": "default UI sans-serif"
+      },
+      "sans-bold": {
+        "display_name": "Sans Bold",
+        "role": "emphasis / headline sans-serif"
+      },
+      "serif": {
+        "display_name": "Serif",
+        "role": "serif text"
+      },
+      "mono": {
+        "display_name": "Monospace",
+        "role": "monospaced text"
+      },
+      "cjk": {
+        "display_name": "CJK Sans",
+        "role": "Japanese / Chinese / Korean text"
+      }
+    }
+  },
+  "rendering": {
+    "engine": "Pillow",
+    "video_frame_decoding": "delegated to ffmpeg-skill (probe, look --at --no-timecode); this skill never runs ffmpeg itself",
+    "compositing": "Pillow raster operations only (paste/crop/resize/draw); no filter string, no shell, no arbitrary code path"
+  },
+  "execution": {
+    "mode": "local",
+    "canonical_invocation": [
+      "thumbnail",
+      "run",
+      "-",
+      "--json"
+    ],
+    "stdin": "{\"tool\": <tool_id>, \"params\": {...}}",
+    "stdout": "exactly one thumbnail-skill/response@1 document (through run -) or {'ok', 'tool', 'result'}",
+    "shell": false,
+    "arbitrary_executables": false,
+    "arbitrary_filters": false,
+    "network": false,
+    "input_mutation": false,
+    "ai": false,
+    "forbidden_request_fields": [
+      "af",
+      "args",
+      "argv",
+      "cmd",
+      "command",
+      "commands",
+      "css",
+      "cwd",
+      "env",
+      "eval",
+      "exec",
+      "executable",
+      "ffmpeg",
+      "filter",
+      "filter_complex",
+      "filters",
+      "html",
+      "javascript",
+      "script",
+      "shell",
+      "vf"
+    ]
+  },
+  "ffmpeg_skill": {
+    "contract_version": "1.0",
+    "tools_used": [
+      "probe",
+      "look"
+    ],
+    "compatibility": "any version whose probe/look expose flags_required (detected from its contract or --help; no version window)",
+    "flags_required": {
+      "probe": [],
+      "look": [
+        "output",
+        "at",
+        "no_timecode",
+        "json"
+      ]
+    },
+    "flags_optional": {
+      "look": [
+        "overwrite"
+      ]
+    }
+  },
+  "schema_versions": {
+    "contract": "1",
+    "request": "1",
+    "response": "1",
+    "doctor": "1"
+  },
+  "errors": {
+    "codes": [
+      "INVALID_REQUEST",
+      "INVALID_INPUT",
+      "PATH_NOT_ALLOWED",
+      "UNSUPPORTED_OPERATION",
+      "UNSUPPORTED_FORMAT",
+      "MISSING_INPUT",
+      "INVALID_TIME_RANGE",
+      "DEPENDENCY_ERROR",
+      "TOOL_ERROR",
+      "OUTPUT_ERROR",
+      "VALIDATION_ERROR",
+      "CANCELLED",
+      "INTERNAL_ERROR"
+    ],
+    "exit_codes": {
+      "INVALID_REQUEST": 2,
+      "INVALID_INPUT": 3,
+      "PATH_NOT_ALLOWED": 4,
+      "UNSUPPORTED_OPERATION": 5,
+      "UNSUPPORTED_FORMAT": 6,
+      "MISSING_INPUT": 7,
+      "INVALID_TIME_RANGE": 8,
+      "DEPENDENCY_ERROR": 11,
+      "TOOL_ERROR": 12,
+      "OUTPUT_ERROR": 13,
+      "VALIDATION_ERROR": 14,
+      "CANCELLED": 15,
+      "INTERNAL_ERROR": 16
+    },
+    "retryable": {
+      "INVALID_REQUEST": false,
+      "INVALID_INPUT": false,
+      "PATH_NOT_ALLOWED": false,
+      "UNSUPPORTED_OPERATION": false,
+      "UNSUPPORTED_FORMAT": false,
+      "MISSING_INPUT": false,
+      "INVALID_TIME_RANGE": false,
+      "DEPENDENCY_ERROR": false,
+      "TOOL_ERROR": true,
+      "OUTPUT_ERROR": false,
+      "VALIDATION_ERROR": false,
+      "CANCELLED": true,
+      "INTERNAL_ERROR": false
+    },
+    "success_exit_code": 0
+  },
+  "provenance": {
+    "per_output": [
+      "skill",
+      "skill_version",
+      "operation",
+      "engine",
+      "engine_version",
+      "identity",
+      "reused",
+      "assets (sha256, timestamp for video_frame)",
+      "fonts (font_id, path, sha256)",
+      "output_hash"
+    ],
+    "identity": "sha256 over canonical JSON of {document, resolved asset content identity, resolved font content identity, skill/engine version}; a video_frame's identity is its source video's sha256 + timestamp, not the decoded frame's bytes"
+  },
+  "deterministic": true
+}

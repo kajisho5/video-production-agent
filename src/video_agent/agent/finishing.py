@@ -79,7 +79,7 @@ GRAPHICS_SKILL = "motion_graphics"
 # ADR-064: the vocabulary is read from the pinned motion-graphics contract (the data file the adapter pins, read as data so the agent
 # layer never imports a tool package): every element type it offers, each with every parameter it declares, by the contract's names
 # and ranges. A re-pin that adds an element or a parameter changes this vocabulary with it (tests/test_satellite_params.py says so).
-MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.3.json"
+MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.4.json"
 _MOTION_CONTRACT: Dict[str, Any] = json.loads(MOTION_CONTRACT_PATH.read_text(encoding="utf-8"))
 MOTION_ELEMENT_SPECS: Dict[str, Dict[str, Any]] = {str(e["type"]): e for e in _MOTION_CONTRACT["element_types"]}
 # element type → (its `--set` key, the contract parameter that key's value sets; None = the key is a plain switch: the element has no
@@ -103,12 +103,11 @@ ELEMENT_DEFAULT_DURATION = {"title": 5.0, "lower_third": 6.0, "chapter": 5.0, "s
 MOTION_FONTS = tuple(sorted((_MOTION_CONTRACT.get("fonts") or {}).get("registry") or {}))
 # motion-graphics-skill model.py COLOR_RE: a colour name or bare RRGGBB, optionally @alpha (the Skill refuses anything else)
 MOTION_COLOR_RE = re.compile(r"^([A-Za-z]{2,24}|[0-9A-Fa-f]{6})(@(0(\.[0-9]+)?|1(\.0+)?))?$")
-# The contract types every colour parameter `color` (a name or RRGGBB, optionally @alpha), but the elements it draws with ffmpeg-skill's
-# graphics templates (title, lower_third, bug, chapter, progress, countdown, sticker, hook, meme) pass the colour to graphics.py
-# --primary / --text-color, which accepts RRGGBB only (_common/color.py color_hex: "colour must be RRGGBB", measured on the real Skills,
-# ADR-064). The agent accepts the subset that runs, bare RRGGBB, for those elements; the contract's wider type is motion-graphics-skill's to fix.
-GRAPHICS_TEMPLATE_SCRIPT = "graphics"   # the engine tool name after the package prefix, as the contract's element_types[].tool spells it
-MOTION_TEMPLATE_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")   # and the Skill itself refuses a leading #
+# motion-graphics-skill 0.2.4 (its ADR-20) publishes the colour names it accepts (`colors.named`: FFmpeg's own table, matched in any case)
+# and marks every colour parameter that cannot take @alpha with `alpha: false` (the graphics-template colours: ffmpeg-skill/graphics
+# draws them opaque, and the Skill converts a name to its RRGGBB itself). The agent accepts exactly that, read from the pinned contract:
+# a name from the table or bare RRGGBB everywhere, @alpha only where the parameter's schema does not say `alpha: false` (ADR-067).
+MOTION_COLOR_NAMES = frozenset(str(n).lower() for n in ((_MOTION_CONTRACT.get("colors") or {}).get("named") or {}))
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".m4v", ".webm", ".mxf", ".avi", ".ts", ".mts", ".m2ts")
 
 # ---- thumbnail
@@ -201,9 +200,9 @@ def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, A
     return out
 
 
-def _motion_param(v: Any, key: str, name: str, spec: Dict[str, Any], tool: str = "") -> Any:
-    """One element parameter checked against the pinned contract's schema for it (type, range, max_length, enum). `tool` is the
-    engine tool the contract says draws the element: a template element's colour is narrowed to bare RRGGBB (ADR-064)."""
+def _motion_param(v: Any, key: str, name: str, spec: Dict[str, Any]) -> Any:
+    """One element parameter checked against the pinned contract's schema for it (type, range, max_length, enum; for a colour, the
+    contract's colour-name table and the parameter's `alpha: false`, ADR-067)."""
     t = spec.get("type")
     if t == "path":
         return _file(v, key, IMAGE_EXTENSIONS if name == "image_path" else VIDEO_EXTENSIONS)
@@ -214,9 +213,14 @@ def _motion_param(v: Any, key: str, name: str, spec: Dict[str, Any], tool: str =
     if t == "color":
         if isinstance(v, str) and len(v) > 32:
             raise EditRequirementError(f"{key} must be a colour of at most 32 characters, got {v!r}")
-        if tool.rsplit("/", 1)[-1] == GRAPHICS_TEMPLATE_SCRIPT:   # measured: ffmpeg-skill graphics.py takes --primary / --text-color as RRGGBB only (a name or @alpha exits 1)
-            return _token(v, key, MOTION_TEMPLATE_COLOR_RE, "a bare RRGGBB hex colour (e.g. FFCC00): the graphics templates take no colour names or @alpha")
-        return _token(v, key, MOTION_COLOR_RE, "a colour name or RRGGBB hex, optionally @alpha (e.g. white, FFCC00, black@0.5)")
+        opaque = spec.get("alpha") is False
+        c = _token(v, key, MOTION_COLOR_RE, "a colour name or RRGGBB hex" + ("" if opaque else ", optionally @alpha") + " (e.g. white, FFCC00" + ("" if opaque else ", black@0.5") + ")")
+        base, _, alpha = c.partition("@")
+        if not re.fullmatch(r"[0-9A-Fa-f]{6}", base) and base.lower() not in MOTION_COLOR_NAMES:
+            raise EditRequirementError(f"{key}: {base!r} is not a colour name motion-graphics-skill knows (its contract's colors.named table); give RRGGBB hex instead")
+        if alpha and opaque:
+            raise EditRequirementError(f"{key} takes no @alpha: motion-graphics-skill draws this colour opaque (its contract says alpha: false); give RRGGBB or a colour name")
+        return c
     if t == "position":
         return _position(v, key)
     if t == "font":
@@ -258,7 +262,7 @@ def parse_motion_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, 
             key = base if name == main_param else f"{base}.{name}"
             if key not in vals:
                 continue
-            p[MOTION_PATH_PARAMS.get(name, name)] = _motion_param(vals[key], key, name, pspec, str(spec.get("tool") or ""))
+            p[MOTION_PATH_PARAMS.get(name, name)] = _motion_param(vals[key], key, name, pspec)
         for group in (c.get("at_least_one_of") for c in spec.get("constraints") or [] if c.get("at_least_one_of")):
             if not any(n in p for n in group):
                 raise EditRequirementError(f"{base} needs at least one of " + " / ".join(f"{base}.{n}" for n in group) + " (the contract's constraint)")

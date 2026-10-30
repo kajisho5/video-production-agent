@@ -2259,6 +2259,18 @@ class AudioProductionRealTests(unittest.TestCase):
         dur, ch, sr, has_v = self._probe(res[-1]["output"])
         self.assertAlmostEqual(dur, 16.0, delta=0.1, msg="the mix follows its first input"); self.assertEqual((ch, has_v), (2, False))
 
+    def test_voice_cleanup_end_to_end(self):
+        """ADR-068 on the real Skill (audio-production 0.4.3): `audio.voice_cleanup=light` → VOICE_CLEANUP (ffmpeg-skill/audio --voice light) before
+        the FFT noise reduction; the Skill records the level it ran. With an ffmpeg-skill older than 1.13 the Skill runs medium only and refuses
+        light (TOOL_ERROR voice_level_unsupported, not retried): that path is covered against the fake (tests/test_satellite_params.py)."""
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc, p, out, res, prov = self._run("V", [self.wav], {"audio.production": True, "audio.voice_cleanup": "light", "audio.noise_reduction.strength_db": 30},
+                                           ["audio_cut", "audio_voice_cleanup", "audio_noise_reduction"], ["CUT", "VOICE_CLEANUP", "NOISE_REDUCTION"])
+        self.assertEqual(res[1]["data"]["operation"]["parameters"], {"level": "light", "audio_stream": 0})
+        dur, ch, sr, has_v = self._probe(res[-1]["output"])
+        self.assertEqual((ch, has_v), (2, False)); self.assertGreater(dur, 5.0)
+
     def test_refusals_on_real_skill(self):
         if not self.ap:
             self.skipTest("needs an audio-production-skill checkout")
@@ -2477,6 +2489,24 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual(recs["text_overlay"]["parameters"]["font"]["font_id"], "system:dejavu-serif")
         dur, size, audio, _ = self._probe(res["output"])
         self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
+
+    def test_template_colour_names_render(self):
+        """ADR-067 on the real motion-graphics-skill (0.2.4, its ADR-20): a colour name on a template element (chapter / hook / progress)
+        is planned and rendered (the Skill converts it to RRGGBB for ffmpeg-skill/graphics); ADR-064 measured the same request failing
+        mid-render before. @alpha on a template colour is refused at planning, before anything runs."""
+        self._need("motion-graphics")
+        svc = self._svc("mg_names")
+        reqs = {"motion.chapter": "Part 2", "motion.chapter.primary_color": "navy", "motion.hook": "Wait", "motion.hook.text_color": "White",
+                "motion.hook.primary_color": "darkorange", "motion.progress": True, "motion.progress.primary_color": "Crimson"}
+        ir, p = self._plan(svc, [self.a], reqs, profile="generic", name="mg_names")
+        out = self._render(svc, p)
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "motion-graphics/run")
+        self.assertTrue(res["ok"] and os.path.isfile(res["output"]), res)
+        recs = {o["type"]: o for o in res["data"]["operations"]}
+        self.assertEqual((recs["chapter"]["parameters"]["primary_color"], recs["hook"]["parameters"]["text_color"], recs["progress"]["parameters"]["primary_color"]),
+                         ("navy", "White", "Crimson"), "the Skill records the request's own value; the conversion is its own")
+        with self.assertRaises(ValueError):
+            svc.plan([self.a], "generic", user_requirements={"motion.chapter": "x", "motion.chapter.primary_color": "navy@0.5"}, params={"offline": True})
 
     def test_motion_placement_blocks_after_a_turn(self):
         """ADR-064 on the real resolver: {x: 1000} fits the 1280x720 source but not the 720x1280 picture a quarter turn delivers."""

@@ -567,6 +567,92 @@ NEW_ELEMENTS = {"motion.bug": "@studio", "motion.bug.position": "top-left", "mot
                 "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green"}
 
 
+VOICE_CAPS = PipelineCaps(extra=AUDIO_PRODUCTION_CAPS + [f"audio-production:{t}" for t in ("VOICE_CLEANUP", "NOISE_REDUCTION", "NORMALIZE", "GAIN")])
+
+
+class AudioVoiceCleanupTests(unittest.TestCase):
+    """audio.voice_cleanup=light|medium|strong → audio-production VOICE_CLEANUP (ADR-068, audio-production-skill 0.4.3)."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        clear_modes()
+
+    def test_vocabulary_matches_the_pinned_contract(self):
+        from video_agent.agent.audio import AUDIO_ORDER, OPERATIONS, VOICE_CLEANUP_LEVELS
+        c = audio_contract()
+        self.assertEqual(c["version"], "0.4.3")
+        vc = {o["type"]: o for o in c["operations"]}["VOICE_CLEANUP"]
+        self.assertEqual(set(vc["parameters"]), {"level", "audio_stream"})
+        self.assertEqual((tuple(vc["parameters"]["level"]["enum"]), vc["parameters"]["level"]["required"], "default" in vc["parameters"]["level"]), (VOICE_CLEANUP_LEVELS, True, False))
+        self.assertEqual(OPERATIONS["audio.voice_cleanup"], {"skill": "audio_voice_cleanup", "type": "VOICE_CLEANUP", "params": ("level",), "risk": "MEDIUM"})
+        self.assertEqual(AUDIO_ORDER.index("audio.voice_cleanup") + 1, AUDIO_ORDER.index("audio.noise_reduction"), "voice clean-up runs right before noise reduction")
+        self.assertTrue({"filter:highpass", "filter:deesser"} <= set(vc["required_capabilities"]))
+        from video_agent.capabilities.resolver import FILTERS
+        self.assertEqual((FILTERS["highpass"], FILTERS["deesser"]), (["highpass"], ["deesser"]), "the resolver measures the filters VOICE_CLEANUP requires")
+        from video_agent.skills import default_registry
+        spec = default_registry().get("audio_voice_cleanup")
+        self.assertEqual((spec.tools, spec.inputs["level"]), (["audio-production/run"], "light|medium|strong"))
+        self.assertIn("audio-production:VOICE_CLEANUP", spec.required_capabilities)
+
+    def test_requirements_and_refusals(self):
+        for lvl in ("light", "medium", "STRONG"):
+            self.assertEqual(parse_audio_requirements(reqs({"audio.production": True, "audio.voice_cleanup": lvl}))["voice_cleanup"], {"level": lvl.lower()})
+        for bad, msg in (({"audio.voice_cleanup": "medium"}, "audio.production=true"), ({"audio.production": True, "audio.voice_cleanup": "loud"}, "one of"),
+                         ({"audio.production": True, "audio.voice_cleanup": True}, "one of")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse_audio_requirements(reqs(bad))
+            self.assertIn(msg, str(cm.exception), str(bad))
+            with self.assertRaises(ValueError, msg=str(bad)):
+                _check_requirement_keys(bad)
+        self.assertIn("audio.voice_cleanup", BRIEF_REQUIREMENT_KEYS)
+        op = {"type": "audio.voice_cleanup", "asset": "a", "level": "strong"}
+        self.assertEqual(lower_audio_op("audio-production/run", op, "a", "a_vc"), {"operation": "VOICE_CLEANUP", "input": "a", "level": "strong", "output": "a_vc"})
+
+    def test_pipeline_decision_ir_step_and_skill_request(self):
+        v = pipeline_media(self.tmp, "voice.wav", video=False, duration=16.0)
+        svc = pipeline_service(self.tmp, caps=VOICE_CAPS)
+        r = plan_and_render(svc, [v], {"audio.production": True, "audio.voice_cleanup": "light", "audio.noise_reduction.strength_db": 30, "audio.gain": -2}, profile="generic", name="vc")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        self.assertEqual([op["type"] for op in d["audio"]["operations"] if op["type"] != "audio.cut"], ["audio.voice_cleanup", "audio.noise_reduction", "audio.gain"])
+        dec = next(x for x in d["decisions"] if x["subject"] == "audio.voice_cleanup")
+        self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["basis"]["approval"]["key"], dec["params"]["level"]), ("TRANSFORM", "AUTO", "USER", "audio.voice_cleanup.approval", "light"))
+        self.assertIn("engine release 1.13+", dec["reason"])
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "audio_voice_cleanup")
+        self.assertEqual((step["tool"], step["params"]), ("audio-production/run", {"asset": ids_first(d), "level": "light"}))
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [x for x in out["execution"]["results"] if x["tool"] == "audio-production/run" and x["data"]["operation_type"] != "CUT"]
+        self.assertEqual([x["data"]["operation_type"] for x in res], ["VOICE_CLEANUP", "NOISE_REDUCTION", "GAIN"])
+        self.assertEqual(res[0]["data"]["operation"]["parameters"], {"level": "light"})
+        # the validator refuses a level outside the contract's enum in a tampered IR
+        from video_agent.project.validator import check_audio_operations
+        bad = json.loads(json.dumps(d))
+        next(op for op in bad["audio"]["operations"] if op["type"] == "audio.voice_cleanup")["level"] = "loud"
+        self.assertTrue(any("audio.voice_cleanup: level 'loud'" in e for e in check_audio_operations(bad)), check_audio_operations(bad))
+
+    def test_an_older_engine_refuses_light_and_strong_without_retrying(self):
+        """ffmpeg-skill < 1.13 runs only medium: the Skill refuses strong with TOOL_ERROR voice_level_unsupported (retryable false); the
+        agent stops the job there with the levels the engine offers, and never substitutes medium."""
+        v = pipeline_media(self.tmp, "voice.wav", video=False, duration=16.0)
+        os.environ["FAKE_AP_MODE"] = "voice_engine_old"
+        svc = pipeline_service(self.tmp, caps=VOICE_CAPS)
+        out = plan_and_render(svc, [v], {"audio.production": True, "audio.voice_cleanup": "strong"}, profile="generic", name="vc_old")["out"]
+        self.assertNotEqual(out["execution"]["status"], "COMPLETED")
+        failed = [x for x in out["execution"]["results"] if not x["ok"]]
+        self.assertEqual(len(failed), 1, "one attempt: not retried")
+        err = failed[0]["data"]["error"]
+        self.assertEqual((err["code"], err["retryable"], err["details"]["reason"], err["details"]["available_levels"]), ("TOOL_ERROR", False, "voice_level_unsupported", ["medium"]))
+        self.assertFalse([x for x in out["execution"]["results"] if x["ok"] and x["tool"] == "audio-production/run" and x["data"].get("operation_type") == "VOICE_CLEANUP"])
+
+
+def ids_first(d):
+    return list(d["assets"])[0]
+
+
 class MotionGraphicsElementTests(unittest.TestCase):
     """Every element type and parameter of the pinned motion-graphics contract (ADR-064): `motion.<element>` + `motion.<element>.<parameter>`
     → decision `graphics.<type>` → one graphics.render element → the Skill request, with placement checked against the planned picture."""
@@ -616,7 +702,8 @@ class MotionGraphicsElementTests(unittest.TestCase):
         png, clip = self._files()
         for bad, msg in (({"motion.countdown": True, "motion.countdown.count_from": 61}, "within"), ({"motion.countdown": True, "motion.countdown.count_from": 2.5}, "integer"),
                          ({"motion.bug": "x", "motion.bug.position": "center"}, "one of"), ({"motion.sticker": "x" * 201}, "at most 200"),
-                         ({"motion.hook": "x", "motion.hook.text_color": "white"}, "bare RRGGBB"), ({"motion.chapter": "x", "motion.chapter.primary_color": "FFCC00@0.5"}, "bare RRGGBB"),
+                         ({"motion.hook": "x", "motion.hook.text_color": "white@0.5"}, "takes no @alpha"), ({"motion.chapter": "x", "motion.chapter.primary_color": "FFCC00@0.5"}, "takes no @alpha"),
+                         ({"motion.hook": "x", "motion.hook.primary_color": "notacolour"}, "not a colour name"), ({"motion.text": "x", "motion.text.box_color": "random@0.5"}, "not a colour name"),
                          ({"motion.text": "x", "motion.text.font_color": "#FFCC00"}, "colour name"), ({"motion.text": "x", "motion.text.font": "Arial"}, "registry font"),
                          ({"motion.text": "x", "motion.text.border_width": 21}, "within"), ({"motion.text": "x", "motion.text.box": "maybe"}, "true or false"),
                          ({"motion.video": clip, "motion.video.chromakey_similarity": 0}, "within"), ({"motion.video": png}, "one of"),
@@ -633,6 +720,29 @@ class MotionGraphicsElementTests(unittest.TestCase):
                 _check_requirement_keys({unknown: 1})
             self.assertIn("unknown requirement key", str(cm.exception))
         self.assertEqual(parse_motion_requirements(reqs({"motion.progress": False})), {}, "a switch set to false asks for nothing")
+
+    def test_template_colours_follow_the_contract(self):
+        """ADR-067 (motion-graphics-skill 0.2.4, its ADR-20): a template element's colour takes a name from the contract's colors.named
+        table (any case; the Skill converts it to RRGGBB) as well as bare RRGGBB, and @alpha is refused exactly where the parameter's
+        schema says alpha: false -- read from the pin, not from the engine tool's name. Overlay colours still take @alpha."""
+        from video_agent.agent.finishing import MOTION_COLOR_NAMES, MOTION_ELEMENT_SPECS
+        self.assertEqual(MOTION_COLOR_NAMES, frozenset(motion_contract()["colors"]["named"]), "the names are the pinned contract's table")
+        self.assertIn("navy", MOTION_COLOR_NAMES); self.assertNotIn("random", MOTION_COLOR_NAMES)
+        opaque = sorted((t, k) for t, e in MOTION_ELEMENT_SPECS.items() for k, ps in e["parameters"].items() if ps["type"] == "color" and ps.get("alpha") is False)
+        self.assertEqual(opaque, sorted([("title", "text_color"), ("title", "primary_color"), ("lower_third", "text_color"), ("lower_third", "primary_color"),
+                                         ("bug", "text_color"), ("chapter", "primary_color"), ("progress", "primary_color"), ("countdown", "primary_color"),
+                                         ("sticker", "primary_color"), ("hook", "text_color"), ("hook", "primary_color")]), "meme has no colour parameter")
+        got = parse_motion_requirements(reqs({"motion.hook": "x", "motion.hook.text_color": "white", "motion.hook.primary_color": "Navy",
+                                              "motion.chapter": "x", "motion.chapter.primary_color": "FFCC00", "motion.title": "t", "motion.title.primary_color": "teal",
+                                              "motion.text": "x", "motion.text.font_color": "Yellow@0.8", "motion.text.box_color": "000000@0.5"}))
+        self.assertEqual(got["hook"]["params"], {"title": "x", "text_color": "white", "primary_color": "Navy"})
+        self.assertEqual(got["chapter"]["params"]["primary_color"], "FFCC00"); self.assertEqual(got["title"]["params"]["primary_color"], "teal")
+        self.assertEqual((got["text_overlay"]["params"]["font_color"], got["text_overlay"]["params"]["box_color"]), ("Yellow@0.8", "000000@0.5"))
+        for key in ("motion.title.text_color", "motion.lower_third.primary_color", "motion.bug.text_color", "motion.progress.primary_color", "motion.countdown.primary_color", "motion.sticker.primary_color"):
+            base = key.rsplit(".", 1)[0]
+            with self.assertRaises(EditRequirementError, msg=key) as cm:
+                parse_motion_requirements(reqs({base: True if base in ("motion.progress", "motion.countdown") else "x", key: "red@1.0"}))
+            self.assertIn("takes no @alpha", str(cm.exception))
 
     def test_set_and_brief_keys(self):
         """--set takes every key; a brief may yield all of them but the two file paths (only the user names a file the agent reads)."""

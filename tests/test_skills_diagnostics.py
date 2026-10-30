@@ -7,8 +7,9 @@ The "RealData" tests below use real `provides[]` excerpts captured from each Ski
 actual, merged `main` (2026-09-06) as literal fixtures -- no network access, matching
 this test suite's own existing convention (`tests/fake_qc.py` and friends) -- combined
 with this Agent's *real*, currently-registered `PACKAGE`/`default_registry()` data, so
-they double as regression tests for the two real tool-id drift cases (`qc-skill`,
-`subtitle-skill`) and the shared-tool-id granularity limit (`color-grading-skill`)
+they double as regression tests for the real tool-id drift case (`qc-skill`; `subtitle-skill`'s
+was fixed by its #20 and is now read from the pinned contract as PROVIDES_VALID) and the
+shared-tool-id granularity limit (`color-grading-skill`)
 found by `kajisho5/AI-video-production-OS`'s own exhaustive investigation
 (`docs/ecosystem/WORK_QUEUE.md` item 1, 2026-09-06).
 """
@@ -153,14 +154,21 @@ class RealDataRegressionTests(unittest.TestCase):
         # confirms WORK_QUEUE item 1's finding: real tool_id is "qc/run" everywhere, never "qc/check"
         self.assertTrue(all(f.evidence.get("agent_tool_ids") == ["qc/check", "qc/inspect"] for f in findings if f.status == "PROVIDES_MISMATCH"))
 
-    def test_real_subtitle_skill_both_capabilities_are_self_declared_mismatch(self):
+    def test_real_subtitle_skill_both_capabilities_are_valid(self):
+        """subtitle-skill #20 (0.2.1, its ADR-002) publishes provides[] tool ids as `subtitle/generate` / `subtitle/render`, the ids
+        this Agent's adapter registers: read from the pinned contract (re-pinned from subtitle-skill main), both are PROVIDES_VALID.
+        Before #20 the contract said `subtitle-skill/...` and both were PROVIDES_MISMATCH (the 2026-09-06 finding)."""
         from video_agent.skills import default_registry
         from video_agent.tools.subtitle import PACKAGE as SUBTITLE_PACKAGE
+        from video_agent.tools.subtitle.adapter import pinned_contract
 
-        subtitle_provides = provides(("subtitle.generate", "subtitle-skill/generate"), ("subtitle.render", "subtitle-skill/render"))
-        findings = check_provides(SUBTITLE_PACKAGE, subtitle_provides, default_registry().all())
-        mismatches = {f.capability_id for f in findings if f.status == "PROVIDES_MISMATCH"}
-        self.assertEqual(mismatches, {"subtitle.generate", "subtitle.render"})
+        contract = pinned_contract()
+        self.assertEqual(sorted((p["id"], p["tool_id"]) for p in contract["provides"]), [("subtitle.generate", "subtitle/generate"), ("subtitle.render", "subtitle/render")])
+        findings = check_provides(SUBTITLE_PACKAGE, contract, default_registry().all())
+        published = [f for f in findings if f.capability_id]
+        self.assertEqual({(f.capability_id, f.tool_id, f.status) for f in published},
+                         {("subtitle.generate", "subtitle/generate", "PROVIDES_VALID"), ("subtitle.render", "subtitle/render", "PROVIDES_VALID")})
+        self.assertFalse([f for f in findings if f.status in ("PROVIDES_MISMATCH", "CAPABILITY_MISSING")], findings)
 
     def test_real_color_grading_skill_shared_tool_id_all_valid_but_annotated(self):
         """color-grading-skill really does publish all 5 Capability ids through the one generic

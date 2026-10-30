@@ -53,6 +53,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  # ADR-063: the mix (another way to build the audio programme), noise reduction and dynamics: CONFIRM, waived by their own explicit requirement
                  "audio.mix": ("audio.mix.approval", "CONFIRM"), "audio.noise_reduction": ("audio.noise_reduction.approval", "CONFIRM"),
                  "audio.dynamics": ("audio.dynamics.approval", "CONFIRM"),
+                 # ADR-068: the speech clean-up preset, CONFIRM like noise reduction, waived by its own explicit requirement
+                 "audio.voice_cleanup": ("audio.voice_cleanup.approval", "CONFIRM"),
                  # explicit camera-switch programme (ADR-045): an explicit switch list waives CONFIRM like any other edit.* op; never AUTO by policy default
                  "video.switch": ("video.switch.approval", "CONFIRM"),
                  # ADR-046 Priority A batch: CONFIRM by default like every other edit.* op (an explicit USER
@@ -494,6 +496,15 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            risk=AUDIO_OPERATIONS["audio.gain"]["risk"], approval=approval_for("audio.gain", explicit=m["audio.gain"]), provenance="USER",
                            params={"asset_id": subject, "gain_db": audio["gain"]}, requirements=audio["requirements"], serves_intent=None)
                 planned_ops.append("audio_gain")
+            if audio.get("voice_cleanup") is not None:   # ADR-068: VOICE_CLEANUP's one typed level, first in the chain
+                lvl = audio["voice_cleanup"]["level"]
+                eng.decide(subject="audio.voice_cleanup", type="TRANSFORM", decision=f"voice clean-up ({lvl}) on {subject}",
+                           reason=f"user asked for speech clean-up ({sw.source}); the engine's {lvl} speech chain runs first, on the raw signal"
+                           + ("" if lvl == "medium" else "; this level needs engine release 1.13+ (an older engine runs medium only and the Skill refuses the step)"),
+                           confidence=1.0, evidence=ev, risk=AUDIO_OPERATIONS["audio.voice_cleanup"]["risk"],
+                           approval=approval_for("audio.voice_cleanup", explicit=m["audio.voice_cleanup"]), provenance="USER",
+                           params={"asset_id": subject, "level": lvl}, requirements=audio["requirements"], serves_intent=None)
+                planned_ops.append("audio_voice_cleanup")
             if audio.get("noise_reduction") is not None:   # ADR-063: NOISE_REDUCTION's own parameters, by name
                 nr = audio["noise_reduction"]
                 eng.decide(subject="audio.noise_reduction", type="TRANSFORM", decision=f"noise reduction ({nr['mode']}, {nr['strength_db']:g} dB) on {subject}",
@@ -549,7 +560,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove")) for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
             if not planned_ops and subject not in normalised and not cut_planned and not audio_programme_ok and any(has_video(a.technical) for a in src):
                 eng.decide(subject="audio.production", type="BLOCK", decision=f"BLOCK: nothing to do on the audio path for {subject}",
-                           reason="a video container on the audio path needs at least one audio operation (cut / normalise / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
+                           reason="a video container on the audio path needs at least one audio operation (cut / normalise / voice clean-up / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
                            evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=audio["requirements"])
             for sk in planned_ops:
                 cap_block(sk, f"capability.{sk}")

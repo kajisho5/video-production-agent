@@ -28,12 +28,15 @@ Vocabulary and arithmetic only, no execution:
   three stages `audio.dynamics.<gate|compressor|limiter>` (true: the stage with the Skill's own defaults) + `.<field>` (each stage
   field of the contract, e.g. `audio.dynamics.compressor.ratio`). The mix keeps every input on its own timeline from 0 s, so
   no silence is cut from a mixed input. Ducking: the pinned MIX has none (no sidechain parameter), so none is planned.
-- **Fixed order** after the cut: concat | mix → noise reduction → gain → channels → dynamics → fade_in → fade_out → normalize
+- **Voice clean-up** (ADR-068, audio-production-skill 0.4.3): `audio.voice_cleanup=light|medium|strong` → VOICE_CLEANUP (the engine's
+  speech chain: highpass / de-esser / FFT denoise / compression / limiter by level). light / strong need engine release 1.13+; an
+  older engine runs medium only and the Skill refuses the others with TOOL_ERROR `voice_level_unsupported` (never substituted).
+- **Fixed order** after the cut: concat | mix → voice clean-up → noise reduction → gain → channels → dynamics → fade_in → fade_out → normalize
   (noise is estimated on the raw signal, dynamics act on the gained / laid-out signal, fades are not pumped by a compressor,
   loudness last so the delivered level is the normalised one).
-- **Four stages:** the Skill supports 14 operation types; the adapter lowers every declared type; the planner generates the
+- **Four stages:** the Skill supports 15 operation types (0.4.3); the adapter lowers every declared type; the planner generates the
   ones listed here (TRIM as a cut, CUT, NORMALIZE, GAIN, FADE_IN, FADE_OUT, MONO / STEREO / DOWNMIX, CONCAT, and since ADR-063
-  MIX, NOISE_REDUCTION, DYNAMICS); SILENCE_REMOVE (the agent already subtracts margins itself) is executable through the
+  MIX, NOISE_REDUCTION, DYNAMICS, since ADR-068 VOICE_CLEANUP); SILENCE_REMOVE (the agent already subtracts margins itself) is executable through the
   adapter but not planned.
 """
 from __future__ import annotations
@@ -53,6 +56,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "audio.concat":   {"skill": "audio_concat",   "type": "CONCAT",   "params": ("crossfade",), "risk": "MEDIUM"},
     # ADR-063: the other way to build the audio programme (2..8 inputs summed; the first sets the length), and two chain operations
     "audio.mix":      {"skill": "audio_mix",      "type": "MIX",      "params": ("levels",), "risk": "MEDIUM"},
+    # ADR-068: audio-production-skill 0.4.3's speech clean-up preset (ffmpeg-skill/audio --voice <level>), one typed level
+    "audio.voice_cleanup": {"skill": "audio_voice_cleanup", "type": "VOICE_CLEANUP", "params": ("level",), "risk": "MEDIUM"},
     "audio.noise_reduction": {"skill": "audio_noise_reduction", "type": "NOISE_REDUCTION", "params": ("mode", "strength_db"), "risk": "MEDIUM"},
     "audio.dynamics": {"skill": "audio_dynamics", "type": "DYNAMICS", "params": ("gate", "compressor", "limiter"), "risk": "MEDIUM"},
     "audio.gain":     {"skill": "audio_gain",     "type": "GAIN",     "params": ("gain_db",), "risk": "LOW"},
@@ -66,10 +71,10 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
 }
 SKILL_OF = {k: v["skill"] for k, v in OPERATIONS.items()}
 # the order the planner / compiler apply audio operations on one subject (after the per-asset cut and the concat)
-AUDIO_ORDER = ("audio.noise_reduction", "audio.gain", "audio.mono", "audio.stereo", "audio.downmix", "audio.dynamics", "audio.fade_in", "audio.fade_out", "audio.loudness")
+AUDIO_ORDER = ("audio.voice_cleanup", "audio.noise_reduction", "audio.gain", "audio.mono", "audio.stereo", "audio.downmix", "audio.dynamics", "audio.fade_in", "audio.fade_out", "audio.loudness")
 PROGRAMME_OPS = ("audio.concat", "audio.mix")   # the two ways to build PROGRAMME_AUDIO from 2+ inputs (mutually exclusive)
 CHANNEL_SKILLS = ("audio_mono", "audio_stereo", "audio_downmix")
-# ADR-063: the pinned contract's parameters (audio-production 0.4.2; tests/test_satellite_params.py checks them against it)
+# ADR-063: the pinned contract's parameters (audio-production 0.4.3, which added VOICE_CLEANUP; tests/test_satellite_params.py checks them against it)
 MAX_MIX_INPUTS = 8                                   # contract max_mix_inputs / MIX.inputs.max
 MIX_GAIN_RANGE = (-60.0, 60.0)                       # MIX.levels[].gain_db
 NOISE_REDUCTION_MODES = ("fft",)                     # NOISE_REDUCTION.mode (enum; only afftdn is implemented)
@@ -83,11 +88,15 @@ DYNAMICS_STAGES: Dict[str, Dict[str, Tuple[float, float]]] = {   # DYNAMICS.<sta
     "compressor": {"threshold_db": (-60.0, 0.0), "ratio": (1.0, 20.0), "attack_ms": (0.01, 2000.0), "release_ms": (0.01, 9000.0), "makeup_db": (0.0, 36.0), "knee_db": (1.0, 8.0)},
     "limiter": {"ceiling_db": (-24.0, 0.0), "attack_ms": (0.1, 80.0), "release_ms": (1.0, 8000.0)},
 }
+# ADR-068: VOICE_CLEANUP.level (required enum, no default). light / strong need an ffmpeg-skill whose --voice takes a level (>= 1.13);
+# with an older one the Skill runs only `medium` and refuses the others before any tool runs (TOOL_ERROR voice_level_unsupported).
+VOICE_CLEANUP_LEVELS = ("light", "medium", "strong")
+VOICE_CLEANUP_KEY = "audio.voice_cleanup"
 MIX_KEYS = ("audio.mix", "audio.mix.levels")
 NOISE_REDUCTION_KEYS = ("audio.noise_reduction.strength_db", "audio.noise_reduction.mode")
 DYNAMICS_KEYS = tuple(k for st, fields in DYNAMICS_STAGES.items() for k in (f"audio.dynamics.{st}",) + tuple(f"audio.dynamics.{st}.{f}" for f in fields))
 REQUIREMENT_KEYS = ("audio.production", "audio.extract", "audio.gain", "audio.fade_in", "audio.fade_out", "audio.channels", "audio.concat", "audio.concat.crossfade", "audio.sample_rate") \
-    + MIX_KEYS + NOISE_REDUCTION_KEYS + DYNAMICS_KEYS
+    + MIX_KEYS + (VOICE_CLEANUP_KEY,) + NOISE_REDUCTION_KEYS + DYNAMICS_KEYS
 SAMPLE_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000)
 GAIN_RANGE = (-60.0, 60.0)
 FADE_RANGE = (0.001, 3600.0)
@@ -153,6 +162,10 @@ def parse_audio_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
             if int(sr) != float(sr) or int(sr) not in SAMPLE_RATES:
                 raise EditRequirementError(f"audio.sample_rate must be one of {SAMPLE_RATES}, got {v!r}")
             out["sample_rate"] = int(sr)
+        elif key == VOICE_CLEANUP_KEY:   # ADR-068: the level itself is the value (the contract has no default, none is guessed)
+            if not isinstance(v, str) or v.strip().lower() not in VOICE_CLEANUP_LEVELS:
+                raise EditRequirementError(f"audio.voice_cleanup must be one of {VOICE_CLEANUP_LEVELS} (the Skill's speech clean-up presets), got {v!r}")
+            out["voice_cleanup"] = {"level": v.strip().lower()}
         elif key in MIX_KEYS or key in NOISE_REDUCTION_KEYS or key in DYNAMICS_KEYS:
             continue   # ADR-063: read together below (each operation from all of its keys)
     if "crossfade" in out and not out.get("concat"):

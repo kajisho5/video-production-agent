@@ -5,7 +5,7 @@ small self-describing output file (the format tests/fake_adapter.py probes), and
 
   ok | reused | tool_error | tool_error_final | output_missing | validation_error | cancelled | timeout | hang | malformed | empty |
   two_docs | text | nonzero_ok | wrong_schema | wrong_skill | wrong_version | bad_contract | contract_fail | contract_drift |
-  hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance
+  hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance | voice_engine_old
 
 FAKE_AP_CALLS: a file every invocation (subcommand + argv) is appended to (security tests read it). Never runs ffmpeg or
 ffmpeg-skill, never imports audio_production. Test double only."""
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "audio_production" / "contract_0.4.2.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "audio_production" / "contract_0.4.3.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_AP_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_AP_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -298,6 +298,9 @@ def main() -> int:
     segments = [{"timeline": {"start": 0.0, "end": dur}, "source_id": tracks[inputs[0][6:]]["source_id"], "source": {"start": 0.0, "end": dur}, "input_index": 0}]
     record = {"node_id": f"op:{op['op_id']}", "operation_id": op_id, "type": t, "implicit": False, "tool": tool, "required_capabilities": OPS[t]["required_capabilities"], "inputs": inputs,
               "parameters": params, "status": "planned", "expected_duration": dur, "input_hashes": src_hashes, "seconds": 0.0, "segments": segments, "measurements": {}, "tool_commands_observed": []}
+    if MODE == "voice_engine_old" and t == "VOICE_CLEANUP" and params.get("level") != "medium":   # like the real Skill with ffmpeg-skill < 1.13 (dry run included)
+        return err("TOOL_ERROR", f"op {op['op_id']}: VOICE_CLEANUP level {params.get('level')!r} is not offered by the located ffmpeg-skill (1.12.0); its --voice runs ['medium']",
+                   {"reason": "voice_level_unsupported", "level": params.get("level"), "available_levels": ["medium"], "ffmpeg_skill_version": "1.12.0"}, retryable=False, dry_run=dry_run)
     if dry_run:
         emit({**base, "ok": True, "status": "ok", "dry_run": True, "plan": plan, "results": [record], "outputs": plan["outputs"]})
         return 0

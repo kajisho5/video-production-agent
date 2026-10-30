@@ -211,6 +211,8 @@ class TranscriptionAdapter(ToolAdapter):
                     os.environ[k] = v
 
     def _fetch_contract(self) -> Dict[str, Any]:
+        # `skill --json`, not `contract --json`: transcription-skill added `contract` as an alias only in 0.7.5 (#36), and the
+        # oldest release this adapter accepts (0.2.x) has no such command. The two print the same document (ADR-067).
         code, out, err = self._invoke(["skill", "--json"], timeout=60.0)
         if code != 0:
             raise ContractError(f"transcription skill --json failed ({code}): {err.strip()[-300:]}")
