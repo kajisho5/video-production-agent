@@ -55,6 +55,9 @@ from .tools.motion_graphics import PACKAGE as MOTION_GRAPHICS_PACKAGE, MotionGra
 from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_report, locate_qc
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
+from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
+from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
+from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
 from .agent.finishing import QC_REFERENCE_KEYS, parse_qc_reference
 from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
@@ -74,7 +77,7 @@ class Service:
     def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, adapter=None, caps: Optional[CapabilityResolver] = None,
                  provider: Optional[AIProvider] = None, media_analysis_dir: Optional[str] = None, transcription_dir: Optional[str] = None, offline: bool = False,
                  video_editing_dir: Optional[str] = None, audio_production_dir: Optional[str] = None, subtitle_dir: Optional[str] = None, thumbnail_dir: Optional[str] = None,
-                 color_grading_dir: Optional[str] = None, motion_graphics_dir: Optional[str] = None, qc_dir: Optional[str] = None):
+                 color_grading_dir: Optional[str] = None, motion_graphics_dir: Optional[str] = None, qc_dir: Optional[str] = None, ingest_dir: Optional[str] = None):
         self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
         self.skill_dir = ffmpeg_skill_dir or os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR")
         self.media_analysis_dir = media_analysis_dir or os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR")
@@ -87,6 +90,7 @@ class Service:
         self.color_grading_dir = color_grading_dir or os.environ.get("VIDEO_AGENT_COLOR_GRADING_DIR")
         self.motion_graphics_dir = motion_graphics_dir or os.environ.get("VIDEO_AGENT_MOTION_GRAPHICS_DIR")
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
+        self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
                                                video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
@@ -103,6 +107,7 @@ class Service:
         self.registry.register_package(AUDIO_PRODUCTION_PACKAGE)  # external audio production Skill (audio-production-skill, ADR-030): same rule
         for pkg in (SUBTITLE_PACKAGE, THUMBNAIL_PACKAGE, COLOR_GRADING_PACKAGE, MOTION_GRAPHICS_PACKAGE, QC_PACKAGE):   # Phase 3 finishing Skills (ADR-031 / ADR-032): same rule
             self.registry.register_package(pkg)
+        self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -140,6 +145,7 @@ class Service:
             (locate_color_grading(self.color_grading_dir), lambda sk: ColorGradingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             (locate_motion_graphics(self.motion_graphics_dir), lambda sk: MotionGraphicsAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             (locate_qc(self.qc_dir), lambda sk: QcAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
+            (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
         ):
             if located:
                 try:
@@ -301,6 +307,229 @@ class Service:
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
         return ir
+
+    # ---- card offload (ADR-066): plan → CONFIRM → render → the verified copies become assets
+    def plan_offload(self, source: str, user_requirements: Optional[Dict[str, Any]] = None, project_name: Optional[str] = None) -> ProjectIR:
+        """The plan of a card offload: what ingest-skill's dry run and the card's inventory say (OBSERVED, nothing written), one TRANSFORM
+        `ingest.offload` decision that is always CONFIRM, and one `media_offload` step. Without ingest-skill (or an ingest-skill this agent
+        cannot use) the step has no tool and a BLOCK decision names the package; `handoffs()` then says how to install it. Requirements that
+        cannot be planned (no destination, a destination that is not a mounted directory, ...) and refusals by ingest-skill's dry run
+        (HASH_UNAVAILABLE, REEL_INVALID, ...) raise ValueError before anything is recorded."""
+        from .agent.decision_engine import DecisionEngine
+        from .models import Asset, Intent, Observation, Requirement
+        reqs = dict(user_requirements or {})
+        req = offload_task.parse_offload_requirements(source, reqs)
+        router = self.adapter([])
+        tools = self.tools_for(router)
+        tool = tools.get(offload_task.SKILL)
+        requirements = [Requirement(key=k, value=reqs[k], provenance="USER", source="cli") for k in sorted(reqs)]
+        card = Asset(path=req.source, type="UNKNOWN", provenance="USER", status="source_card", classification={"kind": "card", "provenance": "USER"})
+        observations: List[Observation] = []
+        version = ""
+        if tool:
+            version = str(router.version_of(INGEST_OFFLOAD))
+            dry = router.measure(INGEST_OFFLOAD, req.args(dry_run=True))
+            if not dry.ok:
+                err = dry.data.get("error") or {}
+                raise ValueError(f"ingest-skill refused the offload ({err.get('code')}/{err.get('kind')}): {err.get('message') or dry.stderr_tail}")
+            inv = router.measure(INGEST_INVENTORY, {"target": req.source, **({"reel": req.reel} if req.reel else {})})
+            if not inv.ok:
+                err = inv.data.get("error") or {}
+                raise ValueError(f"ingest-skill could not inventory the card ({err.get('code')}/{err.get('kind')}): {err.get('message') or inv.stderr_tail}")
+            observations.append(Observation(kind=offload_task.PLAN_OBS_KIND, asset_id=card.id, source=f"{INGEST_OFFLOAD}@{version}", data=offload_task.plan_summary(dry.data["summary"]),
+                                            skill="ingest", skill_version=version, tool=INGEST_OFFLOAD, parameters=req.args(dry_run=True)))
+            observations.append(Observation(kind=offload_task.CARD_OBS_KIND, asset_id=card.id, source=f"{INGEST_INVENTORY}@{version}", data=offload_task.card_summary(inv.data["inventory"]),
+                                            skill="ingest", skill_version=version, tool=INGEST_INVENTORY, parameters={"target": req.source}))
+            roots = observations[0].data["roots"]
+        else:
+            name = req.reel if (req.name_by == "reel" and req.reel) else Path(req.source).name   # without ingest-skill a reel from the card cannot be read
+            roots = [str(Path(d) / req.project / name) if req.project else str(Path(d) / name) for d in req.destinations]
+        intent = Intent(primary="ingest", provenance="USER", reason="a card folder with explicit destinations (ingest.dest)")
+        eng = DecisionEngine(resolve_rules([]), intent, DecisionEngine.evidence_index(observations=observations, requirements=requirements), requirements)
+        params = {k: v for k, v in {"source": req.source, "destinations": req.destinations, "project": req.project, "hash": req.hash, "name_by": req.name_by,
+                                     "reel": req.reel, "roots": roots}.items() if v is not None}
+        plan_obs = observations[0].data if observations else {}
+        what = (f"{plan_obs.get('files')} file(s), {plan_obs.get('bytes_total')} bytes, reel {((plan_obs.get('card') or {}).get('reel') or {}).get('id')}" if observations
+                else "size unknown (ingest-skill is not available to read the card)")
+        dec = eng.decide(subject=offload_task.SUBJECT, type="TRANSFORM", decision=f"offload {req.source} to {len(req.destinations)} destination(s): " + ", ".join(roots),
+                         reason=f"the user named the destination(s) ({offload_task.KEY_DEST}); {what}; every copy is read back ({req.hash}), nothing is overwritten"
+                                + ("; " + "; ".join(req.warnings) if req.warnings else ""),
+                         evidence=[r.id for r in requirements] + [o.id for o in observations], risk="MEDIUM",
+                         approval={"approval": "CONFIRM", "setting": None, "notes": ["fixed CONFIRM: an offload writes the user's drives; never AUTO, no policy key lowers it (ADR-066)"]},
+                         confidence=1.0, provenance="USER", params=params, requirements=requirements, serves_intent="ingest")
+        if not tool:
+            spec = self.registry.get(offload_task.SKILL)
+            _, why = self.registry.select_tool(spec.name, self.caps.resolve(), router.supports)
+            eng.decide(subject=offload_task.SUBJECT, type="BLOCK", decision="BLOCK: the offload is handed off to ingest-skill",
+                       reason=f"no tool for {spec.name} here ({why}); install ingest-skill and plan again, or offload the card with it directly (see the plan's handoff)",
+                       evidence=[f"skill:{spec.name}"], risk="HIGH", approval="BLOCK", confidence=1.0, provenance="SYSTEM", params={"skill": spec.name, "missing": ["ingest"]})
+        ir = ProjectIR.new(project_name or Path(req.source).name, {"name": "offload", "version": "1", "chain": []}, self.workspace)
+        d = ir.doc
+        d["project"]["kind"] = offload_task.PROJECT_KIND
+        d["request"] = Request(raw="", args={"inputs": [req.source], "profile": "offload", "requirements": reqs}).to_dict()
+        d["requirements"] = [r.to_dict() for r in requirements]
+        d["source"] = {"agent_version": __version__, "tool_versions": self.tool_versions(), "generator": "video-agent plan (offload)"}
+        d["assets"] = {card.id: card.to_dict()}
+        d["analysis"]["observations"] = [o.to_dict() for o in observations]
+        d["analysis"]["warnings"] = list(req.warnings) + list((observations[1].data.get("warnings") if len(observations) > 1 else []) or [])
+        d["intent"] = intent.to_dict()
+        d["decisions"] = [x.to_dict() for x in eng.decisions]
+        d["plan"] = {"id": new_id("plan"), "project_id": d["project"]["id"], "version": 1, "objective": "verified offload of a card to the destinations the user named",
+                     "steps": [{"id": offload_task.STEP_ID, "order": 1, "skill": offload_task.SKILL, "tool": tool, "inputs": [card.id], "params": params, "outputs": [],
+                                "depends_on": [], "evidence": [o.id for o in observations], "decision_ids": [dec.id], "decision_id": dec.id, "temporal_scope": None}],
+                     "summary": [f"offload {req.source} → {', '.join(roots)} ({req.hash} read-back, ingest-manifest.json + ASC MHL per destination)"] + list(req.warnings)}
+        d["qa"]["required"] = []
+        d["execution"]["allowed_inputs"] = [req.source]
+        d["execution"]["recovery_policy"]["max_attempts"] = 1   # a copy to the user's drives is never re-run automatically
+        d["provenance"].update({"source_hashes": {}, "profile_version": "1", "skill_versions": {offload_task.SKILL: self.registry.get(offload_task.SKILL).version},
+                                "tool_versions": d["source"]["tool_versions"]})
+        ir.refresh_plan_status()
+        ir.finalize_hash()
+        return ir
+
+    def _execute_offload(self, ir: ProjectIR, ir_path: str, job: Job, store: JobStore, approved: List[str], who: str, timeout: Optional[float]) -> Dict[str, Any]:
+        """The approved copy (ingest offload), then the admission of the copies and their inventory as new assets (ADR-066). Never re-run
+        automatically; a completed offload is not copied again by a second render (BLOCKED with the earlier job; re-plan the card for that)."""
+        from .agent.offload import OP_ID, STEP_ID
+        from .models import Operation
+        prev = (ir.doc["execution"].get("offload") or {})
+        if prev.get("status") == "COMPLETED":
+            job.transition("BLOCKED", f"offload already completed in job {prev.get('job_id')}")
+            store.save(job)
+            return {"job": job.to_dict(), "status": "BLOCKED", "blocked": [], "approved": approved, "offload": prev,
+                    "hint": f"this card was offloaded by job {prev.get('job_id')}; plan the card again to copy it once more (ingest-skill skips identical files)"}
+        step = next(st for st in ir.doc["plan"]["steps"] if st["id"] == STEP_ID)
+        p = step["params"]
+        args = {"source": p["source"], "destinations": list(p["destinations"]), "hash": p.get("hash", "sha256"), "name_by": p.get("name_by", "folder"), "dry_run": False}
+        args.update({k: p[k] for k in ("project", "reel") if p.get(k)})
+        job.transition("EXECUTING")
+        store.save(job)
+        router = self.adapter([])
+        op = Operation(tool=step["tool"], args=args, inputs=[], outputs=[], decision_ids=list(step["decision_ids"]), kind="transform", id=OP_ID)
+        ex = Executor(router, max_attempts=1, timeout=timeout)
+        result = ex.run([op], {})
+        r = result.results[-1] if result.results else None
+        data = (r.data if r is not None else {}) or {}
+        if data.get("report") is not None:
+            (job.dir / "offload-report.json").write_text(json.dumps(data["report"], indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        summary = data.get("summary") or {}
+        rec: Dict[str, Any] = {"job_id": job.id, "at": now_iso(), "tool": op.tool, "ingest_version": str(router.version_of(op.tool)), "summary": summary,
+                               "report": str(job.dir / "offload-report.json") if data.get("report") is not None else None}
+        out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "offload": rec}
+        if result.status == "COMPLETED":
+            job.transition("QA", "admitting the verified copies")
+            try:
+                lifted = self._lift_offload(ir, router, data, args, job.id, rec)
+            except (ValueError, ToolError) as e:
+                rec.update({"status": "FAILED", "error": {"kind": "INVALID_OUTPUT", "message": str(e)}})
+                job.transition("FAILED", f"offload copies not admitted: {e}")
+                out["status"] = "FAILED"
+            else:
+                rec.update({"status": "COMPLETED", **lifted})
+                job.transition("COMPLETED", f"offloaded to {len(summary.get('destinations') or [])} destination(s); {len(lifted['asset_ids'])} asset(s)")
+        else:
+            err = (data.get("error") or {})
+            rec.update({"status": result.status, "error": {k: err.get(k) for k in ("code", "kind", "message", "retryable", "recovery_class", "exit_code", "details")}})
+            # ingest-skill's own re-check of each destination that holds a manifest (reads only): its failure codes per file, for the person who fixes the drive
+            checks = []
+            for dd in ((err.get("details") or {}).get("destinations") or []):
+                if not dd.get("ok") and dd.get("manifest") and Path(str(dd["manifest"])).is_file():
+                    v = router.measure(INGEST_VERIFY, {"target": dd["root"]})
+                    checks.append({"root": dd["root"], "verified": bool(v.data.get("verified")) if v.ok else None, "failures": v.data.get("failures") if v.ok else [],
+                                   "error": None if v.ok else (v.data.get("error") or {}).get("message")})
+            rec["verify"] = checks
+            out["hint"] = ("fix what the error names (a full or unplugged drive, a conflicting file), then render again: ingest-skill resumes the copy "
+                           "(identical files are skipped, nothing is overwritten); destinations already complete stay as they are")
+            job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"offload {err.get('code')}/{err.get('kind')}: {str(err.get('message') or '')[:300]}")
+        ir.doc["execution"]["offload"] = rec
+        ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash, "plan_version": ir.version,
+                                             "resumed_from": None, "skipped": []})
+        save_ir(ir, ir_path)
+        save_ir(ir, str(job.dir / "ir.json"))
+        write_audit(str(job.dir / "provenance.json"), {"kind": "offload", "who": who, "at": now_iso(), "plan_hash": job.plan_hash, "plan_version": ir.version,
+                                                       "decisions": step["decision_ids"], "reviews": ir.doc["execution"].get("reviews", {}), "offload": rec,
+                                                       "results": [x.to_dict() for x in result.results]})
+        (job.dir / "report.json").write_text(json.dumps({k: v for k, v in out.items() if k != "job"}, indent=2, default=str) + "\n", encoding="utf-8")
+        store.save(job)
+        out["job"] = job.to_dict()
+        out["report"] = str(job.dir / "report.json")
+        return out
+
+    def _lift_offload(self, ir: ProjectIR, router: ToolRouter, data: Dict[str, Any], args: Dict[str, Any], job_id: str, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """Admission of a completed offload and the new assets: every destination's ingest-manifest.json lists every file of the report with
+        the report's hash and size; the inventory of the first destination's copy (ingest inventory, reads only) names its recordings; each
+        member file is under that copy, present, of its manifest size, and -- with sha256 -- of its manifest hash when the agent's own analysis
+        hashed it. The agent's analysis of the copies runs when the media engine can read them; otherwise the assets carry ingest-skill's facts."""
+        from .models import Asset
+        report, summary = data["report"], data["summary"]
+        algo = str(report.get("hash"))
+        files = {f["path"]: f for f in report.get("files") or [] if isinstance(f, dict)}
+        dests = summary.get("destinations") or []
+        for dd in dests:
+            man = json.loads(Path(str(dd["manifest"])).read_text(encoding="utf-8"))
+            entries = {e.get("path"): e for e in man.get("files") or [] if isinstance(e, dict)}
+            for path, f in files.items():
+                e = entries.get(path)
+                if e is None or e.get(algo) != (f.get("hashes") or {}).get(algo) or e.get("size") != f.get("size"):
+                    raise ValueError(f"{dd['manifest']} does not list {path} with the reported {algo} and size")
+        primary = Path(str(dests[0]["root"]))
+        inv_res = router.measure(INGEST_INVENTORY, {"target": str(primary)})
+        if not inv_res.ok:
+            err = inv_res.data.get("error") or {}
+            raise ValueError(f"ingest inventory of {primary} failed ({err.get('code')}/{err.get('kind')}): {err.get('message')}")
+        inv = inv_res.data["inventory"]
+        rels: List[str] = []
+        for c in inv.get("clips") or []:
+            for m in c.get("members") or []:
+                rel = str(m.get("path"))
+                f = (primary / rel).resolve()
+                if ".." in Path(rel).parts or not str(f).startswith(str(primary.resolve())) or not f.is_file():
+                    raise ValueError(f"inventory names {rel!r}, which is not a file of the copy {primary}")
+                if rel not in files or f.stat().st_size != files[rel].get("size"):
+                    raise ValueError(f"{rel}: not in the offload report, or its size differs from the copied file")
+                rels.append(rel)
+        paths = [str((primary / rel).resolve()) for rel in rels]
+        warnings: List[str] = []
+        assets: List[Any] = []
+        observations: List[Any] = []
+        if paths:
+            try:
+                _, _, analysis = self.analyze(paths, "generic", allowed_inputs=[str(primary)], hash_sources=True)
+                assets, observations = list(analysis.assets), list(analysis.observations)
+                warnings += list(analysis.warnings or [])
+            except Exception as e:  # noqa: BLE001 -- the copies are verified whether or not the media engine can read them (e.g. BRAW, no engine)
+                warnings.append(f"the agent's analysis of the copies did not run ({str(e)[:300]}); the assets carry ingest-skill's facts only")
+                facts = {str((primary / str(m.get('path'))).resolve()): (c, m) for c in inv.get("clips") or [] for m in c.get("members") or []}
+                for pth in paths:
+                    c, m = facts[pth]
+                    h = (m.get("hash") or {}) if isinstance(m.get("hash"), dict) else {}
+                    assets.append(Asset(path=pth, type="UNKNOWN", hash=h.get("value") if h.get("algorithm") == "sha256" else None,
+                                        technical={"duration": m.get("duration_s"), "size": m.get("size")}, provenance="OBSERVED", status="ingested"))
+        by_path = {str(Path(a.path).resolve()): a for a in assets}
+        asset_of = {rel: by_path[str((primary / rel).resolve())].id for rel in rels}
+        if algo == "sha256":
+            for rel in rels:
+                a = by_path[str((primary / rel).resolve())]
+                want = (files[rel].get("hashes") or {}).get("sha256")
+                if a.hash and a.hash != want:
+                    raise ValueError(f"{rel}: the agent's sha256 {a.hash} != ingest-skill's {want} (the copy changed after it was verified)")
+        for c in inv.get("clips") or []:   # a recording split across files: its members point at one another, in order
+            ids = [asset_of[str(m.get("path"))] for m in c.get("members") or []]
+            for i, aid in enumerate(ids):
+                a = next(x for x in assets if x.id == aid)
+                a.status = "ingested"
+                a.relationships = list(a.relationships or []) + [{"kind": "spanned_member", "target": t, "metadata": {"clip_id": c.get("clip_id"), "index": j}}
+                                                                 for j, t in enumerate(ids) if t != aid]
+        version = str(rec.get("ingest_version") or "")
+        clip_obs = offload_task.clip_observations(inv, report, summary, asset_of, version, {"job_id": job_id, "offload_report": rec.get("report"),
+                                                                                            "started_at": report.get("started_at"), "finished_at": report.get("finished_at")})
+        ir.doc["assets"].update({a.id: a.to_dict() for a in assets})
+        ir.doc["analysis"]["observations"] += [o.to_dict() for o in observations] + [o.to_dict() for o in clip_obs]
+        ir.doc["analysis"]["warnings"] = list(ir.doc["analysis"].get("warnings") or []) + warnings + [f"inventory: {w}" for w in inv.get("warnings") or []]
+        ir.doc["provenance"]["source_hashes"].update({a.id: a.hash for a in assets})
+        return {"asset_ids": [asset_of[rel] for rel in rels], "paths": paths, "clip_count": inv.get("clip_count"), "spanned_count": inv.get("spanned_count"),
+                "reel": (inv.get("card") or {}).get("reel"), "observations": [o.id for o in clip_obs], "warnings": warnings,
+                "next": "video-agent plan " + " ".join(paths[:3]) + (" ..." if len(paths) > 3 else "")}
 
     def extract_brief(self, text: str, explicit: Optional[Dict[str, Any]] = None, profile_name: str = "generic",
                       answer: Any = None, ai_model: str = "host-chat") -> Dict[str, Any]:
@@ -478,6 +707,8 @@ class Service:
         ai_recommendations (ADR-050): the answer of the chat model the agent runs in to the brief `plan --ai-brief` returned.
         It replaces the recorded AI inferences and goes through the same validation as any provider's; the recorded analysis
         keeps every asset / observation / event id the brief named, which is why this is a revision and not a new plan."""
+        if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:
+            raise ValueError("an offload plan is not revised: reject it, then plan the card again with the destinations you want (ADR-066)")
         who = who or _default_who()
         old = json.loads(json.dumps(ir.doc))
         _check_requirement_keys(user_requirements or {})
@@ -574,6 +805,8 @@ class Service:
         return validate_ir(ir, self.caps.resolve(), check_paths=check_paths, registry=self.registry, supports=self.adapter([]).supports)
 
     def dry_run(self, ir: ProjectIR) -> Dict[str, Any]:
+        if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:   # ADR-066: what the approved offload would run (nothing is copied)
+            return self._offload_dry_run(ir)
         job_dir = str(Path(self.workspace) / "jobs" / "<job_id>")
         ops, paths = compile_ir(ir, job_dir)
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or None)
@@ -592,6 +825,24 @@ class Service:
                 "expected_outputs": [paths[o] for op in ops for o in op.outputs], "risks": [d["subject"] + ": " + d["risk"] for d in ir.doc["decisions"] if d["risk"] != "LOW"],
                 "warnings": self.validate(ir).warnings + ir.doc["analysis"].get("warnings", []), "pending_confirmations": [d["id"] for d in ir.pending_confirmations()], "blocked": [d["id"] for d in ir.blocked()],
                 "estimate": {"source_seconds": round(total, 1), "full_reencodes": reencodes, "note": "processing time ≈ source duration × re-encodes on a laptop CPU (see ffmpeg-skill devices.md)"}}
+
+    def _offload_dry_run(self, ir: ProjectIR) -> Dict[str, Any]:
+        from .models import Operation
+        step = next(st for st in ir.doc["plan"]["steps"] if st["skill"] == offload_task.SKILL)
+        p = step["params"]
+        args = {"source": p["source"], "destinations": list(p["destinations"]), "hash": p.get("hash", "sha256"), "name_by": p.get("name_by", "folder"), "dry_run": False}
+        args.update({k: p[k] for k in ("project", "reel") if p.get(k)})
+        router = self.adapter([])
+        cmd = router.preview(Operation(tool=step["tool"], args=args, inputs=[], outputs=[], kind="transform", id=offload_task.OP_ID), {}) if step.get("tool") and router.supports(step["tool"]) else ["<no tool: ingest-skill is not available here>"]
+        caps = self.caps.resolve()
+        plan_obs = next((o["data"] for o in ir.doc["analysis"]["observations"] if o["kind"] == offload_task.PLAN_OBS_KIND), {})
+        return {"operations": [{"op": offload_task.OP_ID, "tool": step.get("tool"), "kind": "transform", "args": args, "inputs": [p["source"]], "outputs": list(p.get("roots") or []),
+                                "command": cmd, "decisions": step["decision_ids"]}],
+                "required_capabilities": {c: caps[c].status if c in caps else "UNKNOWN" for c in self.registry.get(offload_task.SKILL).required_capabilities},
+                "expected_outputs": list(p.get("roots") or []), "risks": [d["subject"] + ": " + d["risk"] for d in ir.doc["decisions"] if d["risk"] != "LOW"],
+                "warnings": self.validate(ir).warnings + ir.doc["analysis"].get("warnings", []), "pending_confirmations": [d["id"] for d in ir.pending_confirmations()],
+                "blocked": [d["id"] for d in ir.blocked()],
+                "estimate": {"files": plan_obs.get("files"), "bytes": plan_obs.get("bytes_total"), "note": "the card is read once per file; each destination is written and read back"}}
 
     def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None,
                resume: Optional[str] = None) -> Dict[str, Any]:
@@ -654,6 +905,8 @@ class Service:
             job.transition("BLOCKED" if st in ("REJECTED", "BLOCKED") else "WAITING_FOR_APPROVAL", f"production plan is {st}")
             store.save(job)
             return {"job": job.to_dict(), "status": "BLOCKED" if st in ("REJECTED", "BLOCKED") else "WAITING_FOR_APPROVAL", "plan_status": st, "approved": approved}
+        if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:   # ADR-066: the approved card offload, not a compiled media pipeline
+            return self._execute_offload(ir, ir_path, job, store, approved, who, timeout)
         job.transition("EXECUTING")
         store.save(job)
         ops, paths = compile_ir(ir, str(job.dir))
@@ -1166,6 +1419,9 @@ BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT
 
 def _check_requirement_keys(user_requirements: Dict[str, Any]) -> None:
     """The --set gate shared by plan / revise / a brief's keys: a known prefix, not a dead key, then the per-key checks."""
+    if offload_task.has_offload_keys(user_requirements or {}):   # ADR-066: the offload of a card folder is its own plan
+        raise ValueError(f"{', '.join(sorted(k for k in user_requirements if k.startswith(offload_task.PREFIX)))}: ingest.* keys plan the offload of a card folder; "
+                         "give the card folder as the only input (plan the edit on the verified copies afterwards)")
     bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
     if bad:
         raise ValueError(f"unknown requirement key(s): {', '.join(bad)}; allowed prefixes: {', '.join(REQUIREMENT_PREFIXES)}")

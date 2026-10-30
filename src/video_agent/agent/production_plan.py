@@ -50,7 +50,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "motion_graphics": ("asset", "elements"), "subtitle_generation": ("asset", "format", "language", "cues"), "subtitle_burn_in": ("asset",), "subtitle_mux": ("asset",),
                    "thumbnail_frame": ("asset", "at", "format"), "thumbnail_render": ("asset", "at", "format", "text"), "qc_check": ("asset", "target", "kind", "artifact"),
                    # timeline export (ADR-052): the subject, the editor format and how many clips its cut list has
-                   "timeline_export": ("asset", "format", "clips")}
+                   "timeline_export": ("asset", "format", "clips"),
+                   # card offload (ADR-066): the card, the destinations the user named and the copy folder ingest-skill makes in each
+                   "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots")}
 
 
 @dataclass

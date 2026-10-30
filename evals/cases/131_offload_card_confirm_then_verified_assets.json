@@ -1,0 +1,32 @@
+{
+ "name": "offload_card_confirm_then_verified_assets",
+ "offload": {
+  "destinations": 2,
+  "requirements": {
+   "ingest.project": "event"
+  }
+ },
+ "expect": {
+  "plan": {
+   "decision": {
+    "type": "TRANSFORM",
+    "approval": "CONFIRM",
+    "status": "PROPOSED",
+    "risk": "MEDIUM",
+    "provenance": "USER"
+   },
+   "step": {
+    "skill": "media_offload",
+    "tool": "ingest/offload",
+    "status": "PROPOSED"
+   }
+  },
+  "render": {
+   "status": "COMPLETED",
+   "assets": 3,
+   "clip_observations": 3,
+   "spanned_clips": 1,
+   "error_kind": null
+  }
+ }
+}

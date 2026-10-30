@@ -92,7 +92,7 @@ class HandoffTests(unittest.TestCase):
 # AI-video-production-OS ecosystem.json and each repository's README, independently of skills/ecosystem.py.
 _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
-    "media_ingest": ("ingest", "ingest-skill", f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill[fetch]'"),   # [fetch]: URL download (ADR-059)
+    # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload
     "voice_enhancement": ("voice-enhance", "voice-enhance-skill", f"none yet: voice-enhance-skill is a scaffold repository with no released package ({_GH}voice-enhance-skill)"),
     "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
@@ -144,8 +144,23 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertEqual(svc.registry.get(skill).phase, 2)
         self.assertEqual(svc.registry.get(skill).tools[0].split("/", 1)[0], package)
 
-    def test_media_ingest(self):
-        self.assert_handoff("media_ingest")
+    def test_media_ingest_moved_to_the_offload_adapter(self):
+        """ADR-066: `job.media_ingest` is no longer a handoff switch; it is refused with how the implemented offload is asked for, and a
+        card planned without ingest-skill still hands the step over naming ingest-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.media_ingest": True})
+        self.assertIn("ingest.dest", str(cm.exception))
+        self.assertNotIn("media_ingest", svc.registry.names())
+        card = Path(tmp) / "CARD"; (card / "CLIP").mkdir(parents=True); (card / "CLIP" / "C0001.MP4").write_bytes(b"x")
+        dest = Path(tmp) / "SSD1"; dest.mkdir()
+        ir = svc.plan_offload(str(card), {"ingest.dest": str(dest)})
+        [h] = svc.handoffs(ir)
+        self.assertEqual((h["skill"], h["provided_by"], h["repositories"]), ("media_offload", ["ingest"], ["ingest-skill"]))
+        self.assertIn(f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill[fetch]'", h["install"])
+        self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"])
+        self.assertEqual(list(dest.iterdir()), [], "nothing copied")
 
     def test_voice_enhancement(self):
         self.assert_handoff("voice_enhancement")
