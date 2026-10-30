@@ -220,6 +220,9 @@ class QcAdapterTests(unittest.TestCase):
         self.assertEqual(req["rules"], {"video": {"expected_width": 640, "frame_rate_tolerance": 0.1, "expected_codec": "h264"}, "audio": {"require_audio_stream": True, "expected_channels": None}})
         self.assertEqual(req["parameters"], {"black_min_duration_sec": 0.5}); self.assertNotIn("timeout", req); self.assertNotIn("subtitle", req)
         self.assertEqual(ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video", "rules": {"video": {"expected_width": 640.0}}}, paths)["request"]["rules"]["video"]["expected_width"], 640)
+        # a caller's budget is forwarded so the Skill can stop its own ffmpeg children (qc-skill ADR-019); none given, none sent
+        self.assertEqual(ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video"}, paths, timeout=30)["request"]["timeout"], 30.0)
+        self.assertEqual(RECOVERY_CLASS["TIMEOUT"], "TIMEOUT")   # the Skill's own budget ran out: retry with a longer one
         bad = [({"kind": "hologram"}, "kind"), ({"kind": "video", "input": "nope"}, "not found"), ({"tool": "x"}, "unknown arguments"),
                ({"rules": {"colour": {}}}, "unknown rule section"), ({"rules": {"video": {"expected_bitrate": 1}}}, "not a declared rule field"), ({"rules": {"video": {"expected_width": 640.5}}}, "integer"),
                ({"rules": {"video": {"expected_width": "640"}}}, "finite number"), ({"rules": {"video": {"expected_width": True}}}, "finite number"), ({"rules": {"video": {"frame_rate_tolerance": None}}}, "not null"),
