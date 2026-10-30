@@ -165,6 +165,24 @@ class Service:
     def skills(self) -> List[Dict[str, Any]]:
         return self.registry.availability(self.caps.resolve(), self.adapter([]).supports, default=default_providers(self.workspace))
 
+    def handoffs(self, ir: ProjectIR) -> List[Dict[str, Any]]:
+        """Plan steps no installed skill can execute here (ADR-051). Each names the job, why no tool was selected and which
+        packages would do it, so the chat model the agent runs in can tell the user, install the skill, or do the step
+        with what it has -- outside the OS: the agent never runs, records or verifies a handoff as its own work."""
+        caps, supports = self.caps.resolve(), self.adapter([]).supports
+        out = []
+        for st in ir.doc["plan"]["steps"]:
+            if st.get("tool") or st.get("skill") not in self.registry.names():
+                continue
+            spec = self.registry.get(st["skill"])
+            _, reason = self.registry.select_tool(spec.name, caps, supports)
+            pkgs = sorted({t.split("/", 1)[0] for t in spec.tools})
+            repos = [p if p.endswith("-skill") else p + "-skill" for p in pkgs]
+            out.append({"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
+                        "reason": reason, "provided_by": pkgs,
+                        "install": [f"/plugin install {r}@ai-video-production-os" for r in repos] + ["or ./install.sh from AI-video-production-OS (packages and CLIs)"]})
+        return out
+
     def packages(self) -> List[Dict[str, Any]]:
         """Skill packages known to this codebase and whether they are usable here (ecosystem view for `video-agent skills`)."""
         router = self.adapter([])

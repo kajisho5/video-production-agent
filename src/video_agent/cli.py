@@ -175,8 +175,9 @@ def cmd_plan(args, svc: Service) -> int:
     save_ir(ir, out)
     rep = svc.validate(ir)
     ai: Dict[str, Any] = {"ai_brief": dict(host.brief() or {}, next=f"write the answer as JSON, then: video-agent revise {out} --ai-recommendations <file>")} if host else {}
+    handoff = svc.handoffs(ir)   # ADR-051: steps no installed skill can run here
     if args.json:
-        _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict(), **ai}, True)
+        _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict(), "handoff": handoff, **ai}, True)
     else:
         print(f"Project IR: {out}")
         _print_plan(ir.doc)
@@ -191,6 +192,10 @@ def cmd_plan(args, svc: Service) -> int:
             print("Validation errors:")
             for e in rep.errors:
                 print("  -", e)
+        if handoff:
+            print("Not executable here (no installed skill; the step is BLOCKED until one is installed, or done outside the OS):")
+            for h in handoff:
+                print(f"  {h['step']}  {h['skill']}: {h['job']} -- {h['reason']}; provided by {', '.join(h['provided_by'])}")
         if ai.get("ai_brief"):
             print("AI brief (answer it as JSON, then `video-agent revise <project> --ai-recommendations FILE`):")
             print(json.dumps(ai["ai_brief"], indent=2, ensure_ascii=False, default=str))

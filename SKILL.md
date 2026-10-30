@@ -25,6 +25,10 @@ You are the brain; `video-agent` measures, validates, executes and records. Run 
 
 Explicit requirements go in as `--set key=value` on plan or revise (e.g. `audio.loudness.target_lufs=-16`, `edit.trim_leading_silence=true`).
 
+## When a skill is missing (handoff)
+
+Every skill is optional; the plan uses the ones installed here. `plan --json` lists steps no installed skill can run under `handoff` (job, reason, which package provides it, how to install it); those steps are BLOCKED. Tell the user, and either install the skill (`/plugin install <skill>@ai-video-production-os`, or `./install.sh`) and plan again, or — only if the user agrees and it is safe — do that job with another installed skill or a standard tool. Say plainly that such a step is outside the agent: no contract, no provenance, no approval record, no QA by the agent. Then verify its output with `video-agent --json check <file>`.
+
 ## Exit codes
 
 0 done / 2 validation errors / 3 BLOCKED / 4 waiting for approval / 5 QA FAIL (revise: no new version) / 1 other. Exit 4 means ask the user, not retry with approval.

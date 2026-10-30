@@ -329,3 +329,16 @@
 - 決定: `providers/host.py` に `HostProvider` を追加する。推論は同じ project の2段で行う。(1) `plan --ai-brief`: 決定的に計画し、provider が受け取るはずだった要求（inputs / context / result の形）と規則 `HOST_RULES` を `ai_brief` として出力する（推薦は0件）。(2) `revise <project> --ai-recommendations FILE [--ai-model NAME]`: 記録済みの解析（同じ id）に対して、チャットのモデルの答えを HostProvider 経由で `agent/ai_reasoning.py` の検証に通す。登録外 intent・存在しない id・引用なしは捨てられ、禁止 params は落とされ、risk / approval は policy が決める。revise は受理 / 却下の内訳（`ai.accepted` / `ai.dropped`）を返し、AI の答えは計画が変わらなくても必ず新版として記録する（provenance の `ai_calls` に provider `host` と model 名が残る）。service の provider は revise の間だけ差し替え、終われば戻す。`mcp_server.py`（`video-agent-mcp` / `python -m video_agent.mcp_server`）は標準ライブラリだけの stdio MCP server で、doctor / skills / plan / revise / validate / explain / diff / approve / reject / render / check / artifacts を `video-agent --json <command>` の子プロセス実行として出す（protocol の stdout に skill の出力が混ざらない）。plan は既定で ai_brief 付き、revise は `ai_recommendations` を JSON のまま受ける。承認は `approve` tool を明示的に呼ぶ必要があり、`render` tool には一括承認の引数を持たせない。Claude Code 向けに `SKILL.md` を置き、OS の installer が `~/.claude/skills/video-agent` にリンクする。
 - 検証: `tests/test_ai_host.py`（7件。brief に依頼文・許可 intent・規則・asset が載り推薦は0件、答えのうち引用ありの1件だけ受理され引用なし・登録外 intent の2件が落ち禁止 params が消え、計画が変わらなくても新版になり provider が戻ること、tool → argv の対応と render に approve が無いこと、stdio の initialize / tools/list / 通知無応答 / -32601 / -32700、子プロセスでの実行）。実クリップ（talk.mp4）で plan --ai-brief → revise の2段を実行し、1件受理・2件却下・v2 作成・silence.leading の evidence に AI 推論が入ることを確認。Claude Desktop 実機での接続は未確認（この環境に無い）。
 - 対象外: スマホ / Web の Claude アプリ（ローカルの stdio MCP server を起動できない）。リモート MCP（HTTP）化。`requirements_extraction` を host provider で行うこと（ADR-049 と同じく次の段階）。
+
+## ADR-051 インストールされていないスキルの工程は handoff として名指しする。エージェントは自分の仕事として扱わない（2026-10-30）
+- 事実: スキルは単体でも使われており、全スキルがそろっている前提は成り立たない。既存の動作では、その環境で tool を選べない工程は step の `tool` が空になり、plan が BLOCKED になる（`production_plan.py`）。理由は `video-agent skills` を別に見ないと分からず、チャットのモデル（ADR-050）には「何が足りず、どうすれば進むか」が渡っていなかった。
+- 決定: `Service.handoffs(ir)` は、tool の無い工程ごとに次の項目を返す。
+  - 仕事の内容（SkillSpec.description）
+  - 選べなかった理由（`select_tool` の reason）
+  - 提供するパッケージと、その入れ方（`/plugin install <repo>@ai-video-production-os` または `./install.sh`）
+  `plan` の JSON に `handoff` として、テキスト出力にも載せる。工程は BLOCKED のままとし、エージェントは代わりの実行を試みない。SKILL.md は、チャットのモデルに次の順で指示する。
+  1. スキルを入れて計画し直す。
+  2. ユーザーが了承した場合に限り、別のスキルか標準ツールで行う。その工程は契約・provenance・承認記録・QA の外であると明言し、出力は `check` で確かめる。
+  OS 側の経路判断（入っている OS スキル → 他のスキル・標準ツール → モデル自身）は AI-video-production-OS ADR-013 に従う。
+- 検証: `tests/test_ai_host.py::HandoffTests`。全工程に tool があれば handoff は空になる。tool の無い工程は、理由（欠けた capability）・提供パッケージ（ffmpeg-skill / video-editing）・インストール方法付きで報告される。
+- 対象外: handoff した工程の結果を IR に取り込むこと（外部で作った成果物は、今は入力として plan し直す）。

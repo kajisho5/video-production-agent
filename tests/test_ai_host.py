@@ -68,6 +68,25 @@ class HostProviderTests(unittest.TestCase):
             load_recommendations({"recs": []})
 
 
+class HandoffTests(unittest.TestCase):
+    """ADR-051: a step no installed skill can run is reported as a handoff naming the job and who provides it."""
+
+    def test_step_without_a_tool_is_a_handoff(self):
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        ir = svc.plan([fake_media(tmp)], "youtube", request_text="冒頭の無音を詰めて")
+        self.assertEqual(svc.handoffs(ir), [], "every step has a tool here")
+        step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "silence_cleanup")
+        step["tool"] = None
+        svc.caps = FakeCaps(missing=["ffmpeg"])
+        [h] = svc.handoffs(ir)
+        self.assertEqual((h["step"], h["skill"]), (step["id"], "silence_cleanup"))
+        self.assertIn("ffmpeg", h["reason"])
+        self.assertIn("video-editing", h["provided_by"])
+        self.assertIn("/plugin install video-editing-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install ffmpeg-skill@ai-video-production-os", h["install"])
+
+
 class McpServerTests(unittest.TestCase):
     def test_tool_argv(self):
         tmp = tempfile.mkdtemp()
