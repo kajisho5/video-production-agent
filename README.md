@@ -14,6 +14,19 @@ Request → Requirements → Intent → Analysis(probe / silence / loudness) →
 
 AI（Claude）: `pip install -e '.[ai]'` の上で `VIDEO_AGENT_AI_PROVIDER=anthropic`（資格情報は `ANTHROPIC_API_KEY` か `ant auth login`。モデルは `VIDEO_AGENT_AI_MODEL`、既定 `claude-opus-5-5`）。AI は計測結果と依頼文から制作の推薦を出すだけで、引用の無い推薦は捨てられ、実行の可否は policy と検証が決める（ADR-018 / ADR-049）。未設定なら完全に決定的なパイプラインのまま動く。
 
+チャットの Claude を脳にする（API キー不要、ADR-050）: Claude Code / Claude Desktop など、いま話しているチャットのモデルが推薦を出す。手順は2段で、`plan --ai-brief` が AI に渡す材料（計測結果・引用可能な id・許可された intent・依頼文・規則）を出し、チャットのモデルがそれを読んで JSON で答え、`revise <project> --ai-recommendations answer.json --ai-model claude-code` がその答えを ADR-049 と同じ検証に通して新版にする（受理・却下の内訳を表示）。
+
+- Claude Code: OS の installer が `SKILL.md` を `~/.claude/skills/video-agent` にリンクするので、「この動画を YouTube 用にして」と頼めば上の2段を CLI で回す。MCP で使うなら `claude mcp add video-agent -- video-agent-mcp --workspace ~/video-agent-work`。
+- Claude Desktop: `claude_desktop_config.json` に MCP server を追加（`video-agent-mcp` は `pip install -e .` で入る。パスは `which video-agent-mcp` の絶対パス）:
+
+```json
+{"mcpServers": {"video-agent": {"command": "/abs/path/to/video-agent-mcp", "args": ["--workspace", "/abs/path/to/video-agent-work"],
+  "env": {"VIDEO_AGENT_FFMPEG_SKILL_DIR": "/abs/path/to/ffmpeg-skill"}}}}
+```
+
+  tools: `doctor` `skills` `plan`（既定で ai_brief 付き）`revise`（`ai_recommendations` を直接渡す）`validate` `explain` `diff` `approve` `reject` `render` `check` `artifacts`。各 tool は `video-agent --json <command>` を子プロセスで実行するだけ。承認は `approve` を別に呼ぶ必要があり、`render` に一括承認は無い。
+- スマホ / Web の Claude アプリ: ローカルの MCP server（stdio）は動かせない。動画ファイルと ffmpeg があるマシンで Claude Code か Claude Desktop を使う。
+
 ## セットアップ
 
 ```bash

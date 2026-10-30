@@ -387,9 +387,13 @@ class Service:
         return {"rejected": done, "reason": reason, "by": who, "plan_version": ir.version, "cited_operations": len(ir.rejected_cited()),
                 "hint": "run `video-agent revise <project>` to produce the next plan version without the rejected operations"}
 
-    def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None) -> Dict[str, Any]:
+    def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None,
+               ai_recommendations: Optional[List[Dict[str, Any]]] = None, ai_model: str = "host-chat") -> Dict[str, Any]:
         """Plan v(n) → v(n+1): re-plan from the recorded analysis with the rejections and feedback applied. v(n) is snapshotted
-        first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations)."""
+        first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations).
+        ai_recommendations (ADR-050): the answer of the chat model the agent runs in to the brief `plan --ai-brief` returned.
+        It replaces the recorded AI inferences and goes through the same validation as any provider's; the recorded analysis
+        keeps every asset / observation / event id the brief named, which is why this is a revision and not a new plan."""
         who = who or _default_who()
         old = json.loads(json.dumps(ir.doc))
         bad = [k for k in (user_requirements or {}) if not k.startswith(REQUIREMENT_PREFIXES) or k in DEAD_REQUIREMENT_KEYS]
@@ -426,7 +430,19 @@ class Service:
         fresh.doc["project"] = dict(old["project"])   # same project identity: sessions / events keep their deterministic ids across versions
         prior_ai = [Inference.from_dict(i) for i in old["analysis"].get("inferences") or [] if i.get("provenance") == "AI_GENERATED"]
         self._ai_calls = list(old["provenance"].get("ai_calls") or [])
-        dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed, prior_ai=prior_ai)
+        saved_provider, ai_warn_from = self.provider, len(analysis.warnings)
+        if ai_recommendations is not None:
+            from .providers.host import HostProvider
+            self.provider, prior_ai = HostProvider(recommendations=ai_recommendations, model=ai_model), None
+        try:
+            dropped = self._fill(fresh, request, profile, rules, analysis, plan_version=new_version, suppressed=suppressed, prior_ai=prior_ai)
+        finally:
+            self.provider = saved_provider
+        ai_report = None
+        if ai_recommendations is not None:
+            ai_report = {"accepted": [{"id": i["id"], "kind": i["kind"], "asset_id": i["asset_id"], "statement": i["statement"]}
+                                      for i in fresh.doc["analysis"]["inferences"] if i.get("provenance") == "AI_GENERATED"],
+                         "dropped": [w for w in analysis.warnings[ai_warn_from:] if str(w).startswith("ai:")], "model": ai_model}
         nd = fresh.doc
         # carry identity, history and the audit trail
         nd["project"] = old["project"]
@@ -451,11 +467,12 @@ class Service:
             diff["summary"].insert(0, f"REJECTED {d['subject']}: {d['decision']} — {(old['execution'].get('reviews') or {}).get(d['id'], {}).get('reason', '')}")
         # a new version exists only when the plan actually changed or a new rejection was applied. Feedback that produces no
         # plan change is kept in revision.feedback (once) but never creates an empty version.
-        if diff["empty"] and not new_rejections:
+        if diff["empty"] and not new_rejections and ai_recommendations is None:   # an AI answer is always recorded as a version (ADR-050)
             if fb_ids and not duplicate_feedback:
                 save_ir(ir, ir_path)   # persist the recorded feedback without a version bump
             reason = ("feedback recorded but it changed nothing in the plan" + ("; the proposal it would re-enable was rejected earlier" if dropped else "")) if fb_ids else "no new feedback or rejections since the last revision"
-            return {"version": ir.version, "created": False, "diff": diff, "reason": reason, "dropped_proposals": dropped, "feedback_ids": fb_ids}
+            return {"version": ir.version, "created": False, "diff": diff, "reason": reason, "dropped_proposals": dropped, "feedback_ids": fb_ids,
+                    **({"ai": ai_report} if ai_report is not None else {})}
         snap = snapshot_path(ir_path, ir.version)
         if not Path(snap).exists():
             Path(snap).write_text(json.dumps(old, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
@@ -466,7 +483,7 @@ class Service:
         ir.doc = nd
         save_ir(ir, ir_path)
         return {"version": new_version, "created": True, "snapshot": snap, "diff": diff, "dropped_proposals": dropped, "pending": [d["id"] for d in ir.pending_confirmations()],
-                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering"}
+                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering", **({"ai": ai_report} if ai_report is not None else {})}
 
     def validate(self, ir: ProjectIR, check_paths: bool = True):
         return validate_ir(ir, self.caps.resolve(), check_paths=check_paths, registry=self.registry, supports=self.adapter([]).supports)

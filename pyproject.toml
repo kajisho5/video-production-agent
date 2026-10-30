@@ -19,6 +19,7 @@ ai = ["anthropic>=2.3; python_version >= '3.10'"]
 
 [project.scripts]
 video-agent = "video_agent.cli:main"
+video-agent-mcp = "video_agent.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

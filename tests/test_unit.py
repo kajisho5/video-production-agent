@@ -1411,7 +1411,7 @@ class EcosystemContractTests(unittest.TestCase):
     def test_no_engine_leakage_in_orchestration(self):
         root = Path(__file__).resolve().parents[1] / "src" / "video_agent"
         allowed = ("tools/", "skills/", "capabilities/")
-        allowed_files = {"execution/recovery.py", "service.py", "cli.py", "__init__.py"}
+        allowed_files = {"execution/recovery.py", "service.py", "cli.py", "mcp_server.py", "__init__.py"}   # mcp_server.py: the CLI front end over MCP (ADR-050)
         offenders = []
         for py in root.rglob("*.py"):
             rel = py.relative_to(root).as_posix()

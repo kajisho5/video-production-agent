@@ -160,6 +160,11 @@ def _print_analysis(analysis) -> int:
 
 
 def cmd_plan(args, svc: Service) -> int:
+    host = None
+    if args.ai_brief:   # ADR-050: the chat model the agent runs in is the reasoning step; this is its brief
+        from .providers.host import HostProvider
+        host = HostProvider(model=args.ai_model or "host-chat")
+        svc.provider = host
     ingest = _resolve_url_inputs(args.inputs, svc.workspace)
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
                   strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
@@ -169,8 +174,9 @@ def cmd_plan(args, svc: Service) -> int:
         out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")
     save_ir(ir, out)
     rep = svc.validate(ir)
+    ai: Dict[str, Any] = {"ai_brief": dict(host.brief() or {}, next=f"write the answer as JSON, then: video-agent revise {out} --ai-recommendations <file>")} if host else {}
     if args.json:
-        _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict()}, True)
+        _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict(), **ai}, True)
     else:
         print(f"Project IR: {out}")
         _print_plan(ir.doc)
@@ -185,6 +191,9 @@ def cmd_plan(args, svc: Service) -> int:
             print("Validation errors:")
             for e in rep.errors:
                 print("  -", e)
+        if ai.get("ai_brief"):
+            print("AI brief (answer it as JSON, then `video-agent revise <project> --ai-recommendations FILE`):")
+            print(json.dumps(ai["ai_brief"], indent=2, ensure_ascii=False, default=str))
     return 0 if rep.ok else 2
 
 
@@ -297,13 +306,22 @@ def cmd_reject(args, svc: Service) -> int:
 def cmd_revise(args, svc: Service) -> int:
     ir = load_ir(args.project)
     try:
-        out = svc.revise(ir, args.project, feedback=args.feedback or "", user_requirements=_kv(args.set), who=args.by)
+        recs = None
+        if args.ai_recommendations:   # ADR-050: the chat model's answer to `plan --ai-brief`
+            from .providers.host import load_recommendations
+            recs = load_recommendations(json.loads(Path(args.ai_recommendations).read_text(encoding="utf-8")))
+        out = svc.revise(ir, args.project, feedback=args.feedback or "", user_requirements=_kv(args.set), who=args.by,
+                         ai_recommendations=recs, ai_model=args.ai_model or "host-chat")
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     if args.json:
         _print(out, True)
         return 0 if out["created"] else 5
+    if out.get("ai"):
+        print(f"AI recommendations ({out['ai']['model']}): {len(out['ai']['accepted'])} accepted, {len(out['ai']['dropped'])} dropped")
+        for w in out["ai"]["dropped"]:
+            print("  -", w)
     if not out["created"]:
         print(f"no new plan version: {out['reason']} (still v{out['version']})")
         return 5
@@ -699,6 +717,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--kind", action="append", dest="kinds", help="additional analysis kind(s) to record in the IR (e.g. transcript, duration)")
     p.add_argument("--language", help="transcript kind: ISO 639-1 code for recognition (default: detected by the engine)")
     p.add_argument("--offline", action="store_true", help="transcript kind: no remote engine, no model download")
+    p.add_argument("--ai-brief", action="store_true", help="the chat model this runs in (Claude Code, Claude Desktop) is the AI: output what it should read, then answer with `revise --ai-recommendations` (ADR-050)")
+    p.add_argument("--ai-model", help="name of the chat model, recorded in provenance (default host-chat)")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("validate", help="validate a Project IR (schema, semantics, capabilities)")
     p.add_argument("project"); p.add_argument("--no-paths", action="store_true", help="do not require asset paths to exist")
@@ -717,6 +737,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("revise", help="produce the next plan version from rejections and feedback (previous version is preserved)")
     p.add_argument("project"); p.add_argument("--feedback", help="free-text feedback (only unambiguous phrases are interpreted)")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="structured feedback, e.g. audio.loudness.target_lufs=-16"); p.add_argument("--by")
+    p.add_argument("--ai-recommendations", metavar="FILE", help="the chat model's answer to `plan --ai-brief` (JSON); validated like any provider's (ADR-050)")
+    p.add_argument("--ai-model", help="name of the chat model that answered, recorded in provenance (default host-chat)")
     p.set_defaults(fn=cmd_revise)
     p = sub.add_parser("diff", help="show the PlanDiff between two plan versions (default: previous → current)")
     p.add_argument("project"); p.add_argument("--from", type=int, dest="from"); p.add_argument("--to", type=int)
