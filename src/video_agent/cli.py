@@ -195,7 +195,9 @@ def cmd_plan(args, svc: Service) -> int:
         if handoff:
             print("Not executable here (no installed skill; the step is BLOCKED until one is installed, or done outside the OS):")
             for h in handoff:
-                print(f"  {h['step']}  {h['skill']}: {h['job']} -- {h['reason']}; provided by {', '.join(h['provided_by'])}")
+                print(f"  {h['step']}  {h['skill']}: {h['job']} -- {h['reason']}; provided by {', '.join(h['repositories'])}")
+                for c in h["install"]:
+                    print(f"      install: {c}")
         if ai.get("ai_brief"):
             print("AI brief (answer it as JSON, then `video-agent revise <project> --ai-recommendations FILE`):")
             print(json.dumps(ai["ai_brief"], indent=2, ensure_ascii=False, default=str))

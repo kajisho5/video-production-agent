@@ -12,6 +12,7 @@ from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO,
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, concat_segments, ir_operation, kept_duration
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
+from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
@@ -649,6 +650,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+    # ---- ecosystem jobs handed off (ADR-057): one step per requested job, on the request's assets, with no tool (BLOCKED; the
+    # plan's handoff names the owning package and its install command). It waits on nothing and produces nothing the agent tracks.
+    for d in [x for x in decisions if x.subject.startswith(JOB_PREFIX) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
+        skill = d.params["skill"]
+        order += 1
+        steps.append(ProductionStep(id=f"step_job_{skill}", order=order, skill=skill, tool=tool_for(skill), inputs=[a.id for a in analysis.assets],
+                                    params={}, outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+        summary.append(f"Hand off {skill} ({d.subject}): no adapter here; see the plan's handoff")
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:

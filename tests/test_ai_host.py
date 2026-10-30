@@ -87,6 +87,149 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("/plugin install ffmpeg-skill@ai-video-production-os", h["install"])
 
 
+
+# ADR-057 (roadmap step 1): job -> (owning package, repository, the install command the handoff must name). Written by hand from
+# AI-video-production-OS ecosystem.json and each repository's README, independently of skills/ecosystem.py.
+_GH = "https://github.com/kajisho5/"
+ECOSYSTEM_JOBS = {
+    "media_ingest": ("ingest", "ingest-skill", f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill'"),
+    "voice_enhancement": ("voice-enhance", "voice-enhance-skill", f"none yet: voice-enhance-skill is a scaffold repository with no released package ({_GH}voice-enhance-skill)"),
+    "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
+    "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
+    "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
+    "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
+    "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
+    "platform_publish": ("publish", "publish-skill", f"none yet: publish-skill is a scaffold repository with no released package ({_GH}publish-skill)"),
+    "still_image_edit": ("imagemagick", "imagemagick-skill", "npx imagemagick-skill"),
+    "render_3d": ("blender", "blender-skill", "npx blender-skill"),
+    "measured_motion_graphics": ("remotion-ffmpeg", "remotion-ffmpeg-skill", "npx remotion-ffmpeg-skill"),
+    "html_scene_render": ("hyperframes", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
+    "document_verification": ("artifacts", "artifacts-skill", f"git clone {_GH}artifacts-skill && pip install -e 'artifacts-skill[all]'"),
+    "bluray_authoring": ("bdmvkit", "bdmvkit", "pip install bdmvkit"),
+    "dvd_authoring": ("vtskit", "vtskit", "pip install vtskit"),
+    "disc_image": ("udfkit", "udfkit", "pip install udfkit"),
+    "dvd_line21_captions": ("dvdcc", "dvdcc", "pip install dvdcc"),
+}
+# ecosystem.json `plugin: true` (listed in the Claude Code marketplace) / `optional: true` (./install.sh --with-optional)
+PLUGINS = {"ingest-skill", "diarization-skill", "detection-skill", "slide-sync-skill", "imagemagick-skill", "blender-skill", "remotion-ffmpeg-skill",
+           "hyperframes-skill", "artifacts-skill"}
+OPTIONAL = {"diarization-skill", "detection-skill", "bdmvkit", "vtskit", "udfkit", "dvdcc"}
+
+
+class EcosystemJobHandoffTests(unittest.TestCase):
+    """ADR-057: a plan asking for a job another package of the ecosystem owns (`job.<skill>=true`) shows a BLOCKED step and a
+    handoff naming that package, its repository and its install command. One test per job."""
+
+    def assert_handoff(self, skill):
+        package, repo, command = ECOSYSTEM_JOBS[skill]
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={f"job.{skill}": True})
+        step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == skill)
+        self.assertEqual((step["id"], step["tool"], step["status"]), (f"step_job_{skill}", None, "BLOCKED"))
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        asked = next(d for d in ir.doc["decisions"] if d["id"] == step["decision_id"])
+        self.assertEqual((asked["subject"], asked["type"], asked["provenance"]), (f"job.{skill}", "TRANSFORM", "USER"))
+        self.assertTrue(any(d["subject"] == f"job.{skill}" and d["approval"] == "BLOCK" for d in ir.doc["decisions"]))
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == skill]
+        self.assertEqual(h["step"], step["id"])
+        self.assertIn("declared for phase 2 and not implemented", h["reason"])
+        self.assertEqual((h["provided_by"], h["repositories"]), ([package], [repo]))
+        self.assertIn(command, h["install"])
+        self.assertEqual(f"/plugin install {repo}@ai-video-production-os" in h["install"], repo in PLUGINS)
+        if not command.startswith("none yet"):
+            self.assertIn("or ./install.sh" + (" --with-optional" if repo in OPTIONAL else "") + " from AI-video-production-OS (packages and CLIs)", h["install"])
+        else:
+            self.assertEqual(h["install"], [command], "nothing released: no command that cannot work")
+        self.assertEqual(svc.registry.get(skill).phase, 2)
+        self.assertEqual(svc.registry.get(skill).tools[0].split("/", 1)[0], package)
+
+    def test_media_ingest(self):
+        self.assert_handoff("media_ingest")
+
+    def test_voice_enhancement(self):
+        self.assert_handoff("voice_enhancement")
+
+    def test_dubbing(self):
+        self.assert_handoff("dubbing")
+
+    def test_sound_design(self):
+        self.assert_handoff("sound_design")
+
+    def test_speaker_diarization(self):
+        self.assert_handoff("speaker_diarization")
+
+    def test_visual_detection(self):
+        self.assert_handoff("visual_detection")
+
+    def test_slide_sync(self):
+        self.assert_handoff("slide_sync")
+
+    def test_platform_publish(self):
+        self.assert_handoff("platform_publish")
+
+    def test_still_image_edit(self):
+        self.assert_handoff("still_image_edit")
+
+    def test_render_3d(self):
+        self.assert_handoff("render_3d")
+
+    def test_measured_motion_graphics(self):
+        self.assert_handoff("measured_motion_graphics")
+
+    def test_html_scene_render(self):
+        self.assert_handoff("html_scene_render")
+
+    def test_document_verification(self):
+        self.assert_handoff("document_verification")
+
+    def test_bluray_authoring(self):
+        self.assert_handoff("bluray_authoring")
+
+    def test_dvd_authoring(self):
+        self.assert_handoff("dvd_authoring")
+
+    def test_disc_image(self):
+        self.assert_handoff("disc_image")
+
+    def test_dvd_line21_captions(self):
+        self.assert_handoff("dvd_line21_captions")
+
+    def test_every_declared_job_is_covered(self):
+        from video_agent.skills.registry import ECOSYSTEM_JOB_SKILLS
+        self.assertEqual({s.name for s in ECOSYSTEM_JOB_SKILLS}, set(ECOSYSTEM_JOBS))
+
+    def test_several_jobs_one_plan_and_nothing_without_the_switch(self):
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.dubbing": True, "job.disc_image": "true", "job.render_3d": False})
+        self.assertEqual(sorted(h["skill"] for h in svc.handoffs(ir)), ["disc_image", "dubbing"])
+        plain = svc.plan([fake_media(tmp)], "youtube")
+        self.assertFalse([s for s in plain.doc["plan"]["steps"] if s["id"].startswith("step_job_")])
+        self.assertEqual(svc.handoffs(plain), [])
+
+    def test_unknown_job_or_value_is_refused_before_analysis(self):
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaisesRegex(Exception, "unknown job 'job.teleport'"):
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.teleport": True})
+        with self.assertRaisesRegex(Exception, "is a switch"):
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.dubbing": "into English"})
+
+    def test_snapshot_matches_the_os_ecosystem_json(self):
+        """skills/ecosystem.py against a sibling AI-video-production-OS checkout's ecosystem.json, when there is one."""
+        from video_agent.skills.ecosystem import COMPONENTS
+        manifest = Path(__file__).resolve().parents[2] / "AI-video-production-OS" / "ecosystem.json"
+        if not manifest.is_file():
+            self.skipTest("no AI-video-production-OS checkout next to this repository")
+        rows = {c["repo"]: c for c in json.loads(manifest.read_text(encoding="utf-8"))["components"]}
+        for c in COMPONENTS.values():
+            row = rows.get(c.repo)
+            self.assertIsNotNone(row, f"{c.repo} is not in ecosystem.json")
+            self.assertEqual((c.department, c.install, c.plugin, c.optional, list(c.owns)),
+                             (row["department"], row["install"], bool(row.get("plugin")), bool(row.get("optional")), row["owns"]), c.repo)
+
+
 class McpServerTests(unittest.TestCase):
     def test_tool_argv(self):
         tmp = tempfile.mkdtemp()

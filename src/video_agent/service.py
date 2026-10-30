@@ -15,6 +15,7 @@ from .agent.production_plan import plan_status
 from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
+from .agent.handoffs import check_job_keys
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -36,6 +37,7 @@ from .project.ir import snapshot_path
 from .media.analyzer import AnalysisResult
 from .qa import run_qa
 from .skills import ProvidesFinding, check_all, default_registry
+from .skills.ecosystem import component, install_commands, repository
 from .skills.providers import default_providers, explicit_providers
 from .tools import ToolRouter
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
@@ -179,10 +181,12 @@ class Service:
             spec = self.registry.get(st["skill"])
             _, reason = self.registry.select_tool(spec.name, caps, supports)
             pkgs = sorted({t.split("/", 1)[0] for t in spec.tools})
-            repos = [p if p.endswith("-skill") else p + "-skill" for p in pkgs]
+            # ADR-057: repository and install commands from the ecosystem snapshot (skills/ecosystem.py), not a guessed `-skill` suffix
+            install = list(dict.fromkeys(c for p in pkgs for c in install_commands(p)))
             out.append({"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
-                        "reason": reason, "provided_by": pkgs,
-                        "install": [f"/plugin install {r}@ai-video-production-os" for r in repos] + ["or ./install.sh from AI-video-production-OS (packages and CLIs)"]})
+                        "reason": reason, "provided_by": pkgs, "repositories": [repository(p) for p in pkgs],
+                        "packages": [component(p).to_dict() if component(p) else {"package": p, "repository": repository(p)} for p in pkgs],
+                        "install": install})
         return out
 
     def packages(self) -> List[Dict[str, Any]]:
@@ -1058,7 +1062,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1123,6 +1127,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_thumbnail_requirements(rm)
     qc_requested(rm)
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
+    check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 

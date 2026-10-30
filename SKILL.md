@@ -29,6 +29,8 @@ Explicit requirements go in as `--set key=value` on plan or revise (e.g. `audio.
 
 Every skill is optional; the plan uses the ones installed here. `plan --json` lists steps no installed skill can run under `handoff` (job, reason, which package provides it, how to install it); those steps are BLOCKED. Tell the user, and either install the skill (`/plugin install <skill>@ai-video-production-os`, or `./install.sh`) and plan again, or — only if the user agrees and it is safe — do that job with another installed skill or a standard tool. Say plainly that such a step is outside the agent: no contract, no provenance, no approval record, no QA by the agent. Then verify its output with `video-agent --json check <file>`.
 
+A job the agent has no adapter for at all (another package of the ecosystem owns it) is asked for with `--set job.<skill>=true`: `media_ingest`, `voice_enhancement`, `dubbing`, `sound_design`, `speaker_diarization`, `visual_detection`, `slide_sync`, `platform_publish`, `still_image_edit`, `render_3d`, `measured_motion_graphics`, `html_scene_render`, `document_verification`, `bluray_authoring`, `dvd_authoring`, `disc_image`, `dvd_line21_captions`. The plan then carries a BLOCKED step for it and a handoff naming the package, its repository and its install command (`none yet` for a package that has not been released). Use it when the user asks for such a job, so the request is recorded and handed over instead of silently dropped.
+
 ## Exit codes
 
 0 done / 2 validation errors / 3 BLOCKED / 4 waiting for approval / 5 QA FAIL (revise: no new version) / 1 other. Exit 4 means ask the user, not retry with approval.
