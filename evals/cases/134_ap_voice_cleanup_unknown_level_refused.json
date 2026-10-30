@@ -1,0 +1,33 @@
+{
+ "name": "ap_voice_cleanup_unknown_level_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.voice_cleanup": "extreme"
+ },
+ "expect": {
+  "plan_error": "must be one of",
+  "note": "VOICE_CLEANUP.level is the contract's enum light / medium / strong (no default); anything else is refused at planning"
+ }
+}

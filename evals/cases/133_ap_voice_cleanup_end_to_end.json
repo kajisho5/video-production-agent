@@ -1,0 +1,59 @@
+{
+ "name": "ap_voice_cleanup_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.voice_cleanup": "medium",
+  "audio.noise_reduction.strength_db": 30,
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "ir_ops": [
+   "audio.cut",
+   "audio.voice_cleanup",
+   "audio.noise_reduction",
+   "audio.loudness"
+  ],
+  "steps": [
+   "audio_cut",
+   "audio_voice_cleanup",
+   "audio_noise_reduction",
+   "audio_normalize"
+  ],
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "CUT",
+    "VOICE_CLEANUP",
+    "NOISE_REDUCTION",
+    "NORMALIZE"
+   ],
+   "qa_status": "PASS"
+  }
+ }
+}

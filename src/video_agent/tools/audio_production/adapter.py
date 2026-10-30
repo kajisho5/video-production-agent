@@ -46,7 +46,7 @@ CONTRACT_SCHEMA = "audio-production/contract@1"
 REQUEST_SCHEMA = "audio-production/request@1"
 RESPONSE_SCHEMA = "audio-production/response@1"
 DOCTOR_SCHEMA = "audio-production/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.0: engine compatibility by capability detection (no
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
                                                # version window, ADR-048); operations/request/response unchanged.
                                                # 0.3.0 (audio-production-skill #8): audio_stream added to
                                                # GAIN/FADE_IN/FADE_OUT/MONO/STEREO/DOWNMIX/NOISE_REDUCTION/DYNAMICS.
@@ -62,6 +62,9 @@ ERROR_CODES: Dict[str, str] = {
     "INVALID_SAMPLE_RATE": "INVALID_ARGS", "DEPENDENCY_ERROR": "INVALID_ARGS", "TOOL_ERROR": "UNKNOWN", "OUTPUT_ERROR": "SKILL_ERROR",
     "VALIDATION_ERROR": "SKILL_ERROR", "CANCELLED": "TIMEOUT", "INTERNAL_ERROR": "SKILL_ERROR",
 }
+# ADR-068: details.reason of the TOOL_ERROR the Skill (0.4.3) returns when the located ffmpeg-skill cannot run a VOICE_CLEANUP level
+# (details.level, details.available_levels, details.ffmpeg_skill_version; retryable false)
+VOICE_LEVEL_UNSUPPORTED = "voice_level_unsupported"
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
 SCHEMA_VERSIONS = {"contract": "1", "request": "1", "response": "1", "doctor": "1"}
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -172,7 +175,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic audio production (typed operation graph, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -462,8 +465,15 @@ class AudioProductionAdapter(ToolAdapter):
             details = _scrub(err_doc.get("details"), self.lowering.forbidden)
             if errc == "CANCELLED" and (details.get("reason") or "") not in ("timeout", "signal"):
                 details["reason"] = details.get("reason") or "signal"
+            message = str(err_doc.get("message") or tail or "")[:500]
+            if errc == "TOOL_ERROR" and details.get("reason") == VOICE_LEVEL_UNSUPPORTED:
+                # ADR-068: refused at the Skill's planning, before any tool ran: the located ffmpeg-skill cannot run this VOICE_CLEANUP
+                # level (light / strong need >= 1.13). Retrying cannot change that, so it is never retried, whatever the code's table says.
+                retry = False
+                levels = details.get("available_levels")
+                message = (message + f" -- set audio.voice_cleanup to one of {levels} or install ffmpeg-skill >= 1.13")[:500] if isinstance(levels, list) and levels else message
             self._remove_fresh(out_path, t0)
-            return self._fail(op, attempt, dry_run, t0, code if code != 0 else 1, errc, str(err_doc.get("message") or tail or "")[:500], retryable=bool(retry), details=details,
+            return self._fail(op, attempt, dry_run, t0, code if code != 0 else 1, errc, message, retryable=bool(retry), details=details,
                               skill_results=doc.get("results") if isinstance(doc.get("results"), list) else None)
         errs = self._check_response(doc, out_path, dry_run)
         if errs:

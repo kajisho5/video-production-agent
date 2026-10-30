@@ -307,6 +307,8 @@ def default_registry() -> SkillRegistry:
         # ADR-063: what the pinned contract (0.4.2) already offers and nothing planned before
         ("audio_mix", "MIX", "Sum 2..8 audio inputs (per-input gain / mute); the first input sets the length", {"assets": "audio[]", "levels": "list"}, "MEDIUM"),
         ("audio_noise_reduction", "NOISE_REDUCTION", "FFT noise reduction (strength in dB)", {"asset": "audio", "strength_db": "float"}, "MEDIUM"),
+        # ADR-068: audio-production 0.4.3's speech clean-up preset (ffmpeg-skill/audio --voice <level>)
+        ("audio_voice_cleanup", "VOICE_CLEANUP", "Speech clean-up preset (light | medium | strong: highpass, de-esser, FFT denoise, compression, limiter)", {"asset": "audio", "level": "light|medium|strong"}, "MEDIUM"),
         ("audio_dynamics", "DYNAMICS", "Gate → compressor → limiter (typed stage parameters)", {"asset": "audio", "stages": "object"}, "MEDIUM"),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production", f"audio-production:{typ}"],

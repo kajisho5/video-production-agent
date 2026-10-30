@@ -469,7 +469,7 @@ def run_case(case: dict) -> dict:
             return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e!s:.200}"]}
         drift = ad.drift()
         os.environ.pop("FAKE_AP_MODE", None)
-        extra = [] if ap.get("no_capability") else ["audio-production"] + [f"audio-production:{t}" for t in ("CUT", "NORMALIZE", "GAIN", "MONO", "STEREO", "DOWNMIX", "FADE_IN", "FADE_OUT", "CONCAT", "MIX", "NOISE_REDUCTION", "DYNAMICS")]
+        extra = [] if ap.get("no_capability") else ["audio-production"] + [f"audio-production:{t}" for t in ("CUT", "NORMALIZE", "GAIN", "MONO", "STEREO", "DOWNMIX", "FADE_IN", "FADE_OUT", "CONCAT", "MIX", "NOISE_REDUCTION", "DYNAMICS", "VOICE_CLEANUP")]
         if drift:
             extra = []   # what the resolver does with a drifted contract: the capability is MISSING
         caps = FakeCaps(case.get("missing_capabilities", ()), extra=extra)

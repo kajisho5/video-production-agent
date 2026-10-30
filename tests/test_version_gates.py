@@ -27,7 +27,8 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        for v in ("0.1.0", "0.2.0", "0.2.1"):
+        self.assertEqual(mg.pinned_contract()["version"], "0.2.4")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false)
+        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9"):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
             self.assertEqual(mg.contract_breaking_drift(live), [], v)
@@ -51,7 +52,8 @@ class VersionGateTests(unittest.TestCase):
 
     def test_subtitle_release_versions(self):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
-        for v in ("0.1.5", "0.2.0", "0.2.4"):
+        self.assertEqual(st.pinned_contract()["version"], "0.2.1")   # subtitle-skill #20: provides[] tool ids are subtitle/...
+        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4"):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)

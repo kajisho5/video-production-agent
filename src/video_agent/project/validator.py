@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
-from ..agent.audio import (AUDIO_ORDER, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS,
+from ..agent.audio import (AUDIO_ORDER, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
                            PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
 from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF, switch_cams
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
@@ -140,6 +140,8 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
                 errs.append(f"{t}: duration {op.get('duration')!r} must be within 0..3600 s")
             if t == "audio.gain" and not (isinstance(op.get("gain_db"), (int, float)) and -60 <= float(op["gain_db"]) <= 60 and float(op["gain_db"]) != 0):
                 errs.append(f"audio.gain: gain_db {op.get('gain_db')!r} must be within -60..60 and not 0")
+            if t == "audio.voice_cleanup" and op.get("level") not in VOICE_CLEANUP_LEVELS:   # ADR-068: the contract's required enum
+                errs.append(f"audio.voice_cleanup: level {op.get('level')!r} must be one of {VOICE_CLEANUP_LEVELS}")
             if t == "audio.noise_reduction":   # ADR-063: the contract's required pair
                 if op.get("mode") not in NOISE_REDUCTION_MODES:
                     errs.append(f"audio.noise_reduction: mode {op.get('mode')!r} must be one of {NOISE_REDUCTION_MODES}")

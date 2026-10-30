@@ -4,10 +4,10 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
-  "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), fades, EBU R128 loudness normalisation, mix, concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
+  "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), fades, EBU R128 loudness normalisation, mix, concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
   "repository": "https://github.com/kajisho5/audio-production-skill",
   "not_provided": [
     "AI reasoning",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -49,7 +49,8 @@
         "NORMALIZE",
         "SILENCE_REMOVE",
         "STEREO",
-        "TRIM"
+        "TRIM",
+        "VOICE_CLEANUP"
       ],
       "supports": {
         "dry_run": true,
@@ -153,6 +154,12 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "TRIM"
+    },
+    {
+      "id": "audio.voice_cleanup",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "VOICE_CLEANUP"
     }
   ],
   "dependencies": [
@@ -786,6 +793,47 @@
       "deterministic": "content_equivalent"
     },
     {
+      "type": "VOICE_CLEANUP",
+      "description": "Speech clean-up preset (ffmpeg-skill/audio --voice): a fixed filter chain per level, nothing tuned here",
+      "inputs": {
+        "min": 1,
+        "max": 1
+      },
+      "parameters": {
+        "level": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "light",
+            "medium",
+            "strong"
+          ],
+          "description": "light = highpass 80 Hz + gentle compression; medium = highpass, de-esser, FFT denoise (fixed -25 dB floor), compression; strong = medium + harder de-esser, second compressor, limiter at -1 dBFS. No default: the caller decides. light / strong need an ffmpeg-skill whose contract declares the --voice levels (older releases: medium only, anything else is refused with TOOL_ERROR before a tool runs)"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "0-based index of the input's audio stream to process (ffmpeg-skill audio.py --audio-stream; probe lists a source's streams under audio_streams); ffmpeg-skill refuses an index the input does not have"
+        }
+      },
+      "tool": "ffmpeg-skill/audio",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "encoder:pcm_s16le",
+        "filter:highpass",
+        "filter:deesser",
+        "filter:afftdn",
+        "filter:acompressor",
+        "filter:alimiter"
+      ],
+      "keeps_timeline": true,
+      "deterministic": "content_equivalent"
+    },
+    {
       "type": "CONCAT",
       "description": "Concatenate 2..32 inputs in order (ffmpeg concat), optional equal-power crossfade",
       "inputs": {
@@ -994,6 +1042,7 @@
         "downmix",
         "denoise",
         "denoise_strength",
+        "voice",
         "music",
         "music_volume",
         "json",

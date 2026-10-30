@@ -1584,7 +1584,8 @@
       "audio.fade_out",
       "audio.mix",
       "audio.noise_reduction",
-      "audio.dynamics"
+      "audio.dynamics",
+      "audio.voice_cleanup"
      ]
     },
     "asset": {
@@ -1683,6 +1684,13 @@
     "mode": {
      "enum": [
       "fft"
+     ]
+    },
+    "level": {
+     "enum": [
+      "light",
+      "medium",
+      "strong"
      ]
     },
     "strength_db": {

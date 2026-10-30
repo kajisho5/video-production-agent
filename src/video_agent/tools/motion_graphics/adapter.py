@@ -27,8 +27,10 @@ Contract discrepancies absorbed here (documented, never patched into either proj
   as a string and sends `{"font_id": …}`; a custom font file is not accepted from the agent (it would be a path from a plan).
 - The x264 preset enum is not published by the contract (request.shape shows "medium" only); the Skill's own list is pinned here
   as PRESETS and re-checked by the Skill.
-- `color` values are validated by the Skill (named colour / RRGGBB hex with optional @alpha); the agent only refuses shapes that
-  cannot be a colour (non-empty string ≤ 32 chars of [A-Za-z0-9#@.])."""
+- `color` values are validated by the Skill (a name from the contract's `colors.named` table, any case, or bare RRGGBB hex; @alpha
+  unless the parameter's schema says `alpha: false`, motion-graphics-skill 0.2.4 / its ADR-20). Here the agent refuses shapes that
+  cannot be a colour (non-empty string ≤ 32 chars of [A-Za-z0-9#@.]) and an @alpha on a parameter whose pinned schema says
+  `alpha: false` (the graphics-template colours, drawn opaque; ADR-067); which names exist stays the Skill's check."""
 from __future__ import annotations
 
 import json
@@ -54,7 +56,7 @@ CONTRACT_SCHEMA = "motion-graphics/contract@1"
 REQUEST_SCHEMA = "motion-graphics/request@1"
 RESPONSE_SCHEMA = "motion-graphics/response@1"
 DOCTOR_SCHEMA = "motion-graphics/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.x: the same contract, now reporting its release version
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.x: the same contract, now reporting its release version (0.2.4 adds colors / alpha: false, ADR-067)
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["motion-graphics", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
@@ -66,9 +68,10 @@ OUTPUT_EXTENSION = ".mp4"
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _COLOR_SHAPE_RE = re.compile(r"^[A-Za-z0-9#@.]+$")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_element_types", "animations", "unsupported_animations", "positions", "fonts", "output_formats",
-              "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors")
+              "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors",
+              "colors")   # ADR-067: 0.2.4's colour-name table, which the agent's planning reads from the pin
 DRIFT_ELEMENT_KEYS = ("type", "tool", "animation", "parameters", "required_capabilities", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.3.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.4.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -406,6 +409,8 @@ class MotionGraphicsAdapter(ToolAdapter):
             if t == "color":
                 if len(v) > 32 or not _COLOR_SHAPE_RE.match(v):
                     raise ToolError(f"motion-graphics: {name} {v!r} cannot be a colour (named colour or RRGGBB hex, optionally @alpha)")
+                if "@" in v and ps.get("alpha") is False:   # ADR-067: the contract marks the opaque template colours alpha: false
+                    raise ToolError(f"motion-graphics: {name} {v!r} takes no @alpha (the contract says alpha: false: the template draws it opaque)")
                 return v
             if v not in self.fonts:
                 raise ToolError(f"motion-graphics: {name} {v!r} is not a registry font id {self.fonts} (custom font files are not accepted from the agent)")
