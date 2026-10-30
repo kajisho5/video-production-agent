@@ -11,9 +11,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_adapter import FakeAdapter  # noqa: E402
 from fake_ai_provider import FakeAIProvider, recommend_from_analysis  # noqa: E402
-from fake_yt_dlp import install as install_fake_yt_dlp  # noqa: E402
+import fake_ingest  # noqa: E402
 
-from video_agent.agent.ingest import ENV_YTDLP, IngestError, IngestRecord, YtDlp, download_url, is_url, locate_yt_dlp, probe_url  # noqa: E402
+from video_agent.agent.ingest import ENV_DIR as INGEST_ENV_DIR, IngestError, IngestRecord, fetch_url, is_url, locate_ingest, url_fetch_handoff, yt_dlp_capability  # noqa: E402
 from video_agent.capabilities.resolver import Capability  # noqa: E402
 from video_agent.execution import CompileError, Executor, compile_ir  # noqa: E402
 from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
@@ -6475,28 +6475,35 @@ class UnrecognizedFinishingKeyTests(unittest.TestCase):
 
 
 class UrlIngestTests(unittest.TestCase):
-    """URL ingestion (issue #50 Task 1): URL detection, locating yt-dlp (an external engine dependency exactly like
-    ffmpeg -- PATH / an env var, never a Skill checkout), the live-vs-VOD branch from yt-dlp's own `--dump-json`
-    metadata (never guessed), and the OBSERVED provenance recorded for the download -- against a fake yt-dlp process
-    (tests/fake_yt_dlp.py) that speaks the real CLI surface (`--version`, `--dump-json`, a download ending in
-    `--print after_move:filepath`). No network access, no real yt-dlp needed."""
+    """URL ingestion (issue #50 Task 1, handed over to ingest-skill in ADR-059): URL detection, locating ingest-skill (a Skill
+    CLI like every other: VIDEO_AGENT_INGEST_DIR checkout / `ingest` on PATH), the exact argv (`ingest fetch <url> --dest
+    <workspace>/downloads --json`, a list, never a shell), the mapping of ingest-skill's errors and report onto IngestRecord
+    (redacted URLs, the yt-dlp version, the live flags, the sha256 the agent recomputes), yt-dlp availability from `ingest
+    doctor --json`, and the ADR-051 handoff when ingest-skill is absent -- against a fake `ingest` process (tests/fake_ingest.py)
+    speaking ingest-skill's report shapes. No network access, no ingest-skill or yt-dlp needed."""
 
-    FAKE = str(Path(__file__).resolve().parent / "fake_yt_dlp.py")
-    CLEAR = ("FAKE_YTDLP_MODE", "FAKE_YTDLP_VERSION", "FAKE_YTDLP_CALLS")
+    FAKE = str(Path(__file__).resolve().parent / "fake_ingest.py")
+    CLEAR = ("FAKE_INGEST_MODE", "FAKE_INGEST_CALLS", INGEST_ENV_DIR)
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self._path = os.environ.get("PATH", "")
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self._env = {k: os.environ.get(k) for k in self.CLEAR + ("PATH",)}
         for k in self.CLEAR:
             os.environ.pop(k, None)
 
     def tearDown(self):
-        for k in self.CLEAR:
-            os.environ.pop(k, None)
-        os.environ["PATH"] = self._path
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
-    def _yt_dlp(self, version: str = "2026.08.19-fake") -> YtDlp:
-        return YtDlp(command=[sys.executable, self.FAKE], version=version)
+    def _skill(self):
+        from video_agent.tools.skill_process import CliSkill
+        return CliSkill("ingest", [sys.executable, self.FAKE], None, {})
+
+    def _calls(self, log):
+        return [json.loads(ln) for ln in Path(log).read_text(encoding="utf-8").splitlines()]
 
     # ---- URL detection: scheme + host, never "doesn't exist as a local path"
     def test_is_url_accepts_http_and_https_only(self):
@@ -6506,145 +6513,78 @@ class UrlIngestTests(unittest.TestCase):
                     "file:///tmp/a.mp4", "", "not a url at all", "www.youtube.com/watch?v=abc"):
             self.assertFalse(is_url(bad), bad)
 
-    # ---- locate_yt_dlp: explicit -> VIDEO_AGENT_YTDLP -> PATH, and only a binary that actually runs counts
-    def test_locate_yt_dlp_explicit_overrides_env_and_path(self):
+    # ---- locating ingest-skill: a checkout through VIDEO_AGENT_INGEST_DIR, else the `ingest` console script on PATH
+    def test_locate_ingest_checkout_and_console_script(self):
+        root = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
+        sk = locate_ingest(env={INGEST_ENV_DIR: root, "PATH": ""})
+        self.assertEqual((sk.command[1:], sk.env), (["-m", "ingest_skill.cli"], {"PYTHONPATH": str(Path(root) / "src")}))
         bin_dir = Path(self.tmp) / "bin"
-        exe = install_fake_yt_dlp(bin_dir)
-        found = locate_yt_dlp(explicit=exe, env={"PATH": ""})
-        self.assertIsNotNone(found)
-        self.assertEqual(found.command, [exe])
-        self.assertEqual(found.version, "2026.08.19")   # fake_yt_dlp.py's default FAKE_YTDLP_VERSION
+        fake_ingest.install(bin_dir)
+        cwd = Path(self.tmp) / "nested" / "cwd"; cwd.mkdir(parents=True)
+        here = os.getcwd(); os.chdir(str(cwd))   # no ../ingest-skill sibling checkout to find first
+        try:
+            sk = locate_ingest(env={"PATH": str(bin_dir)})
+        finally:
+            os.chdir(here)
+        self.assertEqual(Path(sk.command[0]).stem, "ingest")   # ingest.cmd on Windows
+        self.assertIsNone(locate_ingest(env={INGEST_ENV_DIR: str(Path(self.tmp) / "nothing"), "PATH": ""}))
 
-    def test_locate_yt_dlp_env_var_when_no_explicit(self):
-        exe = install_fake_yt_dlp(Path(self.tmp) / "bin")
-        found = locate_yt_dlp(env={ENV_YTDLP: exe, "PATH": ""})
-        self.assertEqual(found.command, [exe])
-
-    def test_locate_yt_dlp_falls_back_to_path(self):
-        bin_dir = Path(self.tmp) / "bin"
-        install_fake_yt_dlp(bin_dir)
-        found = locate_yt_dlp(env={"PATH": str(bin_dir)})
-        self.assertIsNotNone(found)
-        self.assertEqual(Path(found.command[0]).stem, "yt-dlp")   # yt-dlp.cmd on Windows
-
-    def test_locate_yt_dlp_missing_is_none(self):
-        self.assertIsNone(locate_yt_dlp(env={"PATH": ""}))
-        self.assertIsNone(locate_yt_dlp("/nonexistent/yt-dlp", env={"PATH": ""}))
-
-    def test_locate_yt_dlp_rejects_a_name_that_does_not_actually_run(self):
-        bin_dir = Path(self.tmp) / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        broken = bin_dir / "yt-dlp"
-        broken.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n")
-        broken.chmod(0o755)   # on PATH, executable, but --version fails: a broken install is MISSING, never guessed at
-        self.assertIsNone(locate_yt_dlp(env={"PATH": str(bin_dir)}))
-
-    # ---- probe_url: is_live / was_live decide the branch, never guessed
-    def test_probe_url_reports_in_progress_live(self):
-        os.environ["FAKE_YTDLP_MODE"] = "live"
-        meta = probe_url("https://example.com/live", self._yt_dlp())
-        self.assertTrue(meta["is_live"])
-        self.assertFalse(meta["was_live"])
-        self.assertEqual(meta["id"], "vid0000001")
-
-    def test_probe_url_reports_ended_stream_as_vod(self):
-        os.environ["FAKE_YTDLP_MODE"] = "was_live"
-        meta = probe_url("https://example.com/ended", self._yt_dlp())
-        self.assertFalse(meta["is_live"])
-        self.assertTrue(meta["was_live"])
-        self.assertEqual(meta["duration"], 42.5)
-
-    def test_probe_url_failure_is_reported_not_swallowed(self):
-        os.environ["FAKE_YTDLP_MODE"] = "probe_fail"
-        with self.assertRaises(IngestError) as cm:
-            probe_url("https://example.com/x", self._yt_dlp())
-        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
-
-    def test_probe_url_invalid_json_is_reported(self):
-        os.environ["FAKE_YTDLP_MODE"] = "bad_json"
-        with self.assertRaises(IngestError) as cm:
-            probe_url("https://example.com/x", self._yt_dlp())
-        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
-
-    # ---- download_url: engine location, live-vs-VOD argv, output capture, hash, provenance
-    def test_download_url_ended_stream_downloads_as_plain_vod(self):
-        os.environ["FAKE_YTDLP_MODE"] = "was_live"
-        calls_log = str(Path(self.tmp) / "calls.log")
-        os.environ["FAKE_YTDLP_CALLS"] = calls_log
-        rec = download_url("https://example.com/ended", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertFalse(rec.is_live)
-        self.assertTrue(rec.was_live)
-        self.assertFalse(rec.live_from_start)
-        self.assertEqual(rec.video_id, "vid0000001")
-        self.assertEqual(rec.source_url, "https://example.com/ended")
-        self.assertTrue(Path(rec.path).is_file())
-        self.assertTrue(Path(rec.path).resolve().is_relative_to(Path(self.tmp).resolve()), "download must land inside the workspace")
+    # ---- fetch_url: argv, layout, mapping
+    def test_fetch_argv_layout_and_record(self):
+        log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_INGEST_CALLS"] = log
+        os.environ["FAKE_INGEST_MODE"] = "was_live"
+        url = "https://user:pa55@example.com/watch?v=abc&token=s3cr3t"
+        ws = Path(self.tmp) / "ws"
+        rec = fetch_url(url, str(ws), skill=self._skill())
+        fetch_call = next(c for c in self._calls(log) if c[:1] == ["fetch"])
+        self.assertEqual(fetch_call, ["fetch", url, "--dest", str((ws / "downloads").resolve()), "--json"], "one argv list: the URL is one element, never a shell string")
+        self.assertEqual(Path(rec.path), (ws / "downloads" / "generic-vid0000001" / "vid0000001.mp4").resolve())
         import hashlib
-        self.assertEqual(rec.sha256, hashlib.sha256(Path(rec.path).read_bytes()).hexdigest())
-        # no invocation (probe or download) ever passed --live-from-start for an ended stream
-        calls = [json.loads(ln) for ln in Path(calls_log).read_text().splitlines()]
-        self.assertTrue(any("-o" in c for c in calls), "the download invocation was made")
-        self.assertFalse(any("--live-from-start" in c for c in calls))
+        self.assertEqual(rec.sha256, hashlib.sha256(Path(rec.path).read_bytes()).hexdigest(), "the agent recomputes the hash itself")
+        self.assertEqual((rec.video_id, rec.title, rec.duration, rec.yt_dlp_version, rec.extractor, rec.format_id), ("vid0000001", "フェイク taped session", 42.5, "2026.10.26", "generic", "mp4"))
+        self.assertEqual((rec.is_live, rec.was_live, rec.live_from_start), (False, True, False))
+        self.assertEqual(rec.source_url, "https://example.com/watch?v=abc&token=REDACTED", "the redacted URL from ingest-skill, never the credentials")
+        self.assertEqual(rec.resolved_url, rec.source_url); self.assertEqual(rec.redacted, ["token", "userinfo"])
+        self.assertEqual((rec.downloaded_at, rec.ingest_version), ("2026-10-30T00:00:05Z", "0.1.0"))
+        self.assertEqual(rec.manifest, str((ws / "downloads" / "generic-vid0000001" / "ingest-manifest.json").resolve()))
+        self.assertNotIn("s3cr3t", json.dumps(rec.to_dict())); self.assertNotIn("pa55", json.dumps(rec.to_dict()))
+        os.environ["FAKE_INGEST_MODE"] = "live"
+        rec = fetch_url("https://example.com/live", str(ws), skill=self._skill())
+        self.assertEqual((rec.is_live, rec.live_from_start, rec.duration), (True, True, None), "the live branch is ingest-skill's (yt-dlp's own is_live)")
 
-    def test_download_url_in_progress_live_uses_live_from_start(self):
-        os.environ["FAKE_YTDLP_MODE"] = "live"
-        calls_log = str(Path(self.tmp) / "calls.log")
-        os.environ["FAKE_YTDLP_CALLS"] = calls_log
-        rec = download_url("https://example.com/live", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertTrue(rec.is_live)
-        self.assertTrue(rec.live_from_start)
-        calls = [json.loads(ln) for ln in Path(calls_log).read_text().splitlines()]
-        download_call = next(c for c in calls if "-o" in c)
-        self.assertIn("--live-from-start", download_call)
-
-    def test_download_url_lands_under_workspace_downloads(self):
-        os.environ["FAKE_YTDLP_MODE"] = "was_live"
-        rec = download_url("https://example.com/ended", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertEqual(Path(rec.path).parent, Path(self.tmp).resolve() / "downloads")
-
-    def test_download_url_engine_missing(self):
+    def test_fetch_errors_are_mapped(self):
+        for mode, kind, fragment in (("unavailable", "ENGINE_MISSING", "ingest-skill[fetch]"), ("url_invalid", "URL_INVALID", "http"),
+                                     ("fetch_failed", "DOWNLOAD_FAILED", "sign in required"), ("incomplete", "INCOMPLETE", "tmp-staging"),
+                                     ("bad_json", "INVALID_OUTPUT", "not JSON"), ("no_files", "INVALID_OUTPUT", "no downloaded file"),
+                                     ("outside", "INVALID_OUTPUT", "not a file under"), ("hash_mismatch", "INVALID_OUTPUT", "sha256"),
+                                     ("wrong_schema", "INVALID_OUTPUT", "fetch-report")):
+            os.environ["FAKE_INGEST_MODE"] = mode
+            with self.assertRaises(IngestError, msg=mode) as cm:
+                fetch_url("https://example.com/x", str(Path(self.tmp) / mode), skill=self._skill())
+            self.assertEqual(cm.exception.kind, kind, mode); self.assertIn(fragment, str(cm.exception), mode)
+        os.environ["FAKE_INGEST_MODE"] = "hang"
         with self.assertRaises(IngestError) as cm:
-            download_url("https://example.com/x", self.tmp, env={"PATH": ""})
-        self.assertEqual(cm.exception.kind, "ENGINE_MISSING")
+            fetch_url("https://example.com/x", self.tmp, skill=self._skill(), timeout=1.0)
+        self.assertEqual(cm.exception.kind, "TIMEOUT")
 
-    def test_download_url_failure_is_reported(self):
-        os.environ["FAKE_YTDLP_MODE"] = "download_fail"
+    def test_fetch_without_ingest_skill_is_engine_missing_naming_it(self):
         with self.assertRaises(IngestError) as cm:
-            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertEqual(cm.exception.kind, "DOWNLOAD_FAILED")
-        self.assertIn("sign in", str(cm.exception).lower())
+            fetch_url("https://example.com/x", self.tmp, env={INGEST_ENV_DIR: str(Path(self.tmp) / "nothing"), "PATH": ""})
+        self.assertEqual(cm.exception.kind, "ENGINE_MISSING"); self.assertIn("ingest-skill[fetch]", str(cm.exception))
 
-    def test_download_url_no_output_is_invalid_not_silently_ignored(self):
-        os.environ["FAKE_YTDLP_MODE"] = "no_output"
-        with self.assertRaises(IngestError) as cm:
-            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertEqual(cm.exception.kind, "INVALID_OUTPUT")
-
-    def test_probe_failure_during_download_surfaces_before_any_download_attempt(self):
-        os.environ["FAKE_YTDLP_MODE"] = "probe_fail"
-        with self.assertRaises(IngestError) as cm:
-            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
-
-    def test_missing_video_id_is_reported(self):
-        os.environ["FAKE_YTDLP_MODE"] = "no_id"
-        with self.assertRaises(IngestError) as cm:
-            download_url("https://example.com/x", self.tmp, yt_dlp=self._yt_dlp())
-        self.assertEqual(cm.exception.kind, "PROBE_FAILED")
-
-    # ---- doctor: yt-dlp reported the same way ffmpeg / ffprobe are, but never in the hard "must be present" list
-    def test_doctor_reports_yt_dlp_available(self):
+    # ---- doctor: yt-dlp as ingest-skill's own doctor reports it, never in the hard "must be present" list
+    def test_doctor_reports_yt_dlp_through_ingest_doctor(self):
         from video_agent.capabilities.resolver import CapabilityResolver
-        bin_dir = Path(self.tmp) / "bin"
-        install_fake_yt_dlp(bin_dir)
-        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": str(bin_dir)}).resolve()["yt-dlp"]
-        self.assertEqual(cap.status, "AVAILABLE")
-        self.assertEqual(cap.evidence["version"], "2026.08.19")
-
-    def test_doctor_reports_yt_dlp_missing(self):
-        from video_agent.capabilities.resolver import CapabilityResolver
-        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": ""}).resolve()["yt-dlp"]
-        self.assertEqual(cap.status, "MISSING")
+        root = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={INGEST_ENV_DIR: root, "PATH": ""}).resolve()["yt-dlp"]
+        self.assertEqual((cap.status, cap.detail, cap.evidence["version"], cap.evidence["via"], cap.evidence["ingest_version"]), ("AVAILABLE", "2026.10.26", "2026.10.26", "ingest-skill", "0.1.0"))
+        for mode, fragment in (("unavailable", "ingest-skill[fetch]"), ("no_doctor_check", "no yt-dlp check")):
+            os.environ["FAKE_INGEST_MODE"] = mode
+            status, detail, _ = yt_dlp_capability(skill=self._skill())
+            self.assertEqual(status, "MISSING", mode); self.assertIn(fragment, detail, mode)
+        os.environ.pop("FAKE_INGEST_MODE")
+        cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={INGEST_ENV_DIR: str(Path(self.tmp) / "nothing"), "PATH": ""}).resolve()["yt-dlp"]
+        self.assertEqual(cap.status, "MISSING"); self.assertIn("ingest-skill not found", cap.detail)
 
     def test_doctor_never_hard_requires_yt_dlp(self):
         """`video-agent doctor`'s exit code must stay 0 without yt-dlp: a deployment that never points `plan`/
@@ -6656,31 +6596,24 @@ class UrlIngestTests(unittest.TestCase):
 
     # ---- IngestRecord -> Observation: same discipline as every other measurement
     def test_ingest_record_becomes_an_observed_observation(self):
-        rec = IngestRecord(source_url="https://example.com/x", resolved_url="https://example.com/x?really=yes",
-                           video_id="vid0000001", title="a title", path="/ws/downloads/vid0000001.mp4",
-                           sha256="a" * 64, yt_dlp_version="2026.08.19", is_live=False, was_live=True,
-                           live_from_start=False, duration=42.5)
+        rec = IngestRecord(source_url="https://example.com/x?token=REDACTED", resolved_url="https://example.com/x?token=REDACTED",
+                           video_id="vid0000001", title="a title", path="/ws/downloads/generic-vid0000001/vid0000001.mp4",
+                           sha256="a" * 64, yt_dlp_version="2026.10.26", is_live=False, was_live=True,
+                           live_from_start=False, duration=42.5, extractor="generic", redacted=["token"], ingest_version="0.1.0")
         obs = rec.observation("asset_123")
-        self.assertEqual(obs.kind, "ingest")
-        self.assertEqual(obs.asset_id, "asset_123")
-        self.assertEqual(obs.provenance, "OBSERVED")
-        self.assertEqual(obs.source, "yt-dlp/download@2026.08.19")
-        self.assertEqual(obs.skill, "yt-dlp")
-        self.assertEqual(obs.skill_version, "2026.08.19")
-        self.assertEqual(obs.tool, "yt-dlp/download")
-        self.assertEqual(obs.external_id, "vid0000001")
-        self.assertEqual(obs.fingerprint, "a" * 64)
-        self.assertEqual(obs.data["source_url"], "https://example.com/x")
-        self.assertEqual(obs.data["was_live"], True)
+        self.assertEqual((obs.kind, obs.asset_id, obs.provenance), ("ingest", "asset_123", "OBSERVED"))
+        self.assertEqual((obs.source, obs.skill, obs.skill_version, obs.tool), ("ingest/fetch@0.1.0", "ingest", "0.1.0", "ingest/fetch"))
+        self.assertEqual((obs.external_id, obs.fingerprint), ("vid0000001", "a" * 64))
+        self.assertEqual((obs.data["source_url"], obs.data["was_live"], obs.data["yt_dlp_version"], obs.data["redacted"]), ("https://example.com/x?token=REDACTED", True, "2026.10.26", ["token"]))
         # the project validator's own rule for every observation (project/validator.py): a tool source with '@', OBSERVED
         self.assertIn("@", obs.source)
         self.assertFalse(obs.source.startswith("ai"))
 
     # ---- Service integration: the downloaded local file flows through the exact same pipeline as any local input
     def test_service_analyze_attaches_ingest_observation_to_the_downloaded_asset(self):
-        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        os.environ["FAKE_INGEST_MODE"] = "was_live"
         ws = Path(self.tmp) / "ws"
-        rec = download_url("https://example.com/ended", str(ws), yt_dlp=self._yt_dlp())
+        rec = fetch_url("https://example.com/ended", str(ws), skill=self._skill())
         svc = make_service(str(ws), adapter=FakeAdapter())
         profile, rules, analysis = svc.analyze([rec.path], "generic", hash_sources=False, ingest_records={rec.path: rec})
         asset = next(a for a in analysis.assets if str(Path(a.path).resolve()) == str(Path(rec.path).resolve()))
@@ -6693,16 +6626,48 @@ class UrlIngestTests(unittest.TestCase):
 
     def test_cli_resolve_url_inputs_rewrites_in_place_and_returns_provenance(self):
         """cli.py's own entry point (not agent/ingest.py directly): a URL and a local path in the same `plan`/
-        `analyze` call, resolved via the real yt-dlp lookup (PATH), against the fake process end to end."""
+        `analyze` call, resolved via the real ingest-skill lookup (VIDEO_AGENT_INGEST_DIR), against the fake process end to end."""
         from video_agent.cli import _resolve_url_inputs
-        install_fake_yt_dlp(Path(self.tmp) / "bin")
-        os.environ["PATH"] = str(Path(self.tmp) / "bin") + os.pathsep + os.environ.get("PATH", "")
-        os.environ["FAKE_YTDLP_MODE"] = "was_live"
+        os.environ[INGEST_ENV_DIR] = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
+        os.environ["FAKE_INGEST_MODE"] = "was_live"
         local_file = str(Path(self.tmp) / "local.mp4")
         Path(local_file).write_bytes(b"\x00")
         inputs = ["https://example.com/ended", local_file]
         records = _resolve_url_inputs(inputs, self.tmp)
-        self.assertEqual(inputs[0], str(Path(self.tmp).resolve() / "downloads" / "vid0000001.mp4"))
+        self.assertEqual(inputs[0], str(Path(self.tmp).resolve() / "downloads" / "generic-vid0000001" / "vid0000001.mp4"))
         self.assertEqual(inputs[1], local_file, "a local path is left untouched")
         self.assertEqual(set(records), {inputs[0]})
         self.assertEqual(records[inputs[0]].source_url, "https://example.com/ended")
+
+    def test_cli_hands_a_url_over_when_ingest_skill_is_missing(self):
+        """ADR-051 / ADR-059: no ingest-skill (or no fetch extra) → BLOCKED with a handoff naming ingest-skill and its install
+        command (with the fetch extra), exit 3 -- not a crash, and the agent downloads nothing itself."""
+        import argparse
+        import contextlib
+        import io
+        from video_agent.cli import cmd_plan
+        os.environ[INGEST_ENV_DIR] = str(Path(self.tmp) / "no-ingest-skill")
+        svc = make_service(self.tmp, adapter=FakeAdapter())
+        args = argparse.Namespace(inputs=["https://example.com/watch?v=abc"], json=True, ai_brief=False, ai_model=None)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cmd_plan(args, svc), 3)
+        doc = json.loads(buf.getvalue())
+        self.assertEqual(doc["status"], "BLOCKED")
+        h = doc["handoff"][0]
+        self.assertEqual((h["skill"], h["provided_by"], h["repositories"], h["inputs"]), ("url_fetch", ["ingest"], ["ingest-skill"], ["https://example.com/watch?v=abc"]))
+        self.assertIn("git clone https://github.com/kajisho5/ingest-skill && pip install -e 'ingest-skill[fetch]'", h["install"])
+        self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"]); self.assertIn("ingest-skill not found", h["reason"])
+        self.assertFalse((Path(self.tmp) / "downloads").exists() and any((Path(self.tmp) / "downloads").iterdir()), "nothing downloaded")
+        # ingest-skill present but without its fetch extra: the same handoff, with ingest-skill's own reason
+        os.environ[INGEST_ENV_DIR] = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
+        os.environ["FAKE_INGEST_MODE"] = "unavailable"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cmd_plan(argparse.Namespace(inputs=["https://example.com/watch?v=abc"], json=False, ai_brief=False, ai_model=None), svc), 3)
+        self.assertIn("FETCH_UNAVAILABLE", buf.getvalue()); self.assertIn("install: git clone https://github.com/kajisho5/ingest-skill && pip install -e 'ingest-skill[fetch]'", buf.getvalue())
+        # any other failure is an error, never a handoff
+        os.environ["FAKE_INGEST_MODE"] = "fetch_failed"
+        with self.assertRaises(IngestError):
+            cmd_plan(argparse.Namespace(inputs=["https://example.com/watch?v=abc"], json=True, ai_brief=False, ai_model=None), svc)
+        self.assertEqual(url_fetch_handoff([], "x", self.tmp), [])

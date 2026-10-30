@@ -5,10 +5,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
-from .agent.ingest import IngestRecord, is_url, download_url
+from .agent.ingest import IngestError, IngestRecord, fetch_url, is_url, url_fetch_handoff
 from .capabilities import CapabilityResolver
 from .project import load_ir, save_ir
 from .service import Service
@@ -39,15 +39,36 @@ def _kv(pairs: Optional[List[str]]) -> Dict[str, Any]:
 def _resolve_url_inputs(inputs: List[str], workspace: str) -> Dict[str, IngestRecord]:
     """Rewrite any URL in `inputs` into a locally downloaded file, in place, before analysis ever sees it (issue #50
     Task 1): everything past this point -- svc.analyze/plan, the naming below that reads args.inputs[0] -- deals
-    only with local files, exactly like any other input. Returns the download provenance keyed by the resolved
-    local path, threaded into svc.analyze/plan so it is recorded as an OBSERVED Observation on the right asset."""
+    only with local files, exactly like any other input. The download is ingest-skill's `ingest fetch` (ADR-059).
+    Returns the download provenance keyed by the resolved local path, threaded into svc.analyze/plan so it is
+    recorded as an OBSERVED Observation on the right asset."""
     records: Dict[str, IngestRecord] = {}
     for i, raw in enumerate(inputs):
         if is_url(raw):
-            record = download_url(raw, workspace)
+            record = fetch_url(raw, workspace)
             inputs[i] = record.path
             records[record.path] = record
     return records
+
+
+def _url_inputs_or_handoff(args, svc: Service) -> Tuple[Optional[Dict[str, IngestRecord]], Optional[int]]:
+    """(records, None), or (None, exit code 3) after printing the ADR-051 handoff when nothing installed here can download a
+    URL input (ingest-skill absent, or without its fetch extra): the URL is handed over, never a crash (ADR-059)."""
+    try:
+        return _resolve_url_inputs(args.inputs, svc.workspace), None
+    except IngestError as e:
+        if e.kind != "ENGINE_MISSING":
+            raise
+        handoff = url_fetch_handoff([u for u in args.inputs if is_url(u)], str(e), svc.workspace)
+    if getattr(args, "json", False):
+        _print({"status": "BLOCKED", "handoff": handoff}, True)
+    else:
+        print("Not executable here (URL input: no installed skill downloads it; BLOCKED until ingest-skill is installed, or download it outside the OS):")
+        for h in handoff:
+            print(f"  {h['step']}  {h['skill']}: {h['job']} -- {h['reason']}; provided by {', '.join(h['repositories'])}")
+            for c in h["install"]:
+                print(f"      install: {c}")
+    return None, 3
 
 
 def cmd_doctor(args, svc: Service) -> int:
@@ -107,7 +128,9 @@ def cmd_transcribe(args, svc: Service) -> int:
 
 
 def cmd_analyze(args, svc: Service) -> int:
-    ingest = _resolve_url_inputs(args.inputs, svc.workspace)
+    ingest, blocked = _url_inputs_or_handoff(args, svc)
+    if blocked is not None:
+        return blocked
     profile, rules, analysis = svc.analyze(args.inputs, args.profile, hash_sources=not args.no_hash, strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds,
                                            ingest_records=ingest)
     doc = analysis.to_dict()
@@ -165,7 +188,9 @@ def cmd_plan(args, svc: Service) -> int:
         from .providers.host import HostProvider
         host = HostProvider(model=args.ai_model or "host-chat")
         svc.provider = host
-    ingest = _resolve_url_inputs(args.inputs, svc.workspace)
+    ingest, blocked = _url_inputs_or_handoff(args, svc)
+    if blocked is not None:
+        return blocked
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
                   strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
                   ingest_records=ingest)
