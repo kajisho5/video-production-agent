@@ -42,6 +42,8 @@ Uses 16 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
   - Done when: subtitles and edits carry speaker ids from a diarized transcript
 - [ ] **9. Adapters for the new skills, as they ship** — ingest (media_offload), detection (redact faces), dubbing, voice-enhance, sound-design (via audio-production MIX), publish (CONFIRM after QC), nle-bridge
   - Done when: one PR per skill: plan -> run -> provenance, handoff when absent
+- [ ] **10. Take selection and beat-synced assembly** — group takes of the same line by transcript similarity (transcription-skill); score each take on measured facts (sharpness / exposure / loudness from media-analysis, flubs and fillers from the transcript, faces from detection) and let the AI pick with the evidence recorded as a decision; assemble the picks with cuts snapped to a measured beat grid (ffmpeg-skill `scenes --beats`, `cut --snap beats`) and audio crossfades at the joins (audio-production `concat` crossfade); export OTIO for finishing in an NLE
+  - Done when: an eval with several takes per line picks the expected take, every pick carries its scores, and the cuts land on measured beats
 
 ## Boundaries
 
