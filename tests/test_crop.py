@@ -272,5 +272,44 @@ class CroppedPictureSizeTests(unittest.TestCase):
                          "a quarter turn alone changes the delivered width too")
 
 
+class GridPictureSizeTests(unittest.TestCase):
+    """Left over from PR #81 (ADR-062's addendum): `picture_size` ignored `video.grid`, so the programme a grid builds was sized as its
+    first input. grid.py's output is the cells it places (cols × cell_width + gaps); the cell defaults (480x270, gap 0) are grid.py's own."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        clear_modes()
+
+    def test_picture_size_of_a_grid(self):
+        tech = {"video": {"width": 1280, "height": 720}}
+
+        def grid(n, **kw):
+            return {"type": "video.grid", "asset": "programme", "inputs": [f"a{i}" for i in range(n)], **kw}
+        self.assertEqual(picture_size(tech, [grid(2, cols=2, rows=1)], "programme"), (960, 270), "grid.py's default cells")
+        self.assertEqual(picture_size(tech, [grid(4, cols=2, rows=2, cell_width=640, cell_height=360, gap=8)], "programme"), (1288, 728), "cells + the gaps between them")
+        self.assertEqual(picture_size(tech, [grid(3, cols=2, rows=2)], "programme"), (960, 540), "an unfilled cell of a used row still counts")
+        self.assertEqual(picture_size(tech, [grid(2, cols=3, rows=1)], "programme"), (960, 270), "only the columns the inputs fill")
+        self.assertIsNone(picture_size(tech, [grid(3, cols=2, rows=2, gap=8)], "programme"),
+                          "an unfilled grid with gaps depends on how grid.py pads each input (its colour tags): not guessed")
+        self.assertEqual(picture_size(tech, [grid(2, cols=2, rows=1), {"type": "video.rotate", "asset": "programme", "degrees": 90}], "programme"), (270, 960),
+                         "later edits apply to the grid's picture")
+
+    def _plan(self, reqs):
+        a = pipeline_media(self.tmp, "a.mp4")
+        b = pipeline_media(self.tmp, "b.mp4")
+        return pipeline_service(self.tmp).plan([a, b], "generic", user_requirements={"edit.grid": True, "edit.grid.cols": 2, "edit.grid.rows": 1, **reqs})
+
+    def test_thumbnail_canvas_and_qc_width_of_a_grid_programme(self):
+        ir = self._plan({"thumbnail": True, "thumbnail.text": "Compare", "qc": True})
+        th = next(op for op in ir.doc["graphics"]["operations"] if op["type"] == "graphics.thumbnail")
+        self.assertEqual((th["width"], th["height"]), (960, 270), "the canvas is the grid, not its first input")
+        row = next(r for r in delivery_subjects(ir.doc) if not r["audio_only"])
+        spec = rules_for_subject(row, ir.doc["delivery"]["targets"][0], ir.doc, 2.0)
+        self.assertEqual(spec["rules"]["delivery"]["video"]["expected_width"], 960, "the QC gate expects the grid's width")
+
+
 if __name__ == "__main__":
     unittest.main()

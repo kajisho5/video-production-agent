@@ -45,11 +45,12 @@ def rules_for_subject(subject: Dict[str, Any], target: Dict[str, Any], doc: Dict
             audio_rule["expected_channels"] = int(subject["technical"]["audio"]["channels"])
         return {"kind": "audio", "rules": {"audio": audio_rule}}
     video_rule: Dict[str, Any] = {}
-    # the planned picture width: the size after the subject's edits in their order (crop → rotate → resize → fit / fill, `picture_size`),
+    # the planned picture width: the size after the subject's edits in their order (grid → crop → rotate → resize → fit / fill, `picture_size`),
     # stated only when an edit changes the size. Before, the last op carrying a "width" was read, so a quarter turn after a crop / resize /
     # fit (or a rotation alone) expected the unturned width
     vops = (doc.get("video") or {}).get("operations") or []
-    resized = any(op.get("asset") == subject["id"] and (op.get("width") or (op.get("type") == "video.rotate" and op.get("degrees") in (90, 270))) for op in vops)
+    resized = any(op.get("asset") == subject["id"] and (op.get("width") or op.get("type") == "video.grid" or (op.get("type") == "video.rotate" and op.get("degrees") in (90, 270)))
+                  for op in vops)
     size = picture_size(tech, vops, subject["id"]) if resized else None
     if size and target.get("preset") in (None, ""):
         video_rule["expected_width"] = int(size[0])   # a platform preset may scale; without one the planned width is what is delivered

@@ -299,9 +299,28 @@ def parse_qc_reference(m: Dict[str, Requirement]) -> Optional[Dict[str, Any]]:
 
 
 # ---- IR arithmetic
+# ffmpeg-skill grid.py's own defaults for the flags `edit.grid.cell_width` / `.cell_height` / `.gap` leave unset (its argparse defaults)
+GRID_CELL_DEFAULT = (480, 270)
+GRID_GAP_DEFAULT = 0
+
+
+def grid_size(op: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+    """The picture grid.py writes: xstack places input i at column i % cols, row i // cols, each cell cell_width x cell_height and
+    `gap` apart, so the frame is the cells the inputs fill plus the gaps between them. An unfilled grid with gaps is None: grid.py
+    pads a colour-converted cell by its gap but leaves an untouched one bare, so the size depends on the inputs' colour tags (not guessed)."""
+    cols, rows = int(op["cols"]), int(op["rows"])
+    n = len(op.get("inputs") or []) or cols * rows
+    cw, ch = int(op.get("cell_width") or GRID_CELL_DEFAULT[0]), int(op.get("cell_height") or GRID_CELL_DEFAULT[1])
+    gap = int(op.get("gap") or GRID_GAP_DEFAULT)
+    if gap and n < cols * rows:
+        return None
+    used_cols, used_rows = min(cols, n), -(-n // cols)
+    return used_cols * cw + (used_cols - 1) * gap, used_rows * ch + (used_rows - 1) * gap
+
+
 def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], subject: str) -> Optional[Tuple[int, int]]:
     """The subject's picture size after its editing operations, applied in the IR's (fixed) operation order: concat may set
-    width / height; crop makes the picture its rectangle (ADR-060's approved proposal or an explicit `edit.crop`, in source
+    width / height; a grid is its cells (`grid_size`); crop makes the picture its rectangle (ADR-060's approved proposal or an explicit `edit.crop`, in source
     pixels, before any turn); a 90 / 270 rotation swaps width and height; resize keeps the aspect; fit / fill change it.
     None when the source size is unknown — nothing is guessed."""
     v = (technical or {}).get("video") or {}
@@ -315,6 +334,11 @@ def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], sub
         t = op.get("type")
         if t == "video.concat" and op.get("width") and op.get("height"):
             w, h = int(op["width"]), int(op["height"])
+        elif t == "video.grid" and op.get("cols") and op.get("rows"):   # the grid's own picture, not its first input (PR #81's leftover)
+            size = grid_size(op)
+            if size is None:
+                return None
+            w, h = size
         elif t == "video.crop" and op.get("width") and op.get("height"):   # the cropped picture is the rectangle (before rotate / resize / fit)
             w, h = int(op["width"]), int(op["height"])
         elif t == "video.rotate" and op.get("degrees") in (90, 270):   # ADR-062: a quarter turn swaps width and height
