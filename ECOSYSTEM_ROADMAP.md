@@ -25,7 +25,7 @@ Uses 16 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
 
 - [ ] **1. Declare SkillSpecs for every ecosystem job** — phase-2 SkillSpecs (not implemented) for ingest, voice-enhance, dubbing, sound-design, diarization, detection, slide-sync, publish, imagemagick, blender, remotion, hyperframes, artifacts, disc authoring, so ADR-051 handoffs name the right package
   - Done when: a plan asking for each job shows a handoff naming the package and its install command
-- [ ] **2. Version gates follow the satellites' version fixes** — widen SUPPORTED_SKILL_VERSIONS and re-pin contracts as motion-graphics (0.2), subtitle, thumbnail, transcription (0.7), media-analysis fix their reported versions
+- [x] **2. Version gates follow the satellites' version fixes** — widen SUPPORTED_SKILL_VERSIONS and re-pin contracts as motion-graphics (0.2), subtitle, thumbnail, transcription (0.7), media-analysis fix their reported versions ([#65](https://github.com/kajisho5/video-production-agent/pull/65))
   - Done when: integration suite green against each fixed release
 - [ ] **3. Contract-backed ffmpeg-skill catalog check** — at locate time read `_contract.py --json --static`, assert contract_version 1.0 and every catalogued flag in input_schema; surface doctor's missing capabilities
   - Done when: a renamed flag makes the tool unavailable with a reason instead of an argparse error
