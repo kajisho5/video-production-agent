@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, has_video, ir_audio_operation, is_audio_capable, kept_after_cut
-from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, concat_segments, ir_operation, kept_duration
+from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation, kept_duration
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
 from .handoffs import JOB_PREFIX
@@ -421,9 +421,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         start, end = 0.0, dur
         dec_ids: List[str] = []
         removed: List[List[float]] = []
+        explicit_trim = False   # ADR-062: the user's own in / out range (edit.trim) is part of this trim
         for d in decisions:
             if d.params.get("asset_id") != asset.id:
                 continue
+            if d.subject == TRIM_OP and d.type == "TRANSFORM":
+                start, end = max(start, float(d.params["start"])), min(end, float(d.params["end"]))
+                dec_ids, explicit_trim = dec_ids + [d.id], True
+                removed += [r for r in ([0.0, round(float(d.params["start"]), 3)], [round(float(d.params["end"]), 3), round(dur, 3)]) if r[1] > r[0]]
             if d.subject == "silence.leading":
                 start, dec_ids = max(start, d.params["end"]), dec_ids + [d.id]
                 removed.append([0.0, round(d.params["end"], 3)])
@@ -467,16 +472,19 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 scope_of[asset.id] = {"start": 0.0, "end": kept_after_cut(dur, remove)}
             else:
                 # a beat-snapped join must land on its frame, not a keyframe; a crossfaded pick's picture must start where its audio is cut
-                accurate = bool(frame_accurate or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                # ADR-062: the user's in / out points are cut where they were given (frame-accurate); one kept range is video-editing TRIM,
+                # several (internal pauses removed inside it) stay the multi-range cut of silence_cleanup
+                accurate = bool(frame_accurate or explicit_trim or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                trim_skill = TRIM_SKILL if explicit_trim and len(keep) == 1 else "silence_cleanup"
                 video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids})
-                st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill="silence_cleanup", tool=tool_for("silence_cleanup"), inputs=[current],
+                st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill=trim_skill, tool=tool_for(trim_skill), inputs=[current],
                                     params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate}, outputs=[f"{asset.id}_trim"],
                                     depends_on=[], evidence=evidence_of(dec_ids), decision_ids=dec_ids, decision_id=dec_ids[0],
                                     temporal_scope={"start": keep[0][0], "end": keep[-1][1]})
                 scope_of[asset.id] = {"start": 0.0, "end": round(kept_total, 3)}
             steps.append(st)
             current, last_step = st.outputs[0], st.id
-            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s of silence"
+            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" outside the requested in / out range" if explicit_trim else " of silence")
                            + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
         current_of[asset.id] = current
         if last_step:

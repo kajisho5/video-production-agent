@@ -1,0 +1,12 @@
+{
+ "name": "pipe_levels_black_above_white_refused",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "color.levels_in_black": 200,
+  "color.levels_in_white": 100
+ },
+ "expect": {
+  "plan_error": "must be below"
+ }
+}

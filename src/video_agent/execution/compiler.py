@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, TOOL as AUDIO_TOOL
-from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, delivery_subjects
+from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL, delivery_subjects
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, RENDER_TOOL
@@ -52,6 +52,10 @@ def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -
     the contract's CUT parameters `keep` [{start, end}] and `precision` frame | keyframe. The tool itself comes from the
     plan (registry-selected); the compiler never chooses an engine and never falls back to another one."""
     keep = [[round(float(s), 3), round(float(e), 3)] for s, e in op["keep"]]
+    if tool == "video-editing/trim":   # ADR-062: the contract's TRIM takes one range as start / end
+        if len(keep) != 1:
+            raise CompileError(f"video-editing/trim keeps exactly one range; this video.trim keeps {len(keep)}")
+        return {"input": current, "start": keep[0][0], "end": keep[0][1], "precision": "frame" if op.get("accurate") else "keyframe", "output": out_id}
     if tool == "video-editing/cut":
         return {"input": current, "keep": keep, "precision": "frame" if op.get("accurate") else "keyframe", "output": out_id}
     # the reference catalog shape (any adapter implementing the typed `cut` catalog): unchanged since Phase 1
@@ -469,9 +473,10 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             st["gen"] += 1
             out_id = f"{asset_id}_trim"
             paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_trim" / f"{stem}_trim.mp4")
-            tool = tool_for("silence_cleanup", asset_id)
+            trim_skill = TRIM_SKILL if (TRIM_SKILL, asset_id) in step_tools else "silence_cleanup"   # ADR-062: the plan's step names which skill runs it
+            tool = tool_for(trim_skill, asset_id)
             args = lower_video_trim(tool, op, st["current"], out_id)
-            add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill="silence_cleanup")
+            add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill=trim_skill)
             st["current"] = out_id
         cut = next((op for op in d["audio"]["operations"] if op["type"] == "audio.cut" and op["asset"] == asset_id), None)
         if cut is not None:   # audio production path (ADR-030): the silence decisions as one audio.cut; audio outputs are WAV

@@ -1839,6 +1839,39 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
                   ["video.concat", "video.speed", "video.resize", "video.fill", "video.overlay"], (360, 360))   # same bound for fill
 
 
+    def test_explicit_trim_and_rotate_end_to_end(self):
+        """ADR-062: `edit.trim` → video-editing/trim (frame-accurate at the times given) and `edit.rotate` + `.flip` → video-editing/rotate
+        on the real Skill: the trimmed length and the swapped frame size measured by ffprobe, the requests in provenance."""
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        ws = str(Path(self.tmp) / "trim_rotate")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.trim": "2-10", "edit.rotate": 90, "edit.rotate.flip": "h"})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        steps = {s["skill"]: s for s in d["plan"]["steps"]}
+        self.assertEqual((steps["video_trim"]["tool"], steps["video_rotate"]["tool"]), ("video-editing/trim", "video-editing/rotate"))
+        keep = next(op["keep"] for op in d["video"]["operations"] if op["type"] == "video.trim")
+        self.assertEqual(len(keep), 1); self.assertTrue(2.0 <= keep[0][0] < keep[0][1] <= 10.0)
+        p = str(Path(self.tmp) / "trim_rotate.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [r for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")]
+        self.assertEqual([r["tool"] for r in res], ["video-editing/trim", "video-editing/rotate"])
+        self.assertTrue(all(r["ok"] for r in res), res)
+        dur_t, size_t, _ = self._probe(res[0]["output"])
+        self.assertAlmostEqual(dur_t, keep[0][1] - keep[0][0], delta=0.1, msg="frame-precision trim at the requested in / out points")
+        self.assertEqual(size_t, (1280, 720))
+        dur_r, size_r, audio_r = self._probe(res[1]["output"])
+        self.assertEqual(size_r, (720, 1280), "a quarter turn swaps width and height"); self.assertTrue(audio_r)
+        self.assertAlmostEqual(dur_r, dur_t, delta=0.1)
+        self.assertEqual(res[1]["data"]["operation"]["type"], "ROTATE")
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
+        self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
+        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.0" for e in rows.values()))
+
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class AudioProductionRealTests(unittest.TestCase):
     """ADR-030 on the real audio-production-skill (main, 0.1.0) and ffmpeg-skill 0.9.x: contract / doctor / drift against the pinned
@@ -2160,6 +2193,24 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual((arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["stage"]), ("PASS", "candidate"))
         _, _, _, prim = self._probe(arts["YOUTUBE"]["path"])
         self.assertEqual(prim, "bt709")
+
+    def test_primary_correction_gamma_lift_gain_levels_curves(self):
+        """ADR-062: color.gamma / .lift / .gain / .levels_* / .curves → one PRIMARY_CORRECTION request on the real color-grading-skill 0.4.x;
+        the Skill reports back the parameters it applied (its effective parameters, defaults filled in)."""
+        self._need("color-grading")
+        svc = self._svc("pc2")
+        want = {"gamma": 1.2, "lift": 0.05, "gain": -0.05, "levels_in_black": 16, "levels_in_white": 235, "curves": "medium_contrast"}
+        ir, p = self._plan(svc, [self.a], {f"color.{k}": v for k, v in want.items()}, profile="generic", name="pc2")
+        op = ir.doc["color"]["operations"][0]
+        self.assertEqual((op["type"], {k: op[k] for k in want}), ("color.primary_correction", want))
+        out = self._render(svc, p)
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "color-grading/run")
+        self.assertTrue(res["ok"] and os.path.isfile(res["output"]), res)
+        applied = res["data"]["operation"]["parameters"]
+        self.assertEqual({k: applied[k] for k in want}, want)
+        self.assertEqual((applied["levels_out_black"], applied["levels_out_white"], applied["exposure"]), (0, 255, 0.0), "unset parameters keep the Skill's defaults")
+        dur, size, audio, _ = self._probe(res["output"])
+        self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
 
     # ---- Scenario 4: video → motion graphics (text + logo) → subtitle burn-in → QC
     def test_s4_motion_subtitle_burn_qc(self):

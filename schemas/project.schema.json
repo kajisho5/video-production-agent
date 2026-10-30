@@ -1192,6 +1192,7 @@
       "video.stabilize",
       "video.crop",
       "video.redact",
+      "video.rotate",
       "video.speed",
       "video.resize",
       "video.fit",
@@ -1513,6 +1514,19 @@
     },
     "background": {
      "type": "string"
+    },
+    "degrees": {
+     "enum": [
+      90,
+      180,
+      270
+     ]
+    },
+    "flip": {
+     "enum": [
+      "h",
+      "v"
+     ]
     }
    },
    "additionalProperties": false
@@ -2086,6 +2100,55 @@
      "type": "number",
      "minimum": -1.0,
      "maximum": 1.0
+    },
+    "gamma": {
+     "type": "number",
+     "minimum": 0.1,
+     "maximum": 10.0
+    },
+    "lift": {
+     "type": "number",
+     "minimum": -1.0,
+     "maximum": 1.0
+    },
+    "gain": {
+     "type": "number",
+     "minimum": -1.0,
+     "maximum": 1.0
+    },
+    "levels_in_black": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 255
+    },
+    "levels_in_white": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 255
+    },
+    "levels_out_black": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 255
+    },
+    "levels_out_white": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 255
+    },
+    "curves": {
+     "enum": [
+      "color_negative",
+      "cross_process",
+      "darker",
+      "increase_contrast",
+      "lighter",
+      "linear_contrast",
+      "medium_contrast",
+      "negative",
+      "strong_contrast",
+      "vintage"
+     ]
     },
     "temporal_scope": {
      "type": "object",

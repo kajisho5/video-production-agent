@@ -30,6 +30,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "video_deinterlace": ("asset", "mode", "parity", "only_interlaced", "audio_stream"),
                    "video_crop": ("asset", "x", "y", "width", "height", "fps"),
                    "video_stabilize": ("asset", "shakiness", "smoothing", "zoom", "crop_mode", "tripod"),
+                   "video_trim": ("asset", "keep", "removed", "accurate"),   # ADR-062: the same domain parameters as silence_cleanup (one kept range)
+                   "video_rotate": ("asset", "degrees", "flip"),
                    "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
                    "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
@@ -41,7 +43,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "audio_mux": ("asset", "video", "audio"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)
                    "color_strip_dovi": ("asset",), "color_hdr_to_sdr": ("asset",), "color_lut": ("asset", "lut", "lut_strength"), "color_retag": ("asset", "target"),
-                   "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint"),
+                   "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
+                                                "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves"),
                    "motion_graphics": ("asset", "elements"), "subtitle_generation": ("asset", "format", "language", "cues"), "subtitle_burn_in": ("asset",),
                    "thumbnail_frame": ("asset", "at", "format"), "thumbnail_render": ("asset", "at", "format", "text"), "qc_check": ("asset", "target", "kind", "artifact"),
                    # timeline export (ADR-052): the subject, the editor format and how many clips its cut list has

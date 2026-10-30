@@ -28,7 +28,13 @@ ARGS: Dict[str, Tuple[str, ...]] = {
     "FILL": ("input", "output", "aspect", "width", "fps"),
     "RESIZE": ("input", "output", "width", "fps"),
     "OVERLAY": ("input", "output", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
+    # ADR-062: the three operation types the contract has declared since 0.3.0 / 0.4.0 and this module did not lower yet
+    "ROTATE": ("input", "output", "degrees", "flip"),
+    "FREEZE": ("input", "output", "hold", "at"),
+    "REVERSE": ("input", "output"),
 }
+ROTATIONS = (90, 180, 270)   # the contract's ROTATE.degrees ("90 | 180 | 270, clockwise")
+FLIPS = ("h", "v")           # the contract's ROTATE.flip ("h | v")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "args", "script", "binary", "executable", "executables", "env", "environment",
                       "filter", "filters", "filter_complex", "ffmpeg", "ffprobe", "api_key", "apikey", "token", "secret", "password", "credentials",
                       "workspace", "allowed_input", "allowed_inputs", "allowed_input_roots", "allowed-input", "ffmpeg_skill_dir", "ffmpeg-skill-dir", "path", "paths")
@@ -169,6 +175,23 @@ def params_for(t: str, args: Dict[str, Any]) -> Dict[str, Any]:
         for k in ("opacity", "start", "end", "fade"):
             if args.get(k) is not None:
                 p[k] = _num(args[k], k)
+    elif t == "ROTATE":
+        if args.get("degrees") is not None:
+            if _int(args["degrees"], "degrees") not in ROTATIONS:
+                raise ToolError(f"video-editing: degrees must be one of {ROTATIONS}")
+            p["degrees"] = args["degrees"]
+        if args.get("flip") is not None:
+            p["flip"] = _str(args["flip"], "flip", r"^(h|v)$")
+        if not p:
+            raise ToolError("video-editing: ROTATE needs degrees and/or flip")
+    elif t == "FREEZE":
+        if args.get("hold") is None:
+            raise ToolError("video-editing: FREEZE needs hold")
+        p["hold"] = _num(args["hold"], "hold")
+        if args.get("at") is not None:
+            p["at"] = _num(args["at"], "at")
+    elif t == "REVERSE":
+        pass
     else:
         raise ToolError(f"video-editing: no lowering for operation type {t}")
     return p

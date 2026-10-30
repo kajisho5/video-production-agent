@@ -1,0 +1,32 @@
+{
+ "name": "vo_trim_rotate_end_to_end",
+ "profile": "generic",
+ "video_editing_ops": {
+  "inputs": 1
+ },
+ "requirements": {
+  "edit.trim": "4-12",
+  "edit.rotate": 90,
+  "edit.rotate.flip": "h"
+ },
+ "expect": {
+  "ir_ops": [
+   "video.rotate"
+  ],
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "tools": [
+    "video-editing/trim",
+    "video-editing/rotate"
+   ],
+   "qa_status": "PASS",
+   "duration": 8.0,
+   "sources": [
+    1
+   ]
+  }
+ }
+}

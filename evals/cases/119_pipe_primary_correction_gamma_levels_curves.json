@@ -1,0 +1,43 @@
+{
+ "name": "pipe_primary_correction_gamma_levels_curves",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "color.gamma": 1.2,
+  "color.lift": 0.05,
+  "color.gain": -0.1,
+  "color.levels_in_black": 16,
+  "color.levels_in_white": 235,
+  "color.curves": "medium_contrast"
+ },
+ "expect": {
+  "blocked": false,
+  "color_ops": [
+   "color.primary_correction"
+  ],
+  "decisions": {
+   "color.primary_correction": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   }
+  },
+  "steps": [
+   "silence_cleanup",
+   "color_primary_correction",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check"
+  ],
+  "render": {
+   "execution_status": "COMPLETED",
+   "tools": [
+    "ffmpeg-skill/cut",
+    "color-grading/run",
+    "ffmpeg-skill/loudness",
+    "ffmpeg-skill/export",
+    "ffmpeg-skill/check"
+   ]
+  }
+ }
+}

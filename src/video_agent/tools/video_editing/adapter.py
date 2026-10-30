@@ -49,10 +49,10 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.2.0 (video-edit
                                                # widening alone) and outputs[].encoding named directly in
                                                # request_shape (already accepted since 0.1.0, no lowering change
                                                # needed). 0.3.0 (video-editing-skill #12): ROTATE (--rotate/--flip
-                                               # via ffmpeg-skill/fit), additive to the pinned contract; not yet
-                                               # lowered here either (issue #52). 0.4.0 (video-editing-skill #13):
-                                               # SPEED.smooth, additive to the pinned contract; also not yet
-                                               # lowered here.
+                                               # via ffmpeg-skill/fit), additive to the pinned contract; lowered
+                                               # since ADR-062 (issue #52). 0.4.0 (video-editing-skill #13):
+                                               # SPEED.smooth, additive to the pinned contract (lowered); FREEZE /
+                                               # REVERSE (#20) lowered since ADR-062.
 ENGINE_ID = "ffmpeg-skill"
 # the Skill's error vocabulary (contract errors.codes) and the agent's reading of each: (retryable by default, recovery class)
 ERROR_CODES: Dict[str, str] = {
