@@ -279,13 +279,27 @@ class McpServerTests(unittest.TestCase):
         self.assertFalse(getattr(ns, "job", None))
 
     def test_injected_option_does_not_write_outside(self):
-        """ADR-069: through the server, an `inputs` element `--output=<path>` is a (missing) input file, never the write target."""
+        """ADR-069: through the server, an `inputs` element `--output=<path>` reaches the CLI as an input file name, never as the
+        write target. The command the server launches is captured and parsed by the real CLI parser (independent of whether
+        ffmpeg is installed), then the call is made for real and nothing is written outside."""
+        from unittest import mock
+        from video_agent.cli import build_parser
         tmp = tempfile.mkdtemp()
         target = Path(tmp) / "outside" / "planted.project.json"
         target.parent.mkdir()
-        res = Server(workspace=str(Path(tmp) / "ws")).call_tool("plan", {"inputs": [f"--output={target}", fake_media(tmp)], "ai_brief": False})
+        args = {"inputs": [fake_media(tmp), f"--output={target}", "--allow-source-dir", "--no-hash"], "ai_brief": False}
+        server = Server(workspace=str(Path(tmp) / "ws"))
+        with mock.patch("video_agent.mcp_server.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "")) as run:
+            server.call_tool("plan", args)
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[1:3], ["-m", "video_agent.cli"])
+        ns = build_parser().parse_args(cmd[3:])
+        self.assertEqual(ns.inputs, args["inputs"], "every element is an input, including the option-looking ones")
+        self.assertIsNone(getattr(ns, "output", None))
+        self.assertFalse(ns.no_hash)
+        self.assertFalse(getattr(ns, "allow_source_dir", None))
+        res = server.call_tool("plan", args)
         self.assertTrue(res["isError"])
-        self.assertIn(f"error: --output={target}", res["content"][0]["text"], "read as an input file that does not exist")
         self.assertFalse(target.exists())
 
     def test_every_listed_tool_maps_to_a_command(self):
