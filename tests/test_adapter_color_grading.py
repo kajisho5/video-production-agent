@@ -66,7 +66,10 @@ class ColorGradingAdapterTests(unittest.TestCase):
         ad = self._adapter()
         self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
                          ("0.4.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
-        self.assertEqual(ad.unsupported, ["WHITE_BALANCE"]); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
+        # color-grading-skill #23: WHITE_BALANCE is no longer an unsupported type but an `operation_aliases` entry (temperature / tint of
+        # PRIMARY_CORRECTION); the agent lowers only declared operation types, so it keeps sending PRIMARY_CORRECTION itself
+        self.assertEqual(ad.unsupported, []); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
+        self.assertEqual([(a["type"], a["alias_of"]) for a in ad.contract["operation_aliases"]], [("WHITE_BALANCE", "PRIMARY_CORRECTION")])
         pk = ad.package()
         self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.4.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
@@ -97,8 +100,8 @@ class ColorGradingAdapterTests(unittest.TestCase):
         for op in live["operations"]:
             if op["type"] == "PRIMARY_CORRECTION":
                 op["parameters"] = dict(op["parameters"], new_knob={"type": "number"})
-        live["unsupported_operations"] = [u for u in live["unsupported_operations"] if u["type"] != "WHITE_BALANCE"]
-        self.assertEqual(contract_breaking_drift(live, pinned), [], "version bump + a new optional parameter + unsupported shrinking is additive")
+        live["unsupported_operations"] = live["unsupported_operations"] + [{"type": "VIGNETTE", "status": "not_implemented", "reason": "x"}]
+        self.assertEqual(contract_breaking_drift(live, pinned), [], "version bump + a new optional parameter + unsupported changing is non-fatal")
         live2 = json.loads(json.dumps(pinned))
         live2["operations"] = [o for o in live2["operations"] if o["type"] != "PRIMARY_CORRECTION"]
         self.assertTrue(contract_breaking_drift(live2, pinned), "an operation this adapter relies on disappearing must stay fatal")
@@ -119,7 +122,7 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertIn("--allowed-lut", ad._argv(b, False, None))
         b = ad.build_request("color-grading/run", {"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_retag", "exposure": 0.5, "saturation": 0.0}, paths)
         self.assertEqual(b["request"]["project"]["operations"][0]["parameters"], {"exposure": 0.5, "saturation": 0.0})
-        for bad, msg in (({"filter": "x"}, "forbidden"), ({"argv": ["x"]}, "forbidden"), ({"operation": "WHITE_BALANCE"}, "unsupported"), ({"operation": "NOPE"}, "unknown operation"),
+        for bad, msg in (({"filter": "x"}, "forbidden"), ({"argv": ["x"]}, "forbidden"), ({"operation": "WHITE_BALANCE"}, "unknown operation"), ({"operation": "NOPE"}, "unknown operation"),
                          ({"target": "bt2100"}, "not one of"), ({"tonemap": "hable"}, "not declared"), ({"operation": "HDR_TO_SDR", "peak_nits": 99999}, "above"), ({"operation": "HDR_TO_SDR", "crf": 1.5}, "integer"),
                          ({"operation": "PRIMARY_CORRECTION", "exposure": 999}, "above"), ({"operation": "PRIMARY_CORRECTION", "contrast": -1}, "below"),
                          ({"operation": "LUT_APPLY"}, "requires parameter"), ({"format": "avi"}, "not one of"), ({"input": "missing"}, "not found")):

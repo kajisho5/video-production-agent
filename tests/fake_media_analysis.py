@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "media_analysis" / "contract_0.1.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "media_analysis" / "contract_0.1.3.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_MA_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_MA_CALLS")
 

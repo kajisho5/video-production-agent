@@ -1449,7 +1449,7 @@ remote registry, arbitrary code loading. A package becomes known through its ada
   stdout). The agent never imports the package, never runs ffprobe / ffmpeg for it, never forwards commands, argv,
   executable paths or credentials; the Skill's own `--workspace` / `--allowed-input` policy is passed through, not bypassed.
 - Contract is the source of truth: tools, analysis kinds, kind → tool, capabilities, versions and schemas come from
-  `contract --json` (`package_from_contract`); a pinned snapshot (`tools/media_analysis/contract_0.1.0.json`) gives the
+  `contract --json` (`package_from_contract`); a pinned snapshot (`tools/media_analysis/contract_0.1.3.json`) gives the
   package its identity when no installation is present. `check_contract` refuses another skill id, contract / schema
   version, execution mode, tool ownership, a tool that writes media, or a provenance other than OBSERVED.
 - Selection stays in the registry: `media-analysis/probe|silence|loudness` are second candidates for the core
@@ -1496,7 +1496,7 @@ Agent → SkillRegistry (speech_transcription) → TranscriptionAdapter → `tra
   commands, argv, executables, environment or credentials, and never downloads a model.
 - **Contract is the source of truth.** Tools, engines (EngineSpec: id, version, `execution_mode`, `requires_network`,
   capabilities, models and their availability), schema ids, capabilities and versions come from the contract;
-  `tools/transcription/contract_0.2.0.json` is a snapshot for package identity only (engine availability stripped).
+  `tools/transcription/contract_0.7.4.json` is a snapshot for package identity only (engine availability stripped).
   `check_contract` refuses another skill id, an unsupported skill / schema version, an engine contract without `local`,
   a tool of another skill, a transcribe tool with output-writing side effects, and missing declared capabilities.
   Only `transcription/transcribe` is a measurement tool; `segments` / `export` / `check` are not called by the agent.

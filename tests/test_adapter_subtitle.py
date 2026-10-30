@@ -96,7 +96,7 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.1.0")
+        self.assertEqual(a.version, "0.2.0")
         self.assertEqual(a.contract_version, "1.0.0")
         self.assertEqual(a.tools, {TOOL_GENERATE, TOOL_RENDER})
         self.assertTrue(a.supports(TOOL_RENDER) and not a.supports("subtitle/transcribe"))
@@ -191,6 +191,27 @@ class ContractTests(Base):
 
 
 class RequestTests(Base):
+    def test_japanese_line_limits_come_from_the_skills_locale_profile(self):
+        """ADR-055: subtitle-skill 0.2.0 (#19) applies per-locale defaults (ja: 13 full-width characters per line, 4 cps) to any
+        constraint the request leaves unset. The agent sets none of its own, so a Japanese project is checked against the ja profile,
+        never against the English 42-character default: no `constraints` from requirements without explicit subtitle.* limits,
+        none in the IR, none in the compiled arguments, none in the request; the language tag reaches the Skill unchanged."""
+        from video_agent.agent.subtitles import ir_captions_generate, parse_subtitle_requirements
+        from video_agent.execution.compiler import lower_captions
+        from video_agent.models import Requirement
+        parsed = parse_subtitle_requirements({"subtitle": Requirement(key="subtitle", value=True, provenance="USER", source="cli")})
+        self.assertEqual(parsed["constraints"], {})
+        rec = ir_captions_generate("clip", "out", "srt", "ja", json.loads(json.dumps(CUES)), ["d1"], ["asset_1"], {}, constraints=parsed["constraints"])
+        self.assertNotIn("constraints", rec)
+        args = lower_captions(TOOL_GENERATE, rec, None, "out")
+        self.assertNotIn("constraints", args); self.assertEqual(args["language"], "ja")
+        r = self.adapter().build_request(TOOL_GENERATE, args, self.paths)["request"]
+        self.assertNotIn("constraints", r); self.assertEqual(r["subtitle"]["language"], "ja")
+        # an explicit user limit is still the user's: forwarded as given (the Skill then overrides only that field of the profile)
+        user = parse_subtitle_requirements({"subtitle": Requirement(key="subtitle", value=True, provenance="USER", source="cli"),
+                                            "subtitle.max_chars_per_line": Requirement(key="subtitle.max_chars_per_line", value=16, provenance="USER", source="cli")})
+        self.assertEqual(user["constraints"], {"max_chars_per_line": 16})
+
     def test_generate_lowering(self):
         a = self.adapter()
         b = a.build_request(TOOL_GENERATE, self.gen_args(constraints={"max_lines": 2, "reading_speed_cps": 17.5}, video_duration=3), self.paths, op_id="op1")
@@ -314,7 +335,7 @@ class RunTests(Base):
             self.assertTrue(r.ok, r.data)
             self.assertEqual(r.output, self.paths[key])
             d = r.data
-            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.1.0"})
+            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.2.0"})
             self.assertEqual(d["status"], "completed")
             self.assertEqual(d["operation_type"], "generate")
             self.assertEqual(d["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
@@ -326,7 +347,7 @@ class RunTests(Base):
             self.assertEqual(d["warnings"], [])
             self.assertEqual(d["commands"], [])
             self.assertEqual(r.commands, [])
-            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.1.0", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
+            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.2.0", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
             self.assertNotIn("engine", d)
             self.assertNotIn("observation", d)
             text = Path(r.output).read_text(encoding="utf-8")

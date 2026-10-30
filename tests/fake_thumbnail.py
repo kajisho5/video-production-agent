@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "thumbnail" / "contract_0.1.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "thumbnail" / "contract_0.1.3.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_THUMBNAIL_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_THUMBNAIL_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -313,7 +313,7 @@ def main() -> int:
         if MODE == "contract_fail":
             sys.stderr.write("boom\n")
             return 1
-        if MODE == "contract_drift":   # a compatible newer contract: one more registered font (the adapter must notice, never silently keep 0.1.0 expectations)
+        if MODE == "contract_drift":   # a compatible newer contract: one more registered font (the adapter must notice, never silently keep the pinned expectations)
             c["fonts"]["font_ids"] = sorted(c["fonts"]["font_ids"] + ["emoji"])
             c["fonts"]["registry"]["emoji"] = {"display_name": "Emoji", "role": "colour emoji"}
         emit(c)

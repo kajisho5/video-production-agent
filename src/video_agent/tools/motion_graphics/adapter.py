@@ -67,7 +67,7 @@ _COLOR_SHAPE_RE = re.compile(r"^[A-Za-z0-9#@.]+$")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_element_types", "animations", "unsupported_animations", "positions", "fonts", "output_formats",
               "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors")
 DRIFT_ELEMENT_KEYS = ("type", "tool", "animation", "parameters", "required_capabilities", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

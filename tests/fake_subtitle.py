@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "subtitle" / "contract_0.1.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "subtitle" / "contract_0.2.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_SUBTITLE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_SUBTITLE_CALLS")
 NON_RETRYABLE = set(CONTRACT["errors"]["non_retryable"])
@@ -123,7 +123,7 @@ def main() -> int:
         if MODE == "contract_fail":
             sys.stderr.write("boom\n")
             return 1
-        if MODE == "contract_drift":   # a compatible newer contract: one more generate format (the adapter must notice, never silently keep 0.1.0 expectations)
+        if MODE == "contract_drift":   # a compatible newer contract: one more generate format (the adapter must notice, never silently keep the pinned expectations)
             c["operations"]["generate"]["formats"] = ["srt", "vtt", "ass"]
             c["capabilities"]["formats"] = ["srt", "vtt", "ass"]
         emit(c)

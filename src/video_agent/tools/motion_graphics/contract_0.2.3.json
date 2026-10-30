@@ -4,7 +4,8 @@
   "id": "motion-graphics",
   "name": "motion-graphics-skill",
   "package": "motion-graphics-skill",
-  "version": "0.1.0",
+  "version": "0.2.3",
+  "contract_version": 1,
   "kind": "execution",
   "role": "motion graphics rendering (execution); not design, not decision",
   "description": "Deterministic motion-graphics rendering execution: title cards, lower thirds, free-form text overlays, image/logo overlays, and video-on-video picture-in-picture/chroma-key overlays, with built-in template animation (title/lower-third fade and slide) or a configurable linear fade (text/image overlays only); typed Graphics Document in, a validated video artifact with provenance out. Not an AI agent: it never chooses what to show, when to show it, or how it should look.",
@@ -27,7 +28,7 @@
     {
       "tool_id": "motion-graphics/run",
       "skill_id": "motion-graphics",
-      "version": "0.1.0",
+      "version": "0.2.3",
       "role": "execution",
       "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, video-on-video picture-in-picture/chroma-key overlays, with fade animation) onto a video and write a validated artifact with provenance",
       "inputs": [
@@ -124,7 +125,7 @@
       "element_type": "sticker"
     },
     {
-      "id": "motion_graphics.overlay",
+      "id": "motion_graphics.text_overlay",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "motion-graphics/run",
       "element_type": "text_overlay"
@@ -140,6 +141,19 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "motion-graphics/run",
       "element_type": "video_overlay"
+    }
+  ],
+  "dependencies": [
+    {
+      "skill_id": "ffmpeg-skill",
+      "version_range": ">=1.0 <2.0",
+      "range_of": "contract_version",
+      "required": true,
+      "tools": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/graphics",
+        "ffmpeg-skill/overlay"
+      ]
     }
   ],
   "element_types": [

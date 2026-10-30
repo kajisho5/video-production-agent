@@ -5,6 +5,7 @@
   "name": "color-grading-skill",
   "package": "color-grading-skill",
   "version": "0.4.0",
+  "contract_version": 1,
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
   "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU removal, and typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves), executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or look to apply, nor which correction values to use.",
@@ -19,7 +20,7 @@
     "image understanding",
     "scene/face detection",
     "shot matching",
-    "a single white-balance operation type (use PRIMARY_CORRECTION's temperature and tint parameters)",
+    "automatic white balance (WHITE_BALANCE takes explicit temperature and tint values)",
     "container/format conversion (ffmpeg-skill/export)",
     "arbitrary ffmpeg filters",
     "shell execution",
@@ -92,6 +93,18 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "color-grading/run",
       "operation": "STRIP_DOVI"
+    }
+  ],
+  "dependencies": [
+    {
+      "skill_id": "ffmpeg-skill",
+      "version_range": ">=1.0 <2.0",
+      "range_of": "contract_version",
+      "required": true,
+      "tools": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/color"
+      ]
     }
   ],
   "operations": [
@@ -469,13 +482,22 @@
       "deterministic": "content_equivalent"
     }
   ],
-  "unsupported_operations": [
+  "operation_aliases": [
     {
       "type": "WHITE_BALANCE",
-      "status": "not_implemented",
-      "reason": "no single white-balance operation or flag exists; use PRIMARY_CORRECTION's temperature and tint parameters"
+      "alias_of": "PRIMARY_CORRECTION",
+      "parameters": [
+        "temperature",
+        "tint",
+        "crf",
+        "preset",
+        "audio_stream"
+      ],
+      "description": "white balance only: PRIMARY_CORRECTION's temperature (Kelvin) and tint, every other correction parameter left at its identity default (ffmpeg-skill/color --correct --temperature --tint)",
+      "resolved_at": "validation; plan, identity, results and provenance name the target operation type"
     }
   ],
+  "unsupported_operations": [],
   "output_formats": {
     "mp4": {
       "extension": ".mp4",
