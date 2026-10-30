@@ -29,9 +29,14 @@ _DESCRIPTIONS = {"probe": "Inspect media (duration, streams, HDR, VFR)", "silenc
                  "render": "Write a project's cut as an editor timeline (.otio / .fcpxml / .edl); nothing rendered"}
 
 
+def tool_capability(name: str) -> str:
+    """ADR-056: the per-tool capability the resolver sets from the contract-backed catalog check (`ffmpeg-skill:cut`)."""
+    return f"{SKILL_ID}:{name}"
+
+
 def package(version: str = "") -> SkillPackage:
     tools = [ToolSpec(tool_id=PREFIX + name, skill_id=SKILL_ID, version=version, description=_DESCRIPTIONS.get(name, name),
-                      required_capabilities=list(_EXTRA_CAPS.get(name, [])), inputs=list(spec["positional"]),
+                      required_capabilities=list(_EXTRA_CAPS.get(name, [])) + [tool_capability(name)], inputs=list(spec["positional"]),
                       produces_output=bool(spec.get("produces_output")), deterministic=True, result_keys=list(spec.get("result_keys", [])))
              for name, spec in CATALOG.items()]
     return SkillPackage(skill_id=SKILL_ID, name="ffmpeg-skill", version=version, description=f"Deterministic media processing (Reference Skill, contract verified for {SUPPORTED_RANGE})",

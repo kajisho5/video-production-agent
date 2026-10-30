@@ -90,7 +90,7 @@ class SkillRegistry:
         rows = []
         for pkg in self.packages():
             missing = [c for c in pkg.capabilities if getattr(caps.get(c), "status", "MISSING") not in ("AVAILABLE", "DEGRADED")]
-            usable = [t.tool_id for t in pkg.tools if supports(t.tool_id)]
+            usable = [t.tool_id for t in pkg.tools if supports(t.tool_id) and not self.tool_missing_capabilities(t.tool_id, caps)]
             available = not missing and bool(usable)
             reason = "ok" if available else ("required capability missing: " + ", ".join(missing) if missing else "no registered adapter supports its tools")
             rows.append({"skill_id": pkg.skill_id, "name": pkg.name, "version": (versions or {}).get(pkg.skill_id) or pkg.version or "-", "repository": pkg.repository,
@@ -128,7 +128,7 @@ class SkillRegistry:
             return None, f"skill {name} is declared for phase {spec.phase} and not implemented"
         missing = self.missing_capabilities(name, caps)
         if missing:
-            return None, "required capability missing: " + ", ".join(missing)
+            return None, "required capability missing: " + ", ".join(_with_reason(c, caps) for c in missing)
         candidates: List[str] = []
         blocked: List[str] = []
         for tool in spec.tools:
@@ -136,7 +136,7 @@ class SkillRegistry:
                 continue
             tool_missing = self.tool_missing_capabilities(tool, caps)
             if tool_missing:   # the package / tool contract names capabilities this environment lacks: never executed on a guess
-                blocked.append(f"{tool} (missing {', '.join(tool_missing)})")
+                blocked.append(f"{tool} (missing {', '.join(_with_reason(c, caps) for c in tool_missing)})")
                 continue
             candidates.append(tool)
         if not candidates:
@@ -202,6 +202,13 @@ class SkillRegistry:
                          "implemented": spec.implemented, "packages": sorted({t.split("/", 1)[0] for t in spec.tools}),
                          "required_capabilities": spec.required_capabilities, "risk": spec.risk_level, "approval": spec.approval})
         return rows
+
+
+def _with_reason(cap: str, caps: Dict[str, Any]) -> str:
+    """A missing capability as the selection reason names it: with the resolver's evidence["reason"] when it recorded one
+    (ADR-056: the ffmpeg-skill contract's word on why that one tool cannot be used), so a handoff says which flag broke."""
+    reason = (getattr(caps.get(cap), "evidence", None) or {}).get("reason")
+    return f"{cap}: {reason}" if reason else cap
 
 
 def default_registry() -> SkillRegistry:

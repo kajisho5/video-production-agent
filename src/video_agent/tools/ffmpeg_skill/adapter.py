@@ -65,7 +65,12 @@ class FfmpegSkillAdapter(ToolAdapter):
 
     # ---- description
     def describe(self) -> Dict[str, Any]:
-        return {"name": self.name, "version": self.version, "root": str(self.skill.root), "tools": {PREFIX + k: v for k, v in CATALOG.items()}}
+        return {"name": self.name, "version": self.version, "root": str(self.skill.root), "tools": {PREFIX + k: v for k, v in CATALOG.items()},
+                "contract": self.skill.catalog_check().to_dict()}
+
+    def unavailable_reason(self, tool: str) -> Optional[str]:
+        """ADR-056: why the installed checkout's contract (or doctor) rules this catalogued tool out, or None."""
+        return self.skill.catalog_check().tool_reason(tool[len(PREFIX):]) if tool.startswith(PREFIX) else None
 
     def supports(self, tool: str) -> bool:
         if not (tool.startswith(PREFIX) and tool[len(PREFIX):] in CATALOG and tool[len(PREFIX):] in self.skill.scripts):
@@ -84,6 +89,9 @@ class FfmpegSkillAdapter(ToolAdapter):
         spec = CATALOG.get(script)
         if spec is None:
             raise ToolError(f"unknown tool {tool}")
+        why = self.unavailable_reason(tool)
+        if why:   # ADR-056: refused here with the contract's reason, never handed to argparse to fail on a renamed flag
+            raise ToolError(f"{tool} is unavailable: {why}")
         args = dict(args)
         argv: List[str] = []
         inputs: List[str] = []
