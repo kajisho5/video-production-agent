@@ -1,0 +1,31 @@
+{
+ "name": "pipe_timeline_switch_blocks",
+ "profile": "generic",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "cam0.mp4"
+   },
+   {
+    "name": "cam1.mp4"
+   }
+  ]
+ },
+ "requirements": {
+  "edit.switch": "0-5:0,5-16:1",
+  "delivery.timeline": "otio"
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "timeline.export"
+  ],
+  "plan_status": "BLOCKED",
+  "decisions": {
+   "timeline.export": {
+    "type": "BLOCK",
+    "provenance": "USER"
+   }
+  }
+ }
+}

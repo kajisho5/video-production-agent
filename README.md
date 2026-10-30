@@ -102,6 +102,8 @@ video-agent explain <project.json> --pipeline
 video-agent check <artifact.mp4> --platform youtube --qc
 ```
 
+編集ソフトへの受け渡し（ADR-052）: `--set delivery.timeline=otio`（または `fcpxml` / `edl`、既定 `none`）で、IR の cut list（trim が残す範囲を programme の順に並べたもの、hard cut、source は元の場所を参照）を ffmpeg-skill `render.py --export-timeline` が書き出し、type `TIMELINE` の Artifact になる。speed / colour / graphics などはタイムラインに載らず、decision に名指しされる。switch / grid / audio path は BLOCK。
+
 生成される ProductionPlan（依存関係付き）: trim ×3 → concat → captions.generate（transcript の cue を delivered timeline に写像）→ captions.burn → loudness → export → check → thumbnail → qc ×2（deliverable と sidecar）。QC PASS → artifact は `approved`（READY）、WARN → candidate（policy `qc.warn.promotion`、既定 CONFIRM）、FAIL → `working`（final 昇格不可）。「話者が変わったらカメラを切り替える」は未実装（docs/GAP_ANALYSIS_PHASE2.md §22）。
 
 ## テスト

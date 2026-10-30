@@ -21,7 +21,7 @@ jobs:
       - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
       - run: python -m unittest -v tests/test_pipeline.py
       # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra)
-      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py
+      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py
       - run: python evals/run.py
   integration:
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/color-grading-skill ../color-grading-skill
       - run: git clone --depth 1 https://github.com/kajisho5/motion-graphics-skill ../motion-graphics-skill
       - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill
-      - run: pip install -e . Pillow
+      - run: pip install -e . Pillow opentimelineio   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - run: python -m unittest -v tests/test_integration.py
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"

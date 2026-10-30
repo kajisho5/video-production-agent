@@ -25,7 +25,8 @@ _DESCRIPTIONS = {"probe": "Inspect media (duration, streams, HDR, VFR)", "silenc
                  "look": "Contact sheet", "scenes": "Scene / highlight detection", "sync": "Align two sources by audio", "multicam": "Multi-camera switch", "report": "Before/after report",
                  "redact": "Blur / pixelate a fixed rectangle (privacy redaction)", "deinterlace": "Deinterlace (yadif)",
                  "cropdetect": "Measure black bars and report the crop rectangle (measurement only)", "crop": "Crop to an exact pixel rectangle",
-                 "stabilize": "Stabilize shaky footage (vidstab, two-pass)", "grid": "Composite several clips into a COLSxROWS grid"}
+                 "stabilize": "Stabilize shaky footage (vidstab, two-pass)", "grid": "Composite several clips into a COLSxROWS grid",
+                 "render": "Write a project's cut as an editor timeline (.otio / .fcpxml / .edl); nothing rendered"}
 
 
 def package(version: str = "") -> SkillPackage:

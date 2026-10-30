@@ -67,7 +67,8 @@ class ProjectIR:
         """Operations / delivery targets that still cite a REJECTED decision (must be revised away before rendering)."""
         rej = {d["id"] for d in self.rejected()}
         out = []
-        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.doc["delivery"]["targets"]:
+        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.doc["delivery"]["targets"] \
+                + list(self.doc["delivery"].get("timelines") or []):
             if any(x in rej for x in op.get("decision_ids") or []):
                 out.append(op)
         return out

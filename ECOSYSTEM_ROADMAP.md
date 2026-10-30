@@ -19,18 +19,19 @@ Python orchestrator (`video-agent`). 10 adapters (ffmpeg-skill, video-editing, a
 
 ## Wiring
 
-Uses 15 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (18 entries; fit, scenes, report unreachable). Does not read ffmpeg-skill's `contract --json` / `doctor --json`. No NLE interchange (FCPXML/OTIO/EDL) although ffmpeg-skill `render --export-timeline` provides it.
+Uses 16 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, scenes, report unreachable). Does not read ffmpeg-skill's `contract --json` / `doctor --json`. NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052).
 
 ## Steps
 
 - [ ] **1. Declare SkillSpecs for every ecosystem job** — phase-2 SkillSpecs (not implemented) for ingest, voice-enhance, dubbing, sound-design, diarization, detection, slide-sync, publish, imagemagick, blender, remotion, hyperframes, artifacts, disc authoring, so ADR-051 handoffs name the right package
   - Done when: a plan asking for each job shows a handoff naming the package and its install command
-- [ ] **2. Version gates follow the satellites' version fixes** — widen SUPPORTED_SKILL_VERSIONS and re-pin contracts as motion-graphics (0.2), subtitle, thumbnail, transcription (0.7), media-analysis fix their reported versions
+- [x] **2. Version gates follow the satellites' version fixes** — widen SUPPORTED_SKILL_VERSIONS and re-pin contracts as motion-graphics (0.2), subtitle, thumbnail, transcription (0.7), media-analysis fix their reported versions ([#65](https://github.com/kajisho5/video-production-agent/pull/65))
   - Done when: integration suite green against each fixed release
 - [ ] **3. Contract-backed ffmpeg-skill catalog check** — at locate time read `_contract.py --json --static`, assert contract_version 1.0 and every catalogued flag in input_schema; surface doctor's missing capabilities
   - Done when: a renamed flag makes the tool unavailable with a reason instead of an argparse error
-- [ ] **4. Timeline export (OTIO first)** — SkillSpec `timeline_export` -> ffmpeg-skill/render `--export-timeline` (.otio, .fcpxml, .edl) from the IR cut list, plus a sidecar SRT; ADR amending ADR-002
+- [x] **4. Timeline export (OTIO first)** — SkillSpec `timeline_export` -> ffmpeg-skill/render `--export-timeline` (.otio, .fcpxml, .edl) from the IR cut list, plus a sidecar SRT; ADR amending ADR-002
   - Done when: `--set delivery.timeline=otio` produces a timeline Artifact that `opentimelineio` reads back with the same cuts. Neither NLE is available yet (owner, 2026-10-30): the Resolve / Premiere import check is recorded when they are
+  - Done (ADR-052): `delivery.timeline=otio|fcpxml|edl` → TIMELINE Artifact; opentimelineio 0.18.1 reads the .otio back with the IR's keep ranges (within one frame) in `tests/test_integration.py::TimelineExportRealTests`. No separate sidecar: `subtitle=srt` already lands on the same timeline when no speed / transition is applied; embedding captions in the timeline is a follow-up
 - [ ] **5. NL brief -> requirements (requirements_extraction)** — AI task that returns only known `--set` keys, through the host (MCP) or Claude provider; unknown keys refused
   - Done when: "60 s vertical, captions, -14 LUFS" yields valid keys; no provider = deterministic
 - [ ] **6. Wire what the satellites already offer** — color gamma/lift/gain/levels/curves; all 12 motion-graphics elements; subtitle mux; audio MIX / NOISE_REDUCTION / DYNAMICS; qc delivery_package gate; video-editing trim/rotate

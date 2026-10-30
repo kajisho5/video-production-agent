@@ -312,6 +312,10 @@ def default_registry() -> SkillRegistry:
                          ["subtitle"], "LOW", True, "CONFIRM", ["subtitle/generate"]))
     r.register(SkillSpec("subtitle_burn_in", "1.0", "Burn the subtitle document into the picture (subtitle-skill render → ffmpeg-skill/caption)", {"asset": "video", "captions": "artifact"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "subtitle", "encoder:libx264", "filter:subtitles"], "MEDIUM", True, "CONFIRM", ["subtitle/render"]))
+    # ADR-052 (amends ADR-002): the IR's cut list as an editor timeline. ffmpeg-skill/render --export-timeline reads only the
+    # sources (probing their durations / rates) and writes a text document; nothing is encoded, so no encoder capability.
+    r.register(SkillSpec("timeline_export", "1.0", "The cut list (kept source ranges in programme order) as an editor timeline: OpenTimelineIO, FCPXML or CMX 3600 EDL",
+                         {"asset": "video", "format": "otio|fcpxml|edl"}, {"artifact": "TIMELINE"}, ["ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/render"]))
     r.register(SkillSpec("thumbnail_frame", "1.0", "One video frame at an explicit timestamp as a PNG / JPEG", {"asset": "video", "at": "float"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM", ["thumbnail/extract_frame"]))
     r.register(SkillSpec("thumbnail_render", "1.0", "A video frame with a caption rendered as a thumbnail document", {"asset": "video", "at": "float", "text": "str"}, {"artifact": "THUMBNAIL"},
