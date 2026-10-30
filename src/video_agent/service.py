@@ -54,6 +54,7 @@ from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_r
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
 from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
+from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
 from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, stage_for
@@ -369,6 +370,8 @@ class Service:
         d["graphics"] = {"operations": plan["graphics_ops"]} if plan.get("graphics_ops") else {}
         d["color"] = {"operations": plan["color_ops"]} if plan.get("color_ops") else {}
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
+        if plan.get("timelines"):   # ADR-052: written only when planned, so an unchanged request keeps its plan hash
+            d["delivery"]["timelines"] = plan["timelines"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
         if (plan.get("qc") or {}).get("enabled"):
             d["qa"]["qc"] = plan["qc"]
@@ -717,8 +720,8 @@ class Service:
                     # in-workspace file yet to register as an Artifact)
                     continue
                 rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"], "target_decision_ids": list(t.get("decision_ids") or [])})
-            for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail
-                if o.get("role") in ("CAPTIONS", "THUMBNAIL") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
+            for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail; the editor timeline (ADR-052)
+                if o.get("role") in ("CAPTIONS", "THUMBNAIL", "TIMELINE") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
                     rows.append({"logical": o["logical"], "type": o["role"], "sources": list(subject["sources"]), "format": o.get("format") or "", "target": o["role"].lower()})
         for row in rows:
             logical, t = row["logical"], {"id": row["target"], "preset": row["format"], "artifact_type": row["type"]}
@@ -732,9 +735,9 @@ class Service:
                 art_qa = "FAIL" if "FAIL" in statuses else ("WARN" if "WARN" in statuses else ("PASS" if items else "UNKNOWN"))
                 qc_item = next((i for i in items if i.layer == "qc" and i.name == "verdict"), None)
                 qc_verdict: Optional[str] = None
-                if qc_enabled and row["type"] != "THUMBNAIL":   # the gate covers deliverables and sidecars; a thumbnail is checked by the agent only
+                if qc_enabled and row["type"] not in ("THUMBNAIL", "TIMELINE"):   # the gate covers deliverables and sidecars; a thumbnail / timeline is checked by the agent only
                     qc_verdict = str(qc_item.observed) if qc_item is not None and str(qc_item.observed) in ("PASS", "WARN", "FAIL") else "FAIL"   # no admitted report → never promoted on silence
-                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "thumbnail_frame", "thumbnail_render") and logical in o.outputs), None)
+                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "thumbnail_frame", "thumbnail_render", "timeline_export") and logical in o.outputs), None)
                 # a no-preset deliverable is an alias (compiler.delivery(): "the last processed intermediate
                 # is the deliverable") — no op names `logical` itself, so also credit whichever real op's
                 # output resolved to this same on-disk path, or a processed deliverable would misreport as
@@ -1096,6 +1099,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     from .models import Requirement
     keys = [k for k in user_requirements if k.startswith(_FINISHING_PREFIXES)]
     unknown = sorted(k for k in keys if k not in _FINISHING_REQUIREMENT_KEYS)
+    unknown += sorted(k for k in user_requirements if k.startswith(TIMELINE_KEY) and k != TIMELINE_KEY)   # ADR-052: e.g. delivery.timeline.format is not a key
     if unknown:
         raise ValueError(f"unknown requirement key(s): {', '.join(unknown)} (matches a recognised namespace but is not a real key there)")
     reqs = [Requirement(key=k, value=user_requirements[k], provenance="USER", source="cli") for k in keys]
@@ -1107,6 +1111,8 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_motion_requirements(rm)
     parse_thumbnail_requirements(rm)
     qc_requested(rm)
+    if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
+        parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
 
 def _subtitles_requested(user_requirements: Dict[str, Any]) -> bool:

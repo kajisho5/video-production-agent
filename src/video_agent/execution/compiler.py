@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
-trim → concat → edits → colour → graphics → captions (sidecar, burn-in) → loudness → export → check → thumbnail → QC gate.
+trim → concat → edits → colour → graphics → captions (sidecar, burn-in) → loudness → export → check → timeline → thumbnail → QC gate.
 Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
@@ -16,6 +16,7 @@ from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, delivery
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, RENDER_TOOL
+from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
 
@@ -184,6 +185,15 @@ def lower_qc_check(tool: str, kind: str, input_id: str, rules: Dict[str, Any], s
     return args
 
 
+def lower_timeline_export(tool: str, op: Dict[str, Any], project_id: str, out_id: str) -> Dict[str, Any]:
+    """IR `timeline.export` (ADR-052) → the timeline tool's typed arguments: the clips as records (source asset id + in / out
+    seconds) the adapter writes into the tool's project document inside the workspace, that document's path id, and the
+    timeline output id (its extension, chosen by the compiler from the format, selects the writer). The tool comes from the
+    plan (registry-selected, single candidate); like the other reference-engine-only operations there is no pairing to check."""
+    return {"project": project_id, "clips": [{"input": c["asset"], "in": float(c["in"]), "out": float(c["out"])} for c in op["clips"]],
+            "output": out_id, "overwrite": True}
+
+
 def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
     """(skill, asset-or-target key) → tool id, from plan.steps. The compiler never chooses tools itself."""
     out: Dict[Tuple[str, str], str] = {}
@@ -347,6 +357,22 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             src = st.get("picture") or st["current"]
             add(tool, lower_thumbnail(tool, op, src, out_id), [src], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
 
+    def timeline(subject: str) -> None:
+        """The subject's cut list as an editor timeline (ADR-052): reads the sources only, never an intermediate, so it depends on
+        no other operation; the render project it needs is an intermediate of its own under ops/."""
+        st = state[subject]
+        for op in (d.get("delivery") or {}).get("timelines") or []:
+            if op["asset"] != subject or op["type"] != TIMELINE_SUBJECT:
+                continue
+            out_id = op.get("output") or f"{subject}_timeline"
+            paths[out_id] = str(job / "artifacts" / f"{st['stem']}_timeline.{TIMELINE_EXTENSIONS[op['format']]}")
+            project_id = f"{out_id}_project"
+            paths[project_id] = str(job / "ops" / f"{st['stem']}_timeline" / f"{st['stem']}_timeline_project.json")
+            keys[project_id] = ""
+            tool = tool_for(TIMELINE_SKILL, subject)
+            inputs = list(dict.fromkeys(c["asset"] for c in op["clips"]))
+            add(tool, lower_timeline_export(tool, op, project_id, out_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=TIMELINE_SKILL)
+
     def qc_gate(subject: str) -> None:
         """One qc/check per delivery artifact of the subject and one for its subtitle sidecar (ADR-032): kind qa, no output, never reused."""
         qc = (d.get("qa") or {}).get("qc") or {}
@@ -446,6 +472,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             finishing(asset_id)
             loudness(asset_id)
             delivery(asset_id)
+            timeline(asset_id)
             thumbnail(asset_id)
             qc_gate(asset_id)
     if audio_concat is not None:
@@ -473,6 +500,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         finishing(subject)
         loudness(subject)
         delivery(subject)
+        timeline(subject)
         thumbnail(subject)
         qc_gate(subject)
     if switch is not None:

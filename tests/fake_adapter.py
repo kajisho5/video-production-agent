@@ -1,6 +1,7 @@
 """FakeAdapter: canned ffmpeg-skill responses so unit tests run without ffmpeg."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -171,4 +172,26 @@ class FakeAdapter(ToolAdapter):
                 _write_fake(out, {"duration": total, "lufs": self.lufs})
             doc = {"output": out, "commands": ["ffmpeg grid"], "probe": probe_doc(out or "", total)}
             return ToolResult(op.id, op.tool, True, 0, out, doc, doc["commands"], "", 0.3, attempt, dry_run)
+        if script == "render":
+            # a fake timeline export (tests only, ADR-052): only the --export-timeline use of render.py is catalogued. The typed clips
+            # become a minimal document of the output's format (an OTIO Timeline with one Clip per cut-list range); the JSON shape
+            # mirrors a real ffmpeg-skill 2.21.0 --json capture (output, timeline summary, verification, no commands).
+            assert set(op.args) <= {"project", "clips", "output", "overwrite"}, op.args
+            clips = op.args["clips"]
+            fmt = Path(out).suffix.lstrip(".") if out else ""
+            if out and not dry_run:
+                Path(out).parent.mkdir(parents=True, exist_ok=True)
+                if fmt == "otio":
+                    items = [{"OTIO_SCHEMA": "Clip.2", "name": Path(paths.get(c["input"], c["input"])).name,
+                              "source_range": {"start": c["in"], "duration": round(c["out"] - c["in"], 3)}} for c in clips]
+                    Path(out).write_text(json.dumps({"OTIO_SCHEMA": "Timeline.1", "tracks": {"OTIO_SCHEMA": "Stack.1", "children": [{"OTIO_SCHEMA": "Track.1", "kind": "Video", "children": items}]}}))
+                elif fmt == "fcpxml":
+                    Path(out).write_text('<?xml version="1.0"?>\n<fcpxml version="1.10"/>\n')
+                else:
+                    Path(out).write_text("TITLE: timeline\nFCM: NON-DROP FRAME\n")
+            total = round(sum(c["out"] - c["in"] for c in clips), 3)
+            doc = {"status": "completed", "output": out, "dry_run": dry_run, "commands": [], "verified": True, "verification": [{"step": "exists", "ok": True}, {"step": "parse", "ok": True}],
+                   "timeline": {"format": fmt, "rate": "30", "duration": total, "frames": int(round(total * 30)), "clips": len(clips), "transition": "none", "transition_frames": 0,
+                                "music": False, "markers": 0, "notes": [], "not_exported": []}}
+            return ToolResult(op.id, op.tool, True, 0, out, doc, [], "", 0.1, attempt, dry_run)
         return ToolResult(op.id, op.tool, False, 2, None, {}, [], f"error: unknown tool {script}", 0.0, attempt, dry_run)

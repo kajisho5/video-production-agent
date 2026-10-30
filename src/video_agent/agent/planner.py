@@ -15,6 +15,7 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_S
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
+from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -24,8 +25,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     `tools` is the skill → tool map produced by SkillRegistry.resolve_tools for this environment; it is the only
     source of tool ids here (the planner has no default engine). A step whose skill is absent from the map is emitted
     with tool=None and the plan is marked BLOCKED so the validator / decide() refuse it explicitly.
-    Returns {"plan": ProductionPlan.to_dict(), "steps", "summary", "video_ops", "audio_ops", "delivery", "captions_ops", "graphics_ops", "color_ops", "qc"}
-    (ADR-031 / ADR-032: the finishing sections and the QC gate)."""
+    Returns {"plan": ProductionPlan.to_dict(), "steps", "summary", "video_ops", "audio_ops", "delivery", "captions_ops", "graphics_ops", "color_ops", "qc", "timelines"}
+    (ADR-031 / ADR-032: the finishing sections and the QC gate; ADR-052: the editor timeline exports)."""
     if tools is None:
         raise TypeError("build_plan needs the skill → tool map resolved by SkillRegistry (tools=None is not allowed)")
     no_tool: List[str] = []
@@ -56,6 +57,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     color_ops: List[Dict[str, Any]] = []
     qc_plan: Dict[str, Any] = {"enabled": False, "decision_ids": [], "subjects": {}, "sidecars": {}}
     delivery: List[Dict[str, Any]] = []
+    timelines: List[Dict[str, Any]] = []
     outputs: List[Dict[str, Any]] = []
     summary: List[str] = []
     blocked = [d for d in decisions if d.approval == "BLOCK"]
@@ -197,6 +199,28 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             steps.append(st)
             outputs.append({"role": "THUMBNAIL", "logical": out_id, "format": params["format"], "expected": {"timestamp": params["timestamp"], "source": subject}})
             summary.append(d.decision)
+
+    def timeline_steps(subject: str, sources: List[str]) -> None:
+        """The subject's cut list as an editor timeline (ADR-052): the kept source ranges of `sources` in programme order. The step
+        reads the sources themselves (the timeline references them), so it waits on no other step."""
+        nonlocal order
+        for d in [x for x in decisions if x.subject == TIMELINE_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
+            clips = timeline_clips(video_ops, sources, durations)
+            out_id = f"{subject}_timeline"
+            # the cut list rests on the decisions that made it (the trims' silence decisions, the concat): cited too, so a rejected cut
+            # makes the timeline rejected-cited as well and a pending one keeps it PROPOSED
+            cut_ids = [x for op in video_ops if op.get("type") == "video.trim" and op.get("asset") in sources for x in op.get("decision_ids") or []]
+            cut_ids += [concat_dec.id] if (concat_dec is not None and subject == PROGRAMME) else []
+            ids = [d.id] + [x for x in dict.fromkeys(cut_ids) if x != d.id]
+            rec = ir_timeline_export(subject, d.params["format"], clips, ids, out_id)
+            timelines.append(rec)
+            order += 1
+            steps.append(ProductionStep(id=f"step_timeline_{subject}", order=order, skill=TIMELINE_SKILL, tool=tool_for(TIMELINE_SKILL), inputs=list(dict.fromkeys(sources)),
+                                        params={"asset": subject, "format": d.params["format"], "clips": len(clips)}, outputs=[out_id], depends_on=[],
+                                        evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id))
+            outputs.append({"role": "TIMELINE", "logical": out_id, "format": d.params["format"],
+                            "expected": {"clips": len(clips), "duration": rec["timeline_duration"], "source": subject}})
+            summary.append(f"Export the cut of {subject} as an {d.params['format']} timeline ({len(clips)} clip(s), {rec['timeline_duration']:.2f}s)")
 
     def qc_steps(subject: str, tolerance_lu: float) -> None:
         """One qc_check step per delivery artifact of the subject (after its check), and one for the subtitle sidecar (ADR-032)."""
@@ -444,6 +468,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             finishing_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
             delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
+            timeline_steps(asset.id, [asset.id])
             thumbnail_steps(asset.id, [asset.id])
             qc_steps(asset.id, qc_tolerance_lu)
     if audio_concat_dec is not None:
@@ -486,6 +511,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         finishing_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
+        timeline_steps(PROGRAMME, inputs)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
     if switch_dec is not None:
@@ -552,4 +578,4 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
     return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "delivery": delivery,
-            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan}
+            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines}
