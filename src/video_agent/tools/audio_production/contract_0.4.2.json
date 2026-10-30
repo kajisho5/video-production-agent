@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), fades, EBU R128 loudness normalisation, mix, concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -95,13 +95,13 @@
       "operation": "DYNAMICS"
     },
     {
-      "id": "audio.fade",
+      "id": "audio.fade_in",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "FADE_IN"
     },
     {
-      "id": "audio.fade",
+      "id": "audio.fade_out",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "FADE_OUT"
@@ -153,6 +153,21 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "TRIM"
+    }
+  ],
+  "dependencies": [
+    {
+      "skill_id": "ffmpeg-skill",
+      "version_range": ">=1.0 <2.0",
+      "range_of": "contract_version",
+      "required": true,
+      "tools": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/audio",
+        "ffmpeg-skill/cut",
+        "ffmpeg-skill/loudness",
+        "ffmpeg-skill/join"
+      ]
     }
   ],
   "operations": [
