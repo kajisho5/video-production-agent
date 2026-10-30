@@ -23,7 +23,7 @@ Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
 
 ## Steps
 
-- [x] **1. Declare SkillSpecs for every ecosystem job** — phase-2 SkillSpecs (not implemented) for ingest, voice-enhance, dubbing, sound-design, diarization, detection, slide-sync, publish, imagemagick, blender, remotion, hyperframes, artifacts, disc authoring, so ADR-051 handoffs name the right package (PR_LINK)
+- [x] **1. Declare SkillSpecs for every ecosystem job** — phase-2 SkillSpecs (not implemented) for ingest, voice-enhance, dubbing, sound-design, diarization, detection, slide-sync, publish, imagemagick, blender, remotion, hyperframes, artifacts, disc authoring, so ADR-051 handoffs name the right package ([#76](https://github.com/kajisho5/video-production-agent/pull/76))
   - Done when: a plan asking for each job shows a handoff naming the package and its install command
   - Done (ADR-057): 17 phase-2 SkillSpecs (disc authoring is four, as ecosystem.json splits it: bdmvkit / vtskit / udfkit / dvdcc); `--set job.<skill>=true` adds a BLOCKED step whose handoff names the package, its repository and its install command from an ecosystem.json snapshot plus each README (`none yet` for the four scaffolds with nothing released: voice-enhance, dubbing, sound-design, publish); one test per job in `tests/test_ai_host.py::EcosystemJobHandoffTests`
 - [x] **2. Version gates follow the satellites' version fixes** — widen SUPPORTED_SKILL_VERSIONS and re-pin contracts as motion-graphics (0.2), subtitle, thumbnail, transcription (0.7), media-analysis fix their reported versions ([#65](https://github.com/kajisho5/video-production-agent/pull/65))
