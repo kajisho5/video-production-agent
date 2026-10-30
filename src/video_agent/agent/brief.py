@@ -28,7 +28,8 @@ Rule-based coverage (`parse_brief`, English and Japanese, after NFKC so full-wid
              「横型」「横長」 → edit.fit=16:9; "square" / "1:1" / 「正方形」 → edit.fit=1:1; also 4:5 and 4:3 written as ratios.
              fit (letterbox, nothing cut) is chosen over fill (crop); two different aspects → unmapped (conflict)
   captions   "caption(s)" / "subtitle(s)" / "subtitled" / 「字幕」「キャプション」 → subtitle=true; "burned-in" / "burn in" /
-             "open captions" / "hardcoded" / 「焼き付け」「焼き込み」 → subtitle.burn_in=true; "srt" / "vtt" → subtitle.format;
+             "open captions" / "hardcoded" / 「焼き付け」「焼き込み」 → subtitle.burn_in=true; "soft subtitles" / "subtitle track" /
+             「ソフト字幕」「字幕トラック」 → subtitle.mode=mux (ADR-063; burn-in and a soft track together → unmapped); "srt" / "vtt" → subtitle.format;
              "no captions" / "without subtitles" / 「字幕なし」「字幕不要」 → nothing
   loudness   "-14 LUFS" / "LUFS -14" / 「ラウドネス -14」 → audio.loudness.target_lufs (and audio.normalize=true); "-1 dBTP" →
              audio.loudness.true_peak; a LUFS figure without a minus sign is ambiguous → unmapped
@@ -95,6 +96,7 @@ _ASPECTS = [
 _CAPTIONS = re.compile(r"\b(?:closed\s+)?(?:captions?|captioned|subtitles?|subtitled)\b|字幕|キャプション", re.I)
 _NO_CAPTIONS = re.compile(r"\b(?:no|without)\s+(?:closed\s+)?(?:captions?|subtitles?)\b|字幕\s*(?:なし|無し|不要|は?いらない)", re.I)
 _BURN_IN = re.compile(r"\bburn(?:ed|t)?[- ]?in\b|\bopen\s+captions?\b|\bhard[- ]?(?:coded|subs?)\b|焼き付け|焼き込み|焼きこみ", re.I)
+_SOFT_SUBS = re.compile(r"\bsoft[- ]?(?:subtitles?|subs?|captions?)\b|\b(?:subtitle|caption)\s+track\b|ソフト字幕|字幕トラック", re.I)
 _SUB_FORMAT = [(re.compile(r"\bsrt\b", re.I), "srt"), (re.compile(r"\b(?:web)?vtt\b", re.I), "vtt")]
 _LUFS = [re.compile(r"(-\s*\d+(?:\.\d+)?)\s*LUFS", re.I), re.compile(r"LUFS\s*[:=]?\s*(-\s*\d+(?:\.\d+)?)", re.I),
          re.compile(r"ラウドネス\s*[:=]?\s*(-\s*\d+(?:\.\d+)?)")]
@@ -133,9 +135,13 @@ def parse_brief(text: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     cap = _CAPTIONS.search(t)
     if cap and not _NO_CAPTIONS.search(t):
         add("subtitle", True, cap.group(0))
-        burn = _BURN_IN.search(t)
-        if burn:
+        burn, soft = _BURN_IN.search(t), _SOFT_SUBS.search(t)
+        if burn and soft:
+            unmapped.append({"phrase": f"{burn.group(0)}, {soft.group(0)}", "reason": "burnt-in and soft subtitles both named: which one is meant is not guessed"})
+        elif burn:
             add("subtitle.burn_in", True, burn.group(0))
+        elif soft:
+            add("subtitle.mode", "mux", soft.group(0))
         for rx, fmt in _SUB_FORMAT:
             m = rx.search(t)
             if m:

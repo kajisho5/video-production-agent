@@ -19,7 +19,7 @@ from ..policy.rules import RuleSet
 from ..skills.registry import SkillRegistry
 from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
-from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
+from .audio import MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
@@ -50,6 +50,9 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  # audio.extract is waived only by its own explicit requirement `audio.extract=true` — never by the generic `audio.production` switch (ADR-033)
                  "audio.extract": ("audio.extract.approval", "CONFIRM"), "audio.gain": ("audio.gain.approval", "CONFIRM"), "audio.channels": ("audio.channels.approval", "CONFIRM"),
                  "audio.fade_in": ("audio.fade_in.approval", "CONFIRM"), "audio.fade_out": ("audio.fade_out.approval", "CONFIRM"), "audio.concat": ("audio.concat.approval", "CONFIRM"),
+                 # ADR-063: the mix (another way to build the audio programme), noise reduction and dynamics: CONFIRM, waived by their own explicit requirement
+                 "audio.mix": ("audio.mix.approval", "CONFIRM"), "audio.noise_reduction": ("audio.noise_reduction.approval", "CONFIRM"),
+                 "audio.dynamics": ("audio.dynamics.approval", "CONFIRM"),
                  # explicit camera-switch programme (ADR-045): an explicit switch list waives CONFIRM like any other edit.* op; never AUTO by policy default
                  "video.switch": ("video.switch.approval", "CONFIRM"),
                  # ADR-046 Priority A batch: CONFIRM by default like every other edit.* op (an explicit USER
@@ -142,7 +145,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- audio production path (ADR-030): explicit `audio.production` + `audio.*` requirements; the audio of the asset becomes the subject
     audio = parse_audio_requirements(m)
     audio_assets = [a for a in analysis.assets if is_audio_capable(a.technical)] if audio["production"] else []
-    audio_concat_ok = False
+    audio_programme_ok = False   # an audio programme is built from the inputs (audio.concat, or audio.mix since ADR-063)
+    audio_mix_ok = False
     if audio["production"]:
         sw = m[AUDIO_SWITCH]
         a_ev = [r.id for r in audio["requirements"]]
@@ -164,7 +168,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 eng.decide(subject="audio.concat", type="BLOCK", decision="BLOCK: audio concat needs two or more inputs with audio", reason=f"{len(audio_assets)} input(s) carry audio",
                            confidence=1.0, evidence=a_ev + probe_ids_of([a.id for a in analysis.assets]), risk="HIGH", approval="BLOCK", provenance="USER", requirements=audio["requirements"])
             else:
-                audio_concat_ok = True
+                audio_programme_ok = True
                 cf = float(audio.get("crossfade") or 0.0)
                 eng.decide(subject="audio.concat", type="TRANSFORM", decision="audio concat " + " + ".join(a.id for a in audio_assets) + f" → {PROGRAMME_AUDIO}" + (f" (crossfade {cf:g}s)" if cf else ""),
                            reason=f"user asked to join the audio of the inputs in the given order ({sw.source}); the cut inputs become one programme",
@@ -172,6 +176,27 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            approval=approval_for("audio.concat", explicit=m["audio.concat"]),   # the concat's own explicit requirement; the switch enables the path only (ADR-033 / ADR-034)
                            provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": [a.id for a in audio_assets], "crossfade": cf}, requirements=audio["requirements"], serves_intent=None)
                 cap_block("audio_concat", "capability.audio_concat")
+        if audio.get("mix"):
+            # ADR-063: every audio input, in input order, summed into one programme by the Skill's MIX (2..8 inputs; the first sets the length)
+            ids = [a.id for a in audio_assets]
+            levels = audio.get("mix_levels")
+            why = (f"{len(ids)} input(s) carry audio; a mix sums two or more" if len(ids) < 2
+                   else f"{len(ids)} inputs carry audio; the Skill's MIX takes at most {AUDIO_MAX_MIX_INPUTS}" if len(ids) > AUDIO_MAX_MIX_INPUTS
+                   else f"audio.mix.levels lists {len(levels)} level(s) for {len(ids)} inputs: which level is meant for which input is not guessed" if levels is not None and len(levels) != len(ids)
+                   else None)
+            if why is not None:
+                eng.decide(subject="audio.mix", type="BLOCK", decision="BLOCK: audio mix " + " + ".join(ids), reason=why, confidence=1.0,
+                           evidence=a_ev + probe_ids_of([a.id for a in analysis.assets]), risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": ids},
+                           requirements=audio["requirements"])
+            else:
+                audio_programme_ok = audio_mix_ok = True
+                words = ", ".join(f"{a} {'muted' if lv['mute'] else format(lv['gain_db'], '+g') + ' dB'}" for a, lv in zip(ids, levels)) if levels else "every input at 0 dB"
+                eng.decide(subject="audio.mix", type="TRANSFORM", decision="audio mix " + " + ".join(ids) + f" → {PROGRAMME_AUDIO} ({words})",
+                           reason=f"user asked to mix the audio of the inputs ({m['audio.mix'].source}); the inputs are summed on their own timelines from 0 s and the mix lasts as long as {ids[0]} "
+                                  "(the first input); no silence is cut from a mixed input (it would move one input against the others)",
+                           confidence=1.0, evidence=a_ev + probe_ids_of(ids), risk=AUDIO_OPERATIONS["audio.mix"]["risk"], approval=approval_for("audio.mix", explicit=m["audio.mix"]),
+                           provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": ids, **({"levels": levels} if levels else {})}, requirements=audio["requirements"], serves_intent=None)
+                cap_block("audio_mix", "capability.audio_mix")
     # ---- take selection (ADR-053): explicit `edit.takes`; the picks (one per line, in line order) become the concat inputs, the other
     # takes and the music bed get no decision and no step of their own
     takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX, cap_missing=cap_missing)
@@ -301,6 +326,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         conflicts = [i for i in infs if i.kind == "speech_silence_conflict"]
         if asset.id in take_picks:
             lead = tail = None   # ADR-053: a pick keeps its speech span (+ handles) as one range; its own decision trims it
+        mixed = audio_mix_ok and asset in audio_assets
+        if mixed:
+            lead = tail = None   # ADR-063: a mixed input keeps its own timeline from 0 s (a cut would move it against the other inputs)
 
         def disputed(start: float, end: float) -> List[Inference]:
             """Speech / silence conflicts overlapping a trim range: recognised speech inside a 'technical' silence. The trim then
@@ -341,7 +369,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             eng.decide(subject="speech.continuity", type="KEEP", decision=f"keep all {activity.data['intervals']} speech interval(s)", reason=activity.statement + "; recognised speech is never removed by an automatic edit",
                        confidence=activity.confidence, evidence=[activity.id] + activity.evidence, risk="LOW", approval="AUTO", provenance="INFERRED",
                        params={"asset_id": asset.id, "intervals": activity.data["intervals"], "speech_seconds": activity.data["speech_seconds"]})
-        removable = [i for i in infs if i.kind == "internal_silence_removable" and asset.id not in take_picks]   # a pick's pauses are scored, not cut (ADR-053)
+        removable = [i for i in infs if i.kind == "internal_silence_removable" and asset.id not in take_picks and not mixed]   # a pick's pauses are scored, not cut (ADR-053)
         covered = {(i.data["silence"]["start"], i.data["silence"]["end"]) for i in removable}
         for inf in removable:
             appr = approval_for("silence.internal", floor="CONFIRM")
@@ -390,7 +418,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 eng.decide(subject="audio.loudness", type="SKIP", decision="skip", reason=amb.statement, confidence=amb.confidence, evidence=[amb.id] + amb.evidence, risk="MEDIUM", approval="AUTO",
                            alternatives=[Alternative(f"normalize to {target.value:g} LUFS", "force normalisation", "raises noise floor").to_dict()], provenance="INFERRED",
                            requirements=[want_norm, target], serves_intent=_serves(intent, "audio.loudness"))
-            elif concat_ok or (audio_concat_ok and asset in audio_assets):
+            elif concat_ok or (audio_programme_ok and asset in audio_assets):
                 pass   # the joined programme is normalised once (decision below); a per-input normalisation would be undone by the join
             elif off or want_norm.provenance == "USER":
                 tp = m.get("audio.loudness.true_peak")
@@ -440,7 +468,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     if audio["production"] and audio_assets:
         sw = m[AUDIO_SWITCH]
         a_ev = [r.id for r in audio["requirements"]]
-        if audio_concat_ok:
+        if audio_programme_ok:
             want_norm, target = m.get("audio.normalize"), m.get("audio.loudness.target_lufs")
             offs = [i for i in inferences if i.kind == "loudness_off_target" and i.asset_id in {a.id for a in audio_assets}]
             loud_obs = [o.id for o in analysis.observations if o.kind == "loudness" and o.asset_id in {a.id for a in audio_assets}]
@@ -448,14 +476,14 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 tp = m.get("audio.loudness.true_peak")
                 tol = resolve_setting(rules, "audio.loudness.tolerance_lu", 2.0)
                 eng.decide(subject="audio.loudness", type="TRANSFORM", decision=f"normalize {PROGRAMME_AUDIO} to {float(target.value):g} LUFS / {float(tp.value) if tp else -1:g} dBTP",
-                           reason=("; ".join(i.statement for i in offs) if offs else "user asked for normalisation") + f"; applied once to the joined audio programme; target from {target.provenance.lower()} ({target.source})",
+                           reason=("; ".join(i.statement for i in offs) if offs else "user asked for normalisation") + f"; applied once to the audio programme (the join or the mix); target from {target.provenance.lower()} ({target.source})",
                            confidence=min(i.confidence for i in offs) if offs else 1.0, evidence=[i.id for i in offs] + [e for i in offs for e in i.evidence] + loud_obs + a_ev, risk="LOW",
                            approval=approval_for("audio.loudness"), provenance="USER" if want_norm.provenance == "USER" else target.provenance,
                            params={"asset_id": PROGRAMME_AUDIO, "target_lufs": float(target.value), "true_peak": float(tp.value) if tp else -1.0, "tolerance_lu": float(tol["value"]),
                                    **({"sample_rate": audio["sample_rate"]} if audio.get("sample_rate") else {})},
                            settings=[tol], requirements=[want_norm, target] + ([tp] if tp else []) + audio["requirements"], serves_intent=_serves(intent, "audio.loudness"))
                 cap_block("audio_normalize", "capability.audio_normalize")
-        a_subjects = [(PROGRAMME_AUDIO, [a.id for a in audio_assets])] if audio_concat_ok else [(a.id, [a.id]) for a in audio_assets]
+        a_subjects = [(PROGRAMME_AUDIO, [a.id for a in audio_assets])] if audio_programme_ok else [(a.id, [a.id]) for a in audio_assets]
         normalised = {d.params.get("asset_id") for d in decs if d.subject == "audio.loudness" and d.type == "TRANSFORM"}
         for subject, sources in a_subjects:
             src = [a for a in analysis.assets if a.id in sources]
@@ -466,6 +494,14 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                            risk=AUDIO_OPERATIONS["audio.gain"]["risk"], approval=approval_for("audio.gain", explicit=m["audio.gain"]), provenance="USER",
                            params={"asset_id": subject, "gain_db": audio["gain"]}, requirements=audio["requirements"], serves_intent=None)
                 planned_ops.append("audio_gain")
+            if audio.get("noise_reduction") is not None:   # ADR-063: NOISE_REDUCTION's own parameters, by name
+                nr = audio["noise_reduction"]
+                eng.decide(subject="audio.noise_reduction", type="TRANSFORM", decision=f"noise reduction ({nr['mode']}, {nr['strength_db']:g} dB) on {subject}",
+                           reason=f"user asked for noise reduction ({sw.source}); the Skill's FFT denoiser removes a {nr['strength_db']:g} dB noise floor, before every other audio operation",
+                           confidence=1.0, evidence=ev, risk=AUDIO_OPERATIONS["audio.noise_reduction"]["risk"],
+                           approval=approval_for("audio.noise_reduction", explicit=m["audio.noise_reduction.strength_db"]), provenance="USER",
+                           params={"asset_id": subject, **nr}, requirements=audio["requirements"], serves_intent=None)
+                planned_ops.append("audio_noise_reduction")
             if audio.get("channels"):
                 chans = [c for c in (audio_channels(a.technical) for a in src) if c is not None]
                 ch: Optional[int] = max(chans) if chans and len(chans) == len(src) else None   # a concat programme carries the widest input's layout (Skill contract)
@@ -481,6 +517,15 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                confidence=1.0, evidence=ev, risk=AUDIO_OPERATIONS[op_type]["risk"], approval=approval_for("audio.channels", explicit=m["audio.channels"]), provenance="USER",
                                params={"asset_id": subject, "layout": audio["channels"], "operation": op_type, "channels": ch}, requirements=audio["requirements"], serves_intent=None)
                     planned_ops.append(AUDIO_OPERATIONS[op_type]["skill"])
+            if audio.get("dynamics") is not None:   # ADR-063: DYNAMICS' stages (gate → compressor → limiter, the Skill's order), unset fields keep ffmpeg's defaults
+                dyn = audio["dynamics"]
+                words = "; ".join(f"{st} " + (", ".join(f"{k}={v:g}" for k, v in dyn[st].items()) or "defaults") for st in ("gate", "compressor", "limiter") if st in dyn)
+                eng.decide(subject="audio.dynamics", type="TRANSFORM", decision=f"dynamics on {subject}: {words}",
+                           reason=f"user asked for dynamics processing ({sw.source}); applied after gain and channel layout, before the fades and the loudness normalisation",
+                           confidence=1.0, evidence=ev, risk=AUDIO_OPERATIONS["audio.dynamics"]["risk"],
+                           approval=approval_for("audio.dynamics", explicit=m[audio["dynamics_keys"][0]]), provenance="USER",
+                           params={"asset_id": subject, **dyn}, requirements=audio["requirements"], serves_intent=None)
+                planned_ops.append("audio_dynamics")
             for key in ("fade_in", "fade_out"):
                 if audio.get(key) is not None:
                     eng.decide(subject=f"audio.{key}", type="TRANSFORM", decision=f"{key.replace('_', ' ')} {audio[key]:g}s on {subject}", reason=f"user asked for a {key.replace('_', ' ')} ({sw.source})",
@@ -502,9 +547,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="MEDIUM", approval=approval_for("audio.extract", explicit=extract_req), provenance="USER",
                                params={"asset_id": a.id}, requirements=audio["requirements"], serves_intent=None)
             cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove")) for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
-            if not planned_ops and subject not in normalised and not cut_planned and not audio_concat_ok and any(has_video(a.technical) for a in src):
+            if not planned_ops and subject not in normalised and not cut_planned and not audio_programme_ok and any(has_video(a.technical) for a in src):
                 eng.decide(subject="audio.production", type="BLOCK", decision=f"BLOCK: nothing to do on the audio path for {subject}",
-                           reason="a video container on the audio path needs at least one audio operation (cut / normalise / gain / channels / fade); none was decided", confidence=1.0,
+                           reason="a video container on the audio path needs at least one audio operation (cut / normalise / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
                            evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=audio["requirements"])
             for sk in planned_ops:
                 cap_block(sk, f"capability.{sk}")

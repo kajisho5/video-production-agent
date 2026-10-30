@@ -5,7 +5,7 @@
     of the artifact, OBSERVED, schema / skill / kind as requested) → QA items (layer "qc") → artifact stage
 
 The rules a deliverable is checked against derive from the IR only (what the plan promised): the delivered stream layout, the
-loudness target of a normalisation, the planned picture size after a resize, the sidecar's presence. Nothing here measures, and
+loudness target of a normalisation, the planned picture width after the edits (`picture_size`), the sidecar's presence. Nothing here measures, and
 the agent's own QA checks (duration / streams / loudness / true peak) stay in force — the Skill's verdict is an additional gate,
 never a replacement.
 
@@ -16,6 +16,8 @@ registered `working` and can never be promoted to final (the existing QA FAIL ga
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+
+from .finishing import picture_size
 
 QC_TOOL = "qc/check"
 QC_SKILL = "qc_check"
@@ -43,9 +45,14 @@ def rules_for_subject(subject: Dict[str, Any], target: Dict[str, Any], doc: Dict
             audio_rule["expected_channels"] = int(subject["technical"]["audio"]["channels"])
         return {"kind": "audio", "rules": {"audio": audio_rule}}
     video_rule: Dict[str, Any] = {}
-    width = next((op.get("width") for op in reversed((doc.get("video") or {}).get("operations") or []) if op.get("asset") == subject["id"] and op.get("width")), None)
-    if width and target.get("preset") in (None, ""):
-        video_rule["expected_width"] = int(width)   # a platform preset may scale; without one the planned width is what is delivered
+    # the planned picture width: the size after the subject's edits in their order (crop → rotate → resize → fit / fill, `picture_size`),
+    # stated only when an edit changes the size. Before, the last op carrying a "width" was read, so a quarter turn after a crop / resize /
+    # fit (or a rotation alone) expected the unturned width
+    vops = (doc.get("video") or {}).get("operations") or []
+    resized = any(op.get("asset") == subject["id"] and (op.get("width") or (op.get("type") == "video.rotate" and op.get("degrees") in (90, 270))) for op in vops)
+    size = picture_size(tech, vops, subject["id"]) if resized else None
+    if size and target.get("preset") in (None, ""):
+        video_rule["expected_width"] = int(size[0])   # a platform preset may scale; without one the planned width is what is delivered
     reference = ((doc.get("qa") or {}).get("qc") or {}).get("reference") or {}
     if reference.get("path") and (reference.get("rule") or {}).get("reference_metrics"):
         video_rule.update(reference["rule"])

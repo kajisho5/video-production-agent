@@ -1549,7 +1549,10 @@
       "audio.stereo",
       "audio.downmix",
       "audio.fade_in",
-      "audio.fade_out"
+      "audio.fade_out",
+      "audio.mix",
+      "audio.noise_reduction",
+      "audio.dynamics"
      ]
     },
     "asset": {
@@ -1626,6 +1629,128 @@
      "exclusiveMinimum": 0,
      "maximum": 3600
     },
+    "levels": {
+     "type": "array",
+     "minItems": 2,
+     "maxItems": 8,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+       "gain_db": {
+        "type": "number",
+        "minimum": -60,
+        "maximum": 60
+       },
+       "mute": {
+        "type": "boolean"
+       }
+      }
+     }
+    },
+    "mode": {
+     "enum": [
+      "fft"
+     ]
+    },
+    "strength_db": {
+     "type": "number",
+     "minimum": 20.0,
+     "maximum": 60.0
+    },
+    "gate": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "threshold_db": {
+       "type": "number",
+       "minimum": -60.0,
+       "maximum": 0.0
+      },
+      "ratio": {
+       "type": "number",
+       "minimum": 1.0,
+       "maximum": 9000.0
+      },
+      "attack_ms": {
+       "type": "number",
+       "minimum": 0.01,
+       "maximum": 9000.0
+      },
+      "release_ms": {
+       "type": "number",
+       "minimum": 0.01,
+       "maximum": 9000.0
+      },
+      "range_db": {
+       "type": "number",
+       "minimum": -90.0,
+       "maximum": 0.0
+      },
+      "knee_db": {
+       "type": "number",
+       "minimum": 1.0,
+       "maximum": 8.0
+      }
+     }
+    },
+    "compressor": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "threshold_db": {
+       "type": "number",
+       "minimum": -60.0,
+       "maximum": 0.0
+      },
+      "ratio": {
+       "type": "number",
+       "minimum": 1.0,
+       "maximum": 20.0
+      },
+      "attack_ms": {
+       "type": "number",
+       "minimum": 0.01,
+       "maximum": 2000.0
+      },
+      "release_ms": {
+       "type": "number",
+       "minimum": 0.01,
+       "maximum": 9000.0
+      },
+      "makeup_db": {
+       "type": "number",
+       "minimum": 0.0,
+       "maximum": 36.0
+      },
+      "knee_db": {
+       "type": "number",
+       "minimum": 1.0,
+       "maximum": 8.0
+      }
+     }
+    },
+    "limiter": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "ceiling_db": {
+       "type": "number",
+       "minimum": -24.0,
+       "maximum": 0.0
+      },
+      "attack_ms": {
+       "type": "number",
+       "minimum": 0.1,
+       "maximum": 80.0
+      },
+      "release_ms": {
+       "type": "number",
+       "minimum": 1.0,
+       "maximum": 8000.0
+      }
+     }
+    },
     "segments": {
      "type": "array",
      "items": {
@@ -1700,7 +1825,8 @@
     "type": {
      "enum": [
       "captions.generate",
-      "captions.burn"
+      "captions.burn",
+      "captions.mux"
      ]
     },
     "asset": {

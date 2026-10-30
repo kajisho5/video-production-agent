@@ -1593,6 +1593,102 @@ class TakeCrossfadeRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class SubtitleMuxRealTests(unittest.TestCase):
+    """ADR-063 on the real Skills (subtitle-skill render `mode: "mux"`, ffmpeg-skill cut / loudness / caption): `subtitle.mode=mux` adds
+    the cues as a soft subtitle track; the track survives the loudness pass into the deliverable of a profile without a platform preset,
+    and the agent's QA checks it there. A platform export (ffmpeg-skill export.py) writes the picture and the audio only — measured here
+    — so the same request with the youtube profile is a BLOCK. Speech recognition is the fake process reading a sidecar transcript (CI
+    has no ASR model); every other tool is real."""
+
+    SPEECH = [[4.0, 8.0, "hello there"], [9.0, 12.0, "and goodbye"]]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_mux_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.media = str(src / "talk.mp4")
+        make_media(cls.media)
+        Path(cls.media + ".segments.json").write_text(json.dumps(cls.SPEECH), encoding="utf-8")
+
+    def _service(self, ws):
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        fake = [sys.executable, str(Path(__file__).resolve().parent / "fake_transcription.py")]
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill(fake, None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                return self._sync_packages(ToolRouter([ts] + [a for a in r.adapters if a.name != "transcription"]))
+        svc = _Svc(workspace=ws, offline=True)
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                caps = dict(real.resolve(refresh))
+                caps["transcription"] = Capability("transcription", "AVAILABLE", "fake recogniser (sidecar transcripts)", {})
+                return caps
+        svc.caps = _Caps()
+        return svc
+
+    def _streams(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name:format=duration", "-of", "json", path], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        return [(s_["codec_type"], s_.get("codec_name")) for s_ in doc["streams"]], float(doc["format"]["duration"])
+
+    def _svc_with_subtitle(self, name):
+        svc = self._service(str(Path(self.tmp) / name))
+        cap = svc.caps.resolve().get("subtitle")
+        if cap is None or cap.status != "AVAILABLE":
+            self.skipTest(f"needs subtitle-skill (VIDEO_AGENT_SUBTITLE_DIR): {getattr(cap, 'detail', 'not resolved')[:120]}")
+        return svc
+
+    def test_platform_export_drops_subtitle_streams_so_a_preset_blocks(self):
+        """The fact the BLOCK rests on, measured: export.py --preset youtube (and copy) leaves a mov_text track behind."""
+        svc = self._svc_with_subtitle("ws_exp")
+        from video_agent.tools.ffmpeg_skill.adapter import FfmpegSkillAdapter
+        ws = Path(svc.workspace); ws.mkdir(parents=True, exist_ok=True)
+        srt = ws / "c.srt"; srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nhello\n", encoding="utf-8")
+        muxed = str(ws / "muxed.mp4")
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", self.media, "-i", str(srt), "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text", muxed], check=True)
+        self.assertIn("subtitle", [t for t, _ in self._streams(muxed)[0]])
+        ad = FfmpegSkillAdapter(locate_ffmpeg_skill())
+        from video_agent.models import Operation
+        for preset in ("youtube", "copy"):
+            out = str(ws / f"exp_{preset}.mp4")
+            r = ad.run(Operation(tool="ffmpeg-skill/export", args={"input": "m", "preset": preset, "output": "o"}, inputs=["m"], outputs=["o"], id=f"op_{preset}"), {"m": muxed, "o": out})
+            self.assertTrue(r.ok, r.stderr_tail)
+            self.assertNotIn("subtitle", [t for t, _ in self._streams(out)[0]], f"export --preset {preset} now keeps subtitle streams: the ADR-063 BLOCK can be lifted")
+        ir = svc.plan([self.media], "youtube", user_requirements={"subtitle": True, "subtitle.mode": "mux"}, params={"language": "en", "offline": True})
+        self.assertEqual([x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"], ["subtitle.mux"])
+
+    def test_soft_subtitle_track_reaches_the_deliverable(self):
+        svc = self._svc_with_subtitle("ws")
+        ir = svc.plan([self.media], "generic", user_requirements={"subtitle": True, "subtitle.mode": "mux", "audio.normalize": True, "audio.loudness.target_lufs": -16},
+                      params={"language": "en", "offline": True})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual([s_["skill"] for s_ in d["plan"]["steps"]][:4], ["silence_cleanup", "subtitle_generation", "subtitle_mux", "loudness_normalization"])
+        p = str(Path(svc.workspace) / "mux.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", json.dumps([r for r in out["execution"]["results"] if not r["ok"]])[:1500])
+        ren = next(r for r in out["execution"]["results"] if r["tool"] == "subtitle/render")
+        self.assertEqual((ren["data"]["mode"], ren["data"]["engine"]["id"]), ("mux", "ffmpeg-skill"))
+        streams, _ = self._streams(ren["output"])
+        self.assertEqual([t for t, _ in streams], ["video", "audio", "subtitle"], streams)
+        art = next(a for a in out["artifacts"] if a["type"] == "MASTER")
+        streams, dur = self._streams(art["path"])
+        self.assertIn(("subtitle", "mov_text"), streams, "the soft track survives the loudness pass into the deliverable")
+        self.assertTrue(art["path"].endswith("_loudnorm.mp4"), art["path"])
+        track = next(i for i in out["qa"]["items"] if i["name"] == "subtitle_track")
+        self.assertEqual(track["status"], "PASS", track)
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        row = next(e for e in prov["operations"] if e["tool"] == "subtitle/render")
+        self.assertEqual((row["skill"], row["args"]["mode"]), ("subtitle_mux", "mux"))
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class TimelineExportRealTests(unittest.TestCase):
     """ADR-052 on the real ffmpeg-skill: `delivery.timeline=otio` → render.py --export-timeline writes the IR's cut list as an
     OpenTimelineIO document, registered as a TIMELINE Artifact; opentimelineio (when installed) reads it back with the same cuts."""
@@ -2032,6 +2128,25 @@ class AudioProductionRealTests(unittest.TestCase):
         self.assertTrue(art["operations"], "the real audio-production operation must be credited")
         self.assertTrue(art["path"].endswith("programme_audio_loudnorm.wav"))
         self.assertTrue(out["paths"]["programme_audio_delivery_main"].endswith("programme_audio_loudnorm.wav"))
+
+    def test_mix_noise_reduction_dynamics_end_to_end(self):
+        """ADR-063 on the real Skill: the stereo programme (16 s) and the 5 s mono tone mixed (-6 dB on the tone; the inputs keep their own
+        timelines, nothing cut), FFT noise reduction, then a compressor and a limiter; the mix lasts as long as its first input."""
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc, p, out, res, prov = self._run("E", [self.wav, self.mono], {"audio.production": True, "audio.mix": True, "audio.mix.levels": [0, -6],
+                                                                       "audio.noise_reduction.strength_db": 24, "audio.dynamics.compressor.ratio": 3,
+                                                                       "audio.dynamics.compressor.threshold_db": -20, "audio.dynamics.limiter.ceiling_db": -1},
+                                           ["audio_mix", "audio_noise_reduction", "audio_dynamics"], ["MIX", "NOISE_REDUCTION", "DYNAMICS"])
+        d = load_ir(p).doc
+        mix = next(op for op in d["audio"]["operations"] if op["type"] == "audio.mix")
+        self.assertEqual((mix["timeline_duration"], [s_["source_range"] for s_ in mix["segments"]]), (16.0, [[0.0, 16.0], [0.0, 5.0]]))
+        self.assertEqual(res[0]["data"]["operation"]["parameters"]["levels"], [{"gain_db": 0.0, "mute": False}, {"gain_db": -6.0, "mute": False}])
+        self.assertEqual(res[1]["data"]["operation"]["parameters"], {"mode": "fft", "strength_db": 24.0, "audio_stream": 0})
+        self.assertEqual(res[2]["data"]["operation"]["parameters"]["compressor"], {"ratio": 3.0, "threshold_db": -20.0})
+        self.assertEqual(res[2]["data"]["operation"]["parameters"]["limiter"], {"ceiling_db": -1.0})
+        dur, ch, sr, has_v = self._probe(res[-1]["output"])
+        self.assertAlmostEqual(dur, 16.0, delta=0.1, msg="the mix follows its first input"); self.assertEqual((ch, has_v), (2, False))
 
     def test_refusals_on_real_skill(self):
         if not self.ap:

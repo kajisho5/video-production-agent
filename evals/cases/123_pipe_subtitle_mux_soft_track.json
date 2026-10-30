@@ -1,0 +1,58 @@
+{
+ "name": "pipe_subtitle_mux_soft_track",
+ "profile": "generic",
+ "pipeline": {
+  "inputs": [
+   {
+    "segments": [
+     [
+      4.0,
+      8.0,
+      "hello there"
+     ],
+     [
+      9.0,
+      12.0,
+      "and goodbye"
+     ]
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "subtitle": true,
+  "subtitle.mode": "mux",
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "captions_ops": [
+   "captions.generate",
+   "captions.mux"
+  ],
+  "decisions": {
+   "subtitle.mux": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   }
+  },
+  "steps": [
+   "silence_cleanup",
+   "subtitle_generation",
+   "subtitle_mux",
+   "loudness_normalization"
+  ],
+  "render": {
+   "execution_status": "COMPLETED",
+   "qa_status": "PASS",
+   "tools": [
+    "ffmpeg-skill/cut",
+    "subtitle/generate",
+    "subtitle/render",
+    "ffmpeg-skill/loudness"
+   ]
+  }
+ }
+}

@@ -5,12 +5,13 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
-from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, SKILL_OF as AUDIO_SKILL_OF
+from ..agent.audio import (AUDIO_ORDER, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS,
+                           PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
 from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF, switch_cams
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
-from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL
+from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Event
@@ -37,7 +38,7 @@ class ValidationReport:
 
 def produced_subjects(d: Dict[str, Any]) -> set:
     """Logical subjects an operation produced (the video / audio concat programmes) that later operations may reference."""
-    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat") and op.get("output")}
+    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat", "audio.mix") and op.get("output")}
 
 
 def check_audio_operations(d: Dict[str, Any]) -> List[str]:
@@ -93,27 +94,41 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
                 last = r[1]
             if dur and sum(e - s for s, e in rs) >= float(dur) - 0.01:
                 errs.append(f"audio.cut on {subj} would remove everything")
-        elif t == "audio.concat":
+        elif t in AUDIO_PROGRAMME_OPS:   # audio.concat (ADR-030) or audio.mix (ADR-063): one audio programme per plan
             if concat_seen:
-                errs.append("more than one audio.concat (one audio programme per plan)")
+                errs.append(f"more than one audio programme ({t}; one audio.concat or audio.mix per plan)")
             concat_seen = True
             ins = op.get("inputs") or []
             if len(ins) < 2 or len(set(ins)) != len(ins):
-                errs.append("audio.concat needs two or more distinct inputs")
+                errs.append(f"{t} needs two or more distinct inputs")
             for i in ins:
                 if i not in assets:
-                    errs.append(f"audio.concat input {i!r} is not an asset")
+                    errs.append(f"{t} input {i!r} is not an asset")
             if op.get("output") != subj or subj in assets:
-                errs.append("audio.concat: output must equal the operation's subject and not collide with an asset id")
+                errs.append(f"{t}: output must equal the operation's subject and not collide with an asset id")
             segs = op.get("segments") or []
             if segs and {s_.get("input") for s_ in segs} != set(ins):
-                errs.append("audio.concat segments do not cover exactly the inputs")
+                errs.append(f"{t} segments do not cover exactly the inputs")
+            if t == "audio.mix":
+                if len(ins) > MAX_MIX_INPUTS:
+                    errs.append(f"audio.mix takes at most {MAX_MIX_INPUTS} inputs, got {len(ins)}")
+                lv = op.get("levels")
+                if lv is not None:
+                    if not isinstance(lv, list) or len(lv) != len(ins):
+                        errs.append("audio.mix levels must list one {gain_db, mute} per input, in input order")
+                    else:
+                        for n, x in enumerate(lv):
+                            if not (isinstance(x, dict) and set(x) <= {"gain_db", "mute"} and isinstance(x.get("gain_db", 0.0), (int, float)) and not isinstance(x.get("gain_db", 0.0), bool)
+                                    and MIX_GAIN_RANGE[0] <= float(x.get("gain_db", 0.0)) <= MIX_GAIN_RANGE[1] and isinstance(x.get("mute", False), bool)):
+                                errs.append(f"audio.mix levels[{n}] {x!r} must be {{gain_db -60..60, mute}}")
+                        if lv and isinstance(lv[0], dict) and lv[0].get("mute"):
+                            errs.append("audio.mix: the first input sets the mix's length and cannot be muted")
             known.add(subj)
             seen_rank[subj] = -1
             continue
         else:
             if subj not in known:
-                errs.append(f"{t} references {subj!r} before it exists (the audio programme exists only after audio.concat)")
+                errs.append(f"{t} references {subj!r} before it exists (the audio programme exists only after audio.concat / audio.mix)")
             rank = AUDIO_ORDER.index(t)
             if seen_rank.get(subj, -1) >= rank:
                 errs.append(f"{t} on {subj} is out of the fixed audio order {AUDIO_ORDER}")
@@ -124,6 +139,26 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
                 errs.append(f"{t}: duration {op.get('duration')!r} must be within 0..3600 s")
             if t == "audio.gain" and not (isinstance(op.get("gain_db"), (int, float)) and -60 <= float(op["gain_db"]) <= 60 and float(op["gain_db"]) != 0):
                 errs.append(f"audio.gain: gain_db {op.get('gain_db')!r} must be within -60..60 and not 0")
+            if t == "audio.noise_reduction":   # ADR-063: the contract's required pair
+                if op.get("mode") not in NOISE_REDUCTION_MODES:
+                    errs.append(f"audio.noise_reduction: mode {op.get('mode')!r} must be one of {NOISE_REDUCTION_MODES}")
+                sd = op.get("strength_db")
+                if not (isinstance(sd, (int, float)) and not isinstance(sd, bool) and NOISE_REDUCTION_STRENGTH[0] <= float(sd) <= NOISE_REDUCTION_STRENGTH[1]):
+                    errs.append(f"audio.noise_reduction: strength_db {sd!r} must be within {NOISE_REDUCTION_STRENGTH[0]:g}..{NOISE_REDUCTION_STRENGTH[1]:g}")
+            if t == "audio.dynamics":   # ADR-063: at least one stage, each field inside the contract's range
+                stages = [st for st in DYNAMICS_STAGES if op.get(st) is not None]
+                if not stages:
+                    errs.append("audio.dynamics needs at least one of gate, compressor, limiter")
+                for st in stages:
+                    if not isinstance(op[st], dict):
+                        errs.append(f"audio.dynamics {st} must be an object")
+                        continue
+                    for k, v in op[st].items():
+                        rng = DYNAMICS_STAGES[st].get(k)
+                        if rng is None:
+                            errs.append(f"audio.dynamics {st}.{k} is not a field of the stage")
+                        elif not (isinstance(v, (int, float)) and not isinstance(v, bool) and rng[0] <= float(v) <= rng[1]):
+                            errs.append(f"audio.dynamics {st}.{k} {v!r} must be within {rng[0]:g}..{rng[1]:g}")
     for subj in on_audio_path:
         if subj in assets and not ((assets[subj].get("technical") or {}).get("audio")):
             errs.append(f"audio operations on {subj}: no audio stream")
@@ -388,16 +423,16 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             for src in op.get("sources") or []:
                 if not any(o.get("id") == src and o.get("kind") == "transcript" for o in d["analysis"].get("observations") or []):
                     errs.append(f"captions.generate on {subj}: source {src} is not a transcript observation of this project")
-        elif t == "captions.burn":
+        elif t in ("captions.burn", "captions.mux"):   # ADR-063: the mux is the same render (mode mux); one of the two per subject
             if seen.get(("burn", subj)):
-                errs.append(f"more than one captions.burn on {subj}")
+                errs.append(f"more than one captions.burn / captions.mux on {subj}")
             seen[("burn", subj)] = 1
             if not seen.get(("captions", subj)):
-                errs.append(f"captions.burn on {subj} without captions.generate")
+                errs.append(f"{t} on {subj} without captions.generate")
             if op.get("input") in assets:
-                errs.append(f"captions.burn on {subj}: the input is a source asset; the burn-in takes an intermediate inside the workspace")
+                errs.append(f"{t} on {subj}: the input is a source asset; the render takes an intermediate inside the workspace")
             if op.get("sidecar") != f"{subj}_captions":
-                errs.append(f"captions.burn on {subj}: sidecar reference {op.get('sidecar')!r} is not the subject's captions")
+                errs.append(f"{t} on {subj}: sidecar reference {op.get('sidecar')!r} is not the subject's captions")
             stage[subj] = 20
         else:
             errs.append(f"unknown captions operation type {t!r}")
@@ -751,7 +786,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in (d.get("captions") or {}).get("operations") or []:
-        want = GENERATE_SKILL if op["type"] == "captions.generate" else BURN_SKILL
+        want = GENERATE_SKILL if op["type"] == "captions.generate" else MUX_SKILL if op["type"] == "captions.mux" else BURN_SKILL
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in timelines:

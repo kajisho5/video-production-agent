@@ -8,14 +8,15 @@ from typing import Any, Dict, List, Optional
 
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
-from .audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, concat_segments as audio_concat_segments, cut_ranges, has_video, ir_audio_operation, is_audio_capable, kept_after_cut
+from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, concat_segments as audio_concat_segments, cut_ranges, has_video,
+                    ir_audio_operation, is_audio_capable, kept_after_cut, mix_segments)
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation, kept_duration
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
-from .subtitles import BURN_SKILL, GENERATE_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
+from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 
@@ -70,7 +71,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     grid_dec = next((d for d in decisions if d.subject == "video.grid" and d.type == "TRANSFORM" and d.status != "REJECTED"), None)         # ADR-046: alternative to concat_dec/switch_dec, mutually exclusive
     # audio production path (ADR-030): explicit `audio.production` puts every asset with audio on it (its audio is the subject, delivered as audio)
     audio_subjects = {a.id for a in analysis.assets if is_audio_capable(a.technical)} if audio_production else set()
-    audio_concat_dec = next((d for d in decisions if d.subject == "audio.concat" and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if audio_production else None
+    # the decision that builds the audio programme: audio.concat (ADR-030) or audio.mix (ADR-063), never both
+    audio_concat_dec = next((d for d in decisions if d.subject in AUDIO_PROGRAMME_OPS and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if audio_production else None
     # ADR-033: a video container on the audio path is delivered as audio only under its `audio.extract` decision. Every audio operation of
     # that subject cites it (a REJECTED extraction is rejected-cited → BLOCKED; a pending CONFIRM keeps the steps PROPOSED), and once the user
     # rejected it (revise drops the proposal) nothing is planned for the asset on the audio path — the picture is never quietly dropped.
@@ -79,7 +81,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                                  for a in analysis.assets if a.id in audio_subjects and has_video(a.technical)}
     extract_refused = {a for a, d in extract_of.items() if d is None}
     if audio_concat_dec is not None and any(a in extract_refused for a in audio_concat_dec.params.get("inputs") or []):
-        summary.append("audio concat not planned: the extraction of a video input was rejected")
+        summary.append(f"{audio_concat_dec.subject} not planned: the extraction of a video input was rejected")
         audio_concat_dec = None
 
     def extract_ids(subject: str) -> List[str]:
@@ -175,6 +177,16 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 steps.append(bst)
                 current_of[subject], last_of[subject] = burn_out, bst.id
                 summary.append(b.decision)
+            for x in decided(subject, "subtitle.mux"):   # ADR-063: the same render, mode mux — a soft track in the deliverable
+                mux_out = f"{subject}_subs"
+                captions_ops.append(ir_captions_burn(subject, current_of[subject], out_id, mux_out, [x.id], scope=scope, op_type="captions.mux"))
+                order += 1
+                mst = ProductionStep(id=f"step_mux_{subject}", order=order, skill=MUX_SKILL, tool=tool_for(MUX_SKILL), inputs=[current_of[subject], out_id], params={"asset": subject},
+                                     outputs=[mux_out], depends_on=[x_ for x_ in [last_of.get(subject), st.id] if x_], evidence=evidence_of([x.id]),
+                                     decision_ids=[x.id], decision_id=x.id, temporal_scope=scope)
+                steps.append(mst)
+                current_of[subject], last_of[subject] = mux_out, mst.id
+                summary.append(x.decision)
         picture_of[subject] = current_of[subject]
 
     def thumbnail_steps(subject: str, sources: List[str]) -> None:
@@ -327,7 +339,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 summary.append(f"Normalise audio to {d.params['target_lufs']:g} LUFS / {d.params['true_peak']:g} dBTP" + (" (audio-production)" if audio_path else ""))
 
     def audio_steps(subject: str) -> None:
-        """Audio production operations decided for `subject` (gain → channels → fade in → fade out), chained on its current audio output."""
+        """Audio production operations decided for `subject` (noise reduction → gain → channels → dynamics → fade in → fade out), chained on
+        its current audio output."""
         nonlocal order
         for op_type in AUDIO_ORDER:
             if op_type == "audio.loudness":
@@ -565,22 +578,33 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 "audio": final_id, "mux": {"video": PROGRAMME, "audio": final_id, "output": mux_out}, "timeline_duration": round(total, 6), "decision_ids": ids}
 
     if audio_concat_dec is not None:
-        # ---- audio programme: the cut audio of every input, in the decided order; later audio operations apply to it
+        # ---- audio programme: the cut audio of every input, in the decided order (concat), or every input summed from 0 s (mix, ADR-063);
+        # later audio operations apply to it
         inputs = list(audio_concat_dec.params["inputs"])
-        cf = float(audio_concat_dec.params.get("crossfade") or 0.0)
-        segments, total = audio_concat_segments(inputs, {a: (scope_of.get(a) or {}).get("end") or durations.get(a, 0.0) for a in inputs}, cf)
+        lengths = {a: (scope_of.get(a) or {}).get("end") or durations.get(a, 0.0) for a in inputs}
+        op_type = audio_concat_dec.subject
+        name = op_type.split(".", 1)[1]
+        if op_type == "audio.mix":
+            segments, total = mix_segments(inputs, lengths)
+            p_ = {"levels": audio_concat_dec.params["levels"]} if audio_concat_dec.params.get("levels") else {}
+        else:
+            cf = float(audio_concat_dec.params.get("crossfade") or 0.0)
+            segments, total = audio_concat_segments(inputs, lengths, cf)
+            p_ = {"crossfade": cf}
         scope = {"start": 0.0, "end": total}
         cat_ids = [audio_concat_dec.id] + extract_ids(PROGRAMME_AUDIO)
-        audio_ops.append(ir_audio_operation("audio.concat", PROGRAMME_AUDIO, {"crossfade": cf}, cat_ids, scope=scope, inputs=inputs, output=PROGRAMME_AUDIO, segments=segments, timeline_duration=total))
+        audio_ops.append(ir_audio_operation(op_type, PROGRAMME_AUDIO, p_, cat_ids, scope=scope, inputs=inputs, output=PROGRAMME_AUDIO, segments=segments, timeline_duration=total))
         order += 1
-        st = ProductionStep(id=f"step_concat_{PROGRAMME_AUDIO}", order=order, skill="audio_concat", tool=tool_for("audio_concat"), inputs=[current_of[a] for a in inputs],
-                            params={"asset": PROGRAMME_AUDIO, "inputs": inputs, "crossfade": cf}, outputs=[PROGRAMME_AUDIO],
+        skill = AUDIO_OPERATIONS[op_type]["skill"]
+        st = ProductionStep(id=f"step_{name}_{PROGRAMME_AUDIO}", order=order, skill=skill, tool=tool_for(skill), inputs=[current_of[a] for a in inputs],
+                            params={"asset": PROGRAMME_AUDIO, "inputs": inputs, **p_}, outputs=[PROGRAMME_AUDIO],
                             depends_on=[last_of[a] for a in inputs if last_of.get(a)], evidence=evidence_of(cat_ids), decision_ids=cat_ids, decision_id=audio_concat_dec.id,
                             temporal_scope=scope)
         steps.append(st)
         current_of[PROGRAMME_AUDIO], last_of[PROGRAMME_AUDIO], scope_of[PROGRAMME_AUDIO] = PROGRAMME_AUDIO, st.id, scope
         durations[PROGRAMME_AUDIO] = total
-        summary.append(f"Join the audio of {' + '.join(inputs)} into one programme ({total:.2f}s)")
+        summary.append(f"Mix the audio of {' + '.join(inputs)} into one programme ({total:.2f}s, as long as {inputs[0]})" if op_type == "audio.mix"
+                       else f"Join the audio of {' + '.join(inputs)} into one programme ({total:.2f}s)")
         audio_steps(PROGRAMME_AUDIO)
         loudness_steps(PROGRAMME_AUDIO, audio_path=True)
         delivery_steps(PROGRAMME_AUDIO, first=True, single=True)

@@ -1,0 +1,13 @@
+{
+ "name": "pipe_subtitle_mux_with_burn_in_refused",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "subtitle": true,
+  "subtitle.burn_in": true,
+  "subtitle.mode": "mux"
+ },
+ "expect": {
+  "plan_error": "contradict"
+ }
+}

@@ -300,8 +300,10 @@ def parse_qc_reference(m: Dict[str, Requirement]) -> Optional[Dict[str, Any]]:
 
 # ---- IR arithmetic
 def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], subject: str) -> Optional[Tuple[int, int]]:
-    """The subject's picture size after its editing operations (resize keeps the aspect; fit / fill change it; concat may set
-    width / height; a 90 / 270 rotation swaps them). None when the source size is unknown — nothing is guessed."""
+    """The subject's picture size after its editing operations, applied in the IR's (fixed) operation order: concat may set
+    width / height; crop makes the picture its rectangle (ADR-060's approved proposal or an explicit `edit.crop`, in source
+    pixels, before any turn); a 90 / 270 rotation swaps width and height; resize keeps the aspect; fit / fill change it.
+    None when the source size is unknown — nothing is guessed."""
     v = (technical or {}).get("video") or {}
     w, h = v.get("width"), v.get("height")
     if not w or not h:
@@ -312,6 +314,8 @@ def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], sub
             continue
         t = op.get("type")
         if t == "video.concat" and op.get("width") and op.get("height"):
+            w, h = int(op["width"]), int(op["height"])
+        elif t == "video.crop" and op.get("width") and op.get("height"):   # the cropped picture is the rectangle (before rotate / resize / fit)
             w, h = int(op["width"]), int(op["height"])
         elif t == "video.rotate" and op.get("degrees") in (90, 270):   # ADR-062: a quarter turn swaps width and height
             w, h = h, w

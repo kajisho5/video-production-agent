@@ -169,6 +169,15 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                                                   possible_cause="output duration differs from the planned kept duration (keyframe snap, platform maximum, or a lost segment)",
                                                   recommended_action="review the trim decision or use frame-accurate cuts"))
                 rep.items.append(QAItem("video", "video_stream", "PASS" if v else "FAIL", v.get("codec"), "present", artifact=art))
+                if any(op.get("type") == "captions.mux" and op.get("asset") == asset_id for op in (ir_doc.get("captions") or {}).get("operations") or []):
+                    # ADR-063: the soft subtitle track the plan muxed in must still be in the deliverable (a later step or a preset can drop it)
+                    subs = int(p.get("subtitle_streams") or 0)
+                    rep.items.append(QAItem("video", "subtitle_track", "PASS" if subs else "FAIL", subs, ">= 1 soft subtitle stream (subtitle.mode=mux)", artifact=art,
+                                            fix_hint="" if subs else "the muxed subtitle track was dropped after the mux (export preset or a later step); deliver without a preset or mux after it",
+                                            threshold_source="plan"))
+                    if not subs:
+                        rep.incidents.append(Incident(type="MISSING_SUBTITLE_TRACK", severity="HIGH", evidence=[art], possible_cause="the soft subtitle stream was not carried into the deliverable",
+                                                      recommended_action="check the export preset's stream mapping"))
                 sv = (asset.get("technical") or {}).get("video") or {}
                 if v and sv:
                     tone_mapped = any(op.get("asset") == asset_id and op.get("type") == "color.hdr_to_sdr" for op in (ir_doc.get("color") or {}).get("operations") or [])

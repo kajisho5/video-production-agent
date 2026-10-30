@@ -1,0 +1,70 @@
+{
+ "name": "ap_mix_noise_reduction_dynamics_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   },
+   {
+    "channels": 2,
+    "duration": 20.0
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.mix": true,
+  "audio.mix.levels": [
+   0,
+   -12
+  ],
+  "audio.noise_reduction.strength_db": 24,
+  "audio.dynamics.compressor.ratio": 3,
+  "audio.dynamics.limiter.ceiling_db": -1,
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "ir_ops": [
+   "audio.mix",
+   "audio.noise_reduction",
+   "audio.dynamics",
+   "audio.loudness"
+  ],
+  "steps": [
+   "audio_mix",
+   "audio_noise_reduction",
+   "audio_dynamics",
+   "audio_normalize"
+  ],
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "MIX",
+    "NOISE_REDUCTION",
+    "DYNAMICS",
+    "NORMALIZE"
+   ],
+   "qa_status": "PASS",
+   "duration": 16.0
+  }
+ }
+}

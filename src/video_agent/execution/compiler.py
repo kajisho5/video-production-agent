@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
-trim → concat → edits → colour → graphics → captions (sidecar, burn-in) → loudness → export → check → timeline → thumbnail → QC gate.
+trim → concat → edits → colour → graphics → captions (sidecar, burn-in or soft track) → loudness → export → check → timeline → thumbnail → QC gate.
 Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
@@ -11,11 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, TOOL as AUDIO_TOOL
+from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, TOOL as AUDIO_TOOL
 from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL, delivery_subjects
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
-from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, RENDER_TOOL
+from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Operation, stable_hash
@@ -102,13 +102,14 @@ def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: st
 
 
 def lower_audio_op(tool: str, op: Dict[str, Any], current: Any, out_id: str) -> Dict[str, Any]:
-    """IR audio operation (audio.cut / concat / gain / mono / stereo / downmix / fade_in / fade_out) → audio-production/run
-    arguments: the contract's operation type plus the allowlisted parameters copied by name (remove ranges as [[s, e], …])."""
+    """IR audio operation (audio.cut / concat / mix / noise_reduction / gain / mono / stereo / downmix / dynamics / fade_in / fade_out)
+    → audio-production/run arguments: the contract's operation type plus the allowlisted parameters copied by name (remove ranges as
+    [[s, e], …]; MIX levels, NOISE_REDUCTION mode / strength_db and the DYNAMICS stage objects exactly as the decision holds them)."""
     spec = AUDIO_OPERATIONS[op["type"]]
     if tool != AUDIO_TOOL:
         raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {AUDIO_TOOL}")
     args: Dict[str, Any] = {"operation": spec["type"]}
-    if op["type"] == "audio.concat":
+    if op["type"] in AUDIO_PROGRAMME_OPS:   # concat / mix (ADR-063) take the inputs in order
         args["inputs"] = list(current if isinstance(current, list) else [current])
     else:
         args["input"] = current
@@ -163,8 +164,8 @@ def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) ->
 
 
 def lower_captions(tool: str, op: Dict[str, Any], current: Optional[str], out_id: str, sidecar_id: Optional[str] = None) -> Dict[str, Any]:
-    """IR captions.generate / captions.burn → subtitle/generate / subtitle/render arguments (the same document; the burn-in also
-    names the video input and the sidecar it was generated from)."""
+    """IR captions.generate / captions.burn / captions.mux → subtitle/generate / subtitle/render arguments (the same document; the
+    burn-in and the mux (ADR-063, render `mode: "mux"`) also name the video input and the sidecar it was generated from)."""
     if op["type"] == "captions.generate":
         if tool != GENERATE_TOOL:
             raise CompileError(f"captions.generate cannot be executed by {tool}; the only tool of this operation is {GENERATE_TOOL}")
@@ -175,8 +176,11 @@ def lower_captions(tool: str, op: Dict[str, Any], current: Optional[str], out_id
             args["video_duration"] = float(op["temporal_scope"]["end"])
         return args
     if tool != RENDER_TOOL:
-        raise CompileError(f"captions.burn cannot be executed by {tool}; the only tool of this operation is {RENDER_TOOL}")
-    return {"operation": "render", "input": current, "sidecar": sidecar_id, "format": "srt", "document_id": f"{op['asset']}_captions", "language": op["_language"], "cues": list(op["_cues"]), "output": out_id}
+        raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {RENDER_TOOL}")
+    args = {"operation": "render", "input": current, "sidecar": sidecar_id, "format": "srt", "document_id": f"{op['asset']}_captions", "language": op["_language"], "cues": list(op["_cues"]), "output": out_id}
+    if op["type"] == "captions.mux":   # ADR-063: subtitle-skill render's own `mode` parameter (a soft track; nothing re-encoded)
+        args["mode"] = "mux"
+    return args
 
 
 def lower_qc_check(tool: str, kind: str, input_id: str, rules: Dict[str, Any], subtitle_id: Optional[str] = None, reference_id: Optional[str] = None) -> Dict[str, Any]:
@@ -253,7 +257,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
     concat = next((op for op in d["video"]["operations"] if op["type"] == "video.concat"), None)
     switch = next((op for op in d["video"]["operations"] if op["type"] == "video.switch"), None)   # ADR-045: alternative to concat, mutually exclusive
     grid = next((op for op in d["video"]["operations"] if op["type"] == "video.grid"), None)        # ADR-046: alternative to concat/switch, mutually exclusive
-    audio_concat = next((op for op in d["audio"]["operations"] if op["type"] == "audio.concat"), None)
+    audio_concat = next((op for op in d["audio"]["operations"] if op["type"] in AUDIO_PROGRAMME_OPS), None)   # the audio programme: a concat, or a mix (ADR-063)
     state: Dict[str, Dict[str, Any]] = {}   # subject → {"current", "gen", "stem", "fp"}
 
     def edits(subject: str) -> None:
@@ -360,6 +364,15 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 tool = tool_for(BURN_SKILL, subject)
                 b = dict(burn, _language=gen["language"], _cues=gen["cues"])
                 add(tool, lower_captions(tool, b, st["current"], out_id, sc_id), [st["current"], sc_id], [out_id], list(burn.get("decision_ids") or []), st["fp"], skill=BURN_SKILL)
+                st["current"] = out_id
+            mux = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.mux"), None)
+            if mux is not None:   # ADR-063: the soft track; the container stays mp4 (mov_text, chosen by ffmpeg-skill/caption from the extension)
+                st["gen"] += 1
+                out_id = mux.get("output") or f"{subject}_subs"
+                paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_subs" / f"{st['stem']}_subs.mp4")
+                tool = tool_for(MUX_SKILL, subject)
+                x = dict(mux, _language=gen["language"], _cues=gen["cues"])
+                add(tool, lower_captions(tool, x, st["current"], out_id, sc_id), [st["current"], sc_id], [out_id], list(mux.get("decision_ids") or []), st["fp"], skill=MUX_SKILL)
                 st["current"] = out_id
         st["picture"] = st["current"]
 
@@ -506,9 +519,11 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         inputs = [state[a]["current"] for a in audio_concat["inputs"]]
         fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) for a in audio_concat["inputs"]])[:16]
         state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
-        paths[subject] = str(job / "ops" / f"{subject}_01_concat" / f"{subject}.wav")
-        tool = tool_for("audio_concat", subject)
-        add(tool, lower_audio_op(tool, audio_concat, inputs, subject), inputs, [subject], list(audio_concat.get("decision_ids") or []), fp, skill="audio_concat")
+        name = audio_concat["type"].split(".", 1)[1]
+        paths[subject] = str(job / "ops" / f"{subject}_01_{name}" / f"{subject}.wav")
+        skill = AUDIO_OPERATIONS[audio_concat["type"]]["skill"]
+        tool = tool_for(skill, subject)
+        add(tool, lower_audio_op(tool, audio_concat, inputs, subject), inputs, [subject], list(audio_concat.get("decision_ids") or []), fp, skill=skill)
         audio_edits(subject)
         loudness(subject)
         delivery(subject)

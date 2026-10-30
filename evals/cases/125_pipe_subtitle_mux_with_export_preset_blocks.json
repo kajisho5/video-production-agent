@@ -1,0 +1,33 @@
+{
+ "name": "pipe_subtitle_mux_with_export_preset_blocks",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "segments": [
+     [
+      4.0,
+      8.0,
+      "hello there"
+     ],
+     [
+      9.0,
+      12.0,
+      "and goodbye"
+     ]
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "subtitle": true,
+  "subtitle.mode": "mux"
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "subtitle.mux"
+  ],
+  "plan_status": "BLOCKED"
+ }
+}

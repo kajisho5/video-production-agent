@@ -12,8 +12,8 @@ from video_agent.tools.base import ToolAdapter
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 
 
-def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False, video: bool = True, channels: int = 2) -> Dict[str, Any]:
-    return {"file": path, "format": "mov,mp4,m4a,3gp,3g2,mj2", "duration": duration, "size_bytes": 1000, "bitrate": 500, "subtitle_streams": 0,
+def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False, video: bool = True, channels: int = 2, subtitle_streams: int = 0) -> Dict[str, Any]:
+    return {"file": path, "format": "mov,mp4,m4a,3gp,3g2,mj2", "duration": duration, "size_bytes": 1000, "bitrate": 500, "subtitle_streams": subtitle_streams,
             "video": {"codec": "h264", "width": 1280, "height": 720, "fps": 30.0, "pix_fmt": "yuv420p", "hdr": hdr, "hdr_format": "HLG" if hdr else None, "rotation": 0, "variable_frame_rate_suspected": vfr,
                       "color_primaries": "bt709", "color_transfer": "bt709", "bit_depth": 8} if video else None,
             "audio": {"codec": "aac", "channels": channels, "sample_rate": 48000} if audio else None}
@@ -85,7 +85,8 @@ class FakeAdapter(ToolAdapter):
             dur = meta["duration"] if meta else self.duration
             # a self-describing fake file may declare itself audio-only ("video": false) and its channel count (audio-only fixtures, audio-production outputs)
             return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], dur, self.audio, self.vfr, self.hdr, video=bool((meta or {}).get("video", True)),
-                                                                        channels=int((meta or {}).get("channels", 2))), [], "", 0.1, attempt, dry_run)
+                                                                        channels=int((meta or {}).get("channels", 2)), subtitle_streams=int((meta or {}).get("subtitle_streams", 0))),
+                              [], "", 0.1, attempt, dry_run)
         if script == "silence":
             silences = in_meta.get("silences", self.silences) if in_meta else self.silences   # a self-describing fake file may carry its own silences (ADR-053 takes)
             keep = [[max(0.0, (s[1] or self.duration) - 0.15) if i == 0 and s[0] == 0 else 0.0, 0.0] for i, s in enumerate(self.silences[:1])]
@@ -102,7 +103,8 @@ class FakeAdapter(ToolAdapter):
                 return ToolResult(op.id, op.tool, True, 0, None, {"input_i": str(lufs), "input_tp": str(tp), "input_lra": "6.0", "input_thresh": "-21", "target_offset": "0"}, [], "", 0.1, attempt, dry_run)
             self.lufs = float(op.args["lufs"])
             if out and not dry_run:
-                _write_fake(out, {"duration": in_dur, "lufs": self.lufs})
+                # like the real loudness.py (run_keeping_subtitles): subtitle streams are copied; FAKE_DROPS_SUBS simulates a step that loses them
+                _write_fake(out, {"duration": in_dur, "lufs": self.lufs, "subtitle_streams": 0 if os.environ.get("FAKE_DROPS_SUBS") else (in_meta or {}).get("subtitle_streams", 0)})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": ["ffmpeg loudnorm"]}, ["ffmpeg loudnorm"], "", 0.2, attempt, dry_run)
         if script in ("cut", "export", "fit"):
             dur = in_dur
@@ -111,6 +113,7 @@ class FakeAdapter(ToolAdapter):
                 dur = sum(e - s for s, e in segs)
             self.duration = dur
             if out and not dry_run:
+                # no subtitle stream survives cut / fit / export: the real export.py writes the picture and the audio only (measured, ADR-063)
                 _write_fake(out, {"duration": dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", dur)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
         if script == "check":
