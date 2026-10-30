@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]   # not ubuntu-latest: Ubuntu 26.04 runners have no Python 3.9
         python: ["3.9", "3.11"]
     runs-on: ${{ matrix.os }}
     steps:
