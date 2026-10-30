@@ -1,4 +1,18 @@
-# video-production-agent
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/app-icon-dark.png">
+    <img src="brand/app-icon.png" width="128" alt="video-production-agent app icon">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logo/video-production-agent-wordmark-white.svg">
+    <img src="brand/logo/video-production-agent-wordmark-black.svg" height="48" alt="video-production-agent">
+  </picture>
+</p>
+
+<p align="center"><b>Plans, approves, renders and records a production</b></p>
 
 AI Video Production Orchestrator. `kajisho5/ffmpeg-skill` を **Media Processing Engine (Hands)** として使い、本リポジトリは **Production Brain (Orchestrator)** を担当する。
 
