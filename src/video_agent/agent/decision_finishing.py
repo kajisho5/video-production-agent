@@ -23,7 +23,7 @@ from ..models import Decision, Requirement
 from ..policy.rules import RuleSet
 from .decision_engine import DecisionEngine, resolve_setting
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
-                        parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested)
+                        parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
 from .subtitles import BURN_SKILL, GENERATE_SKILL, parse_subtitle_requirements, valid_language
 
@@ -48,6 +48,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
     mots = parse_motion_requirements(m)
     th = parse_thumbnail_requirements(m)
     qc = qc_requested(m)
+    qc_ref = parse_qc_reference(m)
     wanted = sub["enabled"] or bool(cols) or bool(mots) or th["enabled"]
     if audio_production and wanted:
         reqs = sub["requirements"] + [r for c in cols.values() for r in c["requirements"]] + [r for e in mots.values() for r in e["requirements"]] + th["requirements"]
@@ -208,9 +209,14 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
     # ---- QC gate (a measurement: AUTO; the WARN promotion policy is recorded on the decision)
     if qc is not None:
         wp = resolve_setting(rules, WARN_PROMOTION_KEY, WARN_PROMOTION_DEFAULT)
+        ref_reqs = qc_ref["requirements"] if qc_ref else []
+        ref_text = f"; {', '.join(m_.upper() for m_ in qc_ref['metrics'])} of each video deliverable against {Path(qc_ref['path']).name}" if qc_ref else ""
         for subject, sources in subjects:
-            eng.decide(subject="qc.check", type="DELIVER", decision=f"QC gate on the deliverables of {subject}: PASS → ready, WARN → {str(wp['value']).upper()}, FAIL → never delivered",
+            params: Dict[str, Any] = {"asset_id": subject, "warn_promotion": str(wp["value"]).upper()}
+            if qc_ref:   # ADR-058: full-reference metrics, opt-in; the rule is what qc-skill's VideoRule takes
+                params["reference"] = {"path": qc_ref["path"], "rule": dict(qc_ref["rule"])}
+            eng.decide(subject="qc.check", type="DELIVER", decision=f"QC gate on the deliverables of {subject}: PASS → ready, WARN → {str(wp['value']).upper()}, FAIL → never delivered{ref_text}",
                        reason=f"user asked for the QC gate ({qc.source}); qc-skill measures each deliverable (and the subtitle sidecar) and the report is admitted only for the file the agent hashed itself",
-                       confidence=1.0, evidence=[qc.id] + probe_ids_of(sources), risk="LOW", approval=approval_for("qc.check", explicit=qc, keys=APPROVAL_KEYS), provenance="USER",
-                       params={"asset_id": subject, "warn_promotion": str(wp["value"]).upper()}, settings=[wp], requirements=[qc], serves_intent=None)
+                       confidence=1.0, evidence=[qc.id] + [r.id for r in ref_reqs] + probe_ids_of(sources), risk="LOW", approval=approval_for("qc.check", explicit=qc, keys=APPROVAL_KEYS), provenance="USER",
+                       params=params, settings=[wp], requirements=[qc] + ref_reqs, serves_intent=None)
         cap_block(QC_SKILL, f"capability.{QC_SKILL}")

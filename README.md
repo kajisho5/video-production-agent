@@ -108,6 +108,8 @@ video-agent check <artifact.mp4> --platform youtube --qc
 
 生成される ProductionPlan（依存関係付き）: trim ×3 → concat → captions.generate（transcript の cue を delivered timeline に写像）→ captions.burn → loudness → export → check → thumbnail → qc ×2（deliverable と sidecar）。QC PASS → artifact は `approved`（READY）、WARN → candidate（policy `qc.warn.promotion`、既定 CONFIRM）、FAIL → `working`（final 昇格不可）。「話者が変わったらカメラを切り替える」は未実装（docs/GAP_ANALYSIS_PHASE2.md §22）。
 
+マスターとの画質比較（ADR-058、qc-skill 0.2.3）: `--set qc=true --set qc.reference_video=master.mov --set qc.reference_metrics=vmaf,ssim`（`psnr` も可。しきい値は任意で `qc.min_vmaf` / `qc.min_ssim` / `qc.min_psnr_db`、無ければ qc-skill の既定 93 / 0.95 / 31 dB）で、video の各 deliverable を指定したマスターと比べる。マスターのフォルダは allowed input root に加わり、qc の報告はマスターの sha256 も agent 自身の計算と一致した時だけ採用される。fps や長さが違う組は qc-skill が UNKNOWN にする（編集した deliverable はマスターと揃わない）。libvmaf の無い ffmpeg では VMAF だけが UNKNOWN になる。
+
 ## テスト
 
 ```bash

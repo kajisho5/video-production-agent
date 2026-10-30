@@ -19,7 +19,7 @@ Python orchestrator (`video-agent`). 10 adapters (ffmpeg-skill, video-editing, a
 
 ## Wiring
 
-Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052).
+Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052). qc-skill pinned at 0.2.3; its opt-in VMAF / SSIM / PSNR against a master the user names (`qc.reference_video` + `qc.reference_metrics`, ADR-058, [#77](https://github.com/kajisho5/video-production-agent/pull/77)).
 
 ## Steps
 

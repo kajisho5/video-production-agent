@@ -11,7 +11,8 @@ Protocol (from the Skill's own contract, `qc contract --json`):
 
 qc-skill is a measurement Skill: it writes NO media and its result is a report. The agent hands one typed operation:
 {"input": <artifact id>, "kind": video|audio|subtitle|delivery, "rules"?: {video?, audio?, subtitle?, delivery?}, "parameters"?: {…},
-"subtitle"?: <artifact id> (kind delivery only), "reference_video"?: <artifact id> (kind subtitle only), "cache_policy"?: use|bypass}.
+"subtitle"?: <artifact id> (kind delivery only), "reference_video"?: <artifact id> (kind subtitle; kind video / delivery only together with
+the video rule's reference_metrics, qc-skill ADR-021), "cache_policy"?: use|bypass}.
 Rule sections / field names / value types and parameter names come from the contract's `rules` and `parameters` blocks; forbidden keys
 are refused by name; the request carries paths only for the input and its companions (workspace and allowed roots go on argv).
 
@@ -59,6 +60,7 @@ RESPONSE_SCHEMA = "qc/response@1"
 DOCTOR_SCHEMA = "qc/doctor@1"
 # 0.2.x (qc-skill #22, 2026-10-30): the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0;
 # nothing else in the contract changed, so the gate widens to 0.2.x and the pin is re-taken from main (ADR-056, qc の追記).
+# 0.2.3 (qc-skill #23): opt-in VMAF / SSIM / PSNR against request.reference_video; the pin is re-taken from main (ADR-058).
 SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
 CANONICAL_INVOCATION = ["qc", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False}
@@ -69,6 +71,7 @@ REQUIRED_ERROR_CODES = ("INVALID_REQUEST", "INVALID_INPUT", "PATH_NOT_ALLOWED", 
 # the Skill's own forbidden request keys (qc_skill/schemas.py FORBIDDEN_KEYS): not declared in the contract, pinned here
 SKILL_FORBIDDEN_KEYS = ("command", "commands", "argv", "args", "shell", "cmd", "cmdline", "exec", "executable", "filter", "filter_complex", "env", "environment")
 COMMON_ARGS = ("input", "kind", "rules", "parameters", "subtitle", "reference_video", "cache_policy")
+REFERENCE_KINDS = ("subtitle", "video", "delivery")   # qc-skill ADR-021: video / delivery read reference_video only for reference_metrics
 AGENT_CACHE_POLICIES = ("use", "bypass")   # "only" (fail unless cached) is never useful to the agent
 REPORT_ID_PREFIX = "qcreport_"
 _SCALAR_RULE_TYPES = ("int", "float", "bool", "str")
@@ -98,7 +101,7 @@ def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -407,6 +410,18 @@ class QcAdapter(ToolAdapter):
             out[str(k)] = v
         return out
 
+    @staticmethod
+    def _reference_metrics(kind: str, rules: Dict[str, Any]) -> List[str]:
+        """The full-reference metrics the applicable video rule asks for (qc-skill ADR-021): rules.video for kind video,
+        rules.delivery.video for kind delivery; none for any other kind (the Skill does not compute them there)."""
+        if kind == "video":
+            rule = as_dict(rules.get("video"))
+        elif kind == "delivery":
+            rule = as_dict(as_dict(rules.get("delivery")).get("video"))
+        else:
+            return []
+        return [str(m) for m in rule.get("reference_metrics") or []]
+
     def _resolve_input(self, what: str, ref: Any, paths: Dict[str, str]) -> str:
         rid = str(ref or "")
         if not rid:
@@ -439,11 +454,18 @@ class QcAdapter(ToolAdapter):
             if kind != "delivery":
                 raise ToolError("qc: a subtitle companion is only accepted with kind delivery")
             companions["subtitle"] = self._resolve_input("subtitle", args["subtitle"], paths)
-        if args.get("reference_video") is not None:
-            if kind != "subtitle":
-                raise ToolError("qc: a reference_video companion is only accepted with kind subtitle")
-            companions["reference_video"] = self._resolve_input("reference_video", args["reference_video"], paths)
         rules = self.rules_for(args.get("rules"))
+        metrics = self._reference_metrics(kind, rules)
+        if args.get("reference_video") is not None:
+            if kind not in REFERENCE_KINDS:
+                raise ToolError(f"qc: a reference_video companion is only accepted with kind {', '.join(REFERENCE_KINDS)}")
+            if kind != "subtitle" and not metrics:
+                # the Skill reads (and fingerprints) the reference for kind video / delivery only when the video rule opts in:
+                # sent without it, the file is ignored and the report could never be admitted for it
+                raise ToolError(f"qc: a reference_video companion with kind {kind} needs the video rule's reference_metrics")
+            companions["reference_video"] = self._resolve_input("reference_video", args["reference_video"], paths)
+        elif metrics:
+            raise ToolError("qc: reference_metrics needs a reference_video companion (the master the metrics compare against)")
         params = self.params_for(args.get("parameters"))
         if operation == "inspect" and rules:
             raise ToolError("qc: inspect takes no rules (use qc/check)")

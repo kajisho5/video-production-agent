@@ -27,7 +27,9 @@ WARN_PROMOTION_DEFAULT = "CONFIRM"
 
 def rules_for_subject(subject: Dict[str, Any], target: Dict[str, Any], doc: Dict[str, Any], tolerance_lu: float) -> Dict[str, Any]:
     """{"kind", "rules"} for one deliverable, from the IR: an audio deliverable is checked as audio; a video deliverable as
-    delivery (video + audio, the sidecar when it exists). Expected values come from the plan (loudness target, planned width)."""
+    delivery (video + audio, the sidecar when it exists). Expected values come from the plan (loudness target, planned width).
+    ADR-058: when the plan names a QC reference (`qa.qc.reference`), a video deliverable's video rule carries its reference_metrics /
+    min_* and the result has "reference" (the master's path) for the compiler to pass as the reference_video companion."""
     tech = subject.get("technical") or {}
     audio_rule: Dict[str, Any] = {"require_audio_stream": bool(tech.get("audio"))}
     if subject.get("target_lufs") is not None:
@@ -44,10 +46,16 @@ def rules_for_subject(subject: Dict[str, Any], target: Dict[str, Any], doc: Dict
     width = next((op.get("width") for op in reversed((doc.get("video") or {}).get("operations") or []) if op.get("asset") == subject["id"] and op.get("width")), None)
     if width and target.get("preset") in (None, ""):
         video_rule["expected_width"] = int(width)   # a platform preset may scale; without one the planned width is what is delivered
+    reference = ((doc.get("qa") or {}).get("qc") or {}).get("reference") or {}
+    if reference.get("path") and (reference.get("rule") or {}).get("reference_metrics"):
+        video_rule.update(reference["rule"])
     rules: Dict[str, Any] = {"require_video": True, "require_audio": bool(tech.get("audio")), "audio": audio_rule}
     if video_rule:
         rules["video"] = video_rule
-    return {"kind": "delivery", "rules": {"delivery": rules}}   # the Skill's rule sections: delivery nests the video / audio / subtitle rules
+    out: Dict[str, Any] = {"kind": "delivery", "rules": {"delivery": rules}}   # the Skill's rule sections: delivery nests the video / audio / subtitle rules
+    if "reference_metrics" in video_rule:
+        out["reference"] = str(reference["path"])
+    return out
 
 
 def sidecar_rules() -> Dict[str, Any]:

@@ -228,6 +228,45 @@ def qc_requested(m: Dict[str, Requirement]) -> Optional[Requirement]:
     return r
 
 
+# ---- QC reference metrics (ADR-058): qc-skill 0.2.3 compares a video deliverable against a master the user names
+QC_REFERENCE_KEYS = ("qc.reference_video", "qc.reference_metrics", "qc.min_vmaf", "qc.min_ssim", "qc.min_psnr_db")
+QC_REFERENCE_METRICS = ("vmaf", "ssim", "psnr")   # qc-skill rules.py REFERENCE_METRICS, in its canonical order
+# the threshold key of each metric → (rule field, lo, hi); unset, the Skill's own defaults apply (VMAF 93, SSIM 0.95, PSNR 31 dB)
+QC_REFERENCE_MINIMA = {"vmaf": ("qc.min_vmaf", "min_vmaf", 0.0, 100.0), "ssim": ("qc.min_ssim", "min_ssim", 0.0, 1.0), "psnr": ("qc.min_psnr_db", "min_psnr_db", 0.0, 100.0)}
+QC_REFERENCE_EXTENSIONS = (".mp4", ".mov", ".mkv", ".m4v", ".webm", ".mxf", ".avi", ".ts", ".mts", ".m2ts")
+
+
+def parse_qc_reference(m: Dict[str, Requirement]) -> Optional[Dict[str, Any]]:
+    """`qc.reference_video` (the master file) + `qc.reference_metrics` (vmaf, ssim, psnr: a comma list or a list) and optional
+    `qc.min_vmaf` / `qc.min_ssim` / `qc.min_psnr_db` → {"path", "metrics", "rule": {reference_metrics, min_*}, "requirements"}.
+    Opt-in and explicit: every key needs the `qc` gate, the file and the metrics are named together, and a threshold only for a
+    listed metric — an ambiguous request is refused, never completed by guessing. None when none of the keys is set."""
+    given = [m[k] for k in QC_REFERENCE_KEYS if k in m and m[k].provenance != "DEFAULT"]
+    if not given:
+        return None
+    if qc_requested(m) is None:
+        raise EditRequirementError(f"{', '.join(r.key for r in given)} set without the qc gate (--set qc=true): refusing an ambiguous request")
+    ref, met = m.get("qc.reference_video"), m.get("qc.reference_metrics")
+    if ref is None or ref.provenance == "DEFAULT" or met is None or met.provenance == "DEFAULT":
+        raise EditRequirementError("qc.reference_video and qc.reference_metrics are set together (the master and what to measure against it)")
+    raw = met.value if isinstance(met.value, list) else str(met.value).split(",") if isinstance(met.value, str) else None
+    names = [str(x).strip().lower() for x in raw or [] if str(x).strip()]
+    if not names or any(n not in QC_REFERENCE_METRICS for n in names) or len(set(names)) != len(names):
+        raise EditRequirementError(f"qc.reference_metrics must name one or more of {', '.join(QC_REFERENCE_METRICS)} once each, got {met.value!r}")
+    metrics = [x for x in QC_REFERENCE_METRICS if x in names]
+    rule: Dict[str, Any] = {"reference_metrics": metrics}
+    reqs = [ref, met]
+    for metric, (key, field, lo, hi) in QC_REFERENCE_MINIMA.items():
+        r = m.get(key)
+        if r is None or r.provenance == "DEFAULT":
+            continue
+        if metric not in metrics:
+            raise EditRequirementError(f"{key} is set but qc.reference_metrics does not list {metric}: refusing an ambiguous request")
+        rule[field] = float(_number(r.value, key, lo, hi))
+        reqs.append(r)
+    return {"path": _file(ref.value, "qc.reference_video", QC_REFERENCE_EXTENSIONS), "metrics": metrics, "rule": rule, "requirements": reqs}
+
+
 # ---- IR arithmetic
 def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], subject: str) -> Optional[Tuple[int, int]]:
     """The subject's picture size after its editing operations (resize keeps the aspect; fit / fill change it; concat may set

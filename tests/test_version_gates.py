@@ -40,9 +40,9 @@ class VersionGateTests(unittest.TestCase):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
-        """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2 on main) instead of a hard-coded 0.1.0."""
-        self.assertEqual(qc.pinned_contract()["version"], "0.2.2")
-        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.9"):
+        """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
+        self.assertEqual(qc.pinned_contract()["version"], "0.2.3")
+        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.9"):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
             self.assertEqual(qc.contract_breaking_drift(live), [], v)

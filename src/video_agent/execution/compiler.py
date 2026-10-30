@@ -410,7 +410,13 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 continue
             spec = rules_for_subject(row, t, d, tol) if row else {"kind": "delivery", "rules": {}}
             tool = tool_for(QC_SKILL, subject)
-            add(tool, lower_qc_check(tool, spec["kind"], check_input, spec["rules"]), [check_input], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
+            ref_id = None
+            if spec.get("reference"):   # ADR-058: the user's master, an input by path like a LUT (never produced by the plan)
+                ref_id = "qc_reference"
+                paths[ref_id] = spec["reference"]
+                keys[ref_id] = ""
+            add(tool, lower_qc_check(tool, spec["kind"], check_input, spec["rules"], reference_id=ref_id), [check_input] + ([ref_id] if ref_id else []), [],
+                list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
         for sc_id, srow in (qc.get("sidecars") or {}).items():
             if srow.get("subject") != subject or sc_id not in paths:
                 continue

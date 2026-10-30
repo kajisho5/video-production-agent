@@ -3,6 +3,7 @@ specification, the QC gate, the refusals, determinism and the explain chain. No 
 runs the same scenarios on the real ones)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -344,6 +345,45 @@ class PipelineGateAndRefusalTests(unittest.TestCase):
         os.environ["FAKE_QC_MODE"] = "verdict_warn"
         out = plan_and_render(svc2, [self.a], {"qc": True, "qc.warn.promotion": "AUTO"}, name="warnauto")["out"]
         self.assertEqual((out["artifacts"][0]["stage"], out["artifacts"][0]["qa"]["qc_warn_promotion"]), ("approved", "AUTO"))
+
+    def test_qc_reference_metrics_opt_in(self):
+        """ADR-058: `qc.reference_video` + `qc.reference_metrics` (+ `qc.min_*`) compare each video deliverable with the user's master
+        through qc-skill 0.2.3's VMAF / SSIM / PSNR: the rule rides on the delivery's video rule, the master is the reference_video
+        companion (an allowed input root like a LUT's), and its fingerprint is admitted. Without the keys nothing changes."""
+        svc = pipeline_service(self.tmp)
+        master = fake_media(self.tmp, "master.mov", duration=16.0)
+        reqs = {"qc": True, "qc.reference_video": master, "qc.reference_metrics": "ssim, vmaf", "qc.min_vmaf": 90, "qc.min_ssim": "0.97"}
+        r = plan_and_render(svc, [self.a], reqs, name="ref")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        self.assertEqual(d["qa"]["qc"]["reference"], {"path": master, "rule": {"reference_metrics": ["vmaf", "ssim"], "min_vmaf": 90.0, "min_ssim": 0.97}})
+        self.assertIn(str(Path(master).parent), d["execution"]["allowed_inputs"])
+        dec = next(x for x in d["decisions"] if x["subject"] == "qc.check")
+        self.assertIn("VMAF, SSIM of each video deliverable against master.mov", dec["decision"])
+        out = r["out"]
+        self.assertEqual(out["status"], "COMPLETED", out.get("qa"))
+        res = next(x for x in out["execution"]["results"] if x["tool"] == "qc/check")
+        self.assertTrue(res["data"]["admitted"]); self.assertEqual(res["data"]["companions"]["reference_video"], hashlib.sha256(Path(master).read_bytes()).hexdigest())
+        self.assertEqual({c["check_id"] for c in res["data"]["checks"]} & {"video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"},
+                         {"video.vmaf_meets_minimum", "video.ssim_meets_minimum"})
+        ops, paths = compile_ir(load_ir(r["path"]), str(Path(self.tmp) / "jref"))
+        qc_op = next(o for o in ops if o.tool == "qc/check")
+        self.assertEqual((qc_op.args["reference_video"], qc_op.args["rules"]["delivery"]["video"]["reference_metrics"], qc_op.inputs[-1]), ("qc_reference", ["vmaf", "ssim"], "qc_reference"))
+        self.assertEqual(paths["qc_reference"], master)
+        from video_agent.project.ir import ProjectIR
+        doc = json.loads(json.dumps(d)); doc["qa"]["qc"]["reference"]["rule"]["reference_metrics"] = ["ms-ssim"]
+        self.assertTrue(any("is not one of" in e for e in svc.validate(ProjectIR(doc), check_paths=False).errors), "the IR schema types the reference rule")
+        # refused before any analysis: metrics without a master, a master without the gate, a threshold for an unlisted metric, unknown metric
+        for bad, msg in (({"qc": True, "qc.reference_metrics": "ssim"}, "set together"), ({"qc.reference_video": master, "qc.reference_metrics": "ssim"}, "without the qc gate"),
+                         ({"qc": True, "qc.reference_video": master, "qc.reference_metrics": "ssim", "qc.min_vmaf": 90}, "does not list vmaf"),
+                         ({"qc": True, "qc.reference_video": master, "qc.reference_metrics": "ms-ssim"}, "one or more of"),
+                         ({"qc": True, "qc.reference_video": master, "qc.reference_metrics": "ssim,ssim"}, "once each"),
+                         ({"qc": True, "qc.reference_video": master, "qc.reference_metrics": "psnr", "qc.min_psnr_db": 500}, "qc.min_psnr_db"),
+                         ({"qc": True, "qc.reference_video": master + ".missing.mp4", "qc.reference_metrics": "psnr"}, "not found"),
+                         ({"qc": True, "qc.reference_video": master, "qc.reference_metrics": "psnr", "qc.reference": 1}, "unknown requirement key")):
+            with self.assertRaises(ValueError, msg=str(bad)) as cm:
+                svc.plan([self.a], "youtube", user_requirements=bad)
+            self.assertIn(msg, str(cm.exception), bad)
 
     def test_without_the_gate_nothing_changes(self):
         svc = pipeline_service(self.tmp)
