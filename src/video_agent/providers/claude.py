@@ -42,6 +42,20 @@ recommendation you cannot support with a cited id is not worth making.
 - reasoning is one or two plain sentences explaining the overall decision, not a step-by-step transcript.
 - If nothing is worth recommending, return an empty recommendations list."""
 
+BRIEF_SYSTEM_PROMPT = """You read a video production brief -- what the user wants, in their own words, possibly in Japanese -- \
+into the agent's requirement keys (the keys of its `--set key=value` option).
+
+Rules:
+- Use only keys from context.allowed_keys. value is what `--set key=value` takes: true / false, a number, or text such as 9:16, \
+written as a string (it is parsed like the command line).
+- phrase quotes, exactly, the words of the brief the requirement comes from. A requirement without such a phrase is dropped.
+- Keys in context.explicit_keys were set explicitly by the user and keep their value whatever you return.
+- Do not guess what the brief does not say. Put what no allowed key can express (for example a target length) in unmapped \
+with a short reason.
+- Every value is validated afterwards exactly like the command line; an invalid one is refused, not repaired.
+- confidence is your calibrated probability (0 to 1) that the requirement is what the user meant.
+- reasoning is one or two plain sentences."""
+
 _PARAMS_SCHEMA = {"type": "array", "items": {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}},
                                              "required": ["key", "value"], "additionalProperties": False}}
 
@@ -61,6 +75,26 @@ RESPONSE_SCHEMA = {
     "required": ["recommendations", "confidence", "evidence", "reasoning"],
     "additionalProperties": False,
 }
+
+
+def brief_response_schema(allowed_keys: Any) -> Dict[str, Any]:
+    """requirements_extraction (ADR-061): `key` is an enum of the allowed keys the request carries, so the model cannot even
+    name another key (the validation in agent/brief.py still refuses one, whoever produced it)."""
+    keys = sorted({str(k) for k in (allowed_keys or [])}) or ["none"]
+    return {
+        "type": "object",
+        "properties": {
+            "requirements": {"type": "array", "items": {"type": "object", "properties": {
+                "key": {"type": "string", "enum": keys}, "value": {"type": "string"}, "phrase": {"type": "string"}, "confidence": {"type": "number"}},
+                "required": ["key", "value", "phrase", "confidence"], "additionalProperties": False}},
+            "unmapped": {"type": "array", "items": {"type": "object", "properties": {"phrase": {"type": "string"}, "reason": {"type": "string"}},
+                                                    "required": ["phrase", "reason"], "additionalProperties": False}},
+            "confidence": {"type": "number"},
+            "reasoning": {"type": "string"},
+        },
+        "required": ["requirements", "unmapped", "confidence", "reasoning"],
+        "additionalProperties": False,
+    }
 
 
 def _credentials_configured(env: Dict[str, str]) -> bool:
@@ -112,16 +146,17 @@ class AnthropicProvider(AIProvider):
         return self._client
 
     def complete(self, request: AIRequest, timeout: Optional[float] = None) -> AIResponse:
-        if request.task_type != "production_recommendation":
-            raise AIProviderError("UNAVAILABLE", f"task {request.task_type!r} is not implemented by the anthropic provider")
+        brief = request.task_type == "requirements_extraction"   # ADR-061; the other task is production_recommendation (ADR-049)
+        system = BRIEF_SYSTEM_PROMPT if brief else SYSTEM_PROMPT
+        schema = brief_response_schema(request.context.get("allowed_keys")) if brief else RESPONSE_SCHEMA
         client = self._get_client()
         payload = json.dumps({"inputs": request.inputs, "context": request.context, "expected_result": request.schema}, ensure_ascii=False, sort_keys=True, default=str)
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": MAX_TOKENS,
-            "system": [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": [{"role": "user", "content": payload}],
-            "output_config": {"effort": self.effort, "format": {"type": "json_schema", "schema": RESPONSE_SCHEMA}},
+            "output_config": {"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
             "betas": [FALLBACK_BETA],
             "fallbacks": "default",
         }
@@ -141,16 +176,18 @@ class AnthropicProvider(AIProvider):
             data = json.loads(text)
         except (TypeError, ValueError) as e:
             raise AIProviderError("MALFORMED", f"response is not JSON: {e}") from e
-        if not isinstance(data, dict) or not isinstance(data.get("recommendations"), list):
-            raise AIProviderError("MALFORMED", "response has no recommendations list")
+        listed = "requirements" if brief else "recommendations"
+        if not isinstance(data, dict) or not isinstance(data.get(listed), list):
+            raise AIProviderError("MALFORMED", f"response has no {listed} list")
         try:
             confidence = min(1.0, max(0.0, float(data.get("confidence", 0.0))))
         except (TypeError, ValueError):
             confidence = 0.0
         usage = getattr(message, "usage", None)
         served_by = str(getattr(message, "model", "") or self.model)
-        return AIResponse(task_type=request.task_type,
-                          result={"recommendations": [_fold_params(r) if isinstance(r, dict) else r for r in data["recommendations"]]},
+        result = ({"requirements": data["requirements"], "unmapped": data.get("unmapped") or []} if brief else
+                  {"recommendations": [_fold_params(r) if isinstance(r, dict) else r for r in data["recommendations"]]})
+        return AIResponse(task_type=request.task_type, result=result,
                           confidence=confidence, provider=self.name, model=served_by,
                           evidence=[str(e) for e in data.get("evidence") or []], reasoning=str(data.get("reasoning") or "")[:1000],
                           usage=AIUsage(input_tokens=int(getattr(usage, "input_tokens", 0) or 0), output_tokens=int(getattr(usage, "output_tokens", 0) or 0)),

@@ -26,6 +26,7 @@ from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requ
 from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
+from .brief import decide_brief
 from .handoffs import decide_jobs
 
 # production-skill intent → decision subjects that would already execute it (measured path)
@@ -102,6 +103,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                    reason=f"request/preference {c.attempted.value} conflicts with constraint {c.constraint.id}; constraints are never overridden silently",
                    confidence=1.0, evidence=[c.constraint.id, c.attempted.id], risk="MEDIUM", approval="CONFIRM", provenance="SYSTEM",
                    settings=[resolve_setting(rules, c.key, c.constraint.value)])
+
+    # the reading of the user's brief (ADR-061): one record citing the brief and every requirement taken from it
+    decide_brief(eng, reqs)
 
     def cap_missing(skill: str) -> Optional[str]:
         """Why `skill` cannot run here (missing capabilities / no executable tool), or None; decides nothing (cap_block does)."""

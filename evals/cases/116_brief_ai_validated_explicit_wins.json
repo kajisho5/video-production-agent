@@ -1,0 +1,51 @@
+{
+ "name": "brief_ai_validated_explicit_wins",
+ "profile": "youtube",
+ "brief": "縦型で字幕つき、60秒、-14LUFS",
+ "requirements": {
+  "subtitle.burn_in": true,
+  "subtitle": true
+ },
+ "ai": {
+  "brief_requirements": [
+   {"key": "edit.fit", "value": "9:16", "phrase": "縦型", "confidence": 0.9},
+   {"key": "subtitle", "value": "true", "phrase": "字幕つき"},
+   {"key": "audio.loudness.target_lufs", "value": "-14", "phrase": "-14LUFS"},
+   {"key": "delivery.duration", "value": "60", "phrase": "60秒"},
+   {"key": "edit.speed", "value": "fast", "phrase": "縦型"}
+  ]
+ },
+ "expect": {
+  "method": "ai",
+  "accepted": {
+   "audio.loudness.target_lufs": -14,
+   "edit.fit": "9:16"
+  },
+  "refused": [
+   "delivery.duration",
+   "edit.speed"
+  ],
+  "overridden": [
+   "subtitle"
+  ],
+  "requirement_provenance": {
+   "brief": "USER",
+   "edit.fit": "AI_GENERATED",
+   "audio.loudness.target_lufs": "AI_GENERATED",
+   "subtitle": "USER"
+  },
+  "decisions": {
+   "requirements.brief": {
+    "type": "REVIEW",
+    "approval": "CONFIRM",
+    "provenance": "AI_GENERATED"
+   },
+   "video.fit": {
+    "approval": "CONFIRM"
+   },
+   "audio.loudness": {
+    "approval": "CONFIRM"
+   }
+  }
+ }
+}

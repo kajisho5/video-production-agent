@@ -3,7 +3,9 @@
 Stdio JSON-RPC 2.0, standard library only. Each tool runs `video-agent --json <command> ...` in a child process, so
 the protocol stream on stdout never sees a skill's output, and the result is exactly what the CLI prints. The chat
 model is the reasoning step (providers/host.py): `plan` returns an ai_brief, the model answers it, and `revise` takes
-that answer as `ai_recommendations`, validated like any provider's. Approval and rendering stay separate tools: the
+that answer as `ai_recommendations`, validated like any provider's. A brief (ADR-061) works the same way: `brief` (or `plan`
+with `brief`) returns `host_request`, the model answers it, and `plan` takes the answer as `brief_requirements`, validated like
+`--set`. Approval and rendering stay separate tools: the
 server never approves on its own, and `render` has no inline approve.
 
     python -m video_agent.mcp_server [--workspace DIR] [--ffmpeg-skill-dir DIR]
@@ -43,7 +45,18 @@ TOOLS: List[Dict[str, Any]] = [
          "name": _STR, "language": {"type": "string", "description": "ISO 639-1 language for a transcript"},
          "kinds": {"type": "array", "items": _STR, "description": "extra analysis kinds, e.g. transcript, scene_detection, crop_rectangle (black bars → a CONFIRM crop proposal)"},
          "ai_brief": {"type": "boolean", "description": "return the brief for the chat model (default true)"},
-         "ai_model": {"type": "string", "description": "name of the chat model, recorded in provenance"}}}},
+         "ai_model": {"type": "string", "description": "name of the chat model, recorded in provenance"},
+         "brief": {"type": "string", "description": "the user's brief in their own words, read into requirement keys (explicit `set` wins)"},
+         "brief_requirements": {"type": ["object", "array"], "description": "your answer to the brief's host_request: {\"requirements\": [{key, value, phrase, confidence}], \"unmapped\": [...]}"}}}},
+    {"name": "brief", "description": (
+        "Read the user's brief (e.g. \"60 s vertical, captions, -14 LUFS\") into the agent's requirement keys without analysing media. "
+        "Without brief_requirements the result has `host_request`: answer it with keys from its allowed_keys only, each quoting the "
+        "brief's words, then call `brief` or `plan` again with brief_requirements. Every key is checked like --set; unknown keys and "
+        "invalid values are refused with the reason. Without an answer the rule-based reading is shown."),
+     "inputSchema": {"type": "object", "required": ["text"], "properties": {
+         "text": {"type": "string", "description": "the brief"}, "set": {"type": "object", "description": "explicit requirements (they win)"},
+         "brief_requirements": {"type": ["object", "array"], "description": "your answer to host_request"},
+         "ai_model": {"type": "string", "description": "name of the chat model that answered"}}}},
     {"name": "revise", "description": (
         "Write the next plan version. Pass the chat model's answer to the ai_brief as ai_recommendations "
         "({\"recommendations\": [{intent, asset_id, statement, confidence, evidence: [ids], params}]}); every one is "
@@ -86,6 +99,15 @@ def _sets(values: Optional[Dict[str, Any]]) -> List[str]:
     return out
 
 
+def _brief_file(a: Dict[str, Any], tmpdir: str) -> List[str]:
+    if a.get("brief_requirements") is None:
+        return []
+    path = os.path.join(tmpdir, "brief_requirements.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(a["brief_requirements"], f, ensure_ascii=False)
+    return ["--brief-requirements", path]
+
+
 def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
     """CLI arguments for a tool call (after the global options). Raises ValueError on a missing argument."""
     def need(key: str) -> str:
@@ -111,7 +133,13 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
             argv += ["--kind", str(k)]
         if a.get("ai_brief", True):
             argv += ["--ai-brief", *opt("--ai-model", "ai_model")]
+        argv += [*opt("--brief", "brief"), *_brief_file(a, tmpdir)]
+        if a.get("brief_requirements") is not None and "--ai-model" not in argv:
+            argv += opt("--ai-model", "ai_model")
         return argv
+    if name == "brief":
+        argv = ["brief", need("text"), *_sets(a.get("set")), *_brief_file(a, tmpdir)]
+        return argv + (opt("--ai-model", "ai_model") if a.get("brief_requirements") is not None else ["--ai-brief"])
     if name == "revise":
         argv = ["revise", need("project"), *opt("--feedback", "feedback"), *opt("--by", "by"), *_sets(a.get("set"))]
         if a.get("ai_recommendations") is not None:

@@ -191,9 +191,11 @@ def cmd_plan(args, svc: Service) -> int:
     ingest, blocked = _url_inputs_or_handoff(args, svc)
     if blocked is not None:
         return blocked
+    answer = _brief_answer(args)
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
                   strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
-                  ingest_records=ingest)
+                  ingest_records=ingest, brief=args.brief or "", brief_answer=answer, ai_model=args.ai_model or "host-chat")
+    brief = (ir.doc["request"].get("args") or {}).get("brief")
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
         out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")
@@ -202,9 +204,12 @@ def cmd_plan(args, svc: Service) -> int:
     ai: Dict[str, Any] = {"ai_brief": dict(host.brief() or {}, next=f"write the answer as JSON, then: video-agent revise {out} --ai-recommendations <file>")} if host else {}
     handoff = svc.handoffs(ir)   # ADR-051: steps no installed skill can run here
     if args.json:
-        _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict(), "handoff": handoff, **ai}, True)
+        _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict(), "handoff": handoff, **ai,
+                **({"brief": brief} if brief else {})}, True)
     else:
         print(f"Project IR: {out}")
+        if brief:
+            _print_brief(brief)
         _print_plan(ir.doc)
         print("Decisions:")
         for d in ir.doc["decisions"]:
@@ -227,6 +232,53 @@ def cmd_plan(args, svc: Service) -> int:
             print("AI brief (answer it as JSON, then `video-agent revise <project> --ai-recommendations FILE`):")
             print(json.dumps(ai["ai_brief"], indent=2, ensure_ascii=False, default=str))
     return 0 if rep.ok else 2
+
+
+def _brief_answer(args) -> Any:
+    """--brief-requirements FILE: the chat model's answer to the brief (ADR-061), read as JSON; None when not given."""
+    if not getattr(args, "brief_requirements", None):
+        return None
+    if not getattr(args, "brief", None):
+        raise SystemExit("--brief-requirements answers a brief: give the brief with --brief too")
+    return json.loads(Path(args.brief_requirements).read_text(encoding="utf-8"))
+
+
+def _print_brief(b: Dict[str, Any]) -> None:
+    who = f"{b['method']}" + (f" ({b['provider']}/{b['model']})" if b.get("provider") else "")
+    print(f"Brief read by {who}" + (f" -- {b['fallback']}" if b.get("fallback") else "") + ":")
+    for a in b.get("accepted") or []:
+        print(f"  + {a['key']}={json.dumps(a['value'], ensure_ascii=False)}   \"{a.get('phrase', '')}\"  [{a['provenance']}]")
+    for o in b.get("overridden") or []:
+        print(f"  = {o['key']}: explicit --set {json.dumps(o['explicit'], ensure_ascii=False)} wins over the brief's {json.dumps(o['value'], ensure_ascii=False)}")
+    for r in b.get("refused") or []:
+        print(f"  - {r['key']}={json.dumps(r.get('value'), ensure_ascii=False)} refused: {r['reason']}")
+    for u in b.get("unmapped") or []:
+        print(f"  ? \"{u.get('phrase', '')}\" not applied: {u.get('reason', '')}")
+    for w in b.get("warnings") or []:
+        print(f"  ! {w}")
+    if b.get("host_request"):
+        print("Brief for the chat model (answer it as JSON, then plan again with --brief-requirements FILE):")
+        print(json.dumps(b["host_request"], indent=2, ensure_ascii=False, default=str))
+
+
+def cmd_brief(args, svc: Service) -> int:
+    """ADR-061: read a brief into `--set` keys without analysing any media (what `plan --brief` would apply)."""
+    if args.ai_brief and args.brief_requirements is None:
+        from .providers.host import HostProvider
+        svc.provider = HostProvider(model=args.ai_model or "host-chat")
+    answer = json.loads(Path(args.brief_requirements).read_text(encoding="utf-8")) if args.brief_requirements else None
+    try:
+        rec = svc.extract_brief(args.text, _kv(args.set), args.profile, answer=answer, ai_model=args.ai_model or "host-chat")
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    merged = {**{a["key"]: a["value"] for a in rec["accepted"]}, **_kv(args.set)}
+    if args.json:
+        _print({**rec, "requirements": merged}, True)
+    else:
+        _print_brief(rec)
+        print("As --set: " + (" ".join(f"--set {k}={json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}" for k, v in sorted(merged.items())) or "(nothing)"))
+    return 0
 
 
 def cmd_validate(args, svc: Service) -> int:
@@ -751,7 +803,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--offline", action="store_true", help="transcript kind: no remote engine, no model download")
     p.add_argument("--ai-brief", action="store_true", help="the chat model this runs in (Claude Code, Claude Desktop) is the AI: output what it should read, then answer with `revise --ai-recommendations` (ADR-050)")
     p.add_argument("--ai-model", help="name of the chat model, recorded in provenance (default host-chat)")
+    p.add_argument("--brief", help="the brief in the user's own words, read into --set keys (AI provider, else rule-based; explicit --set wins; ADR-061)")
+    p.add_argument("--brief-requirements", metavar="FILE", help="the chat model's JSON answer to the brief (host provider, ADR-061)")
     p.set_defaults(fn=cmd_plan)
+    p = sub.add_parser("brief", help="read a brief into --set keys (no media analysed): what plan --brief would apply (ADR-061)")
+    p.add_argument("text"); p.add_argument("--profile", default="generic")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", help="explicit requirements: they win over the brief")
+    p.add_argument("--ai-brief", action="store_true", help="output the brief for the chat model this runs in (host provider)")
+    p.add_argument("--brief-requirements", metavar="FILE", help="the chat model's JSON answer to the brief")
+    p.add_argument("--ai-model", help="name of the chat model, recorded in provenance (default host-chat)")
+    p.set_defaults(fn=cmd_brief)
     p = sub.add_parser("validate", help="validate a Project IR (schema, semantics, capabilities)")
     p.add_argument("project"); p.add_argument("--no-paths", action="store_true", help="do not require asset paths to exist")
     p.set_defaults(fn=cmd_validate)

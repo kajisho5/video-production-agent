@@ -1193,7 +1193,9 @@ Do not hard-wire core deterministic media functions to an AI API.
 `AIRequest` (task_type ∈ {production_recommendation, requirements_extraction}, inputs = system-produced evidence summaries,
 schema, context), `AIResponse` (task_type, structured result, confidence, evidence ids, short reasoning, provider, model,
 `AIUsage`, latency, response_hash), `AIProviderError` (TIMEOUT / RATE_LIMIT / MALFORMED / UNAVAILABLE / AUTH / BUDGET).
-`NullProvider` is the default; no real provider is bundled.
+`NullProvider` is the default; no real provider is bundled. (Since ADR-049 / ADR-050 the Claude provider and the host provider are bundled; ADR-061 implements
+`requirements_extraction`: a brief → `--set` keys derived from the `--set` validator, validated like `--set`, with a
+rule-based fallback and explicit `--set` precedence — see `agent/brief.py`.)
 
 `agent/ai_reasoning.py` is the only consumer: it builds the request from observations / events (never media, never
 credentials), validates the response into `Inference`s with provenance `AI_GENERATED` (intent must be a registered,

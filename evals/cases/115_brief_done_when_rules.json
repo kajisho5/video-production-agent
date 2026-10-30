@@ -1,0 +1,42 @@
+{
+ "name": "brief_done_when_rules",
+ "profile": "youtube",
+ "brief": "60 s vertical, captions, -14 LUFS",
+ "expect": {
+  "method": "rules",
+  "accepted": {
+   "audio.loudness.target_lufs": -14.0,
+   "audio.normalize": true,
+   "edit.fit": "9:16",
+   "subtitle": true
+  },
+  "refused": [],
+  "overridden": [],
+  "unmapped_seconds": [
+   60.0
+  ],
+  "requirement_provenance": {
+   "brief": "USER",
+   "edit.fit": "USER",
+   "subtitle": "USER",
+   "audio.loudness.target_lufs": "USER"
+  },
+  "decisions": {
+   "requirements.brief": {
+    "type": "KEEP",
+    "approval": "AUTO",
+    "provenance": "USER"
+   },
+   "video.fit": {
+    "type": "TRANSFORM"
+   },
+   "subtitle.generate": {
+    "type": "TRANSFORM"
+   },
+   "audio.loudness": {
+    "type": "TRANSFORM",
+    "decision": "normalize to -14 LUFS / -1 dBTP"
+   }
+  }
+ }
+}
