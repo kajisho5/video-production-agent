@@ -27,7 +27,7 @@ Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
   - Done when: a plan asking for each job shows a handoff naming the package and its install command
 - [x] **2. Version gates follow the satellites' version fixes** — widen SUPPORTED_SKILL_VERSIONS and re-pin contracts as motion-graphics (0.2), subtitle, thumbnail, transcription (0.7), media-analysis fix their reported versions ([#65](https://github.com/kajisho5/video-production-agent/pull/65))
   - Done when: integration suite green against each fixed release
-- [x] **3. Contract-backed ffmpeg-skill catalog check** — at locate time read `_contract.py --json --static`, assert contract_version 1.0 and every catalogued flag in input_schema; surface doctor's missing capabilities (PR_LINK)
+- [x] **3. Contract-backed ffmpeg-skill catalog check** — at locate time read `_contract.py --json --static`, assert contract_version 1.0 and every catalogued flag in input_schema; surface doctor's missing capabilities ([#75](https://github.com/kajisho5/video-production-agent/pull/75))
   - Done when: a renamed flag makes the tool unavailable with a reason instead of an argparse error
   - Done (ADR-056): contract_version 1.x and every catalogued flag / switch arity / positional checked per tool at locate time; doctor's `usable: no` rows surfaced with their fix; an off tool is capability `ffmpeg-skill:<tool>` MISSING with the reason in the selection reason / plan handoff, and the adapter refuses it before argparse
 - [x] **4. Timeline export (OTIO first)** — SkillSpec `timeline_export` -> ffmpeg-skill/render `--export-timeline` (.otio, .fcpxml, .edl) from the IR cut list, plus a sidecar SRT; ADR amending ADR-002
