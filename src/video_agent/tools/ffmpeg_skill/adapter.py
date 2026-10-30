@@ -99,6 +99,9 @@ class FfmpegSkillAdapter(ToolAdapter):
                 inputs.append(p)
                 argv.append(p)
         for key, val in args.items():
+            if key in spec.get("document", {}):
+                self._timeline_clips(tool, val, paths)   # validated here; written into the project document, never onto the command line
+                continue
             typ = spec["flags"].get(key)
             if typ is None:
                 raise ToolError(f"{tool}: flag '{key}' is not in the catalog")
@@ -107,9 +110,6 @@ class FfmpegSkillAdapter(ToolAdapter):
             flag = FLAG_ALIASES.get((script, key)) or FLAG_ALIASES.get(("*", key)) or "--" + key.replace("_", "-")
             if key == "crf" and self.skill.offers_flag(script, QUALITY_FLAG):
                 flag = QUALITY_FLAG   # ffmpeg-skill 1.10 renamed --crf to --quality (same CRF scale) and 2.x refuses --crf
-            if typ == "timeline_clips":
-                self._timeline_clips(tool, val, paths)   # validated here; written into the project document, never onto the command line
-                continue
             if typ == "bool":
                 if val is not True:
                     raise ToolError(f"{tool}: '{key}' must be bool")
@@ -155,10 +155,10 @@ class FfmpegSkillAdapter(ToolAdapter):
         return out
 
     def project_document(self, tool: str, args: Dict[str, Any], paths: Dict[str, str]) -> Optional["tuple[str, Dict[str, Any]]"]:
-        """(path, document) of the project a `project_document` tool reads (render.py, ADR-052), built only from the catalogued
+        """(path, document) of the project a tool with a catalogued `document` reads (render.py, ADR-052), built only from the catalogued
         typed keys: the clips and a hard-cut transition. The path must be a workspace file that is not one of the sources."""
         spec = CATALOG.get(tool[len(PREFIX):]) or {}
-        if not spec.get("project_document"):
+        if not spec.get("document"):
             return None
         clips = self._timeline_clips(tool, args.get("clips"), paths)
         path = paths.get(args["project"], args["project"])

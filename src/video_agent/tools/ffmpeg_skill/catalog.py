@@ -54,10 +54,10 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     # ---- ADR-052 timeline export (verified against ffmpeg-skill v2.21.0 --help and a real --json capture): render.py reads a
     # project.json and, with --export-timeline FILE, writes the project's cut as an editor timeline (.otio / .fcpxml / .edl by
     # extension) instead of rendering. The project is never a free-form document: the adapter writes it from the typed
-    # `clips` records (source path, in, out) with "transition": {"type": "none"} (render.py's default is a dissolve on every
+    # `clips` records (source path, in, out; a `document` key, never a command-line flag) with "transition": {"type": "none"} (render.py's default is a dissolve on every
     # cut) and nothing else, inside the workspace. `output` is spelled --export-timeline (FLAG_ALIASES). --json reports
     # {"output", "timeline": {format, rate, duration, frames, clips, transition, ..., not_exported}, "verification"}.
-    "render": {"positional": ["project"], "flags": {"clips": "timeline_clips", "output": "path_out", "overwrite": "bool"}, "project_document": ("clips",),
+    "render": {"positional": ["project"], "flags": {"output": "path_out", "overwrite": "bool"}, "document": {"clips": "timeline_clips"},
                "requires_flag": "--export-timeline", "produces_output": True, "result_keys": ["output", "timeline", "verification"]},
 }
 
