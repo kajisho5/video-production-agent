@@ -27,7 +27,8 @@ Contract discrepancies absorbed here (documented, never patched):
   * the contract carries no request.forbidden_fields; the Skill's 14 forbidden request keys (schemas.py) are pinned here.
   * the contract's errors block has no retryable map, so error_table() yields non-retryable for every code; the Skill's own
     `retryable` verdict in a failed response is preferred (TOOL_ERROR / CANCELLED are retryable in the Skill's errors.py).
-  * the CLI has no --timeout flag and the request's `timeout` is parsed but unused; the process-boundary timeout is the only timeout.
+  * the CLI has no --timeout flag. The request's `timeout` is forwarded when the caller gives one: qc-skill ADR-019 enforces it (TIMEOUT,
+    exit 15, retryable), older versions parse and ignore it. The process-boundary timeout stays 5 s longer as the backstop.
   * the CLI flag is --allowed-input-root (not --allowed-input); there is no --ffmpeg-skill (ffprobe/ffmpeg come from PATH).
   * a measurement has no dry run: run(dry_run=True) validates the request and returns without invoking the Skill."""
 from __future__ import annotations
@@ -408,6 +409,8 @@ class QcAdapter(ToolAdapter):
             req["rules"] = rules
         if params:
             req["parameters"] = params
+        if timeout is not None:
+            req["timeout"] = float(timeout)
         hit = scan_forbidden(req, self.forbidden, "request")
         if hit:
             raise ToolError(f"qc: refusing to send a request carrying {hit}")
