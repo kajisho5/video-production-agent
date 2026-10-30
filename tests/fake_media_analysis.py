@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "media_analysis" / "contract_0.1.3.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "media_analysis" / "contract_0.1.5.json").read_text(encoding="utf-8"))
+TOOLS = {t["tool_id"]: t for t in CONTRACT["tools"]}
 MODE = os.environ.get("FAKE_MA_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_MA_CALLS")
 
@@ -39,7 +40,8 @@ def observation(req: dict) -> dict:
     ident = "0" * 60 + "%04x" % (hash(kind) & 0xFFFF)
     return {"id": "obs_" + ident[:16], "asset_id": req["asset_id"], "kind": kind, "data": data, "source": f"{tool}@{CONTRACT['version']}",
             "analysis_id": req.get("analysis_id") or f"analysis-{ident[:16]}", "observed_at": "2026-09-04T10:00:00Z",
-            "analysis": {"identity": ident, "analyzer": tool, "analyzer_version": CONTRACT["version"], "parameters": req.get("parameters") or {}, "seconds": 0.01},
+            "analysis": {"identity": ident, "analyzer": tool, "analyzer_version": CONTRACT["version"],
+                         "algorithm_version": TOOLS[tool].get("algorithm_version", "1"), "parameters": req.get("parameters") or {}, "seconds": 0.01},
             "asset": {"path": req["input"], "fingerprint": "f" * 64, "size": 1000}}
 
 
