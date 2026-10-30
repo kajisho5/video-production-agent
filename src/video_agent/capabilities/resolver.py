@@ -11,7 +11,10 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..tools.ffmpeg_skill.catalog import CATALOG
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+from ..tools.ffmpeg_skill.package import PREFIX as FFMPEG_SKILL_PREFIX
+from ..tools.ffmpeg_skill.package import tool_capability
 from ..tools.media_analysis import MediaAnalysisAdapter, locate_media_analysis
 from ..tools.transcription import TranscriptionAdapter, locate_transcription
 from ..tools.video_editing import VideoEditingAdapter, locate_video_editing
@@ -45,6 +48,39 @@ class Capability:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "status": self.status, "detail": self.detail, "evidence": self.evidence}
+
+
+def ffmpeg_skill_capabilities(skill: Any) -> Dict[str, Capability]:
+    """`ffmpeg-skill` and one `ffmpeg-skill:<tool>` per catalogued script of a located checkout. version_supported() only flags a
+    version outside the verified range (DEGRADED, not MISSING). ADR-056: the catalog checked against the checkout's own contract
+    and doctor -- a refused contract (not 1.x, unreadable) makes the package MISSING; a catalogued tool whose flags /
+    positionals / doctor row do not hold is MISSING on its own capability (ToolSpec.required_capabilities), with the reason
+    in evidence["reason"], which the selection reason and the plan's handoff carry."""
+    supported = skill.version_supported()
+    detail = f"{skill.version} at {skill.root}" if supported else f"{skill.version} at {skill.root} (outside the verified version range; re-verify before relying on it)"
+    chk = skill.catalog_check()
+    status = "AVAILABLE" if supported else "DEGRADED"
+    evidence: Dict[str, Any] = {"root": str(skill.root), "version": skill.version, "scripts": skill.scripts, "version_supported": supported, "contract": chk.to_dict()}
+    if chk.status == "refused":
+        status, detail = "MISSING", f"{detail}; {chk.reason}"
+        evidence["reason"] = chk.reason
+    elif chk.status == "unchecked":
+        detail = f"{detail} ({chk.reason})"
+    elif chk.unavailable:
+        detail = f"{detail}; contract {chk.contract_version} checked, unavailable: {', '.join(sorted(chk.unavailable))}"
+    else:
+        detail = f"{detail}; contract {chk.contract_version} checked"
+    out = {"ffmpeg-skill": Capability("ffmpeg-skill", status, detail, evidence)}
+    for name in CATALOG:
+        if name not in skill.scripts:
+            continue
+        why = chk.tool_reason(name)
+        cap = tool_capability(name)
+        if why:
+            out[cap] = Capability(cap, "MISSING", why, {"reason": why, "tool": FFMPEG_SKILL_PREFIX + name})
+        else:
+            out[cap] = Capability(cap, "AVAILABLE", "catalog flags in the contract" if chk.status == "checked" else f"catalog {chk.status}", {"tool": FFMPEG_SKILL_PREFIX + name})
+    return out
 
 
 def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
@@ -119,10 +155,7 @@ class CapabilityResolver:
         # this status, so an operator sees the warning in `doctor`/`skills` without anything actually breaking.
         skill = locate_ffmpeg_skill(self.skill_dir, self.env)
         if skill:
-            supported = skill.version_supported()
-            detail = f"{skill.version} at {skill.root}" if supported else f"{skill.version} at {skill.root} (outside the verified version range; re-verify before relying on it)"
-            caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "AVAILABLE" if supported else "DEGRADED", detail,
-                                              {"root": str(skill.root), "version": skill.version, "scripts": skill.scripts, "version_supported": supported})
+            caps.update(ffmpeg_skill_capabilities(skill))
         else:
             caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "MISSING", "set VIDEO_AGENT_FFMPEG_SKILL_DIR or install with `npx ffmpeg-skill`")
         # media-analysis-skill (external observation Skill): located checkout / console script + its own doctor

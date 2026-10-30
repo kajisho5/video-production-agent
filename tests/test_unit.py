@@ -1313,7 +1313,7 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill.catalog import CATALOG
         self.assertEqual(PACKAGE.tool_ids(), ["ffmpeg-skill/" + k for k in CATALOG])
         cut, probe = PACKAGE.tool("ffmpeg-skill/cut"), PACKAGE.tool("ffmpeg-skill/probe")
-        self.assertEqual((cut.kind, cut.skill_id, cut.required_capabilities), ("transform", "ffmpeg-skill", ["encoder:libx264"]))
+        self.assertEqual((cut.kind, cut.skill_id, cut.required_capabilities), ("transform", "ffmpeg-skill", ["encoder:libx264", "ffmpeg-skill:cut"]))   # ADR-056: the contract-checked per-tool capability
         self.assertEqual((probe.kind, probe.inputs), ("measure", ["inputs"]))
         svc = make_service(self.tmp)
         self.assertEqual(svc.registry.tool("ffmpeg-skill/cut").tool_id, "ffmpeg-skill/cut")
@@ -6157,6 +6157,182 @@ class SyncObservationTests(unittest.TestCase):
         rows = Service.explain_observation(ir.doc, next(iter(sync_ids))) if hasattr(Service, "explain_observation") else None
         if rows is not None:
             self.assertIn("sync", json.dumps(rows))
+
+
+def fake_ffmpeg_contract(version="1.0"):
+    """A `_contract.py --json --static` document shaped like ffmpeg-skill's (contract_version, skill.id, per tool
+    input_schema with `cli` spellings), publishing exactly the flags the catalog uses (ADR-056)."""
+    from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+    from video_agent.tools.ffmpeg_skill.contract_check import flag_for
+    tools = []
+    for name, spec in CATALOG.items():
+        props = {p: {"type": "string", "cli": "positional"} for p in spec["positional"]}
+        for key, typ in spec["flags"].items():
+            flag = "--quality" if key == "crf" and name != "export" else flag_for(name, key)
+            props[key] = {"type": "boolean" if typ == "bool" else "string", "cli": [flag]}
+        props["json"] = {"type": "boolean", "cli": ["--json"]}
+        props["dry_run"] = {"type": "boolean", "cli": ["--dry-run"]}
+        tools.append({"name": name, "id": "ffmpeg-skill/" + name, "input_schema": {"type": "object", "properties": props, "positional": list(spec["positional"]),
+                                                                                    "required": list(spec["positional"])}})
+    return {"contract_version": version, "skill": {"id": "ffmpeg-skill", "version": "2.22.0"}, "tools": tools}
+
+
+def _rename_flag(contract, tool, old, new):
+    for t in contract["tools"]:
+        if t["name"] == tool:
+            for p in t["input_schema"]["properties"].values():
+                if isinstance(p["cli"], list) and old in p["cli"]:
+                    p["cli"] = [new if f == old else f for f in p["cli"]]
+    return contract
+
+
+class FfmpegSkillContractCatalogTests(unittest.TestCase):
+    """ADR-056 (roadmap step 3): the hand-maintained catalog is checked against ffmpeg-skill's own contract at locate time. A
+    renamed / missing flag makes just that tool unavailable with a reason (capability `ffmpeg-skill:<tool>`, selection reason,
+    plan handoff) instead of an argparse error at run time; a contract that is not 1.x is refused as a whole."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _checkout(self, contract, doctor=None, version="2.22.0"):
+        """A fake checkout whose scripts/_contract.py prints the given documents (stdlib only, no ffmpeg)."""
+        from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+        root = Path(tempfile.mkdtemp(dir=self.tmp)) / "ffmpeg-skill"
+        (root / "scripts").mkdir(parents=True)
+        for name in CATALOG:
+            (root / "scripts" / f"{name}.py").write_text("print('{}')\n", encoding="utf-8")
+        (root / "contract.json").write_text(json.dumps(contract), encoding="utf-8")
+        (root / "doctor.json").write_text(json.dumps(doctor if doctor is not None else {"ok": True, "missing": [], "tools": {n: {"usable": "yes"} for n in CATALOG}}), encoding="utf-8")
+        (root / "scripts" / "_contract.py").write_text(
+            "import sys, pathlib\nroot = pathlib.Path(__file__).resolve().parent.parent\n"
+            "print((root / ('doctor.json' if 'doctor' in sys.argv else 'contract.json')).read_text())\n"
+            "sys.exit(1 if 'doctor' in sys.argv and '\"usable\": \"no\"' in (root / 'doctor.json').read_text() else 0)\n", encoding="utf-8")
+        (root / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _registry():
+        from video_agent.skills.registry import default_registry
+        from video_agent.tools.ffmpeg_skill import PACKAGE
+        reg = default_registry()
+        reg.register_package(PACKAGE)
+        return reg
+
+    def test_catalog_matches_a_contract_that_publishes_every_flag(self):
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
+        chk = check_catalog(fake_ffmpeg_contract())
+        self.assertEqual((chk.status, chk.unavailable, chk.contract_version), ("checked", {}, "1.0"))
+        self.assertIsNone(chk.tool_reason("cut"))
+        self.assertEqual(check_catalog(fake_ffmpeg_contract("1.3")).status, "checked", "any 1.x is the shape the check reads")
+
+    def test_renamed_flag_makes_only_that_tool_unavailable_with_a_reason(self):
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
+        chk = check_catalog(_rename_flag(fake_ffmpeg_contract(), "cut", "--accurate", "--frame-accurate"))
+        self.assertEqual(chk.status, "checked")
+        self.assertEqual(sorted(chk.unavailable), ["cut"])
+        self.assertIn("cut.py has no --accurate", chk.tool_reason("cut"))
+        self.assertIsNone(chk.tool_reason("export"))
+        # the crf key is satisfied by --quality (ADR-048) or --crf; a script with neither is unavailable
+        chk = check_catalog(_rename_flag(fake_ffmpeg_contract(), "export", "--crf", "--q"))
+        self.assertIn("export.py has no --crf", chk.tool_reason("export"))
+        # a switch that became a value flag, a tool no longer published, a positional renamed
+        c = fake_ffmpeg_contract()
+        tools = {t["name"]: t for t in c["tools"]}
+        tools["loudness"]["input_schema"]["properties"]["measure_only"]["type"] = "string"
+        c["tools"] = [t for t in c["tools"] if t["name"] != "grid"]
+        tools["sync"]["input_schema"]["positional"] = ["reference", "other"]
+        chk = check_catalog(c)
+        self.assertEqual(sorted(chk.unavailable), ["grid", "loudness", "sync"])
+        self.assertIn("--measure-only is a value flag but the catalog uses it as a switch", chk.tool_reason("loudness"))
+        self.assertIn("not published", chk.tool_reason("grid"))
+        self.assertIn("positionals", chk.tool_reason("sync"))
+
+    def test_contract_version_2_is_refused(self):
+        from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
+        for bad in ("2.0", "0.9", None, "x"):
+            chk = check_catalog(fake_ffmpeg_contract(bad))
+            self.assertEqual(chk.status, "refused", bad)
+            self.assertTrue(all(chk.tool_reason(n) for n in CATALOG), "a refused contract rules out every tool")
+        self.assertIn("contract_version '2.0' is not 1.x", check_catalog(fake_ffmpeg_contract("2.0")).reason)
+        c = fake_ffmpeg_contract()
+        c["skill"]["id"] = "other-skill"
+        self.assertEqual(check_catalog(c).status, "refused")
+        self.assertEqual(check_catalog("not json").status, "refused")
+
+    def test_doctor_missing_capabilities_are_surfaced(self):
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
+        doctor = {"ok": True, "missing": [], "missing_optional": ["external:whisper"], "unknown": [],
+                  "tools": {"stabilize": {"usable": "no", "missing": ["filter:vidstabdetect"], "fix": "install an ffmpeg build with libvidstab"},
+                            "grid": {"usable": "unknown", "unknown": ["filter:xstack"]}, "cut": {"usable": "yes"}}}
+        chk = check_catalog(fake_ffmpeg_contract(), doctor)
+        self.assertEqual(sorted(chk.unavailable), ["stabilize"], "unknown is not missing: it never blocks")
+        self.assertIn("filter:vidstabdetect", chk.tool_reason("stabilize"))
+        self.assertIn("libvidstab", chk.tool_reason("stabilize"))
+        self.assertEqual(set(chk.doctor["tools"]), {"stabilize", "grid"})
+        self.assertEqual(chk.doctor["missing_optional"], ["external:whisper"])
+
+    def test_checkout_without_contract_script_is_unchecked(self):
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        root = Path(self.tmp) / "old-skill"
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "probe.py").write_text("")
+        skill = locate_ffmpeg_skill(str(root), env={})
+        self.assertEqual(skill.catalog_check().status, "unchecked")
+        self.assertIsNone(skill.catalog_check().tool_reason("probe"), "pre-0.9 checkouts keep using the catalog as before")
+
+    def test_located_checkout_blocks_the_tool_end_to_end(self):
+        """locate reads the checkout's contract; the resolver marks `ffmpeg-skill:cut` MISSING with the reason; selection
+        falls through with that reason (what a plan's handoff carries); and the adapter refuses before argparse ever runs."""
+        from video_agent.capabilities.resolver import ffmpeg_skill_capabilities
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        root = self._checkout(_rename_flag(fake_ffmpeg_contract(), "cut", "--accurate", "--frame-accurate"))
+        skill = locate_ffmpeg_skill(str(root), env={})
+        self.assertEqual(skill.catalog_check().status, "checked")
+        caps = dict(FakeCaps().resolve())
+        caps.update(ffmpeg_skill_capabilities(skill))
+        self.assertEqual(caps["ffmpeg-skill"].status, "AVAILABLE")
+        self.assertEqual(caps["ffmpeg-skill:cut"].status, "MISSING")
+        self.assertEqual(caps["ffmpeg-skill:export"].status, "AVAILABLE")
+        reg, ff_only = self._registry(), (lambda t: t.startswith("ffmpeg-skill/"))
+        tool, reason = reg.select_tool("silence_cleanup", caps, ff_only)
+        self.assertIsNone(tool)
+        self.assertIn("ffmpeg-skill:cut: ffmpeg-skill contract: cut.py has no --accurate", reason)
+        self.assertEqual(reg.select_tool("loudness_normalization", caps, ff_only)[0], "ffmpeg-skill/loudness", "only that tool is affected")
+        rows = {r["skill_id"]: r for r in reg.package_availability(caps, ff_only)}
+        self.assertNotIn("ffmpeg-skill/cut", rows["ffmpeg-skill"]["usable_tools"])
+        self.assertIn("ffmpeg-skill/export", rows["ffmpeg-skill"]["usable_tools"])
+        a = FfmpegSkillAdapter(skill)
+        with self.assertRaises(ToolError) as cm:
+            a.build_argv("ffmpeg-skill/cut", {"input": "/x/in.mp4", "accurate": True}, {})
+        self.assertIn("--accurate", str(cm.exception))
+        self.assertEqual(a.build_argv("ffmpeg-skill/export", {"input": "/x/in.mp4", "preset": "youtube"}, {}), ["/x/in.mp4", "--preset", "youtube"])
+        self.assertEqual(a.describe()["contract"]["unavailable"], {"cut": a.unavailable_reason("ffmpeg-skill/cut")})
+
+    def test_located_checkout_with_contract_version_2_is_refused(self):
+        from video_agent.capabilities.resolver import ffmpeg_skill_capabilities
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        skill = locate_ffmpeg_skill(str(self._checkout(fake_ffmpeg_contract("2.0"))), env={})
+        caps = dict(FakeCaps().resolve())
+        caps.update(ffmpeg_skill_capabilities(skill))
+        self.assertEqual(caps["ffmpeg-skill"].status, "MISSING")
+        self.assertIn("contract_version '2.0'", caps["ffmpeg-skill"].detail)
+        tool, reason = self._registry().select_tool("loudness_normalization", caps, lambda t: t.startswith("ffmpeg-skill/"))
+        self.assertIsNone(tool)
+        self.assertIn("contract_version '2.0' is not 1.x", reason)
+        with self.assertRaises(ToolError):
+            FfmpegSkillAdapter(skill).build_argv("ffmpeg-skill/probe", {"inputs": ["/x/in.mp4"]}, {})
+
+    def test_located_checkout_surfaces_doctor(self):
+        from video_agent.capabilities.resolver import ffmpeg_skill_capabilities
+        from video_agent.tools.ffmpeg_skill.catalog import CATALOG
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        doctor = {"ok": True, "missing": [], "tools": dict({n: {"usable": "yes"} for n in CATALOG}, deinterlace={"usable": "no", "missing": ["filter:yadif"], "fix": "rebuild ffmpeg"})}
+        skill = locate_ffmpeg_skill(str(self._checkout(fake_ffmpeg_contract(), doctor)), env={})
+        caps = ffmpeg_skill_capabilities(skill)
+        self.assertEqual(caps["ffmpeg-skill:deinterlace"].status, "MISSING")
+        self.assertIn("ffmpeg-skill doctor: missing filter:yadif (fix: rebuild ffmpeg)", caps["ffmpeg-skill:deinterlace"].detail)
+        self.assertEqual(caps["ffmpeg-skill"].evidence["contract"]["doctor"]["tools"]["deinterlace"]["usable"], "no")
 
 
 class LocateAuthoritativeOverrideTests(unittest.TestCase):

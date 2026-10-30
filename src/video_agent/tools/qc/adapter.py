@@ -57,7 +57,9 @@ CONTRACT_SCHEMA = "qc/contract@1"
 REQUEST_SCHEMA = "qc/request@1"
 RESPONSE_SCHEMA = "qc/response@1"
 DOCTOR_SCHEMA = "qc/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 0.2.x (qc-skill #22, 2026-10-30): the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0;
+# nothing else in the contract changed, so the gate widens to 0.2.x and the pin is re-taken from main (ADR-056, qc の追記).
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
 CANONICAL_INVOCATION = ["qc", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False}
 ALLOWED_EXECUTABLES = {"ffprobe", "ffmpeg"}
@@ -96,7 +98,7 @@ def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.2.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from .contract_check import CatalogCheck, catalog_check
+
 SUPPORTED_MIN = (0, 8, 4)
 # 0.10.0 (2026-09-06): per-tool `doctor --json` usable fields, `contract --json` reencodes_video/reencodes_audio,
 # join.py's audio-less multi-clip filtergraph-index fix, no other script changed its media behaviour (CHANGELOG).
@@ -57,6 +59,11 @@ class FfmpegSkill:
             _HELP_CACHE[key] = out
         return re.search(re.escape(flag) + r"(?![\w-])", _HELP_CACHE[key]) is not None
 
+    def catalog_check(self) -> CatalogCheck:
+        """ADR-056: the catalog checked against this checkout's `_contract.py --json --static` and `doctor --json` (read once per
+        checkout and version). `catalog_check().tool_reason(name)` is why a catalogued tool cannot be used here, or None."""
+        return catalog_check(self.root, self.version, self.scripts)
+
 
 _HELP_CACHE: Dict[Tuple[str, str], str] = {}
 
@@ -89,5 +96,6 @@ def locate_ffmpeg_skill(explicit: Optional[str] = None, env: Optional[Dict[str, 
     for c in cands:
         found = _candidate(c)
         if found:
+            found.catalog_check()   # ADR-056: read the contract at locate time (cached), so every caller sees the same verdict
             return found
     return None

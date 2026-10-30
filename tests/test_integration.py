@@ -499,6 +499,28 @@ class FfmpegSkillContractTests(unittest.TestCase):
         self.assertTrue(bad.revise(load_ir(p), p)["created"])
         self.assertTrue(bad.approve(load_ir(p), p, ["all"])["renderable"])
 
+    def test_contract_publishes_every_catalog_flag(self):
+        """ADR-056 (roadmap step 3): ffmpeg-skill main's own `_contract.py --json --static` is contract_version 1.x and every flag,
+        switch arity and positional the hand-maintained catalog uses is in that tool's input_schema -- so on main no catalogued
+        tool is ruled out by the contract (doctor's per-tool verdict depends on this machine's ffmpeg and is checked apart)."""
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog, read_catalog_check, read_contract
+        skill = locate_ffmpeg_skill()
+        contract, err = read_contract(skill.root)
+        self.assertIsInstance(contract, dict, err)
+        self.assertTrue(str(contract["contract_version"]).startswith("1."), contract["contract_version"])
+        chk = check_catalog(contract, None, skill.scripts)
+        self.assertEqual((chk.status, chk.unavailable), ("checked", {}))
+        self.assertEqual(set(CATALOG) - set(skill.scripts), set())
+        full = read_catalog_check(skill.root, skill.scripts)
+        self.assertEqual(full.status, "checked")
+        self.assertIsNotNone(full.doctor, full.notes)
+        for name, why in full.unavailable.items():   # only doctor may rule a tool out here, and then with its own words
+            self.assertTrue(why.startswith("ffmpeg-skill doctor:"), why)
+        caps = Service(workspace=tempfile.mkdtemp()).caps.resolve()
+        self.assertEqual(caps["ffmpeg-skill"].evidence["contract"]["status"], "checked")
+        for name in CATALOG:
+            self.assertEqual(caps[f"ffmpeg-skill:{name}"].status, "MISSING" if name in full.unavailable else "AVAILABLE", name)
+
     def test_help_declares_every_catalog_flag(self):
         skill = locate_ffmpeg_skill()
         from video_agent.tools.ffmpeg_skill.catalog import FLAG_ALIASES, QUALITY_FLAG
