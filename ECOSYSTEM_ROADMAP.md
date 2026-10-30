@@ -38,8 +38,9 @@ Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
   - Done when: "60 s vertical, captions, -14 LUFS" yields valid keys; no provider = deterministic
 - [ ] **6. Wire what the satellites already offer** — color gamma/lift/gain/levels/curves; all 12 motion-graphics elements; subtitle mux; audio MIX / NOISE_REDUCTION / DYNAMICS; qc delivery_package gate; video-editing trim/rotate
   - Done when: a plan step per new parameter / element, tests
-- [ ] **7. cropdetect -> crop decision** — AnalysisKind crop_rectangle and a CONFIRM decision proposing video_crop
+- [x] **7. cropdetect -> crop decision** — AnalysisKind crop_rectangle and a CONFIRM decision proposing video_crop ([#78](https://github.com/kajisho5/video-production-agent/pull/78))
   - Done when: letterboxed fixture proposes the measured rectangle
+  - Done (ADR-060): `--kind crop_rectangle` runs ffmpeg-skill `cropdetect.py --seconds 10 --samples 5 --round 2` (OBSERVED observation); a rectangle stable across the sampled windows (confidence ≥ 0.9, ≥ 3 windows decoded, rounded inward to even, removing ≥ 1% of a dimension) becomes TRANSFORM `video.crop` with approval floor CONFIRM, and once approved the existing `video_crop` step (ffmpeg-skill `crop.py`) runs; unstable / no bars → KEEP with the reason; no proposal for an explicit `edit.crop`, a multi-input programme or the audio path. `tests/test_crop.py`, evals 113-114, `tests/test_integration.py::CropProposalRealTests` (1920x1080 with a 1920x800 picture → `{x: 0, y: 140, width: 1920, height: 800}`, cropped to 1920x800 after approval)
 - [ ] **8. Speaker ids end to end** — accept diarization output; remove the null-only speaker_id invariants behind an explicit requirement
   - Done when: subtitles and edits carry speaker ids from a diarized transcript
 - [ ] **9. Adapters for the new skills, as they ship** — ingest (media_offload), detection (redact faces), dubbing, voice-enhance, sound-design (via audio-production MIX), publish (CONFIRM after QC), nle-bridge

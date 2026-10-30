@@ -49,7 +49,13 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # measured onset). Measured on one input only, the one named by the request parameter `beat_input` (edit.takes.music); every
     # other input is SKIPPED. A measurement, never a proposal: the agent places nothing on a beat the tool did not report.
     "beats": {"skill": "beat_analysis", "needs_audio": True, "params": (), "only_input_param": "beat_input"},
+    # black letterbox / pillarbox bars (ADR-060): ffmpeg-skill cropdetect.py over windows spread across the file, with the agent's fixed
+    # sampling (CROP_TOOL_ARGS below). A measurement only: whether to crop is a CONFIRM decision (agent/crop.py), never this kind's
+    "crop_rectangle": {"skill": "cropdetect_analysis", "needs_audio": False, "params": ()},
 }
+# what the agent asks cropdetect.py for (ADR-060): 10 s of footage over 5 windows spread across the file, the rectangle to the nearest
+# even pixel (`--round 2`; cropdetect's default 16 cuts up to 14 px into the picture). Recorded as the observation's parameters
+CROP_TOOL_ARGS: Dict[str, Any] = {"seconds": 10.0, "samples": 5, "round_to": 2}
 SYNC_TOOL_PARAMS = ("max_offset", "analyze_seconds", "fix_drift")   # the only sync parameters forwarded to the tool (never replace_audio / trim_second / output)
 SYNC_MIN_CONFIDENCE_DEFAULT = 0.3   # below this the offset is recorded but not applied to the TimelineMap (the sync Skill's own benchmark flags misses at < 0.3)
 CORE_KINDS = ("media_probe", "silence", "loudness")   # what FULL runs by default; other kinds are requested explicitly

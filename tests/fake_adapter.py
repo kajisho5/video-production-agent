@@ -172,10 +172,15 @@ class FakeAdapter(ToolAdapter):
             # a fake measurement (tests only, ADR-046): no output file. Shape verified against a real --json capture
             # (synthetic letterboxed clip, ffmpeg-skill 0.16.2) -- see catalog.py's comment on the cropdetect entry.
             assert "output" not in op.args, op.args
+            # A self-describing fake file may declare what the measurement finds (ADR-060): "crop" (the rectangle, or null for no reading),
+            # "crop_confidence", "crop_windows_failed"; by default the full frame, every reading agreeing (real 2.22.x keys: windows / windows_failed)
             meta = _read_fake(op.args["input"]) or {}
             w, h = int(meta.get("width", 1280)), int(meta.get("height", 720))
-            doc = {"file": op.args["input"], "source_width": w, "source_height": h, "crop": {"width": w, "height": h, "x": 0, "y": 0},
-                   "confidence": 1.0, "commands": ["ffmpeg cropdetect"]}
+            crop = meta.get("crop", {"width": w, "height": h, "x": 0, "y": 0})
+            doc = {"file": op.args["input"], "source_width": w, "source_height": h, "windows": int(op.args.get("samples", 5)),
+                   "windows_failed": int(meta.get("crop_windows_failed", 0)), "crop": crop, "commands": ["ffmpeg cropdetect"]}
+            if crop is not None:
+                doc["confidence"] = float(meta.get("crop_confidence", 1.0))
             return ToolResult(op.id, op.tool, True, 0, None, doc, doc["commands"], "", 0.2, attempt, dry_run)
         if script == "grid":
             # a fake comparison grid (tests only, ADR-046): duration follows grid.py's own contract -- the shortest

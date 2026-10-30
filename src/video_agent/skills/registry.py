@@ -359,11 +359,9 @@ def default_registry() -> SkillRegistry:
                          {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/stabilize"]))
     # cropdetect is deliberately NOT a pipeline edit op (ADR-046): it is a read-only measurement (reports a crop
     # rectangle, writes no file) meant to feed video_crop's x/y/width/height, the same "measure, then a separate
-    # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is registered here as a real,
-    # callable Skill+Tool (phase 1) but is not wired into agent/editing.py's OPERATIONS / EDIT_ORDER, and not (yet)
-    # integrated into the media/analysis.py Observation framework that sync_analysis / silence_analysis etc. use --
-    # that integration is real design work of its own (an AnalysisKind, a Decision that proposes video_crop from its
-    # result) left for a follow-up rather than decided unprompted here.
+    # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is not in agent/editing.py's
+    # OPERATIONS / EDIT_ORDER; it is the analysis kind `crop_rectangle` (ADR-060), whose stable rectangle becomes a
+    # CONFIRM decision proposing video_crop (agent/crop.py).
     r.register(SkillSpec("cropdetect_analysis", "1.0", "Measure black letterbox/pillarbox bars and report the crop rectangle that removes them (measurement only, no output file)",
                          {"asset": "video"}, {"observation": "crop_rectangle"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/cropdetect"]))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited

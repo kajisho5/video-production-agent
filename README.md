@@ -62,6 +62,7 @@ video-agent doctor
 video-agent skills                                      # Skill package（ffmpeg-skill / media-analysis / transcription）と production skill の状態、選択された tool
 video-agent transcribe input.mp4 --language ja --offline   # transcription-skill で認識 → transcript Observation + SpeechEvent（認識まで。話者・字幕・編集は判断しない）
 video-agent plan input.mp4 --profile youtube --kind transcript --language ja   # transcript / SPEECH → speech inference → 発話間の長い無音を削除候補（CONFIRM）として plan に載せる
+video-agent plan film.mp4 --kind crop_rectangle            # 黒帯（レターボックス / ピラーボックス）を測り、安定した矩形なら video.crop を CONFIRM で提案（承認するまで切らない、ADR-060）
 video-agent explain <ir.json> --step step_trim_<asset>   # decision → inference → SpeechEvent / silence event → observation の証拠 chain
 video-agent context <ir.json> --at 10                    # その時刻の Production Context（同時に成立している Event 種別と参照）
 video-agent explain <ir.json> --context <ctx_id>         # context → tracks → events → observations、それに乗る inference / decision
