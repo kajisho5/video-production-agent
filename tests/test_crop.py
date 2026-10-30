@@ -10,10 +10,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_adapter import FakeAdapter, _write_fake  # noqa: E402
+from pipeline_harness import clear_modes, pipeline_service  # noqa: E402
+from pipeline_harness import fake_media as pipeline_media  # noqa: E402
 from test_unit import make_service  # noqa: E402
 from video_agent.agent.crop import (CROP_KIND, MIN_CONFIDENCE, crop_facts, decide_crop, even_inward,  # noqa: E402
                                     stable_rectangle)
 from video_agent.agent.decision_engine import DecisionEngine, resolve_approval  # noqa: E402
+from video_agent.agent.editing import delivery_subjects  # noqa: E402
+from video_agent.agent.finishing import picture_size  # noqa: E402
+from video_agent.agent.qc import rules_for_subject  # noqa: E402
 from video_agent.media.analysis import CROP_TOOL_ARGS  # noqa: E402
 from video_agent.models import Asset, Intent, Observation  # noqa: E402
 from video_agent.policy.rules import Rule, resolve_rules  # noqa: E402
@@ -210,6 +215,61 @@ class CropPlanTests(unittest.TestCase):
         row = next(r for r in ir.doc["analysis"]["analyses"][0]["rows"] if r["kind"] == CROP_KIND)
         self.assertEqual((row["status"], row["reason"]), ("SKIPPED", "no video stream"))
         self.assertFalse(self.crop_decisions(ir.doc))
+
+
+class CroppedPictureSizeTests(unittest.TestCase):
+    """Found during PR #80: `picture_size` ignored `video.crop`, so a step sized from the picture after a crop (the thumbnail canvas,
+    the QC gate's expected width) got the pre-crop size. The size now follows the IR's operation order: crop → rotate → resize → fit / fill."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        clear_modes()
+
+    def test_picture_size_follows_the_operation_order(self):
+        tech = {"video": {"width": 1280, "height": 720}}
+        crop = {"type": "video.crop", "asset": "a", **LETTERBOX}
+        self.assertEqual(picture_size(tech, [crop], "a"), (1280, 536))
+        self.assertEqual(picture_size(tech, [crop, {"type": "video.rotate", "asset": "a", "degrees": 90}], "a"), (536, 1280), "the cropped picture is turned")
+        self.assertEqual(picture_size(tech, [crop, {"type": "video.resize", "asset": "a", "width": 640}], "a"), (640, 268), "resize keeps the cropped aspect")
+        self.assertEqual(picture_size(tech, [crop, {"type": "video.fit", "asset": "a", "aspect": "16:9"}], "a"), (1280, 720), "fit letterboxes the cropped picture back")
+        self.assertEqual(picture_size(tech, [dict(crop, asset="b")], "a"), (1280, 720), "another subject's crop does not count")
+
+    def _plan(self, reqs, kinds=("crop_rectangle",)):
+        self.svc = pipeline_service(self.tmp)
+        return self.svc.plan([pipeline_media(self.tmp, "film.mp4", crop=LETTERBOX)], "generic", user_requirements=reqs, kinds=list(kinds))
+
+    def test_thumbnail_canvas_after_an_approved_crop_proposal(self):
+        """ADR-060's proposal, approved: the thumbnail is taken from the cropped picture, so its canvas is the rectangle's size."""
+        ir = self._plan({"thumbnail": True, "thumbnail.text": "Film"})
+        dec = next(d for d in ir.doc["decisions"] if d["subject"] == "video.crop")
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        self.svc.approve(load_ir(p), p, [dec["id"]])
+        d = load_ir(p).doc
+        th = next(op for op in d["graphics"]["operations"] if op["type"] == "graphics.thumbnail")
+        self.assertEqual(th["input"], next(op["output"] for op in d["video"]["operations"] if op["type"] == "video.crop"), "taken from the cropped picture")
+        self.assertEqual((th["width"], th["height"]), (1280, 536))
+        self.assertEqual(self.svc.validate(load_ir(p)).errors, [])
+
+    def test_thumbnail_canvas_after_an_explicit_crop_and_rotate(self):
+        rect = {"x": 0, "y": 0, "width": 640, "height": 360}
+        ir = self._plan({"edit.crop": rect, "edit.rotate": 90, "thumbnail": True, "thumbnail.text": "Film"}, kinds=())
+        th = next(op for op in ir.doc["graphics"]["operations"] if op["type"] == "graphics.thumbnail")
+        self.assertEqual((th["width"], th["height"]), (360, 640), "crop first (source pixels), then the quarter turn")
+
+    def test_qc_expected_width_after_crop_and_rotate(self):
+        """The other consumer of the planned size: the QC gate's expected width of a deliverable without a platform preset."""
+        ir = self._plan({"edit.crop": {"x": 0, "y": 0, "width": 640, "height": 360}, "edit.rotate": 90, "qc": True}, kinds=())
+        d = ir.doc
+        row = next(r for r in delivery_subjects(d) if not r["audio_only"])
+        spec = rules_for_subject(row, d["delivery"]["targets"][0], d, 2.0)
+        self.assertEqual(spec["rules"]["delivery"]["video"]["expected_width"], 360, "the turned crop is 360 wide, not the crop's 640")
+        ir = self._plan({"edit.rotate": 90, "qc": True}, kinds=())
+        row = next(r for r in delivery_subjects(ir.doc) if not r["audio_only"])
+        self.assertEqual(rules_for_subject(row, ir.doc["delivery"]["targets"][0], ir.doc, 2.0)["rules"]["delivery"]["video"]["expected_width"], 720,
+                         "a quarter turn alone changes the delivered width too")
 
 
 if __name__ == "__main__":
