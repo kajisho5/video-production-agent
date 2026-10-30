@@ -6,8 +6,7 @@
  },
  "expect": {
   "no_decisions": [
-   "silence.leading",
-   "audio.loudness"
+   "silence.leading"
   ],
   "production_plan": {
    "steps": [
@@ -19,6 +18,12 @@
     "loudness_normalization"
    ],
    "validate": true
+  },
+  "decisions": {
+   "audio.loudness": {
+    "decision": "skip",
+    "type": "SKIP"
+   }
   }
  }
 }

@@ -568,9 +568,11 @@ class MediaAnalysisRealTests(unittest.TestCase):
 
     def test_capability_and_contract_come_from_the_installed_skill(self):
         svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
+        from video_agent.tools.media_analysis.adapter import SUPPORTED_SKILL_VERSIONS
         cap = svc.caps.resolve()["media-analysis"]
         self.assertEqual(cap.status, "AVAILABLE", cap.evidence)
-        self.assertEqual((cap.evidence["version"], cap.evidence["contract"], cap.evidence["execution"]), ("0.1.0", "media-analysis/contract@1", "local_subprocess"))
+        self.assertEqual((cap.evidence["contract"], cap.evidence["execution"]), ("media-analysis/contract@1", "local_subprocess"))
+        self.assertTrue(cap.evidence["version"].startswith(SUPPORTED_SKILL_VERSIONS), cap.evidence["version"])   # the installed release, inside the adapter's gate
         self.assertEqual(len(cap.evidence["tools"]), 9)
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["available"] and rows["ffmpeg-skill"]["available"])
@@ -621,13 +623,14 @@ class MediaAnalysisRealTests(unittest.TestCase):
     def test_all_kinds_lifted_with_provenance_and_skill_cache(self):
         ws = str(Path(self.tmp) / "ws_all")
         svc = self._service(ws)
+        installed = svc.caps.resolve()["media-analysis"].evidence["version"]   # whatever release is installed: provenance must name it
         extra = ["stream_layout", "video_format", "audio_format", "duration", "integrity", "scene_detection", "timing"]
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=extra)
         obs = {o.kind: o for o in an.observations}
         self.assertEqual(sorted(obs), sorted(["media_probe", "silence", "loudness"] + extra))
         for o in obs.values():
-            self.assertEqual((o.provenance, o.skill, o.skill_version), ("OBSERVED", "media-analysis", "0.1.0"), o.kind)
-            self.assertTrue(o.tool.startswith("media-analysis/") and o.source == f"{o.tool}@0.1.0" and o.external_id.startswith("obs_"), o.kind)
+            self.assertEqual((o.provenance, o.skill, o.skill_version), ("OBSERVED", "media-analysis", installed), o.kind)
+            self.assertTrue(o.tool.startswith("media-analysis/") and o.source == f"{o.tool}@{installed}" and o.external_id.startswith("obs_"), o.kind)
             self.assertEqual(len(o.fingerprint), 64)
             self.assertEqual(o.cache.get("status"), "miss", o.kind)
         self.assertEqual(obs["duration"].tool, obs["timing"].tool, "one Skill tool serves two kinds; the kind stays on the observation")
@@ -717,9 +720,11 @@ class TranscriptionRealTests(unittest.TestCase):
 
     def test_contract_doctor_and_engine_contract_from_the_installed_skill(self):
         from video_agent.tools.transcription import check_contract
+        from video_agent.tools.transcription.adapter import SUPPORTED_SKILL_VERSIONS
         ad = self.adapter
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.contract["id"], ad.version[:4], ad.contract["schemas"]["transcript"]), ("transcription-skill", "0.2.", "transcription-skill/transcript/0.1"))
+        self.assertEqual((ad.contract["id"], ad.contract["schemas"]["transcript"]), ("transcription-skill", "transcription-skill/transcript/0.1"))
+        self.assertTrue(ad.version.startswith(SUPPORTED_SKILL_VERSIONS), ad.version)
         self.assertLessEqual({"transcription/check", "transcription/export", "transcription/segments", "transcription/transcribe"}, set(ad.tools))   # 0.7 added transcription/batch
         self.assertTrue(ad.supports("transcription/transcribe") and not ad.supports("transcription/export"))
         eng = {e["id"]: e for e in ad.engine_status()}
@@ -1530,6 +1535,7 @@ class AudioProductionRealTests(unittest.TestCase):
         """plan → (status as expected before any approval) → render(approve=all) → COMPLETED. `expect_plan_status` "REVIEW" means the
         plan waits for the CONFIRM decisions in `pending_subjects` (ADR-033: a video container's audio.extract); the explicit
         `approve=["all"]` of render is the existing approval mechanism, after which the saved plan must be APPROVED."""
+        from video_agent.tools.audio_production import pinned_contract as ap_pinned
         ws = str(Path(self.tmp) / name)
         svc = Service(workspace=ws)
         ir = svc.plan(inputs, "generic", user_requirements=reqs)
@@ -1565,7 +1571,7 @@ class AudioProductionRealTests(unittest.TestCase):
         rows = [e for e in prov["operations"] if e["tool"] == "audio-production/run"]
         self.assertEqual([e["skill"] for e in rows], expect_skills)
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.0" and e["skill_package"] == "audio-production")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == ap_pinned()["version"] and e["skill_package"] == "audio-production")
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] in ("TRANSFORM", "REMOVE") for e in rows for i in e["decision"]))
         return svc, p, out, res, prov

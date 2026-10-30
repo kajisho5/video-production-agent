@@ -478,7 +478,9 @@ def run_case(case: dict) -> dict:
         fake_engine = FakeAdapter(**fake)
         svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine, ad]), caps=caps, provider=provider)
         if ve.get("prefer", True):
-            svc.registry.get("silence_cleanup").tools = ["video-editing/cut", "ffmpeg-skill/cut"]
+            # Both cuts are usable here, so the collision policy decides (docs/CAPABILITY_MODEL.md): the workspace default-provider
+            # policy picks video-editing, as a deployment that prefers it would.
+            (Path(tmp) / "providers.json").write_text(json.dumps({"silence_cleanup": "video-editing"}), encoding="utf-8")
         ir = svc.plan([str(src)], case.get("profile", "generic"), user_requirements=case.get("requirements"))
         d = ir.doc
         step = next((s for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"), None)

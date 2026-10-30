@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]   # not ubuntu-latest: Ubuntu 26.04 runners have no Python 3.9
         python: ["3.9", "3.11"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -21,7 +21,7 @@ jobs:
       - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
       - run: python -m unittest -v tests/test_pipeline.py
       # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra)
-      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py
+      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py
       - run: python evals/run.py
   integration:
     runs-on: ubuntu-latest
