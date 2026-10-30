@@ -1,0 +1,26 @@
+{
+ "name": "pipe_motion_placement_outside_rotated_picture_blocks",
+ "profile": "generic",
+ "pipeline": {},
+ "requirements": {
+  "edit.rotate": 90,
+  "motion.text": "LIVE",
+  "motion.text.position": {
+   "x": 1000,
+   "y": 10
+  }
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "graphics.text_overlay"
+  ],
+  "plan_status": "BLOCKED",
+  "decisions": {
+   "graphics.text_overlay": {
+    "type": "BLOCK",
+    "approval": "BLOCK"
+   }
+  }
+ }
+}

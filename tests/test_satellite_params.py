@@ -1,11 +1,13 @@
 """What the satellites already offer (ECOSYSTEM_ROADMAP step 6). Part 1 (ADR-062): color-grading-skill 0.4.0's PRIMARY_CORRECTION
 gamma / lift / gain / levels / curves, and video-editing-skill's TRIM (an explicit in / out range) and ROTATE (lowered here together
 with FREEZE / REVERSE). Part 2 (ADR-063): audio-production-skill 0.4.2's MIX / NOISE_REDUCTION / DYNAMICS and subtitle-skill 0.2.0's
-render `mode: "mux"` (a soft subtitle track). Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
+render `mode: "mux"` (a soft subtitle track). Part 3 (ADR-064): every element of motion-graphics-skill 0.2.3, with every parameter. Part 4 (ADR-065): qc-skill 0.2.3's
+delivery_package check of the deliverable set (the deliverable + its subtitle sidecar / thumbnail) as part of the QC gate. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
 key, ADR-061), a decision, an IR record, a plan step and the compiled Skill request, on the fake engine and the fake Skills
 (tests/test_integration.py runs them on the real Skills)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -19,7 +21,10 @@ from pipeline_harness import clear_modes, pipeline_service, plan_and_render  # n
 from pipeline_harness import fake_media as pipeline_media  # noqa: E402
 from test_unit import FakeCaps, fake_media, make_service  # noqa: E402
 from video_agent.agent.editing import EditRequirementError, parse_edit_requirements  # noqa: E402
-from video_agent.agent.finishing import COLOR_CURVES_PRESETS, parse_color_requirements, picture_size  # noqa: E402
+from video_agent.agent.finishing import (COLOR_CURVES_PRESETS, ELEMENT_TYPES, MOTION_BASE, MOTION_KEYS, parse_color_requirements, parse_motion_requirements,  # noqa: E402
+                                         picture_size, placement_problems)
+from video_agent.execution.compiler import lower_graphics_render  # noqa: E402
+from video_agent.tools.motion_graphics.adapter import pinned_contract as motion_contract  # noqa: E402
 from video_agent.agent.requirements import requirement_map  # noqa: E402
 from video_agent.execution.compiler import CompileError, lower_audio_op, lower_captions, lower_color_op, lower_video_trim  # noqa: E402
 from video_agent.agent.audio import (DYNAMICS_KEYS, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_CONTRACT_STRENGTH, NOISE_REDUCTION_MODES,  # noqa: E402
@@ -550,6 +555,278 @@ class SubtitleMuxTests(unittest.TestCase):
         r = plan_and_render(pipeline_service(self.tmp), [self._media()], {"subtitle": True, "subtitle.mode": "mux"}, profile="generic", kinds=["transcript"], name="wrong")
         res = next(x for x in r["out"]["execution"]["results"] if x["tool"] == "subtitle/render")
         self.assertFalse(res["ok"]); self.assertIn("mode", json.dumps(res["data"]))
+
+
+# the eight element types ADR-064 adds, each with every parameter the contract declares (text-only, so a brief may yield them too)
+NEW_ELEMENTS = {"motion.bug": "@studio", "motion.bug.position": "top-left", "motion.bug.text_color": "FFCC00",
+                "motion.chapter": "Part 2 -- Setup", "motion.chapter.position": "bottom-right", "motion.chapter.primary_color": "1F2A44", "motion.chapter.start": 6,
+                "motion.progress": True, "motion.progress.primary_color": "E53935",
+                "motion.countdown": True, "motion.countdown.count_from": 3, "motion.countdown.primary_color": "FFFFFF", "motion.countdown.start": 1, "motion.countdown.end": 4,
+                "motion.sticker": "NEW", "motion.sticker.position": "bottom-left", "motion.sticker.primary_color": "FFD200",
+                "motion.hook": "Wait for it", "motion.hook.text_color": "FFFFFF", "motion.hook.primary_color": "000000",
+                "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green"}
+
+
+class MotionGraphicsElementTests(unittest.TestCase):
+    """Every element type and parameter of the pinned motion-graphics contract (ADR-064): `motion.<element>` + `motion.<element>.<parameter>`
+    → decision `graphics.<type>` → one graphics.render element → the Skill request, with placement checked against the planned picture."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        clear_modes()
+
+    def _files(self):
+        png = Path(self.tmp) / "src" / "logo.png"
+        png.parent.mkdir(parents=True, exist_ok=True)
+        png.write_bytes(b"\x89PNG fake")
+        return str(png), pipeline_media(self.tmp, "pip.mp4", duration=30.0)
+
+    def test_vocabulary_matches_the_pinned_contract(self):
+        """Every element type the contract offers has a key, and every parameter of it is reachable by its contract name."""
+        c = motion_contract()
+        self.assertEqual(sorted(ELEMENT_TYPES), sorted(e["type"] for e in c["element_types"]))
+        self.assertEqual(sorted(ELEMENT_TYPES), sorted(c["tools"][0]["element_types"]))
+        self.assertEqual(len(ELEMENT_TYPES), 12)
+        for e in c["element_types"]:
+            base, main = MOTION_BASE[e["type"]]
+            for name in e["parameters"]:
+                self.assertIn(base if name == main else f"{base}.{name}", MOTION_KEYS[e["type"]], (e["type"], name))
+            fade = any(a["kind"] == "fade" and e["type"] in a["applies_to"] for a in c["animations"])
+            self.assertEqual(f"{base}.fade" in MOTION_KEYS[e["type"]], fade, e["type"])
+        self.assertEqual([MOTION_BASE[t][0] for t in ("title", "lower_third", "text_overlay", "image_overlay")], ["motion.title", "motion.lower_third", "motion.text", "motion.image"],
+                         "the ADR-031 keys keep their names")
+        got = parse_motion_requirements(reqs(NEW_ELEMENTS))
+        self.assertEqual(sorted(got), ["bug", "chapter", "countdown", "hook", "meme", "progress", "sticker"])
+        self.assertEqual(got["bug"]["params"], {"title": "@studio", "position": "top-left", "text_color": "FFCC00"})
+        self.assertEqual(got["countdown"]["params"], {"count_from": 3, "primary_color": "FFFFFF"}); self.assertEqual((got["countdown"]["start"], got["countdown"]["end"]), (1.0, 4.0))
+        self.assertEqual(got["meme"]["params"], {"top": "when the build", "bottom": "is green"}); self.assertEqual(got["progress"]["params"], {"primary_color": "E53935"})
+        png, clip = self._files()
+        full = parse_motion_requirements(reqs({"motion.text": "LIVE", "motion.text.font": "system:dejavu-serif", "motion.text.font_size": 64, "motion.text.box": True,
+                                               "motion.text.box_color": "black@0.5", "motion.text.border_width": 0, "motion.text.margin": 40, "motion.text.opacity": 0.9,
+                                               "motion.video": clip, "motion.video.chromakey": "00FF00", "motion.video.chromakey_similarity": 0.2, "motion.video.scale_percent": 30,
+                                               "motion.image": png, "motion.image.scale_width": 200, "motion.title": "Hi", "motion.title.primary_color": "008080"}))
+        self.assertEqual(full["video_overlay"]["params"], {"video": clip, "scale_percent": 30.0, "chromakey": "00FF00", "chromakey_similarity": 0.2})
+        self.assertEqual(full["text_overlay"]["params"]["font"], "system:dejavu-serif"); self.assertIs(full["text_overlay"]["params"]["box"], True)
+        self.assertEqual(full["image_overlay"]["params"], {"image": png, "scale_width": 200})
+
+    def test_refusals(self):
+        png, clip = self._files()
+        for bad, msg in (({"motion.countdown": True, "motion.countdown.count_from": 61}, "within"), ({"motion.countdown": True, "motion.countdown.count_from": 2.5}, "integer"),
+                         ({"motion.bug": "x", "motion.bug.position": "center"}, "one of"), ({"motion.sticker": "x" * 201}, "at most 200"),
+                         ({"motion.hook": "x", "motion.hook.text_color": "white"}, "bare RRGGBB"), ({"motion.chapter": "x", "motion.chapter.primary_color": "FFCC00@0.5"}, "bare RRGGBB"),
+                         ({"motion.text": "x", "motion.text.font_color": "#FFCC00"}, "colour name"), ({"motion.text": "x", "motion.text.font": "Arial"}, "registry font"),
+                         ({"motion.text": "x", "motion.text.border_width": 21}, "within"), ({"motion.text": "x", "motion.text.box": "maybe"}, "true or false"),
+                         ({"motion.video": clip, "motion.video.chromakey_similarity": 0}, "within"), ({"motion.video": png}, "one of"),
+                         ({"motion.video": str(Path(self.tmp) / "nope.mp4")}, "not found"), ({"motion.meme": True}, "at least one of"),
+                         ({"motion.progress.primary_color": "red"}, "motion.progress is not"), ({"motion.progress": False, "motion.progress.primary_color": "red"}, "ambiguous"),
+                         ({"motion.chapter": "x", "motion.chapter.start": 5, "motion.chapter.end": 5}, "before")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse_motion_requirements(reqs(bad))
+            self.assertIn(msg, str(cm.exception), str(bad))
+            with self.assertRaises(ValueError, msg=str(bad)):
+                _check_requirement_keys(bad)   # the same refusal before any analysis runs (the --set gate)
+        for unknown in ("motion.bug.font_size", "motion.meme.text", "motion.progress.position", "motion.video_overlay", "motion.hook.fade"):
+            with self.assertRaises(ValueError, msg=unknown) as cm:
+                _check_requirement_keys({unknown: 1})
+            self.assertIn("unknown requirement key", str(cm.exception))
+        self.assertEqual(parse_motion_requirements(reqs({"motion.progress": False})), {}, "a switch set to false asks for nothing")
+
+    def test_set_and_brief_keys(self):
+        """--set takes every key; a brief may yield all of them but the two file paths (only the user names a file the agent reads)."""
+        _check_requirement_keys(dict(NEW_ELEMENTS))
+        for keys in MOTION_KEYS.values():
+            for k in keys:
+                self.assertEqual(k in BRIEF_REQUIREMENT_KEYS, k not in ("motion.image", "motion.video"), k)
+
+    def test_placement_against_the_planned_picture(self):
+        self.assertEqual(placement_problems("text_overlay", {"text": "x", "position": {"x": 1000, "y": 10}}, (1280, 720)), [])
+        self.assertIn("outside the 720x1280 picture", placement_problems("text_overlay", {"text": "x", "position": {"x": 1000, "y": 10}}, (720, 1280))[0])
+        self.assertEqual(placement_problems("text_overlay", {"text": "x", "position": {"x": -700, "y": -10}}, (720, 1280)), [], "negative counts from the far edge")
+        self.assertIn("margin 800 from the bottom", placement_problems("text_overlay", {"text": "x", "margin": 800}, (1280, 720))[0], "the default position is bottom")
+        self.assertEqual(placement_problems("image_overlay", {"image": "x", "position": "center", "margin": 2000}, (1280, 720)), [], "a centred element has no margin side")
+        self.assertIn("wider", placement_problems("video_overlay", {"video": "x", "scale_width": 1300}, (1280, 720))[0])
+        self.assertIn("taller", placement_problems("text_overlay", {"text": "x", "font_size": 300}, (480, 270))[0])
+        self.assertEqual(placement_problems("text_overlay", {"text": "x", "position": {"x": 5000, "y": 0}}, None), [], "an unknown size is never guessed")
+        self.assertEqual(picture_size({"video": {"width": 1280, "height": 720}}, [{"type": "video.rotate", "asset": "a", "degrees": 90}], "a"), (720, 1280))
+
+    def test_compiled_request(self):
+        op = {"type": "graphics.render", "asset": "a", "image": "/x/logo.png", "video": "/x/pip.mp4", "elements": [
+            {"id": "el1_video_overlay", "type": "video_overlay", "start": 0.0, "end": 5.0, "parameters": {"video": "/x/pip.mp4", "chromakey": "00FF00"}},
+            {"id": "el2_meme", "type": "meme", "start": 0.0, "end": 5.0, "parameters": {"top": "a"}}]}
+        args = lower_graphics_render("motion-graphics/run", op, "a_trim", "a_graphics", None, "a_graphics_video")
+        self.assertEqual(args["elements"][0]["parameters"], {"chromakey": "00FF00", "video": "a_graphics_video"}, "the clip travels as an artifact id")
+        self.assertEqual(args["elements"][1]["parameters"], {"top": "a"})
+        with self.assertRaises(CompileError):
+            lower_graphics_render("ffmpeg-skill/overlay", op, "a_trim", "a_graphics")
+
+    def test_pipeline_every_element_decision_ir_step_and_skill_request(self):
+        png, clip = self._files()
+        req = dict(NEW_ELEMENTS, **{"motion.title": "Opening", "motion.title.text_color": "FFFFFF", "motion.lower_third": "Ada", "motion.lower_third.title": "Engineer",
+                                    "motion.text": "LIVE", "motion.text.font_size": 48, "motion.text.fade": 0.5, "motion.image": png, "motion.image.opacity": 0.8,
+                                    "motion.video": clip, "motion.video.position": "bottom-right", "motion.video.scale_width": 320, "motion.video.chromakey": "00FF00"})
+        svc = pipeline_service(self.tmp)
+        r = plan_and_render(svc, [pipeline_media(self.tmp, "talk.mp4")], req, name="mg")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        decs = {x["subject"]: x for x in d["decisions"] if x["subject"].startswith("graphics.")}
+        self.assertEqual(sorted(decs), sorted(f"graphics.{t}" for t in ELEMENT_TYPES))
+        for x in decs.values():
+            self.assertEqual((x["type"], x["provenance"], x["approval"]), ("TRANSFORM", "USER", "AUTO"), x["subject"])
+            self.assertEqual(x["basis"]["approval"]["key"], x["subject"] + ".approval")
+        self.assertEqual(decs["graphics.hook"]["params"]["end"], 3.0, "a hook defaults to a 3 s opener (policy default, recorded)")
+        self.assertIn("motion.hook.duration", [s_["key"] for s_ in decs["graphics.hook"]["basis"]["settings"]])
+        self.assertIsNone(decs["graphics.bug"]["params"]["end"], "a bug stays to the end")
+        self.assertIn("1280x720", decs["graphics.text_overlay"]["reason"], "placed on the planned picture")
+        op = d["graphics"]["operations"][0]
+        self.assertEqual(sorted(e["type"] for e in op["elements"]), sorted(ELEMENT_TYPES))
+        self.assertEqual((op["image"], op["video"]), (png, clip))
+        self.assertIn(str(Path(clip).parent), d["execution"]["allowed_inputs"])
+        step = next(s_ for s_ in d["plan"]["steps"] if s_["skill"] == "motion_graphics")
+        self.assertEqual(len(step["params"]["elements"]), 12); self.assertEqual(sorted(step["decision_ids"]), sorted(x["id"] for x in decs.values()))
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        row = next(e for e in prov["operations"] if e["tool"] == "motion-graphics/run")
+        sent = {e["type"]: e for e in row["args"]["elements"]}
+        self.assertEqual(sent["video_overlay"]["parameters"]["video"], "talk_graphics_video".replace("talk", list(d["assets"])[0]))
+        self.assertEqual(sent["meme"]["parameters"], {"top": "when the build", "bottom": "is green"})
+        self.assertEqual(sent["countdown"]["parameters"], {"count_from": 3, "primary_color": "FFFFFF"})
+        self.assertEqual(sent["text_overlay"]["animation"], {"kind": "fade", "parameters": {"duration": 0.5}})
+        res = next(x for x in out["execution"]["results"] if x["tool"] == "motion-graphics/run")
+        recs = {o["type"]: o for o in res["data"]["operations"]}
+        self.assertEqual(recs["video_overlay"]["parameters"]["chromakey"], "00FF00")
+        self.assertEqual(recs["video_overlay"]["parameters"]["video_path"]["sha256"], hashlib.sha256(Path(clip).read_bytes()).hexdigest(), "the Skill read the user's clip")
+        self.assertEqual(recs["bug"]["parameters"]["position"], "top-left")
+
+    def test_placement_blocks_on_the_rotated_picture(self):
+        """{x: 1000} is on a 1280x720 frame but not on the 720x1280 one a quarter turn delivers: BLOCK, never moved."""
+        src = pipeline_media(self.tmp, "talk.mp4")
+        ok = pipeline_service(self.tmp).plan([src], "generic", user_requirements={"motion.text": "LIVE", "motion.text.position": {"x": 1000, "y": 10}})
+        self.assertFalse([x for x in ok.doc["decisions"] if x["approval"] == "BLOCK"])
+        svc = pipeline_service(self.tmp)
+        ir = svc.plan([src], "generic", user_requirements={"edit.rotate": 90, "motion.text": "LIVE", "motion.text.position": {"x": 1000, "y": 10}})
+        blk = [x for x in ir.doc["decisions"] if x["approval"] == "BLOCK"]
+        self.assertEqual([x["subject"] for x in blk], ["graphics.text_overlay"]); self.assertIn("720x1280", blk[0]["reason"])
+        self.assertEqual(blk[0]["params"]["picture"], [720, 1280]); self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        # a tampered IR (the element moved off the frame after planning) is refused by the validator on the same size
+        ok.doc["graphics"]["operations"][0]["elements"][0]["parameters"]["position"] = {"x": 1300, "y": 10}
+        self.assertTrue(any("outside the 1280x720 picture" in e for e in svc.validate(ok).errors))
+
+
+
+class QcDeliveryPackageTests(unittest.TestCase):
+    """The QC gate checks each target's deliverable set together (ADR-065): qc-skill kind delivery_package → a plan step, `qa.qc.packages`,
+    one qc/check op with the members by artifact id → a `delivery_package` QA item on every member → their stages."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        clear_modes()
+
+    def _render(self, reqs, profile="youtube", name="pkg"):
+        svc = pipeline_service(self.tmp)
+        media = pipeline_media(self.tmp, "talk.mp4", segments=[[4.0, 8.0, "hello there"], [9.0, 12.0, "and goodbye"]])
+        return svc, plan_and_render(svc, [media], reqs, profile=profile, kinds=["transcript"], name=name)
+
+    def test_rules_and_compiled_request(self):
+        from video_agent.agent.qc import package_rules
+        from video_agent.execution.compiler import lower_qc_package
+        members = [{"artifact_id": "a_delivery_youtube", "artifact_type": "video", "input": "a_delivery_youtube", "extension": ".mp4"},
+                   {"artifact_id": "a_captions", "artifact_type": "subtitle", "input": "a_captions", "extension": ".srt"},
+                   {"artifact_id": "a_thumbnail", "artifact_type": "thumbnail", "input": "a_thumbnail", "extension": ".PNG"}]
+        spec = package_rules(members)
+        self.assertEqual(spec["kind"], "delivery_package")
+        rule = spec["rules"]["delivery_package"]
+        self.assertEqual([(a["artifact_id"], a["artifact_type"], a["required"], a["min_size_bytes"], a["expected_extension"]) for a in rule["artifacts"]],
+                         [("a_delivery_youtube", "video", True, 1, "mp4"), ("a_captions", "subtitle", True, 1, "srt"), ("a_thumbnail", "thumbnail", True, 1, "png")])
+        self.assertEqual(rule["cross_artifact"], {"dependencies": [{"artifact_id": "a_captions", "requires_artifact_id": "a_delivery_youtube"},
+                                                                   {"artifact_id": "a_thumbnail", "requires_artifact_id": "a_delivery_youtube"}]})
+        self.assertNotIn("duration_consistency", rule["cross_artifact"], "a subtitle's duration is its last cue, not the programme's")
+        args = lower_qc_package("qc/check", members, spec["rules"])
+        self.assertEqual((args["kind"], args["cache_policy"], [sorted(a) for a in args["artifacts"]]), ("delivery_package", "bypass", [["artifact_id", "artifact_type", "input"]] * 3))
+        with self.assertRaises(CompileError):
+            lower_qc_package("ffmpeg-skill/check", members, spec["rules"])
+
+    def test_pipeline_step_ir_request_qa_and_stages(self):
+        svc, r = self._render({"subtitle": True, "thumbnail": True, "qc": True})
+        d = r["ir"].doc
+        aid = list(d["assets"])[0]
+        self.assertEqual(r["validation"].errors, [])
+        step = d["plan"]["steps"][-1]
+        self.assertEqual((step["skill"], step["params"]["kind"], step["inputs"]), ("qc_check", "delivery_package", [f"{aid}_delivery_youtube", f"{aid}_captions", f"{aid}_thumbnail"]))
+        self.assertEqual(sorted(step["depends_on"]), sorted([f"step_qc_youtube_{aid}", f"step_qc_captions_{aid}", f"step_thumbnail_{aid}"]))
+        self.assertEqual(d["qa"]["qc"]["packages"], {aid: {"targets": ["youtube"], "captions": f"{aid}_captions", "thumbnail": f"{aid}_thumbnail"}})
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [x for x in out["execution"]["results"] if x["tool"] == "qc/check" and x["data"].get("kind") == "delivery_package"]
+        self.assertEqual(len(res), 1); self.assertTrue(res[0]["data"]["admitted"]); self.assertEqual(res[0]["data"]["verdict"], "PASS")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        self.assertEqual(res[0]["data"]["artifacts"], {a["logical_name"]: a["hash"] for a in arts.values()}, "the report is about the delivered bytes of every member")
+        items = [i for i in out["qa"]["items"] if i["name"] == "delivery_package"]
+        self.assertEqual(sorted((i["artifact"], i["status"]) for i in items), sorted((a["logical_name"], "PASS") for a in arts.values()))
+        self.assertEqual({t: (a["qa"]["qc"], a["stage"]) for t, a in arts.items()}, {"YOUTUBE": ("PASS", "approved"), "CAPTIONS": ("PASS", "approved"), "THUMBNAIL": ("PASS", "approved")})
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        row = next(e for e in prov["operations"] if e["tool"] == "qc/check" and e["args"].get("kind") == "delivery_package")
+        self.assertEqual([a["artifact_type"] for a in row["args"]["artifacts"]], ["video", "subtitle", "thumbnail"]); self.assertTrue(row["decision"])
+
+    def test_a_failing_set_keeps_every_member_working(self):
+        os.environ["FAKE_QC_MODE"] = "package_fail"   # the thumbnail is not of the planned extension: the set is not a delivery
+        _svc, r = self._render({"subtitle": True, "thumbnail": True, "qc": True}, name="pkgfail")
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED"); self.assertEqual(out["qa"]["status"], "FAIL")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        self.assertEqual({t: (a["qa"]["qc"], a["stage"]) for t, a in arts.items()}, {"YOUTUBE": ("FAIL", "working"), "CAPTIONS": ("FAIL", "working"), "THUMBNAIL": ("FAIL", "working")},
+                         "every member of a failing set stays working, even those whose own reports pass")
+        th = arts["THUMBNAIL"]["logical_name"]
+        self.assertIn(("delivery_package.artifact_extension_matches_expected", th, "FAIL"), [(i["name"], i["artifact"], i["status"]) for i in out["qa"]["items"]])
+        self.assertIn("DELIVERY_SPEC_FAILURE", [x["type"] for x in out["qa"]["incidents"]])
+
+    def test_a_report_about_other_files_is_never_admitted(self):
+        os.environ["FAKE_QC_MODE"] = "package_fingerprint"
+        _svc, r = self._render({"subtitle": True, "thumbnail": True, "qc": True}, name="pkgfp")
+        res = next(x for x in r["out"]["execution"]["results"] if x["tool"] == "qc/check" and not x["ok"])
+        self.assertEqual(res["data"]["error"]["code"], "INVALID_RESULT"); self.assertIn("sha256", res["data"]["error"]["message"])
+        self.assertEqual(r["out"]["execution"]["status"], "FAILED")
+
+    def test_no_package_without_company_or_without_the_gate(self):
+        _svc, r = self._render({"qc": True}, name="alone")
+        self.assertNotIn("delivery_package", [s_["params"].get("kind") for s_ in r["ir"].doc["plan"]["steps"]], "a lone deliverable is covered by its own report")
+        self.assertNotIn("packages", r["ir"].doc["qa"]["qc"])
+        _svc, r = self._render({"subtitle": True, "thumbnail": True}, name="nogate")
+        self.assertNotIn("qc_check", [s_["skill"] for s_ in r["ir"].doc["plan"]["steps"]], "the package check is part of the opt-in QC gate (ADR-032)")
+
+    def test_tampered_packages_are_refused(self):
+        svc = pipeline_service(self.tmp)
+        media = pipeline_media(self.tmp, "talk.mp4", segments=[[4.0, 8.0, "hello there"]])
+        ir = svc.plan([media], "youtube", user_requirements={"thumbnail": True, "qc": True}, params={"language": "ja"})
+        aid = list(ir.doc["assets"])[0]
+        ir.doc["qa"]["qc"]["packages"][aid]["thumbnail"] = f"{aid}_delivery_youtube"
+        self.assertTrue(any("not a planned THUMBNAIL output" in e for e in svc.validate(ir).errors))
+        ir.doc["qa"]["qc"]["packages"][aid] = {"targets": ["youtube"], "captions": None, "thumbnail": None}
+        self.assertTrue(any("nothing beside the deliverable" in e for e in svc.validate(ir).errors))
+
+    def test_adapter_refusals(self):
+        from video_agent.tools.qc import QcAdapter
+        from video_agent.tools.skill_process import CliSkill
+        from video_agent.tools.base import ToolError
+        ws = str(Path(self.tmp) / "ws"); os.makedirs(ws, exist_ok=True)
+        f = Path(self.tmp) / "src" / "x.mp4"; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(b"x")
+        ad = QcAdapter(CliSkill("qc", [sys.executable, str(Path(__file__).resolve().parent / "fake_qc.py")], None, {}), workspace=ws, allowed_inputs=[str(f.parent)])
+        paths = {"v": str(f)}
+        good = {"kind": "delivery_package", "artifacts": [{"artifact_id": "v", "artifact_type": "video", "input": "v"}]}
+        self.assertEqual(ad.build_request("qc/check", good, paths)["request"]["artifacts"], [{"artifact_id": "v", "artifact_type": "video", "path": str(f)}])
+        for bad, msg in ((dict(good, kind="delivery"), "only accepted with kind"), (dict(good, input="v"), "not input"), (dict(good, artifacts=[]), "non-empty"),
+                         (dict(good, artifacts=[{"artifact_id": "v", "artifact_type": "poster", "input": "v"}]), "artifact_type"),
+                         (dict(good, artifacts=[{"artifact_id": "v", "artifact_type": "video", "input": "v", "path": "/etc/passwd"}]), "forbidden"),
+                         (dict(good, rules={"delivery_package": {"artifacts": [{"artifact_id": "w"}]}}), "does not carry")):
+            with self.assertRaises(ToolError, msg=str(bad)) as cm:
+                ad.build_request("qc/check", bad, paths)
+            self.assertIn(msg, str(cm.exception), str(bad))
 
 
 if __name__ == "__main__":

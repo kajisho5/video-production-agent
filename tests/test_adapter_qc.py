@@ -454,6 +454,33 @@ class QcRealSkillTests(unittest.TestCase):
         rb = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"expected_bitrate": 1}}}, inputs=["clip"], outputs=[], kind="qa", id="op_rb"), paths)
         self.assertFalse(rb.ok); self.assertEqual(rb.data["error"]["code"], "INVALID_REQUEST")
 
+    def test_real_delivery_package(self):
+        """ADR-065: kind delivery_package on the real Skill (qc-skill ADR-010 / ADR-011) with the rules the agent writes — the deliverable, its
+        sidecar and its thumbnail together: admitted (every member's fingerprint is the sha256 the adapter computed), PASS; a member of another
+        extension than planned FAILs with the member named; a report the Skill could not tie to the files is never admitted."""
+        from video_agent.agent.qc import package_rules
+        from video_agent.execution.compiler import lower_qc_package
+        png = str(Path(self.src_dir) / "bars.png")
+        if not os.path.isfile(png):
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", self.src, "-frames:v", "1", png], check=True)
+        ad = self._adapter(); paths = {"clip": self.src, "sub": self.srt, "thumb": png}
+        members = [{"artifact_id": "clip", "artifact_type": "video", "input": "clip"}, {"artifact_id": "sub", "artifact_type": "subtitle", "input": "sub"},
+                   {"artifact_id": "thumb", "artifact_type": "thumbnail", "input": "thumb"}]
+        spec = package_rules([dict(m, extension=Path(paths[m["input"]]).suffix) for m in members])
+        args = lower_qc_package(TOOL_CHECK, members, spec["rules"])
+        r = ad.run(Operation(tool=TOOL_CHECK, args=args, inputs=["clip", "sub", "thumb"], outputs=[], kind="qa", id="op_pkg"), paths)
+        self.assertTrue(r.ok, r.data.get("error")); self.assertTrue(r.data["admitted"]); self.assertEqual(r.data["kind"], "delivery_package")
+        self.assertEqual(r.data["verdict"], "PASS", r.data["findings"])
+        self.assertEqual(r.data["artifacts"], {"clip": sha(self.src), "sub": sha(self.srt), "thumb": sha(png)})
+        ids = {c["check_id"] for c in r.data["checks"]}
+        self.assertTrue({"delivery_package.artifact_present", "delivery_package.artifact_size_within_limit", "delivery_package.artifact_extension_matches_expected",
+                         "delivery_package.dependency_satisfied"} <= ids, ids)
+        bad = package_rules([dict(m, extension=".jpg" if m["artifact_id"] == "thumb" else Path(paths[m["input"]]).suffix) for m in members])
+        r2 = ad.run(Operation(tool=TOOL_CHECK, args=lower_qc_package(TOOL_CHECK, members, bad["rules"]), inputs=["clip", "sub", "thumb"], outputs=[], kind="qa", id="op_pkg2"), paths)
+        self.assertTrue(r2.ok, r2.data.get("error")); self.assertEqual(r2.data["verdict"], "FAIL")
+        failed = [c for c in r2.data["checks"] if c["status"] == "FAIL"]
+        self.assertEqual([(c["check_id"], c.get("artifact_id")) for c in failed], [("delivery_package.artifact_extension_matches_expected", "thumb")])
+
 
 if __name__ == "__main__":
     unittest.main()

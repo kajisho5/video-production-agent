@@ -1,0 +1,90 @@
+{
+ "name": "pipe_motion_graphics_every_text_element",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "motion.bug": "@studio",
+  "motion.bug.position": "top-left",
+  "motion.chapter": "Part 2",
+  "motion.chapter.start": 6,
+  "motion.progress": true,
+  "motion.progress.primary_color": "E53935",
+  "motion.countdown": true,
+  "motion.countdown.count_from": 3,
+  "motion.sticker": "NEW",
+  "motion.sticker.primary_color": "FFD200",
+  "motion.hook": "Wait for it",
+  "motion.meme": true,
+  "motion.meme.top": "when the build",
+  "motion.meme.bottom": "is green",
+  "motion.text": "LIVE",
+  "motion.text.font_size": 64,
+  "motion.text.box": true
+ },
+ "expect": {
+  "blocked": false,
+  "graphics_ops": [
+   "graphics.render"
+  ],
+  "decisions": {
+   "graphics.bug": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.chapter": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.progress": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.countdown": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.sticker": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.hook": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.meme": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   },
+   "graphics.text_overlay": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   }
+  },
+  "steps": [
+   "silence_cleanup",
+   "motion_graphics",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check"
+  ],
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "tools": [
+    "ffmpeg-skill/cut",
+    "motion-graphics/run",
+    "ffmpeg-skill/loudness",
+    "ffmpeg-skill/export",
+    "ffmpeg-skill/check"
+   ]
+  }
+ }
+}

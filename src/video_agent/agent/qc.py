@@ -9,6 +9,10 @@ loudness target of a normalisation, the planned picture width after the edits (`
 the agent's own QA checks (duration / streams / loudness / true peak) stay in force — the Skill's verdict is an additional gate,
 never a replacement.
 
+ADR-065: with the gate on, the deliverable set of each target (the deliverable + its subtitle sidecar and / or thumbnail) is also checked
+together (kind delivery_package: every member present, non-empty, of its planned extension, depending on the deliverable); that verdict
+gates every member beside its own report.
+
 Gate: PASS → the candidate becomes READY (artifact stage `approved`); WARN → stays a candidate, its promotion needs the review
 the policy key `qc.warn.promotion` asks for (CONFIRM by default; AUTO in a profile promotes WARN too); FAIL → the artifact is
 registered `working` and can never be promoted to final (the existing QA FAIL gate); a report that is not admitted is a FAIL.
@@ -45,11 +49,12 @@ def rules_for_subject(subject: Dict[str, Any], target: Dict[str, Any], doc: Dict
             audio_rule["expected_channels"] = int(subject["technical"]["audio"]["channels"])
         return {"kind": "audio", "rules": {"audio": audio_rule}}
     video_rule: Dict[str, Any] = {}
-    # the planned picture width: the size after the subject's edits in their order (crop → rotate → resize → fit / fill, `picture_size`),
+    # the planned picture width: the size after the subject's edits in their order (grid → crop → rotate → resize → fit / fill, `picture_size`),
     # stated only when an edit changes the size. Before, the last op carrying a "width" was read, so a quarter turn after a crop / resize /
     # fit (or a rotation alone) expected the unturned width
     vops = (doc.get("video") or {}).get("operations") or []
-    resized = any(op.get("asset") == subject["id"] and (op.get("width") or (op.get("type") == "video.rotate" and op.get("degrees") in (90, 270))) for op in vops)
+    resized = any(op.get("asset") == subject["id"] and (op.get("width") or op.get("type") == "video.grid" or (op.get("type") == "video.rotate" and op.get("degrees") in (90, 270)))
+                  for op in vops)
     size = picture_size(tech, vops, subject["id"]) if resized else None
     if size and target.get("preset") in (None, ""):
         video_rule["expected_width"] = int(size[0])   # a platform preset may scale; without one the planned width is what is delivered
@@ -63,6 +68,42 @@ def rules_for_subject(subject: Dict[str, Any], target: Dict[str, Any], doc: Dict
     if "reference_metrics" in video_rule:
         out["reference"] = str(reference["path"])
     return out
+
+
+# ADR-065: the deliverable set of one target checked together (qc-skill kind delivery_package). The agent's artifact roles → the
+# contract's artifact types; the deliverable is what the rest of the set depends on.
+PACKAGE_KIND = "delivery_package"
+PACKAGE_TYPES = {"delivery": "video", "audio": "audio", "captions": "subtitle", "thumbnail": "thumbnail"}
+
+
+def package_rules(members: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """{"kind": delivery_package, "rules"} for a deliverable set: `members` are {"artifact_id", "artifact_type", "extension"}, the
+    deliverable first. Every member is required, non-empty and of the extension the plan wrote it with; every other member needs the
+    deliverable (a sidecar / thumbnail without its video is not a delivery). Durations are not compared: a subtitle's measured duration
+    is its last cue's end, not the programme's (the sidecar's own qc check already compares it with the video, ADR-032)."""
+    main = members[0]["artifact_id"]
+    arts = [{"artifact_id": m["artifact_id"], "artifact_type": m["artifact_type"], "required": True, "min_size_bytes": 1,
+             **({"expected_extension": str(m["extension"]).lower().lstrip(".")} if m.get("extension") else {})} for m in members]
+    deps = [{"artifact_id": m["artifact_id"], "requires_artifact_id": main} for m in members[1:]]
+    return {"kind": PACKAGE_KIND, "rules": {PACKAGE_KIND: {"artifacts": arts, **({"cross_artifact": {"dependencies": deps}} if deps else {})}}}
+
+
+def admit_package(data: Dict[str, Any], expected: Dict[str, Optional[str]]) -> List[str]:
+    """`admit` for a package report: every member's fingerprint as the adapter recorded it equals QA's own sha256 of that file."""
+    errs: List[str] = []
+    if not isinstance(data, dict) or data.get("admitted") is not True:
+        errs.append("report not admitted by the adapter")
+    got = (data or {}).get("artifacts") or {}
+    for aid, digest in expected.items():
+        if not digest or got.get(aid) != digest:
+            errs.append(f"package member {aid}: report fingerprint {str(got.get(aid))[:12]} != artifact sha256 {str(digest)[:12]}")
+    if (data or {}).get("kind") != PACKAGE_KIND:
+        errs.append(f"report kind {(data or {}).get('kind')!r} != requested {PACKAGE_KIND!r}")
+    if (data or {}).get("verdict") not in STATUSES:
+        errs.append(f"verdict {(data or {}).get('verdict')!r} unknown")
+    if ((data or {}).get("provenance") or {}).get("measurement_source") != "OBSERVED":
+        errs.append("measurement_source is not OBSERVED")
+    return errs
 
 
 def sidecar_rules() -> Dict[str, Any]:
@@ -89,6 +130,21 @@ def admit(data: Dict[str, Any], expected_sha256: Optional[str], expected_kind: s
 def worst(*statuses: str) -> str:
     order = {"FAIL": 3, "WARN": 2, "PASS": 1, "UNKNOWN": 0, "SKIP": 0}
     return max(statuses, key=lambda s: order.get(s, 0)) if statuses else "UNKNOWN"
+
+
+def qc_verdict_of(items: List[Any], gated: bool) -> Optional[str]:
+    """The QC gate's verdict for one artifact from its QA items: its own report (`verdict`, when the artifact is `gated`: deliverables and
+    sidecars, ADR-032) and the report of the deliverable set it belongs to (`delivery_package`, ADR-065), the worse of the two. A gated
+    artifact without an admitted report of its own is FAIL (never promoted on silence); an artifact the gate does not cover by itself (a
+    thumbnail) takes the package's verdict, or None when it is in no package."""
+    own = next((i for i in items if i.layer == "qc" and i.name == "verdict"), None)
+    pkg = next((i for i in items if i.layer == "qc" and i.name == PACKAGE_KIND), None)
+    verdicts: List[str] = []
+    if gated:
+        verdicts.append(str(own.observed) if own is not None and str(own.observed) in ("PASS", "WARN", "FAIL") else "FAIL")
+    if pkg is not None:
+        verdicts.append(str(pkg.observed) if str(pkg.observed) in ("PASS", "WARN", "FAIL") else "FAIL")
+    return worst(*verdicts) if verdicts else None
 
 
 def stage_for(qa_status: str, qc_verdict: Optional[str], warn_promotion: str) -> str:

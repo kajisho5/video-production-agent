@@ -13,11 +13,15 @@ Everything here is vocabulary and arithmetic, no execution:
   each named after the contract parameter it sets (ADR-062). Fixed order:
   strip_dovi → hdr_to_sdr → primary_correction → lut → retag (technical correction runs on the tone-mapped picture, before
   a creative LUT; color-grading-skill's own ADR-15 documents this as guidance, not something either side enforces).
-- **Motion graphics** (`motion.*`): one element per type — `motion.title` (+ `.subtitle`, `.start`, `.end`), `motion.lower_third`
-  (the name; + `.title`, `.start`, `.end`), `motion.text` (+ `.position`, `.start`, `.end`, `.fade`), `motion.image` (a PNG / JPEG
-  path; + `.position`, `.start`, `.end`, `.fade`, `.scale_percent`). Start / end default from policy settings recorded on the
-  decision (`motion.<type>.start`, `motion.<type>.duration`) and are clipped to the subject's timeline. All elements of a subject
-  are rendered by one `graphics.render` operation (one Skill request, one encode).
+- **Motion graphics** (`motion.*`): one element per type, every element type the pinned motion-graphics contract offers (ADR-064):
+  `motion.title`, `motion.lower_third` (the name), `motion.text`, `motion.image` (a PNG / JPEG path), `motion.video` (a clip, picture
+  in picture / chroma key), `motion.bug`, `motion.chapter`, `motion.sticker`, `motion.hook` (their text), and the switches
+  `motion.progress`, `motion.countdown`, `motion.meme` (+ `.top` / `.bottom`). Every other contract parameter is
+  `motion.<element>.<parameter>` with the contract's range (e.g. `motion.text.font_size`, `motion.video.chromakey`), plus `.start`,
+  `.end` and, for text / image overlays, `.fade`. Start / end default from policy settings recorded on the decision
+  (`motion.<type>.start`, `motion.<type>.duration`) and are clipped to the subject's timeline; an explicit placement is checked
+  against the picture size after the edits. All elements of a subject are rendered by one `graphics.render` operation (one Skill
+  request, one encode).
 - **Thumbnail** (`thumbnail.*`): `thumbnail` (true, or png | jpeg), `thumbnail.at` (seconds on the delivered timeline; default
   from policy `thumbnail.at_ratio` × duration, recorded), `thumbnail.text` (a caption rendered on the frame), `thumbnail.font_size`,
   `thumbnail.position` (center | top | bottom), `thumbnail.format`. Without text the frame is extracted as is (thumbnail/extract_frame);
@@ -27,8 +31,10 @@ Fixed order on a subject after the editing operations: color → graphics → ca
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Requirement
@@ -70,15 +76,40 @@ COLOR_CURVES_PRESETS = ("color_negative", "cross_process", "darker", "increase_c
 # ---- motion graphics
 GRAPHICS_TOOL = "motion-graphics/run"
 GRAPHICS_SKILL = "motion_graphics"
-ELEMENT_TYPES = ("title", "lower_third", "text_overlay", "image_overlay")
+# ADR-064: the vocabulary is read from the pinned motion-graphics contract (the data file the adapter pins, read as data so the agent
+# layer never imports a tool package): every element type it offers, each with every parameter it declares, by the contract's names
+# and ranges. A re-pin that adds an element or a parameter changes this vocabulary with it (tests/test_satellite_params.py says so).
+MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.3.json"
+_MOTION_CONTRACT: Dict[str, Any] = json.loads(MOTION_CONTRACT_PATH.read_text(encoding="utf-8"))
+MOTION_ELEMENT_SPECS: Dict[str, Dict[str, Any]] = {str(e["type"]): e for e in _MOTION_CONTRACT["element_types"]}
+# element type → (its `--set` key, the contract parameter that key's value sets; None = the key is a plain switch: the element has no
+# required text / file, e.g. progress / countdown, or needs one of several, e.g. meme's top / bottom). The four ADR-031 keys keep their names.
+MOTION_BASE: Dict[str, Tuple[str, Optional[str]]] = {
+    "title": ("motion.title", "title"), "lower_third": ("motion.lower_third", "name"), "text_overlay": ("motion.text", "text"),
+    "image_overlay": ("motion.image", "image_path"), "video_overlay": ("motion.video", "video_path"), "bug": ("motion.bug", "title"),
+    "chapter": ("motion.chapter", "title"), "progress": ("motion.progress", None), "countdown": ("motion.countdown", None),
+    "sticker": ("motion.sticker", "text"), "hook": ("motion.hook", "title"), "meme": ("motion.meme", None)}
+ELEMENT_TYPES = tuple(MOTION_BASE)
+# path parameters travel in the IR under a short name (the adapter turns the artifact id back into the contract's path parameter)
+MOTION_PATH_PARAMS = {"image_path": "image", "video_path": "video"}
+FADE_TYPES = tuple(t for a in _MOTION_CONTRACT.get("animations") or [] if a.get("kind") == "fade" for t in a.get("applies_to") or [])
 MOTION_KEYS: Dict[str, Tuple[str, ...]] = {
-    "title": ("motion.title", "motion.title.subtitle", "motion.title.start", "motion.title.end"),
-    "lower_third": ("motion.lower_third", "motion.lower_third.title", "motion.lower_third.start", "motion.lower_third.end"),
-    "text_overlay": ("motion.text", "motion.text.position", "motion.text.start", "motion.text.end", "motion.text.fade"),
-    "image_overlay": ("motion.image", "motion.image.position", "motion.image.start", "motion.image.end", "motion.image.fade", "motion.image.scale_percent"),
-}
-ELEMENT_DEFAULT_DURATION = {"title": 5.0, "lower_third": 6.0}    # explicit DEFAULTs of the policy keys `motion.<type>.duration` (recorded on the decision)
-TEXT_MAX = {"title": 200, "lower_third": 200, "text_overlay": 500}
+    typ: (base,) + tuple(f"{base}.{p}" for p in MOTION_ELEMENT_SPECS[typ]["parameters"] if p != main) + (f"{base}.start", f"{base}.end")
+    + ((f"{base}.fade",) if typ in FADE_TYPES else ())
+    for typ, (base, main) in MOTION_BASE.items()}
+# explicit DEFAULTs of the policy keys `motion.<type>.duration` (recorded on the decision); an element without one runs to the end of the
+# subject (a persistent bug / progress bar / overlay / meme). chapter / sticker / hook / countdown are moments, not whole-programme layers.
+ELEMENT_DEFAULT_DURATION = {"title": 5.0, "lower_third": 6.0, "chapter": 5.0, "sticker": 4.0, "hook": 3.0, "countdown": 5.0}
+MOTION_FONTS = tuple(sorted((_MOTION_CONTRACT.get("fonts") or {}).get("registry") or {}))
+# motion-graphics-skill model.py COLOR_RE: a colour name or bare RRGGBB, optionally @alpha (the Skill refuses anything else)
+MOTION_COLOR_RE = re.compile(r"^([A-Za-z]{2,24}|[0-9A-Fa-f]{6})(@(0(\.[0-9]+)?|1(\.0+)?))?$")
+# The contract types every colour parameter `color` (a name or RRGGBB, optionally @alpha), but the elements it draws with ffmpeg-skill's
+# graphics templates (title, lower_third, bug, chapter, progress, countdown, sticker, hook, meme) pass the colour to graphics.py
+# --primary / --text-color, which accepts RRGGBB only (_common/color.py color_hex: "colour must be RRGGBB", measured on the real Skills,
+# ADR-064). The agent accepts the subset that runs, bare RRGGBB, for those elements; the contract's wider type is motion-graphics-skill's to fix.
+GRAPHICS_TEMPLATE_SCRIPT = "graphics"   # the engine tool name after the package prefix, as the contract's element_types[].tool spells it
+MOTION_TEMPLATE_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")   # and the Skill itself refuses a leading #
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".m4v", ".webm", ".mxf", ".avi", ".ts", ".mts", ".m2ts")
 
 # ---- thumbnail
 THUMBNAIL_FRAME_TOOL = "thumbnail/extract_frame"
@@ -170,48 +201,126 @@ def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, A
     return out
 
 
+def _motion_param(v: Any, key: str, name: str, spec: Dict[str, Any], tool: str = "") -> Any:
+    """One element parameter checked against the pinned contract's schema for it (type, range, max_length, enum). `tool` is the
+    engine tool the contract says draws the element: a template element's colour is narrowed to bare RRGGBB (ADR-064)."""
+    t = spec.get("type")
+    if t == "path":
+        return _file(v, key, IMAGE_EXTENSIONS if name == "image_path" else VIDEO_EXTENSIONS)
+    if t == "string":
+        if spec.get("enum"):
+            return _token(v, key, re.compile("^(" + "|".join(re.escape(x) for x in spec["enum"]) + ")$"), "one of " + ", ".join(spec["enum"]))
+        return _text(v, key, int(spec.get("max_length") or 500))
+    if t == "color":
+        if isinstance(v, str) and len(v) > 32:
+            raise EditRequirementError(f"{key} must be a colour of at most 32 characters, got {v!r}")
+        if tool.rsplit("/", 1)[-1] == GRAPHICS_TEMPLATE_SCRIPT:   # measured: ffmpeg-skill graphics.py takes --primary / --text-color as RRGGBB only (a name or @alpha exits 1)
+            return _token(v, key, MOTION_TEMPLATE_COLOR_RE, "a bare RRGGBB hex colour (e.g. FFCC00): the graphics templates take no colour names or @alpha")
+        return _token(v, key, MOTION_COLOR_RE, "a colour name or RRGGBB hex, optionally @alpha (e.g. white, FFCC00, black@0.5)")
+    if t == "position":
+        return _position(v, key)
+    if t == "font":
+        return _token(v, key, re.compile("^(" + "|".join(re.escape(x) for x in MOTION_FONTS) + ")$"), "a registry font id (" + ", ".join(MOTION_FONTS) + ")")
+    if t == "boolean":
+        return _bool(v, key)
+    x = _number(v, key, spec.get("min"), spec.get("max"))
+    if t == "integer":
+        if float(x) != int(x):
+            raise EditRequirementError(f"{key} must be an integer from {spec.get('min')} to {spec.get('max')}, got {v!r}")
+        return int(x)
+    return float(x)
+
+
 def parse_motion_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, Any]]:
-    """→ {element type: {"params" (contract parameter names; `image` is a path), "start"?, "end"?, "fade"?, "requirements"}}."""
+    """→ {element type: {"params" (contract parameter names; a path parameter as `image` / `video`), "start"?, "end"?, "fade"?, "requirements"}}.
+    `motion.<element>` asks for the element (its value is the parameter MOTION_BASE names, or true for a switch element) and
+    `motion.<element>.<parameter>` sets any other parameter the contract declares for it, range-checked against the contract; an
+    unset parameter keeps the Skill's own default (never filled in here)."""
     out: Dict[str, Dict[str, Any]] = {}
     for typ, keys in MOTION_KEYS.items():
-        main = m.get(keys[0])
+        base, main_param = MOTION_BASE[typ]
+        spec = MOTION_ELEMENT_SPECS[typ]
+        main = m.get(base)
         refinements = [m[k] for k in keys[1:] if k in m and m[k].provenance != "DEFAULT"]
         if main is None or main.provenance == "DEFAULT":
             if refinements:
-                raise EditRequirementError(f"{refinements[0].key} is set but {keys[0]} is not: refusing an ambiguous request")
+                raise EditRequirementError(f"{refinements[0].key} is set but {base} is not: refusing an ambiguous request")
+            continue
+        if main_param is None and not _bool(main.value, base):
+            if refinements:
+                raise EditRequirementError(f"{base}=false with {base}.* refinements: refusing an ambiguous request")
             continue
         reqs = [main] + refinements
         vals = {r.key: r.value for r in reqs}
         p: Dict[str, Any] = {}
         el: Dict[str, Any] = {"params": p, "requirements": reqs}
-        base = keys[0]
-        if typ == "title":
-            p["title"] = _text(vals[base], base, TEXT_MAX[typ])
-            if f"{base}.subtitle" in vals:
-                p["subtitle"] = _text(vals[f"{base}.subtitle"], f"{base}.subtitle", TEXT_MAX[typ])
-        elif typ == "lower_third":
-            p["name"] = _text(vals[base], base, TEXT_MAX[typ])
-            if f"{base}.title" in vals:
-                p["title"] = _text(vals[f"{base}.title"], f"{base}.title", TEXT_MAX[typ])
-        elif typ == "text_overlay":
-            p["text"] = _text(vals[base], base, TEXT_MAX[typ])
-            if f"{base}.position" in vals:
-                p["position"] = _position(vals[f"{base}.position"], f"{base}.position")
-        else:
-            p["image"] = _file(vals[base], base, IMAGE_EXTENSIONS)
-            if f"{base}.position" in vals:
-                p["position"] = _position(vals[f"{base}.position"], f"{base}.position")
-            if f"{base}.scale_percent" in vals:
-                p["scale_percent"] = float(_number(vals[f"{base}.scale_percent"], f"{base}.scale_percent", 0.1, 100.0))
+        for name, pspec in spec["parameters"].items():
+            key = base if name == main_param else f"{base}.{name}"
+            if key not in vals:
+                continue
+            p[MOTION_PATH_PARAMS.get(name, name)] = _motion_param(vals[key], key, name, pspec, str(spec.get("tool") or ""))
+        for group in (c.get("at_least_one_of") for c in spec.get("constraints") or [] if c.get("at_least_one_of")):
+            if not any(n in p for n in group):
+                raise EditRequirementError(f"{base} needs at least one of " + " / ".join(f"{base}.{n}" for n in group) + " (the contract's constraint)")
         for k in ("start", "end"):
             if f"{base}.{k}" in vals:
-                el[k] = float(_number(vals[f"{base}.{k}"], f"{base}.{k}", 0.0, 86400.0))
+                el[k] = float(_number(vals[f"{base}.{k}"], f"{base}.{k}", 0.0, float((_MOTION_CONTRACT.get("limits") or {}).get("max_element_duration_seconds") or 86400.0)))
         if "start" in el and "end" in el and not el["start"] < el["end"]:
             raise EditRequirementError(f"{base}.start must be before {base}.end")
         if f"{base}.fade" in vals:
             el["fade"] = float(_number(vals[f"{base}.fade"], f"{base}.fade", 0.01, 30.0))
         out[typ] = el
     return out
+
+
+def element_label(typ: str, params: Dict[str, Any]) -> str:
+    """How a decision names the element: its text, its file, or what it is."""
+    for k in ("title", "name", "text"):
+        if params.get(k):
+            return f"'{params[k]}'"
+    for k in ("image", "video"):
+        if params.get(k):
+            return f"'{Path(str(params[k])).name}'"
+    if typ == "meme":
+        return "'" + " / ".join(str(params[k]) for k in ("top", "bottom") if params.get(k)) + "'"
+    if typ == "countdown":
+        return f"from {params.get('count_from', MOTION_ELEMENT_SPECS[typ]['parameters']['count_from'].get('default'))}"
+    return "bar"
+
+
+def placement_problems(typ: str, params: Dict[str, Any], size: Optional[Tuple[int, int]]) -> List[str]:
+    """Why an element would not land on the picture it is drawn on (ADR-064): the planned size after the subject's edits (`picture_size`),
+    not the source's. Only what is certain is refused: an explicit {x, y} outside the frame, a margin at least as large as the side it is
+    measured from, an overlay scaled wider than the frame, text taller than the frame. An unknown size checks nothing (never guessed)."""
+    if size is None:
+        return []
+    w, h = size
+    pspec = MOTION_ELEMENT_SPECS[typ]["parameters"]
+    out: List[str] = []
+    pos = params.get("position", (pspec.get("position") or {}).get("default"))
+    if isinstance(pos, dict):
+        if not (-w < int(pos["x"]) < w and -h < int(pos["y"]) < h):
+            out.append(f"position {{x: {pos['x']}, y: {pos['y']}}} lies outside the {w}x{h} picture")
+    elif isinstance(pos, str) and params.get("margin") is not None and (pspec.get("margin") or {}).get("type") == "integer":
+        margin = int(params["margin"])
+        for side, dim in (("left", w), ("right", w), ("top", h), ("bottom", h)):
+            if side in pos and margin >= dim:
+                out.append(f"margin {margin} from the {side} edge puts it outside the {w}x{h} picture")
+                break
+    if params.get("scale_width") is not None and int(params["scale_width"]) > w:
+        out.append(f"scale_width {params['scale_width']} is wider than the {w}x{h} picture")
+    if params.get("font_size") is not None and int(params["font_size"]) >= h:
+        out.append(f"font_size {params['font_size']} is taller than the {w}x{h} picture")
+    return out
+
+
+def planned_picture_size(technical: Dict[str, Any], decisions: List[Any], subject: str) -> Optional[Tuple[int, int]]:
+    """`picture_size` at decision time: the subject's not-rejected editing decisions, in EDIT_ORDER, stand in for the IR operations the
+    planner will build from them (their params carry the same names)."""
+    from .editing import EDIT_ORDER
+    decs = [d for d in decisions if d.type == "TRANSFORM" and d.status != "REJECTED" and d.subject in EDIT_ORDER and d.params.get("asset_id") == subject]
+    ops = [dict(d.params, type=d.subject, asset=subject) for d in sorted(decs, key=lambda d: EDIT_ORDER.index(d.subject))]
+    return picture_size(technical, ops, subject)
 
 
 def parse_thumbnail_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
@@ -299,9 +408,28 @@ def parse_qc_reference(m: Dict[str, Requirement]) -> Optional[Dict[str, Any]]:
 
 
 # ---- IR arithmetic
+# ffmpeg-skill grid.py's own defaults for the flags `edit.grid.cell_width` / `.cell_height` / `.gap` leave unset (its argparse defaults)
+GRID_CELL_DEFAULT = (480, 270)
+GRID_GAP_DEFAULT = 0
+
+
+def grid_size(op: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+    """The picture grid.py writes: xstack places input i at column i % cols, row i // cols, each cell cell_width x cell_height and
+    `gap` apart, so the frame is the cells the inputs fill plus the gaps between them. An unfilled grid with gaps is None: grid.py
+    pads a colour-converted cell by its gap but leaves an untouched one bare, so the size depends on the inputs' colour tags (not guessed)."""
+    cols, rows = int(op["cols"]), int(op["rows"])
+    n = len(op.get("inputs") or []) or cols * rows
+    cw, ch = int(op.get("cell_width") or GRID_CELL_DEFAULT[0]), int(op.get("cell_height") or GRID_CELL_DEFAULT[1])
+    gap = int(op.get("gap") or GRID_GAP_DEFAULT)
+    if gap and n < cols * rows:
+        return None
+    used_cols, used_rows = min(cols, n), -(-n // cols)
+    return used_cols * cw + (used_cols - 1) * gap, used_rows * ch + (used_rows - 1) * gap
+
+
 def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], subject: str) -> Optional[Tuple[int, int]]:
     """The subject's picture size after its editing operations, applied in the IR's (fixed) operation order: concat may set
-    width / height; crop makes the picture its rectangle (ADR-060's approved proposal or an explicit `edit.crop`, in source
+    width / height; a grid is its cells (`grid_size`); crop makes the picture its rectangle (ADR-060's approved proposal or an explicit `edit.crop`, in source
     pixels, before any turn); a 90 / 270 rotation swaps width and height; resize keeps the aspect; fit / fill change it.
     None when the source size is unknown — nothing is guessed."""
     v = (technical or {}).get("video") or {}
@@ -315,6 +443,11 @@ def picture_size(technical: Dict[str, Any], video_ops: List[Dict[str, Any]], sub
         t = op.get("type")
         if t == "video.concat" and op.get("width") and op.get("height"):
             w, h = int(op["width"]), int(op["height"])
+        elif t == "video.grid" and op.get("cols") and op.get("rows"):   # the grid's own picture, not its first input (PR #81's leftover)
+            size = grid_size(op)
+            if size is None:
+                return None
+            w, h = size
         elif t == "video.crop" and op.get("width") and op.get("height"):   # the cropped picture is the rectangle (before rotate / resize / fit)
             w, h = int(op["width"]), int(op["height"])
         elif t == "video.rotate" and op.get("degrees") in (90, 270):   # ADR-062: a quarter turn swaps width and height
@@ -346,10 +479,13 @@ def ir_color_operation(op_type: str, subject: str, params: Dict[str, Any], decis
 
 
 def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_ids: List[str], input_id: str, output: str, scope: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """One render of every element of the subject. The files an element composites (an image overlay's picture, ADR-064: a video
+    overlay's clip) are also named on the operation (`image` / `video`), the way the compiler finds the inputs it registers."""
     rec: Dict[str, Any] = {"type": "graphics.render", "asset": subject, "input": input_id, "output": output, "elements": list(elements)}
-    imgs = [e["parameters"]["image"] for e in elements if e.get("type") == "image_overlay" and e.get("parameters", {}).get("image")]
-    if imgs:
-        rec["image"] = imgs[0]
+    for typ, ref in (("image_overlay", "image"), ("video_overlay", "video")):
+        files = [e["parameters"][ref] for e in elements if e.get("type") == typ and e.get("parameters", {}).get(ref)]
+        if files:
+            rec[ref] = files[0]
     if scope is not None:
         rec["temporal_scope"] = {"start": round(float(scope["start"]), 3), "end": round(float(scope["end"]), 3)}
     rec["decision_ids"] = list(decision_ids)

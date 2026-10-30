@@ -32,7 +32,7 @@ MODE_VARS = ("FAKE_SUBTITLE_MODE", "FAKE_THUMBNAIL_MODE", "FAKE_CG_MODE", "FAKE_
              "FAKE_SUBTITLE_CALLS", "FAKE_THUMBNAIL_CALLS", "FAKE_CG_CALLS", "FAKE_MG_CALLS", "FAKE_QC_CALLS", "FAKE_TS_CALLS", "FAKE_VE_CALLS", "FAKE_AP_MODE", "FAKE_AP_CALLS")
 BASE_CAPS = ["python", "ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:libx264", "encoder:libx265", "encoder:prores_ks", "encoder:aac", "filter:loudnorm", "filter:subtitles", "font:cjk-ja"]
 FINISHING_CAPS = ["subtitle", "thumbnail", "color-grading", "motion-graphics", "qc", "transcription", "video-editing", "filter:xfade", "filter:acrossfade"] \
-    + [f"color-grading:{t}" for t in ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI")] + [f"motion-graphics:{t}" for t in ("title", "lower_third", "text_overlay", "image_overlay")]
+    + [f"color-grading:{t}" for t in ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI")] + [f"motion-graphics:{t}" for t in ("title", "lower_third", "text_overlay", "image_overlay", "video_overlay", "bug", "chapter", "progress", "countdown", "sticker", "hook", "meme")]
 # ADR-054: the fake audio-production process is always registered, but its capabilities are opt-in (PipelineCaps(extra=AUDIO_PRODUCTION_CAPS)),
 # so a pipeline case is "audio-production not installed" unless it says otherwise (the take-assembly crossfades need CUT + CONCAT)
 AUDIO_PRODUCTION_CAPS = ["audio-production", "audio-production:CUT", "audio-production:CONCAT"]

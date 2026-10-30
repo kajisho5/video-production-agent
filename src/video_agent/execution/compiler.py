@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, TOOL as AUDIO_TOOL
 from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL, delivery_subjects
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
-from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
+from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
@@ -135,15 +135,17 @@ def lower_color_op(tool: str, op: Dict[str, Any], current: str, out_id: str, lut
     return args
 
 
-def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None) -> Dict[str, Any]:
-    """IR graphics.render → motion-graphics/run arguments: the element list as planned (image paths become artifact ids)."""
+def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None, video_id: Optional[str] = None) -> Dict[str, Any]:
+    """IR graphics.render → motion-graphics/run arguments: the element list as planned (image / video overlay paths become artifact ids)."""
     if tool != GRAPHICS_TOOL:
         raise CompileError(f"graphics.render cannot be executed by {tool}; the only tool of this operation is {GRAPHICS_TOOL}")
     elements = []
     for e in op.get("elements") or []:
-        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k != "image"}}
+        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k not in ("image", "video")}}
         if e["type"] == "image_overlay" and image_id:
             el["parameters"]["image"] = image_id
+        if e["type"] == "video_overlay" and video_id:
+            el["parameters"]["video"] = video_id
         if e.get("animation"):
             el["animation"] = {"kind": e["animation"]["kind"], "parameters": dict(e["animation"]["parameters"])}
         elements.append(el)
@@ -192,6 +194,15 @@ def lower_qc_check(tool: str, kind: str, input_id: str, rules: Dict[str, Any], s
     if reference_id:
         args["reference_video"] = reference_id
     return args
+
+
+def lower_qc_package(tool: str, members: List[Dict[str, Any]], rules: Dict[str, Any]) -> Dict[str, Any]:
+    """ADR-065: the deliverable set → qc/check kind delivery_package; each member names its artifact (the id the report speaks of), its
+    contract type and the logical input the adapter resolves to the file."""
+    if tool != QC_TOOL:
+        raise CompileError(f"the QC gate cannot be executed by {tool}; the only tool of this operation is {QC_TOOL}")
+    return {"kind": PACKAGE_KIND, "artifacts": [{"artifact_id": m["artifact_id"], "artifact_type": m["artifact_type"], "input": m["input"]} for m in members],
+            "rules": dict(rules), "cache_policy": "bypass"}
 
 
 def lower_timeline_export(tool: str, op: Dict[str, Any], project_id: str, out_id: str) -> Dict[str, Any]:
@@ -342,13 +353,14 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_graphics" / f"{st['stem']}_graphics.mp4")
             tool = tool_for(GRAPHICS_SKILL, subject)
             inputs = [st["current"]]
-            image_id = None
-            if op.get("image"):
-                image_id = f"{subject}_graphics_image"
-                paths[image_id] = op["image"]
-                keys[image_id] = ""
-                inputs.append(image_id)
-            add(tool, lower_graphics_render(tool, op, st["current"], out_id, image_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
+            refs: Dict[str, Optional[str]] = {"image": None, "video": None}
+            for ref in refs:   # the composited files (named by the user) are inputs by path, like a LUT
+                if op.get(ref):
+                    refs[ref] = f"{subject}_graphics_{ref}"
+                    paths[refs[ref]] = op[ref]
+                    keys[refs[ref]] = ""
+                    inputs.append(refs[ref])
+            add(tool, lower_graphics_render(tool, op, st["current"], out_id, refs["image"], refs["video"]), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
             st["current"] = out_id
         gen = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.generate"), None)
         if gen is not None:
@@ -441,6 +453,19 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             ref = srow.get("reference") if srow.get("reference") in paths else None
             tool = tool_for(QC_SKILL, subject)
             add(tool, lower_qc_check(tool, spec["kind"], sc_id, spec["rules"], reference_id=ref), [sc_id] + ([ref] if ref else []), [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
+        pkg = (qc.get("packages") or {}).get(subject)
+        for t in d["delivery"]["targets"] if pkg else []:   # ADR-065: each target's deliverable set, checked together
+            if t["id"] not in pkg.get("targets") or []:
+                continue
+            art_id = f"{subject}_delivery_{t['id']}"
+            check_input = art_id if art_id in paths else subject
+            members = [{"artifact_id": art_id, "artifact_type": PACKAGE_TYPES["audio" if row and row.get("audio_only") else "delivery"], "input": check_input}]
+            members += [{"artifact_id": pkg[role], "artifact_type": PACKAGE_TYPES[role], "input": pkg[role]} for role in ("captions", "thumbnail") if pkg.get(role) in paths]
+            if paths.get(check_input) is None or len(members) < 2:
+                continue
+            spec = package_rules([dict(m, extension=Path(paths[m["input"]]).suffix) for m in members])
+            tool = tool_for(QC_SKILL, subject)
+            add(tool, lower_qc_package(tool, members, spec["rules"]), [m["input"] for m in members], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
 
     def delivery(subject: str) -> None:
         st = state[subject]

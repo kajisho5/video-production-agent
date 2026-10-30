@@ -2238,10 +2238,16 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         agent_fail = any(i["status"] == "FAIL" and i["layer"] != "qc" and i["artifact"] == art["logical_name"] for i in out["qa"]["items"])
         qc = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") in ("delivery", "audio"))
         self.assertTrue(qc["ok"] and qc["data"]["admitted"]); self.assertEqual(qc["data"]["fingerprint"], art["hash"])
-        self.assertEqual(art["qa"]["qc"], qc["data"]["verdict"])
-        if agent_fail or qc["data"]["verdict"] == "FAIL":
+        # ADR-065: the deliverable's set (with its sidecar / thumbnail), when it has one, gates it too: the worse verdict counts
+        pkg = next((r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") == "delivery_package" and art["logical_name"] in (r["data"].get("artifacts") or {})), None)
+        if pkg is not None:
+            self.assertTrue(pkg["ok"] and pkg["data"]["admitted"]); self.assertEqual(pkg["data"]["artifacts"][art["logical_name"]], art["hash"])
+        order = {"PASS": 0, "WARN": 1, "FAIL": 2}
+        verdict = max([qc["data"]["verdict"]] + ([pkg["data"]["verdict"]] if pkg else []), key=lambda v: order.get(v, 2))
+        self.assertEqual(art["qa"]["qc"], verdict)
+        if agent_fail or verdict == "FAIL":
             self.assertEqual((art["stage"], art["qa_status"]), ("working", "FAIL"))
-        elif qc["data"]["verdict"] == "PASS":
+        elif verdict == "PASS":
             self.assertEqual(art["stage"], "approved")
         else:
             self.assertEqual(art["stage"], "candidate")
@@ -2305,7 +2311,13 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertTrue(th["output"].endswith(".png") and os.path.getsize(th["output"]) > 0)
         self.assertEqual((th["data"]["artifact"]["width"], th["data"]["artifact"]["height"]), (1280, 720), "the canvas is the picture size")
         arts = {a["type"]: a for a in out["artifacts"]}
-        self.assertEqual((arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["stage"]), ("PASS", "candidate"))
+        # ADR-065: the deliverable and its thumbnail checked together on the real qc-skill (kind delivery_package); the thumbnail is gated by that report
+        pkg = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") == "delivery_package")
+        self.assertTrue(pkg["ok"] and pkg["data"]["admitted"], pkg["data"].get("error"))
+        self.assertEqual(pkg["data"]["artifacts"], {arts["YOUTUBE"]["logical_name"]: arts["YOUTUBE"]["hash"], arts["THUMBNAIL"]["logical_name"]: arts["THUMBNAIL"]["hash"]})
+        self.assertEqual(pkg["data"]["verdict"], "PASS", pkg["data"]["findings"])
+        self.assertEqual((arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["qa"]["qc"], arts["THUMBNAIL"]["stage"]), ("PASS", "PASS", "approved"))
+        self._gate_coherent(out, arts["YOUTUBE"])
         _, _, _, prim = self._probe(arts["YOUTUBE"]["path"])
         self.assertEqual(prim, "bt709")
 
@@ -2326,6 +2338,42 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual((applied["levels_out_black"], applied["levels_out_white"], applied["exposure"]), (0, 255, 0.0), "unset parameters keep the Skill's defaults")
         dur, size, audio, _ = self._probe(res["output"])
         self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
+
+    def test_every_motion_graphics_element(self):
+        """ADR-064: all twelve element types of the real motion-graphics-skill 0.2.x in one render, each with parameters beyond its text
+        (a chroma-keyed picture-in-picture clip, a registry font, a meme's two lines, a countdown's start number): the Skill renders every
+        element and reports the parameters it used; the picture keeps its size and duration."""
+        self._need("motion-graphics")
+        from video_agent.agent.finishing import ELEMENT_TYPES
+        off = {t: self.caps[f"motion-graphics:{t}"].status for t in ELEMENT_TYPES if getattr(self.caps.get(f"motion-graphics:{t}"), "status", "MISSING") != "AVAILABLE"}
+        self.assertEqual(off, {}, "every element type the pinned contract offers resolves AVAILABLE on this machine")
+        svc = self._svc("mg12")
+        reqs = {"motion.title": "Opening", "motion.title.primary_color": "1F2A44", "motion.text.font_color": "yellow", "motion.lower_third": "Ada", "motion.lower_third.title": "Engineer",
+                "motion.text": "LIVE", "motion.text.font": "system:dejavu-serif", "motion.text.font_size": 40, "motion.text.box": True, "motion.text.fade": 0.3,
+                "motion.image": self.png, "motion.image.opacity": 0.8, "motion.video": self.b, "motion.video.scale_width": 320, "motion.video.chromakey": "00FF00",
+                "motion.bug": "@studio", "motion.chapter": "Part 2", "motion.chapter.start": 6, "motion.progress": True, "motion.countdown": True,
+                "motion.countdown.count_from": 3, "motion.countdown.start": 2, "motion.countdown.end": 5, "motion.sticker": "NEW", "motion.hook": "Wait for it",
+                "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green"}
+        ir, p = self._plan(svc, [self.a], reqs, profile="generic", name="mg12")
+        op = ir.doc["graphics"]["operations"][0]
+        self.assertEqual(sorted(e["type"] for e in op["elements"]), sorted(ELEMENT_TYPES))
+        out = self._render(svc, p)
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "motion-graphics/run")
+        recs = {o["type"]: o for o in res["data"]["operations"]}
+        self.assertEqual(sorted(recs), sorted(ELEMENT_TYPES))
+        self.assertEqual(recs["video_overlay"]["parameters"]["chromakey"], "00FF00"); self.assertEqual(recs["video_overlay"]["parameters"]["scale_width"], 320)
+        self.assertEqual(recs["countdown"]["parameters"]["count_from"], 3); self.assertEqual((recs["meme"]["parameters"]["top"], recs["meme"]["parameters"]["bottom"]), ("when the build", "is green"))
+        self.assertEqual(recs["text_overlay"]["parameters"]["font"]["font_id"], "system:dejavu-serif")
+        dur, size, audio, _ = self._probe(res["output"])
+        self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
+
+    def test_motion_placement_blocks_after_a_turn(self):
+        """ADR-064 on the real resolver: {x: 1000} fits the 1280x720 source but not the 720x1280 picture a quarter turn delivers."""
+        self._need("motion-graphics", "video-editing")
+        svc = self._svc("mg_turn")
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.rotate": 90, "motion.text": "LIVE", "motion.text.position": {"x": 1000, "y": 10}}, params={"offline": True})
+        blk = [x for x in ir.doc["decisions"] if x["approval"] == "BLOCK"]
+        self.assertEqual([x["subject"] for x in blk], ["graphics.text_overlay"]); self.assertEqual(blk[0]["params"]["picture"], [720, 1280])
 
     # ---- Scenario 4: video → motion graphics (text + logo) → subtitle burn-in → QC
     def test_s4_motion_subtitle_burn_qc(self):
@@ -2355,7 +2403,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         d = ir.doc
         trims = [s["skill"] for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"]
         self.assertEqual([s["skill"] for s in d["plan"]["steps"]], trims + ["video_concat", "color_retag", "motion_graphics", "subtitle_generation", "subtitle_burn_in",
-                                                                            "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check", "qc_check"])
+                                                                            "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check", "qc_check", "qc_check"])
         self.assertEqual(len({s["tool"].split("/")[0] for s in d["plan"]["steps"]}), 7)
         gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
         cat = next(op for op in d["video"]["operations"] if op["type"] == "video.concat")

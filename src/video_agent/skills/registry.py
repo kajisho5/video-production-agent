@@ -392,7 +392,7 @@ def default_registry() -> SkillRegistry:
         ("color_retag", "RETAG", "Re-tag the colour metadata (bt709 / bt2020-pq / bt2020-hlg / bt601)", {"asset": "video", "target": "str"}, "LOW"),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading", f"color-grading:{typ}"], risk, True, "CONFIRM", ["color-grading/run"]))
-    r.register(SkillSpec("motion_graphics", "1.0", "Render titles / lower thirds / text and image overlays onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
+    r.register(SkillSpec("motion_graphics", "1.0", "Render the motion-graphics elements (titles, lower thirds, text / image / video overlays, bugs, chapters, progress, countdowns, stickers, hooks, memes) onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "motion-graphics"], "MEDIUM", True, "CONFIRM", ["motion-graphics/run"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
