@@ -13,7 +13,7 @@ from ..models import Asset, Observation, now_iso
 from ..temporal import Timeline
 from ..temporal.events import events_from_observation
 from ..tools.base import ToolAdapter, ToolError
-from .analysis import (probe_facts, sync_facts, ANALYSIS_KINDS, CORE_KINDS, IR_STRATEGY, LEGACY_STRATEGY, SYNC_MIN_CONFIDENCE_DEFAULT, SYNC_TOOL_PARAMS, AnalysisError,
+from .analysis import (probe_facts, sync_facts, ANALYSIS_KINDS, CORE_KINDS, CROP_TOOL_ARGS, IR_STRATEGY, LEGACY_STRATEGY, SYNC_MIN_CONFIDENCE_DEFAULT, SYNC_TOOL_PARAMS, AnalysisError,
                        AnalysisRequest, Analyzer, BudgetMeter, ObservationCache, cache_key, validate_observation)
 
 STRATEGIES = ("FULL_ANALYSIS", "COARSE_ANALYSIS", "TARGETED_ANALYSIS", "CACHED_ONLY")   # names recorded in the IR
@@ -152,6 +152,12 @@ class MediaAnalyzer(Analyzer):
                     args, kp = {"input": asset.path, "measure_only": True}, {}
                 elif kind == "beats":
                     args = {"input": asset.path, "beats": True}
+                elif kind == "crop_rectangle":
+                    if not asset.technical.get("video"):
+                        rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no video stream"})
+                        continue
+                    kp = dict(CROP_TOOL_ARGS)   # the agent's fixed sampling: the observation's parameters and part of its cache key
+                    args = {"input": asset.path, **kp}
                 else:
                     args = {"input": asset.path}
                 o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
@@ -364,6 +370,14 @@ class MediaAnalyzer(Analyzer):
             d["supported_beats"] = [round(float(x), 4) for x in g.get("supported_beats") or []]
             d["beats"] = [round(float(x), 4) for x in data.get("beats") or []]
             d["duration"] = _f(data.get("duration"))
+            return d
+        if kind == "crop_rectangle":
+            # cropdetect.py's measurement keys, as reported (no file path, no commands); `crop` is None when it had no reading at all
+            if _f(data.get("source_width")) is None or _f(data.get("source_height")) is None or "crop" not in data:
+                raise ToolError("cropdetect result lacks source_width / source_height / crop")
+            d = {k: data.get(k) for k in ("source_width", "source_height", "crop", "confidence", "windows", "windows_failed")}
+            if isinstance(d["crop"], dict):
+                d["crop"] = {k: d["crop"].get(k) for k in ("x", "y", "width", "height")}
             return d
         if kind == "sync":
             # the tool's measurement keys, verbatim (offset sign and drift meaning are the tool's); paths and commands are not facts

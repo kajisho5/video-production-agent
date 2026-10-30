@@ -1408,6 +1408,62 @@ class PriorityAToolsRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class CropProposalRealTests(unittest.TestCase):
+    """ADR-060 (roadmap step 7) on the real ffmpeg-skill: a 1920x1080 clip whose active picture is 1920x800 (140 px black bars top
+    and bottom) is measured by cropdetect.py (analysis kind crop_rectangle), the measured rectangle is proposed as a CONFIRM
+    video.crop, nothing is cropped before the approval, and once approved crop.py delivers exactly that rectangle. A clip
+    without bars proposes nothing."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_crop_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.letterboxed = str(src / "letterboxed.mp4")
+        cls.full = str(src / "full.mp4")
+        for path, video in ((cls.letterboxed, "testsrc2=s=1920x800:d=3:r=25,pad=1920:1080:0:140:black"), (cls.full, "testsrc2=s=1920x1080:d=3:r=25")):
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", video, "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", path], check=True)
+
+    def test_letterboxed_clip_proposes_the_measured_rectangle(self):
+        ws = str(Path(self.tmp) / "run_letterboxed")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.letterboxed], "generic", kinds=["crop_rectangle"])
+        d = ir.doc
+        obs = next(o for o in d["analysis"]["observations"] if o["kind"] == "crop_rectangle")
+        self.assertEqual((obs["provenance"], obs["tool"]), ("OBSERVED", "ffmpeg-skill/cropdetect"))
+        self.assertEqual((obs["data"]["source_width"], obs["data"]["source_height"], obs["data"]["windows_failed"]), (1920, 1080, 0))
+        dec = next(x for x in d["decisions"] if x["subject"] == "video.crop")
+        self.assertEqual((dec["type"], dec["approval"], dec["status"], dec["provenance"]), ("TRANSFORM", "CONFIRM", "PROPOSED", "OBSERVED"))
+        rect = {k: dec["params"][k] for k in ("x", "y", "width", "height")}
+        self.assertEqual(rect, {"x": 0, "y": 140, "width": 1920, "height": 800}, "the active picture, as measured")
+        self.assertIn(obs["id"], dec["evidence"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_crop")
+        self.assertEqual(step["tool"], "ffmpeg-skill/crop")
+        p = str(Path(ws) / "crop.json"); save_ir(ir, p)
+        waiting = svc.render(load_ir(p), p)
+        self.assertEqual(waiting["status"], "WAITING_FOR_APPROVAL", waiting)
+        self.assertFalse(waiting.get("execution"), "nothing runs before the proposal is approved")
+        svc.approve(load_ir(p), p, [dec["id"]])
+        out = svc.render(load_ir(p), p)
+        self.assertEqual(out["status"], "COMPLETED", out)
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/crop")
+        self.assertTrue(op_result["ok"], op_result)
+        self.assertEqual(artifact_qa(out, out["artifacts"][0]), "PASS", out["qa"])
+        pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", op_result["output"]],
+                            capture_output=True, text=True, check=True)
+        self.assertEqual(pr.stdout.strip(), "1920x800", "the real crop.py output is the measured rectangle")
+
+    def test_full_frame_clip_proposes_nothing(self):
+        svc = Service(workspace=str(Path(self.tmp) / "run_full"))
+        ir = svc.plan([self.full], "generic", kinds=["crop_rectangle"])
+        dec = next(x for x in ir.doc["decisions"] if x["subject"] == "video.crop")
+        self.assertEqual((dec["type"], dec["approval"]), ("KEEP", "AUTO"))
+        self.assertIn("no black bars", dec["reason"])
+        self.assertNotIn("video_crop", [s["skill"] for s in ir.doc["plan"]["steps"]])
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class BeatGridRealTests(unittest.TestCase):
     """ADR-053 on the real ffmpeg-skill: the `beats` analysis kind (scenes.py --beats) measures the music bed named by
     `beat_input` only, and its grid is the one the beat snap reads (tempo, confidence, supported beat times)."""

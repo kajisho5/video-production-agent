@@ -20,6 +20,7 @@ from ..skills.registry import SkillRegistry
 from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
 from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
+from .crop import decide_crop
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requirements, switch_cams
 from .requirements import requirement_map
@@ -486,6 +487,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                    confidence=1.0, evidence=[r.id for r in req], risk="HIGH", approval="BLOCK", provenance="USER", params={"ops": ["video.fit", "video.fill"]}, requirements=req)
         edits = {k: v for k, v in edits.items() if k not in ("video.fit", "video.fill")}
     subjects = [(PROGRAMME, [a.id for a in video_assets])] if concat_ok else [(a.id, [a.id]) for a in analysis.assets if a.id not in excluded]
+    # ---- measured black bars (ADR-060): a CONFIRM proposal of video.crop with the measured rectangle, on an input that is its own subject
+    decide_crop(eng, analysis, subjects, edits, "a programme of several inputs" if concat_ok or takes is not None else "the audio production path" if audio["production"] else None,
+                approval_for, probe_ids_of, cap_block)
     for op in SINGLE_SOURCE_ORDER:
         if op not in edits:
             continue

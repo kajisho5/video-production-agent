@@ -151,7 +151,10 @@ def run_case(case: dict) -> dict:
     fake = case.get("fake", {})
     src = Path(tmp) / "src" / "in.mp4"
     src.parent.mkdir(parents=True)
-    src.write_bytes(b"0" * 16)
+    if case.get("media_facts"):   # a self-describing fake file: what the fake engine measures on it (e.g. ADR-060 "crop" / "crop_confidence")
+        src.write_bytes(json.dumps({"fake": True, "duration": 16.0, **case["media_facts"]}).encode())
+    else:
+        src.write_bytes(b"0" * 16)
     provider = FakeAIProvider(**case["ai"]) if case.get("ai") else None
     ma = case.get("media_analysis")
     failures = []
@@ -866,8 +869,24 @@ def run_case(case: dict) -> dict:
         return {"case": case["name"], "ok": not failures, "failures": failures}
     else:
         svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())), provider=provider)
-    ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"))
+    ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"), kinds=case.get("kinds"))
     d = ir.doc
+    if "crop" in exp:
+        # ADR-060: the measured rectangle a CONFIRM video.crop proposal carries (null: nothing proposed), citing the crop_rectangle observation
+        want = exp["crop"]
+        prop = next((x for x in d["decisions"] if x["subject"] == "video.crop" and x["type"] == "TRANSFORM"), None)
+        got = {k: prop["params"][k] for k in ("x", "y", "width", "height")} if prop else None
+        if got != want.get("rect"):
+            failures.append(f"proposed crop {got} != {want.get('rect')}")
+        obs = next((o for o in d["analysis"]["observations"] if o["kind"] == "crop_rectangle"), None)
+        if obs is None or obs["provenance"] != "OBSERVED":
+            failures.append("no OBSERVED crop_rectangle observation")
+        if prop is not None and (prop["approval"] != "CONFIRM" or obs is None or obs["id"] not in prop["evidence"]):
+            failures.append(f"the crop proposal is {prop['approval']} / does not cite the measurement")
+        if want.get("reason_contains"):
+            keep = next((x for x in d["decisions"] if x["subject"] == "video.crop" and x["type"] == "KEEP"), None)
+            if keep is None or want["reason_contains"] not in keep["reason"]:
+                failures.append(f"no KEEP video.crop saying {want['reason_contains']!r}: {keep and keep['reason']}")
     if "intent" in exp and d["intent"]["primary"] != exp["intent"]:
         failures.append(f"intent {d['intent']['primary']} != {exp['intent']}")
     subjects = {x["subject"]: x for x in d["decisions"]}

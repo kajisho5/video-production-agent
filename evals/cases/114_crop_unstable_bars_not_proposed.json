@@ -1,0 +1,36 @@
+{
+ "name": "crop_unstable_bars_not_proposed",
+ "profile": "generic",
+ "kinds": [
+  "crop_rectangle"
+ ],
+ "media_facts": {
+  "crop": {
+   "width": 1280,
+   "height": 536,
+   "x": 0,
+   "y": 92
+  },
+  "crop_confidence": 0.5
+ },
+ "expect": {
+  "crop": {
+   "rect": null,
+   "reason_contains": "not stable across the sampled windows"
+  },
+  "decisions": {
+   "video.crop": {
+    "type": "KEEP",
+    "approval": "AUTO"
+   }
+  },
+  "production_plan": {
+   "no_step_skills": [
+    "video_crop"
+   ],
+   "status": "APPROVED",
+   "validate": true
+  },
+  "blocked": false
+ }
+}

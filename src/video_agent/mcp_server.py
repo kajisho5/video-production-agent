@@ -41,7 +41,7 @@ TOOLS: List[Dict[str, Any]] = [
          "request": {"type": "string", "description": "the user's request in their own words"},
          "set": {"type": "object", "description": "explicit user requirements, e.g. {\"audio.loudness.target_lufs\": -16}"},
          "name": _STR, "language": {"type": "string", "description": "ISO 639-1 language for a transcript"},
-         "kinds": {"type": "array", "items": _STR, "description": "extra analysis kinds, e.g. transcript, scene_detection"},
+         "kinds": {"type": "array", "items": _STR, "description": "extra analysis kinds, e.g. transcript, scene_detection, crop_rectangle (black bars → a CONFIRM crop proposal)"},
          "ai_brief": {"type": "boolean", "description": "return the brief for the chat model (default true)"},
          "ai_model": {"type": "string", "description": "name of the chat model, recorded in provenance"}}}},
     {"name": "revise", "description": (

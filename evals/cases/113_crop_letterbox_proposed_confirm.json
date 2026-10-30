@@ -1,0 +1,45 @@
+{
+ "name": "crop_letterbox_proposed_confirm",
+ "profile": "generic",
+ "kinds": [
+  "crop_rectangle"
+ ],
+ "media_facts": {
+  "crop": {
+   "width": 1280,
+   "height": 536,
+   "x": 0,
+   "y": 92
+  },
+  "crop_confidence": 1.0
+ },
+ "expect": {
+  "crop": {
+   "rect": {
+    "x": 0,
+    "y": 92,
+    "width": 1280,
+    "height": 536
+   }
+  },
+  "decisions": {
+   "video.crop": {
+    "type": "TRANSFORM",
+    "approval": "CONFIRM",
+    "status": "PROPOSED",
+    "provenance": "OBSERVED",
+    "risk": "MEDIUM"
+   }
+  },
+  "production_plan": {
+   "steps": [
+    "silence_cleanup",
+    "video_crop"
+   ],
+   "tools_from_registry": true,
+   "validate": true,
+   "render_status": "WAITING_FOR_APPROVAL"
+  },
+  "blocked": false
+ }
+}
