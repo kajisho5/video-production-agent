@@ -69,6 +69,10 @@ def install(bin_dir) -> str:
     executable without a real yt-dlp installation."""
     bin_dir = Path(bin_dir)
     bin_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":   # no shebangs on Windows: a .cmd launcher, which shutil.which finds through PATHEXT
+        exe = bin_dir / "yt-dlp.cmd"
+        exe.write_text(f'@"{sys.executable}" "{Path(__file__).resolve()}" %*\r\n', encoding="utf-8")
+        return str(exe)
     exe = bin_dir / "yt-dlp"
     exe.write_text(f"#!/usr/bin/env python3\nimport runpy\nrunpy.run_path({str(Path(__file__).resolve())!r}, run_name='__main__')\n", encoding="utf-8")
     exe.chmod(0o755)
