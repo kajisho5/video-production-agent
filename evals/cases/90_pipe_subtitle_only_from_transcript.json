@@ -15,6 +15,7 @@
    "delivery_export",
    "delivery_check",
    "qc_check",
+   "qc_check",
    "qc_check"
   ],
   "captions_ops": [

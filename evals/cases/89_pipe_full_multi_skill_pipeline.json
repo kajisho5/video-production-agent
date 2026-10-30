@@ -37,6 +37,7 @@
    "delivery_check",
    "thumbnail_render",
    "qc_check",
+   "qc_check",
    "qc_check"
   ],
   "packages": [
@@ -86,7 +87,7 @@
    "artifacts": {
     "YOUTUBE": "approved",
     "CAPTIONS": "approved",
-    "THUMBNAIL": "candidate"
+    "THUMBNAIL": "approved"
    },
    "resume": true
   }

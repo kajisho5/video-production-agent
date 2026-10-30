@@ -62,7 +62,7 @@ from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
-from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, stage_for
+from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, qc_verdict_of, stage_for
 from .agent.audio import REQUIREMENT_KEYS as _AUDIO_REQUIREMENT_KEYS
 from .agent.audio import parse_audio_requirements
 from .agent.decision import APPROVAL_KEYS as _DECISION_APPROVAL_KEYS
@@ -670,11 +670,12 @@ class Service:
         else:
             job.transition("QA")
             checks = {op.args["input"]: r for op in ops if op.skill == "delivery_check" for r in result.results if r.op_id == op.id}
-            qc_results = {op.args["input"]: r for op in ops if op.skill == "qc_check" for r in result.results if r.op_id == op.id}   # the QC gate's reports, per artifact (ADR-032)
+            qc_results = {op.args["input"]: r for op in ops if op.skill == "qc_check" and op.args.get("input") for r in result.results if r.op_id == op.id}   # the QC gate's reports, per artifact (ADR-032)
+            qc_packages = [(op.args, next((r for r in result.results if r.op_id == op.id), None)) for op in ops if op.skill == "qc_check" and op.args.get("artifacts")]   # ADR-065
             qa_reqs = ((ir.doc.get("request") or {}).get("args") or {}).get("requirements")
             qa_tools = self.tools_for(adapter, qa_reqs)
             self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter, qa_reqs)
-            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results)
+            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results, qc_packages=qc_packages)
             out["qa"] = qa.to_dict()
             try:
                 artifacts = self._register_artifacts(ir, ir_path, job, ops, paths, qa)
@@ -797,10 +798,9 @@ class Service:
                 items = [i for i in qa.items if i.artifact == logical]
                 statuses = {i.status for i in items}
                 art_qa = "FAIL" if "FAIL" in statuses else ("WARN" if "WARN" in statuses else ("PASS" if items else "UNKNOWN"))
-                qc_item = next((i for i in items if i.layer == "qc" and i.name == "verdict"), None)
-                qc_verdict: Optional[str] = None
-                if qc_enabled and row["type"] not in ("THUMBNAIL", "TIMELINE"):   # the gate covers deliverables and sidecars; a thumbnail / timeline is checked by the agent only
-                    qc_verdict = str(qc_item.observed) if qc_item is not None and str(qc_item.observed) in ("PASS", "WARN", "FAIL") else "FAIL"   # no admitted report → never promoted on silence
+                # the gate covers deliverables and sidecars by their own reports (no admitted report → FAIL, never promoted on silence); a thumbnail is
+                # covered only as a member of its deliverable set (ADR-065), a timeline not at all
+                qc_verdict: Optional[str] = qc_verdict_of(items, gated=row["type"] not in ("THUMBNAIL", "TIMELINE")) if qc_enabled else None
                 exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "thumbnail_frame", "thumbnail_render", "timeline_export") and logical in o.outputs), None)
                 # a no-preset deliverable is an alias (compiler.delivery(): "the last processed intermediate
                 # is the deliverable") — no op names `logical` itself, so also credit whichever real op's

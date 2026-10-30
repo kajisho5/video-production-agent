@@ -2238,10 +2238,16 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         agent_fail = any(i["status"] == "FAIL" and i["layer"] != "qc" and i["artifact"] == art["logical_name"] for i in out["qa"]["items"])
         qc = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") in ("delivery", "audio"))
         self.assertTrue(qc["ok"] and qc["data"]["admitted"]); self.assertEqual(qc["data"]["fingerprint"], art["hash"])
-        self.assertEqual(art["qa"]["qc"], qc["data"]["verdict"])
-        if agent_fail or qc["data"]["verdict"] == "FAIL":
+        # ADR-065: the deliverable's set (with its sidecar / thumbnail), when it has one, gates it too: the worse verdict counts
+        pkg = next((r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") == "delivery_package" and art["logical_name"] in (r["data"].get("artifacts") or {})), None)
+        if pkg is not None:
+            self.assertTrue(pkg["ok"] and pkg["data"]["admitted"]); self.assertEqual(pkg["data"]["artifacts"][art["logical_name"]], art["hash"])
+        order = {"PASS": 0, "WARN": 1, "FAIL": 2}
+        verdict = max([qc["data"]["verdict"]] + ([pkg["data"]["verdict"]] if pkg else []), key=lambda v: order.get(v, 2))
+        self.assertEqual(art["qa"]["qc"], verdict)
+        if agent_fail or verdict == "FAIL":
             self.assertEqual((art["stage"], art["qa_status"]), ("working", "FAIL"))
-        elif qc["data"]["verdict"] == "PASS":
+        elif verdict == "PASS":
             self.assertEqual(art["stage"], "approved")
         else:
             self.assertEqual(art["stage"], "candidate")
@@ -2305,7 +2311,13 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertTrue(th["output"].endswith(".png") and os.path.getsize(th["output"]) > 0)
         self.assertEqual((th["data"]["artifact"]["width"], th["data"]["artifact"]["height"]), (1280, 720), "the canvas is the picture size")
         arts = {a["type"]: a for a in out["artifacts"]}
-        self.assertEqual((arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["stage"]), ("PASS", "candidate"))
+        # ADR-065: the deliverable and its thumbnail checked together on the real qc-skill (kind delivery_package); the thumbnail is gated by that report
+        pkg = next(r for r in out["execution"]["results"] if r["tool"] == "qc/check" and r["data"].get("kind") == "delivery_package")
+        self.assertTrue(pkg["ok"] and pkg["data"]["admitted"], pkg["data"].get("error"))
+        self.assertEqual(pkg["data"]["artifacts"], {arts["YOUTUBE"]["logical_name"]: arts["YOUTUBE"]["hash"], arts["THUMBNAIL"]["logical_name"]: arts["THUMBNAIL"]["hash"]})
+        self.assertEqual(pkg["data"]["verdict"], "PASS", pkg["data"]["findings"])
+        self.assertEqual((arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["qa"]["qc"], arts["THUMBNAIL"]["stage"]), ("PASS", "PASS", "approved"))
+        self._gate_coherent(out, arts["YOUTUBE"])
         _, _, _, prim = self._probe(arts["YOUTUBE"]["path"])
         self.assertEqual(prim, "bt709")
 
@@ -2391,7 +2403,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         d = ir.doc
         trims = [s["skill"] for s in d["plan"]["steps"] if s["skill"] == "silence_cleanup"]
         self.assertEqual([s["skill"] for s in d["plan"]["steps"]], trims + ["video_concat", "color_retag", "motion_graphics", "subtitle_generation", "subtitle_burn_in",
-                                                                            "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check", "qc_check"])
+                                                                            "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check", "qc_check", "qc_check"])
         self.assertEqual(len({s["tool"].split("/")[0] for s in d["plan"]["steps"]}), 7)
         gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
         cat = next(op for op in d["video"]["operations"] if op["type"] == "video.concat")

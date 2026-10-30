@@ -1,0 +1,39 @@
+{
+ "name": "pipe_qc_delivery_package_fail_keeps_the_set_working",
+ "profile": "youtube",
+ "pipeline": {
+  "modes": {
+   "FAKE_QC_MODE": "package_fail"
+  }
+ },
+ "requirements": {
+  "subtitle": true,
+  "thumbnail": true,
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "qc_enabled": true,
+  "steps": [
+   "silence_cleanup",
+   "subtitle_generation",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check",
+   "thumbnail_frame",
+   "qc_check",
+   "qc_check",
+   "qc_check"
+  ],
+  "render": {
+   "execution_status": "COMPLETED",
+   "status": "REVIEW",
+   "qa_status": "FAIL",
+   "artifacts": {
+    "YOUTUBE": "working",
+    "CAPTIONS": "working",
+    "THUMBNAIL": "working"
+   }
+  }
+ }
+}

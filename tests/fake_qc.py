@@ -7,7 +7,9 @@ request via FAKE_QC_MODE:
   ok | reused | tool_error | tool_error_final | output_missing | no_report | hash_mismatch | fingerprint_mismatch | malformed | empty |
   two_docs | text | nonzero_ok | wrong_schema | wrong_skill | wrong_version | bad_contract | contract_fail | contract_drift |
   doctor_fail | doctor_degraded | timeout | hang | cancelled | validation_error | internal_error | unknown_code |
-  verdict_fail | verdict_warn | wrong_kind | wrong_operation | not_observed | status_failed_ok | bad_status | bad_report_id
+  verdict_fail | verdict_warn | wrong_kind | wrong_operation | not_observed | status_failed_ok | bad_status | bad_report_id |
+  package_fail (kind delivery_package: the last member's extension does not match its rule) | package_fingerprint (a member's
+  fingerprint is not its file's)
 
 FAKE_QC_CALLS: a file every invocation (subcommand + argv) is appended to (security tests read it). Never runs ffprobe / ffmpeg,
 never imports qc_skill. Test double only."""
@@ -27,7 +29,7 @@ CALLS_LOG = os.environ.get("FAKE_QC_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
 RETRY = {"TOOL_ERROR": True, "CANCELLED": True}   # the Skill's errors.py verdicts (the contract carries no retryable map)
 FORBIDDEN = {"command", "commands", "argv", "args", "shell", "cmd", "cmdline", "exec", "executable", "filter", "filter_complex", "env", "environment"}
-TOP_LEVEL = {"schema", "request_id", "operation", "kind", "input", "subtitle", "reference_video", "parameters", "rules", "cache_policy", "timeout"}
+TOP_LEVEL = {"schema", "request_id", "operation", "kind", "input", "subtitle", "reference_video", "parameters", "rules", "cache_policy", "timeout", "artifacts"}
 RESPONSE = "qc/response@1"
 VERSION = CONTRACT["version"]
 
@@ -100,9 +102,10 @@ def check_rules(section: str, data, where: str):
     for k, v in data.items():
         nested = schema[k].get("nested_rule")
         if nested and v is not None:
-            bad = check_rules(nested, v, f"{where}.{k}")
-            if bad:
-                return bad
+            for i, item in enumerate(v if str(schema[k].get("type", "")).startswith(("List[", "Optional[List[")) else [v]):
+                bad = check_rules(nested, item, f"{where}.{k}" + (f"[{i}]" if isinstance(v, list) else ""))
+                if bad:
+                    return bad
     return None
 
 
@@ -218,6 +221,8 @@ def main() -> int:
             return bad
     if req.get("cache_policy", "use") not in CONTRACT["cache"]["policies"]:
         return err("INVALID_REQUEST", "cache_policy must be one of ['bypass', 'only', 'use']")
+    if kind == "delivery_package" or req.get("artifacts") is not None:
+        return run_package(req, roots, operation, kind, params, rules, argv)
     src, bad = resolve(req.get("input"), roots, "input")
     if bad:
         return bad
@@ -295,6 +300,57 @@ def main() -> int:
     if MODE == "two_docs":
         emit(doc)
     return 3 if MODE == "nonzero_ok" else 0
+
+
+def run_package(req, roots, operation, kind, params, rules, argv) -> int:
+    """kind delivery_package like the real Skill (engine.py _run_delivery_package / rules.py evaluate_delivery_package): N named artifacts,
+    each present / sized / of its expected extension, the dependencies between them; nothing is probed."""
+    arts = req.get("artifacts")
+    if kind != "delivery_package" or req.get("input") is not None or not isinstance(arts, list) or not arts:
+        return err("INVALID_REQUEST", "kind=delivery_package requires a non-empty request.artifacts list (and no input)")
+    found = {}
+    for a in arts:
+        if not isinstance(a, dict) or set(a) - {"artifact_id", "artifact_type", "path"} or a.get("artifact_type") not in CONTRACT["delivery_package"]["artifact_types"]:
+            return err("INVALID_REQUEST", "artifact entry shape / type")
+        p, bad = resolve(a.get("path"), roots, "artifacts.path")
+        if bad:
+            return bad
+        found[a["artifact_id"]] = (a["artifact_type"], p)
+    rule = rules.get("delivery_package") or {}
+    checks, findings, ms = [], [], []
+    for aid, (_t, p) in found.items():
+        ms += [dict(measurement("delivery_package.artifact_present", True, None, "OBSERVED"), artifact_id=aid),
+               dict(measurement("delivery_package.artifact_extension", Path(p).suffix.lower().lstrip("."), None, "OBSERVED"), artifact_id=aid)]
+    last = list(found)[-1]
+    for ar in rule.get("artifacts") or []:
+        aid = ar["artifact_id"]
+        checks.append({"check_id": "delivery_package.artifact_present", "category": "delivery_package", "status": "PASS" if aid in found else "FAIL", "measurement_ids": [], "finding_codes": [], "artifact_id": aid})
+        if aid in found and ar.get("min_size_bytes") is not None:
+            checks.append({"check_id": "delivery_package.artifact_size_within_limit", "category": "delivery_package", "status": "PASS" if os.path.getsize(found[aid][1]) >= ar["min_size_bytes"] else "FAIL",
+                           "measurement_ids": [], "finding_codes": [], "artifact_id": aid})
+        if aid in found and ar.get("expected_extension") is not None:
+            ok = Path(found[aid][1]).suffix.lower().lstrip(".") == ar["expected_extension"] and not (MODE == "package_fail" and aid == last)
+            checks.append({"check_id": "delivery_package.artifact_extension_matches_expected", "category": "delivery_package", "status": "PASS" if ok else "FAIL",
+                           "measurement_ids": [], "finding_codes": [] if ok else ["DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH"], "artifact_id": aid})
+            if not ok:
+                findings.append({"code": "DELIVERY_PACKAGE_ARTIFACT_EXTENSION_MISMATCH", "category": "delivery_package", "severity": "FAIL", "message": f"{aid} extension", "artifact_id": aid})
+    for dep in (rule.get("cross_artifact") or {}).get("dependencies") or []:
+        if dep["artifact_id"] in found:
+            checks.append({"check_id": "delivery_package.dependency_satisfied", "category": "delivery_package", "status": "PASS" if dep["requires_artifact_id"] in found else "FAIL",
+                           "measurement_ids": [], "finding_codes": []})
+    overall = "FAIL" if any(c["status"] == "FAIL" for c in checks) else "PASS"
+    fps = {aid: hashlib.sha256(Path(p).read_bytes()).hexdigest() for aid, (_t, p) in found.items()}
+    if MODE == "package_fingerprint":
+        fps[last] = "0" * 64
+    identity = hashlib.sha256(json.dumps({"fps": fps, "kind": kind, "op": operation, "params": params, "rules": rules}, sort_keys=True).encode()).hexdigest()
+    prov = {"skill": "qc", "skill_version": VERSION, "operation": operation, "engine": {"ffmpeg_version": "fake", "ffprobe_version": "fake"},
+            "artifacts": [{"artifact_id": aid, "artifact_type": t, "present": True, "fingerprint": fps[aid], "size_bytes": os.path.getsize(p)} for aid, (t, p) in found.items()],
+            "identity": identity, "observed_at": "2026-09-05T00:00:00Z", "measurement_source": "OBSERVED"}
+    report = {"id": "qcreport_" + identity[:16], "version": "1", "operation": operation, "kind": kind, "input": {"kind": kind, "artifacts": list(found)},
+              "overall_status": overall, "checks": checks, "measurements": ms, "findings": findings, "provenance": prov}
+    emit({"schema": RESPONSE, "status": "completed", "skill": {"id": "qc", "version": VERSION}, "report": report, "provenance": prov, "reused": False,
+          "cache": {"status": "disabled" if "--no-cache" in argv else "miss", "policy": req.get("cache_policy", "use"), "key": identity}})
+    return 0
 
 
 if __name__ == "__main__":

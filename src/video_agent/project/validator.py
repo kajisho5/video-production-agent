@@ -814,6 +814,18 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         for sc, row in (qc.get("sidecars") or {}).items():
             if not any((s.get("params") or {}).get("artifact") == sc for s in qc_steps):
                 rep.errors.append(f"qa.qc: sidecar {sc} has no qc_check step")
+        outputs = {o.get("logical"): o for o in d["plan"].get("outputs") or []}
+        for subj, row in (qc.get("packages") or {}).items():   # ADR-065: a deliverable set names the subject's own sidecar / thumbnail, and has its steps
+            for role, want in (("captions", "CAPTIONS"), ("thumbnail", "THUMBNAIL")):
+                ref = row.get(role)
+                if ref is not None and ((outputs.get(ref) or {}).get("role") != want or ((outputs.get(ref) or {}).get("expected") or {}).get("source") != subj):
+                    rep.errors.append(f"qa.qc: package of {subj} names {ref} as its {role}, which is not a planned {want} output of {subj}")
+            if not (row.get("captions") or row.get("thumbnail")):
+                rep.errors.append(f"qa.qc: package of {subj} has nothing beside the deliverable")
+            for target in row.get("targets") or []:
+                if not any((s.get("params") or {}).get("asset") == subj and (s.get("params") or {}).get("target") == target and (s.get("params") or {}).get("kind") == "delivery_package"
+                           for s in qc_steps):
+                    rep.errors.append(f"qa.qc: package {subj}/{target} has no qc_check step")
     # temporal layer: events are validated domain objects on existing assets, within their duration, with real evidence
     durations = {aid: (a.get("technical") or {}).get("duration") for aid, a in assets.items()}
     known_evidence = {o.get("id") for o in d["analysis"].get("observations") or []} | {x.get("id") for x in d["decisions"]} | {i.get("id") for i in d["analysis"].get("inferences") or []}

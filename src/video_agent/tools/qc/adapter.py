@@ -12,7 +12,9 @@ Protocol (from the Skill's own contract, `qc contract --json`):
 qc-skill is a measurement Skill: it writes NO media and its result is a report. The agent hands one typed operation:
 {"input": <artifact id>, "kind": video|audio|subtitle|delivery, "rules"?: {video?, audio?, subtitle?, delivery?}, "parameters"?: {…},
 "subtitle"?: <artifact id> (kind delivery only), "reference_video"?: <artifact id> (kind subtitle; kind video / delivery only together with
-the video rule's reference_metrics, qc-skill ADR-021), "cache_policy"?: use|bypass}.
+the video rule's reference_metrics, qc-skill ADR-021), "cache_policy"?: use|bypass}. Kind delivery_package (ADR-065) takes "artifacts":
+[{artifact_id, artifact_type, input: <artifact id>}] instead of "input": the deliverable set checked together; its admission recomputes the
+sha256 of every member and requires the report's provenance to name each member with that fingerprint.
 Rule sections / field names / value types and parameter names come from the contract's `rules` and `parameters` blocks; forbidden keys
 are refused by name; the request carries paths only for the input and its companions (workspace and allowed roots go on argv).
 
@@ -70,7 +72,9 @@ REQUIRED_STATUSES = ("PASS", "WARN", "FAIL", "UNKNOWN")
 REQUIRED_ERROR_CODES = ("INVALID_REQUEST", "INVALID_INPUT", "PATH_NOT_ALLOWED", "UNSUPPORTED_OPERATION", "MISSING_INPUT", "TOOL_ERROR", "VALIDATION_ERROR", "CANCELLED", "INTERNAL_ERROR")
 # the Skill's own forbidden request keys (qc_skill/schemas.py FORBIDDEN_KEYS): not declared in the contract, pinned here
 SKILL_FORBIDDEN_KEYS = ("command", "commands", "argv", "args", "shell", "cmd", "cmdline", "exec", "executable", "filter", "filter_complex", "env", "environment")
-COMMON_ARGS = ("input", "kind", "rules", "parameters", "subtitle", "reference_video", "cache_policy")
+COMMON_ARGS = ("input", "kind", "rules", "parameters", "subtitle", "reference_video", "cache_policy", "artifacts")
+PACKAGE_KIND = "delivery_package"   # ADR-065: N named artifacts validated together (qc-skill ADR-010 / ADR-011); `artifacts` instead of `input`
+PACKAGE_ARTIFACT_KEYS = ("artifact_id", "artifact_type", "input")
 REFERENCE_KINDS = ("subtitle", "video", "delivery")   # qc-skill ADR-021: video / delivery read reference_video only for reference_metrics
 AGENT_CACHE_POLICIES = ("use", "bypass")   # "only" (fail unless cached) is never useful to the agent
 REPORT_ID_PREFIX = "qcreport_"
@@ -448,6 +452,8 @@ class QcAdapter(ToolAdapter):
         kind = str(args.get("kind") or "")
         if kind not in self.kinds:
             raise ToolError(f"qc: kind {kind!r} is not one of {self.kinds}")
+        if kind == PACKAGE_KIND or args.get("artifacts") is not None:
+            return self._package_request(tool, operation, kind, args, paths, op_id, timeout)
         src = self._resolve_input("input", args.get("input"), paths)
         companions: Dict[str, str] = {}
         if args.get("subtitle") is not None:
@@ -486,6 +492,55 @@ class QcAdapter(ToolAdapter):
         inputs = [src] + list(companions.values())
         return {"request": req, "input": src, "companions": companions, "operation": operation, "kind": kind, "tool": tool,
                 "workspace": self.workspace or str(Path(src).parent), "cache": bool(self.workspace), "input_dirs": sorted({str(Path(p).parent) for p in inputs})}
+
+    def _package_request(self, tool: str, operation: str, kind: str, args: Dict[str, Any], paths: Dict[str, str], op_id: str, timeout: Optional[float]) -> Dict[str, Any]:
+        """Kind delivery_package (ADR-065): the members are named artifacts, each resolved like an input; no single input, no companions."""
+        if kind != PACKAGE_KIND:
+            raise ToolError(f"qc: artifacts are only accepted with kind {PACKAGE_KIND}")
+        for k in ("input", "subtitle", "reference_video"):
+            if args.get(k) is not None:
+                raise ToolError(f"qc: kind {PACKAGE_KIND} takes its files as artifacts, not {k}")
+        raw = args.get("artifacts")
+        if not isinstance(raw, list) or not raw:
+            raise ToolError(f"qc: kind {PACKAGE_KIND} needs a non-empty artifacts list")
+        types = [str(t) for t in as_dict(self.contract.get("delivery_package")).get("artifact_types") or []]
+        members: List[Dict[str, str]] = []
+        for i, a in enumerate(raw):
+            if not isinstance(a, dict) or set(a) != set(PACKAGE_ARTIFACT_KEYS):
+                raise ToolError(f"qc: artifacts[{i}] must be {{{', '.join(PACKAGE_ARTIFACT_KEYS)}}}")
+            aid, atype = a["artifact_id"], a["artifact_type"]
+            if not isinstance(aid, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", aid):
+                raise ToolError(f"qc: artifacts[{i}].artifact_id must be a plain id")
+            if atype not in types:
+                raise ToolError(f"qc: artifacts[{i}].artifact_type {atype!r} is not one of the contract's {types}")
+            members.append({"artifact_id": aid, "artifact_type": str(atype), "path": self._resolve_input(f"artifacts[{i}]", a["input"], paths)})
+        ids = [m["artifact_id"] for m in members]
+        if len(set(ids)) != len(ids):
+            raise ToolError("qc: duplicate artifact ids in the package")
+        rules = self.rules_for(args.get("rules"))
+        named = [str(as_dict(r).get("artifact_id")) for r in as_dict(rules.get(PACKAGE_KIND)).get("artifacts") or []]
+        if any(n not in ids for n in named):
+            raise ToolError(f"qc: package rules name artifacts the request does not carry: {sorted(set(named) - set(ids))}")
+        params = self.params_for(args.get("parameters"))
+        if operation == "inspect" and rules:
+            raise ToolError("qc: inspect takes no rules (use qc/check)")
+        policy = str(args.get("cache_policy") or "use")
+        if policy not in AGENT_CACHE_POLICIES or policy not in self.cache_policies:
+            raise ToolError(f"qc: cache_policy {policy!r} is not one of {list(AGENT_CACHE_POLICIES)}")
+        rid = re.sub(r"[^A-Za-z0-9._-]", "_", str(op_id))[:64] or "op"
+        req: Dict[str, Any] = {"schema": REQUEST_SCHEMA, "request_id": rid, "operation": operation, "kind": kind, "artifacts": members, "cache_policy": policy}
+        if rules:
+            req["rules"] = rules
+        if params:
+            req["parameters"] = params
+        if timeout is not None:
+            req["timeout"] = float(timeout)
+        # every member's `path` is the one the adapter itself resolved under the path policy (the args carried artifact ids, scanned above)
+        hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("path", "paths")), "request")
+        if hit:
+            raise ToolError(f"qc: refusing to send a request carrying {hit}")
+        return {"request": req, "input": None, "members": {m["artifact_id"]: m["path"] for m in members}, "companions": {}, "operation": operation, "kind": kind, "tool": tool,
+                "workspace": self.workspace or str(Path(members[0]["path"]).parent), "cache": bool(self.workspace), "input_dirs": sorted({str(Path(m["path"]).parent) for m in members})}
 
     @staticmethod
     def _under(path: str, root: str) -> bool:
@@ -549,6 +604,8 @@ class QcAdapter(ToolAdapter):
 
     def _check_response(self, doc: Dict[str, Any], b: Dict[str, Any]) -> Tuple[List[str], str, Dict[str, Optional[str]]]:
         """Admission: every condition names itself; the first failure is what the failed result reports."""
+        if b.get("members") is not None:
+            return self._check_package_response(doc, b)
         errs: List[str] = []
         fp = sha256_file(b["input"])
         comp: Dict[str, Optional[str]] = {k: sha256_file(p) for k, p in b["companions"].items()}
@@ -592,15 +649,54 @@ class QcAdapter(ToolAdapter):
             errs.append(f"report.id {rep.get('id')!r} is not a qc report id")
         return errs, fp, comp
 
+    def _check_package_response(self, doc: Dict[str, Any], b: Dict[str, Any]) -> Tuple[List[str], str, Dict[str, Optional[str]]]:
+        """Admission of a delivery_package report (ADR-065): the same envelope checks, and every member the agent sent is named in the
+        report's input and provenance with the sha256 the adapter recomputes from its file — a report about another set never counts."""
+        errs: List[str] = []
+        digests: Dict[str, Optional[str]] = {aid: sha256_file(p) for aid, p in b["members"].items()}
+        if doc.get("schema") != RESPONSE_SCHEMA:
+            errs.append(f"response schema {doc.get('schema')!r} != {RESPONSE_SCHEMA}")
+        sk = as_dict(doc.get("skill"))
+        if sk.get("id") != SKILL_ID or str(sk.get("version")) != self.version:
+            errs.append(f"response skill {sk!r} is not {SKILL_ID}@{self.version}")
+        rep = doc.get("report")
+        if not isinstance(rep, dict):
+            return errs + ["report missing"], "", digests
+        prov = as_dict(doc.get("provenance"))
+        if rep.get("operation") != b["operation"]:
+            errs.append(f"report.operation {rep.get('operation')!r} != requested {b['operation']!r}")
+        if rep.get("kind") != b["kind"]:
+            errs.append(f"report.kind {rep.get('kind')!r} != requested {b['kind']!r}")
+        if prov.get("measurement_source") != "OBSERVED":
+            errs.append(f"provenance.measurement_source {prov.get('measurement_source')!r} != OBSERVED")
+        if prov.get("skill") != SKILL_ID or str(prov.get("skill_version")) != self.version:
+            errs.append("provenance skill / skill_version differ from the Skill that answered")
+        if [str(x) for x in as_dict(rep.get("input")).get("artifacts") or []] != list(b["members"]):
+            errs.append(f"report.input.artifacts {as_dict(rep.get('input')).get('artifacts')!r} != the package sent {list(b['members'])}")
+        seen = {str(as_dict(a).get("artifact_id")): as_dict(a) for a in prov.get("artifacts") or []}
+        for aid, digest in digests.items():
+            got = seen.get(aid)
+            if got is None or got.get("present") is not True or strip_sha_prefix(got.get("fingerprint")) != digest:
+                errs.append(f"provenance.artifacts[{aid}] does not carry the sha256 of the file sent ({digest})")
+        if rep.get("overall_status") not in self.statuses:
+            errs.append(f"report.overall_status {rep.get('overall_status')!r} is not one of {self.statuses}")
+        checks = rep.get("checks")
+        if not isinstance(checks, list) or any(not isinstance(c, dict) or c.get("status") not in self.statuses for c in checks):
+            errs.append("report.checks is not a list of checks with contract statuses")
+        if not str(rep.get("id") or "").startswith(REPORT_ID_PREFIX):
+            errs.append(f"report.id {rep.get('id')!r} is not a qc report id")
+        return errs, "", digests
+
     def _success_data(self, doc: Dict[str, Any], b: Dict[str, Any], fp: str, comp: Dict[str, Optional[str]]) -> Dict[str, Any]:
         rep, prov = as_dict(doc.get("report")), as_dict(doc.get("provenance"))
         checks = [{"check_id": c.get("check_id"), "category": c.get("category"), "status": c.get("status"), "finding_codes": list(c.get("finding_codes") or []),
-                   "measurement_ids": list(c.get("measurement_ids") or [])} for c in rep.get("checks") or [] if isinstance(c, dict)]
+                   "measurement_ids": list(c.get("measurement_ids") or []), **({"artifact_id": c["artifact_id"]} if c.get("artifact_id") else {})}
+                  for c in rep.get("checks") or [] if isinstance(c, dict)]
         findings = [scrub(f, self.forbidden) for f in rep.get("findings") or [] if isinstance(f, dict)]
         measurements = [{k: m.get(k) for k in ("id", "category", "name", "value", "unit", "source", "estimated")} for m in rep.get("measurements") or [] if isinstance(m, dict)]
         return {"skill": {"id": SKILL_ID, "version": self.version}, "status": "completed", "operation_type": b["operation"], "kind": b["kind"], "verdict": rep.get("overall_status"),
-                "report_id": rep.get("id"), "checks": checks, "findings": findings, "measurements": measurements, "fingerprint": fp,
-                "companions": {"subtitle": comp.get("subtitle"), "reference_video": comp.get("reference_video")},
+                "report_id": rep.get("id"), "checks": checks, "findings": findings, "measurements": measurements, "fingerprint": fp or None,
+                **({"artifacts": dict(comp)} if b.get("members") is not None else {"companions": {"subtitle": comp.get("subtitle"), "reference_video": comp.get("reference_video")}}),
                 "provenance": {k: prov.get(k) for k in ("skill", "skill_version", "engine", "identity", "observed_at", "measurement_source")},
                 "cache": {k: as_dict(doc.get("cache")).get(k) for k in ("status", "policy", "key")}, "reused": bool(doc.get("reused")), "admitted": True, "commands": [], "warnings": []}
 

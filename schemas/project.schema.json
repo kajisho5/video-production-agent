@@ -678,6 +678,37 @@
          }
         }
        }
+      },
+      "packages": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "targets"
+        ],
+        "properties": {
+         "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+           "type": "string"
+          }
+         },
+         "captions": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "thumbnail": {
+          "type": [
+           "string",
+           "null"
+          ]
+         }
+        }
+       }
       }
      }
     }

@@ -203,7 +203,7 @@ def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, A
 
 def _motion_param(v: Any, key: str, name: str, spec: Dict[str, Any], tool: str = "") -> Any:
     """One element parameter checked against the pinned contract's schema for it (type, range, max_length, enum). `tool` is the
-    ffmpeg-skill tool the contract says draws the element: a template element's colour is narrowed to bare RRGGBB (ADR-064)."""
+    engine tool the contract says draws the element: a template element's colour is narrowed to bare RRGGBB (ADR-064)."""
     t = spec.get("type")
     if t == "path":
         return _file(v, key, IMAGE_EXTENSIONS if name == "image_path" else VIDEO_EXTENSIONS)

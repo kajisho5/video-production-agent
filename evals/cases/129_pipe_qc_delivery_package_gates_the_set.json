@@ -1,0 +1,36 @@
+{
+ "name": "pipe_qc_delivery_package_gates_the_set",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "subtitle": true,
+  "thumbnail": true,
+  "qc": true
+ },
+ "expect": {
+  "blocked": false,
+  "qc_enabled": true,
+  "steps": [
+   "silence_cleanup",
+   "subtitle_generation",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check",
+   "thumbnail_frame",
+   "qc_check",
+   "qc_check",
+   "qc_check"
+  ],
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "status": "COMPLETED",
+   "qa_status": "PASS",
+   "artifacts": {
+    "YOUTUBE": "approved",
+    "CAPTIONS": "approved",
+    "THUMBNAIL": "approved"
+   }
+  }
+ }
+}

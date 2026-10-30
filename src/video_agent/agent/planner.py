@@ -245,6 +245,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if d.params.get("reference"):   # ADR-058: the master the video deliverables are compared against (written only when asked)
                 qc_plan["reference"] = dict(d.params["reference"])
             preset_targets = set()
+            gated: List[Any] = []   # (target, deliverable, its qc step) — ADR-065: the set each one heads
             for exp in [s_ for s_ in steps if s_.skill == "delivery_export" and (s_.params or {}).get("target") and s_.outputs and s_.outputs[0].startswith(f"{subject}_delivery_")]:
                 target = exp.params["target"]
                 preset_targets.add(target)
@@ -254,6 +255,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 st = ProductionStep(id=f"step_qc_{target}_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[art], params={"asset": subject, "target": target, "kind": "delivery", "artifact": art},
                                     outputs=[], depends_on=[chk], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
                 steps.append(st)
+                gated.append((target, art, st.id))
                 qc_plan["subjects"][subject] = {"kind": "delivery", "targets": sorted(set(list((qc_plan["subjects"].get(subject) or {}).get("targets") or []) + [target]))}
             # no-preset targets: no delivery_export step exists (compiler.delivery() aliases the deliverable
             # to the subject's own current media instead, no re-encode), so gate directly against that real
@@ -268,6 +270,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 st = ProductionStep(id=f"step_qc_{target}_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[art], params={"asset": subject, "target": target, "kind": "delivery", "artifact": art},
                                     outputs=[], depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
                 steps.append(st)
+                gated.append((target, art, st.id))
                 qc_plan["subjects"][subject] = {"kind": "delivery", "targets": sorted(set(list((qc_plan["subjects"].get(subject) or {}).get("targets") or []) + [target]))}
             if subject in sidecar_of:
                 sc = sidecar_of[subject]
@@ -279,6 +282,20 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
                 steps.append(st)
                 qc_plan["sidecars"][sc] = {"kind": "subtitle", "reference": ref, "subject": subject}
+            # ADR-065: the deliverable set of each target checked together (qc-skill kind delivery_package) when the deliverable has
+            # company — its subtitle sidecar and / or thumbnail; a lone deliverable is already covered by its own report
+            sc_id = sidecar_of.get(subject)
+            th_id = next((o for s_ in steps if s_.skill in (THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL) and (s_.params or {}).get("asset") == subject for o in s_.outputs), None)
+            extra = [x for x in (sc_id, th_id) if x]
+            for target, art, qc_step in gated if extra else []:
+                order += 1
+                deps = [qc_step] + [x for x in (next((s_.id for s_ in steps if s_.id == f"step_qc_captions_{subject}"), None),
+                                                 next((s_.id for s_ in steps if th_id and th_id in s_.outputs), None)) if x]
+                steps.append(ProductionStep(id=f"step_qc_package_{target}_{subject}", order=order, skill=QC_SKILL, tool=tool_for(QC_SKILL), inputs=[art] + extra,
+                                            params={"asset": subject, "target": target, "kind": "delivery_package", "artifact": art}, outputs=[], depends_on=deps,
+                                            evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+            if extra and gated:
+                qc_plan.setdefault("packages", {})[subject] = {"targets": sorted({t for t, _a, _s in gated}), "captions": sc_id, "thumbnail": th_id}
             summary.append(d.decision)
 
     def edit_steps(subject: str, sources: List[str]) -> None:

@@ -8,7 +8,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from ..agent.editing import delivery_subjects
-from ..agent.qc import admit
+from ..agent.qc import PACKAGE_KIND, admit, admit_package
 from ..artifacts import artifact_id
 from ..media.analysis import loudness_facts, probe_facts
 from ..models import Incident, ToolResult
@@ -58,10 +58,13 @@ REQUIRED_SKILLS = ("media_probe", "loudness_analysis", "delivery_check")   # vis
 
 
 def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], tools: Dict[str, str], sheet_dir: Optional[str] = None,
-           check_by_artifact: Optional[Dict[str, ToolResult]] = None, qc_by_artifact: Optional[Dict[str, ToolResult]] = None) -> QAReport:
+           check_by_artifact: Optional[Dict[str, ToolResult]] = None, qc_by_artifact: Optional[Dict[str, ToolResult]] = None,
+           qc_packages: Optional[List[Any]] = None) -> QAReport:
     """check_by_artifact maps artifact id -> the check ToolResult the executor already produced, so QA does not measure twice.
     qc_by_artifact maps artifact id -> the qc/check ToolResult of the QC gate (ADR-032): admitted only when its fingerprint is the
     sha256 QA computes itself; its verdict is an additional gate beside the agent's own checks, never a replacement.
+    qc_packages: (qc op args, ToolResult) of each deliverable set the gate checked together (ADR-065, kind delivery_package): admitted only
+    when every member's fingerprint is QA's own sha256 of it; its verdict becomes a `delivery_package` item on every member.
     tools: skill → tool id map selected by SkillRegistry for this environment. QA has no default engine; a missing
     measurement skill is an explicit error, never a silent fallback."""
     if tools is None:
@@ -263,7 +266,40 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
             else:
                 ok = size > 0 and _image_magic(path, o.get("format") or "")
                 rep.items.append(QAItem("delivery", "image", "PASS" if ok else "FAIL", f"{size} bytes", f"non-empty {o.get('format')}", artifact=art))
+    for args, r in (qc_packages or []) if qc_enabled else []:
+        package_items(rep, args, r, paths)
     return rep
+
+
+def package_items(rep: "QAReport", args: Dict[str, Any], r: Optional[ToolResult], paths: Dict[str, str]) -> None:
+    """ADR-065: the verdict of one deliverable set as a `delivery_package` item (layer qc) on each member, then each failing / warning check
+    on the member it names (a cross-artifact check on every member). Admission first: a report that does not describe these very files
+    (QA's own sha256 of each) is FAIL for the whole set."""
+    members = [(str(m["artifact_id"]), paths.get(str(m["input"]), str(m["input"]))) for m in args.get("artifacts") or []]
+    names = [aid for aid, _p in members]
+    if r is None or not r.ok:
+        err = ((r.data or {}).get("error") or {}) if r is not None and isinstance(r.data, dict) else {}
+        for aid in names:
+            rep.items.append(QAItem("qc", PACKAGE_KIND, "FAIL", f"{err.get('code')}: {err.get('message')}" if err else "no report", "an admitted qc package report",
+                                    kind="judgement", artifact=aid, fix_hint="the QC gate planned a package check but has no report for it"))
+        return
+    data = r.data if isinstance(r.data, dict) else {}
+    problems = admit_package(data, {aid: (_sha256(p) if p and os.path.isfile(p) else None) for aid, p in members})
+    if problems:
+        for aid in names:
+            rep.items.append(QAItem("qc", PACKAGE_KIND, "FAIL", "; ".join(problems), "an admitted qc package report", kind="judgement", artifact=aid,
+                                    fix_hint="the report does not describe these files as QA measured them"))
+        return
+    verdict = str(data.get("verdict"))
+    status = "PASS" if verdict == "PASS" else ("WARN" if verdict == "WARN" else "FAIL")
+    for aid in names:
+        rep.items.append(QAItem("qc", PACKAGE_KIND, status, verdict, "PASS", kind="judgement", artifact=aid, fix_hint="" if status == "PASS" else "see the package findings"))
+        for c in data.get("checks") or []:
+            if c.get("status") in ("WARN", "FAIL") and c.get("artifact_id") in (None, aid):
+                rep.items.append(QAItem("qc", str(c.get("check_id")), str(c["status"]), ", ".join(str(x) for x in c.get("finding_codes") or []) or c["status"], "PASS", kind="judgement", artifact=aid))
+    if verdict == "FAIL":
+        rep.incidents.append(Incident(type="DELIVERY_SPEC_FAILURE", severity="HIGH", evidence=names, possible_cause="qc-skill reports the deliverable set incomplete or inconsistent",
+                                      recommended_action="review the package findings; no member of the set is deliverable"))
 
 
 def _timeline_items(art: str, path: str, o: Dict[str, Any]) -> List[QAItem]:

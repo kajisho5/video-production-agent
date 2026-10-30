@@ -252,7 +252,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             if qc_ref:   # ADR-058: full-reference metrics, opt-in; the rule is what qc-skill's VideoRule takes
                 params["reference"] = {"path": qc_ref["path"], "rule": dict(qc_ref["rule"])}
             eng.decide(subject="qc.check", type="DELIVER", decision=f"QC gate on the deliverables of {subject}: PASS → ready, WARN → {str(wp['value']).upper()}, FAIL → never delivered{ref_text}",
-                       reason=f"user asked for the QC gate ({qc.source}); qc-skill measures each deliverable (and the subtitle sidecar) and the report is admitted only for the file the agent hashed itself",
+                       reason=f"user asked for the QC gate ({qc.source}); qc-skill measures each deliverable (and the subtitle sidecar), and the deliverable together with its sidecar / thumbnail as one set (ADR-065); a report is admitted only for the files the agent hashed itself",
                        confidence=1.0, evidence=[qc.id] + [r.id for r in ref_reqs] + probe_ids_of(sources), risk="LOW", approval=approval_for("qc.check", explicit=qc, keys=APPROVAL_KEYS), provenance="USER",
                        params=params, settings=[wp], requirements=[qc] + ref_reqs, serves_intent=None)
         cap_block(QC_SKILL, f"capability.{QC_SKILL}")

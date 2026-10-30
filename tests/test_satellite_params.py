@@ -1,7 +1,8 @@
 """What the satellites already offer (ECOSYSTEM_ROADMAP step 6). Part 1 (ADR-062): color-grading-skill 0.4.0's PRIMARY_CORRECTION
 gamma / lift / gain / levels / curves, and video-editing-skill's TRIM (an explicit in / out range) and ROTATE (lowered here together
 with FREEZE / REVERSE). Part 2 (ADR-063): audio-production-skill 0.4.2's MIX / NOISE_REDUCTION / DYNAMICS and subtitle-skill 0.2.0's
-render `mode: "mux"` (a soft subtitle track). Part 3 (ADR-064): every element of motion-graphics-skill 0.2.3, with every parameter. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
+render `mode: "mux"` (a soft subtitle track). Part 3 (ADR-064): every element of motion-graphics-skill 0.2.3, with every parameter. Part 4 (ADR-065): qc-skill 0.2.3's
+delivery_package check of the deliverable set (the deliverable + its subtitle sidecar / thumbnail) as part of the QC gate. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
 key, ADR-061), a decision, an IR record, a plan step and the compiled Skill request, on the fake engine and the fake Skills
 (tests/test_integration.py runs them on the real Skills)."""
 from __future__ import annotations
@@ -713,6 +714,119 @@ class MotionGraphicsElementTests(unittest.TestCase):
         # a tampered IR (the element moved off the frame after planning) is refused by the validator on the same size
         ok.doc["graphics"]["operations"][0]["elements"][0]["parameters"]["position"] = {"x": 1300, "y": 10}
         self.assertTrue(any("outside the 1280x720 picture" in e for e in svc.validate(ok).errors))
+
+
+
+class QcDeliveryPackageTests(unittest.TestCase):
+    """The QC gate checks each target's deliverable set together (ADR-065): qc-skill kind delivery_package → a plan step, `qa.qc.packages`,
+    one qc/check op with the members by artifact id → a `delivery_package` QA item on every member → their stages."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        clear_modes()
+
+    def _render(self, reqs, profile="youtube", name="pkg"):
+        svc = pipeline_service(self.tmp)
+        media = pipeline_media(self.tmp, "talk.mp4", segments=[[4.0, 8.0, "hello there"], [9.0, 12.0, "and goodbye"]])
+        return svc, plan_and_render(svc, [media], reqs, profile=profile, kinds=["transcript"], name=name)
+
+    def test_rules_and_compiled_request(self):
+        from video_agent.agent.qc import package_rules
+        from video_agent.execution.compiler import lower_qc_package
+        members = [{"artifact_id": "a_delivery_youtube", "artifact_type": "video", "input": "a_delivery_youtube", "extension": ".mp4"},
+                   {"artifact_id": "a_captions", "artifact_type": "subtitle", "input": "a_captions", "extension": ".srt"},
+                   {"artifact_id": "a_thumbnail", "artifact_type": "thumbnail", "input": "a_thumbnail", "extension": ".PNG"}]
+        spec = package_rules(members)
+        self.assertEqual(spec["kind"], "delivery_package")
+        rule = spec["rules"]["delivery_package"]
+        self.assertEqual([(a["artifact_id"], a["artifact_type"], a["required"], a["min_size_bytes"], a["expected_extension"]) for a in rule["artifacts"]],
+                         [("a_delivery_youtube", "video", True, 1, "mp4"), ("a_captions", "subtitle", True, 1, "srt"), ("a_thumbnail", "thumbnail", True, 1, "png")])
+        self.assertEqual(rule["cross_artifact"], {"dependencies": [{"artifact_id": "a_captions", "requires_artifact_id": "a_delivery_youtube"},
+                                                                   {"artifact_id": "a_thumbnail", "requires_artifact_id": "a_delivery_youtube"}]})
+        self.assertNotIn("duration_consistency", rule["cross_artifact"], "a subtitle's duration is its last cue, not the programme's")
+        args = lower_qc_package("qc/check", members, spec["rules"])
+        self.assertEqual((args["kind"], args["cache_policy"], [sorted(a) for a in args["artifacts"]]), ("delivery_package", "bypass", [["artifact_id", "artifact_type", "input"]] * 3))
+        with self.assertRaises(CompileError):
+            lower_qc_package("ffmpeg-skill/check", members, spec["rules"])
+
+    def test_pipeline_step_ir_request_qa_and_stages(self):
+        svc, r = self._render({"subtitle": True, "thumbnail": True, "qc": True})
+        d = r["ir"].doc
+        aid = list(d["assets"])[0]
+        self.assertEqual(r["validation"].errors, [])
+        step = d["plan"]["steps"][-1]
+        self.assertEqual((step["skill"], step["params"]["kind"], step["inputs"]), ("qc_check", "delivery_package", [f"{aid}_delivery_youtube", f"{aid}_captions", f"{aid}_thumbnail"]))
+        self.assertEqual(sorted(step["depends_on"]), sorted([f"step_qc_youtube_{aid}", f"step_qc_captions_{aid}", f"step_thumbnail_{aid}"]))
+        self.assertEqual(d["qa"]["qc"]["packages"], {aid: {"targets": ["youtube"], "captions": f"{aid}_captions", "thumbnail": f"{aid}_thumbnail"}})
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [x for x in out["execution"]["results"] if x["tool"] == "qc/check" and x["data"].get("kind") == "delivery_package"]
+        self.assertEqual(len(res), 1); self.assertTrue(res[0]["data"]["admitted"]); self.assertEqual(res[0]["data"]["verdict"], "PASS")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        self.assertEqual(res[0]["data"]["artifacts"], {a["logical_name"]: a["hash"] for a in arts.values()}, "the report is about the delivered bytes of every member")
+        items = [i for i in out["qa"]["items"] if i["name"] == "delivery_package"]
+        self.assertEqual(sorted((i["artifact"], i["status"]) for i in items), sorted((a["logical_name"], "PASS") for a in arts.values()))
+        self.assertEqual({t: (a["qa"]["qc"], a["stage"]) for t, a in arts.items()}, {"YOUTUBE": ("PASS", "approved"), "CAPTIONS": ("PASS", "approved"), "THUMBNAIL": ("PASS", "approved")})
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        row = next(e for e in prov["operations"] if e["tool"] == "qc/check" and e["args"].get("kind") == "delivery_package")
+        self.assertEqual([a["artifact_type"] for a in row["args"]["artifacts"]], ["video", "subtitle", "thumbnail"]); self.assertTrue(row["decision"])
+
+    def test_a_failing_set_keeps_every_member_working(self):
+        os.environ["FAKE_QC_MODE"] = "package_fail"   # the thumbnail is not of the planned extension: the set is not a delivery
+        _svc, r = self._render({"subtitle": True, "thumbnail": True, "qc": True}, name="pkgfail")
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED"); self.assertEqual(out["qa"]["status"], "FAIL")
+        arts = {a["type"]: a for a in out["artifacts"]}
+        self.assertEqual({t: (a["qa"]["qc"], a["stage"]) for t, a in arts.items()}, {"YOUTUBE": ("FAIL", "working"), "CAPTIONS": ("FAIL", "working"), "THUMBNAIL": ("FAIL", "working")},
+                         "every member of a failing set stays working, even those whose own reports pass")
+        th = arts["THUMBNAIL"]["logical_name"]
+        self.assertIn(("delivery_package.artifact_extension_matches_expected", th, "FAIL"), [(i["name"], i["artifact"], i["status"]) for i in out["qa"]["items"]])
+        self.assertIn("DELIVERY_SPEC_FAILURE", [x["type"] for x in out["qa"]["incidents"]])
+
+    def test_a_report_about_other_files_is_never_admitted(self):
+        os.environ["FAKE_QC_MODE"] = "package_fingerprint"
+        _svc, r = self._render({"subtitle": True, "thumbnail": True, "qc": True}, name="pkgfp")
+        res = next(x for x in r["out"]["execution"]["results"] if x["tool"] == "qc/check" and not x["ok"])
+        self.assertEqual(res["data"]["error"]["code"], "INVALID_RESULT"); self.assertIn("sha256", res["data"]["error"]["message"])
+        self.assertEqual(r["out"]["execution"]["status"], "FAILED")
+
+    def test_no_package_without_company_or_without_the_gate(self):
+        _svc, r = self._render({"qc": True}, name="alone")
+        self.assertNotIn("delivery_package", [s_["params"].get("kind") for s_ in r["ir"].doc["plan"]["steps"]], "a lone deliverable is covered by its own report")
+        self.assertNotIn("packages", r["ir"].doc["qa"]["qc"])
+        _svc, r = self._render({"subtitle": True, "thumbnail": True}, name="nogate")
+        self.assertNotIn("qc_check", [s_["skill"] for s_ in r["ir"].doc["plan"]["steps"]], "the package check is part of the opt-in QC gate (ADR-032)")
+
+    def test_tampered_packages_are_refused(self):
+        svc = pipeline_service(self.tmp)
+        media = pipeline_media(self.tmp, "talk.mp4", segments=[[4.0, 8.0, "hello there"]])
+        ir = svc.plan([media], "youtube", user_requirements={"thumbnail": True, "qc": True}, params={"language": "ja"})
+        aid = list(ir.doc["assets"])[0]
+        ir.doc["qa"]["qc"]["packages"][aid]["thumbnail"] = f"{aid}_delivery_youtube"
+        self.assertTrue(any("not a planned THUMBNAIL output" in e for e in svc.validate(ir).errors))
+        ir.doc["qa"]["qc"]["packages"][aid] = {"targets": ["youtube"], "captions": None, "thumbnail": None}
+        self.assertTrue(any("nothing beside the deliverable" in e for e in svc.validate(ir).errors))
+
+    def test_adapter_refusals(self):
+        from video_agent.tools.qc import QcAdapter
+        from video_agent.tools.skill_process import CliSkill
+        from video_agent.tools.base import ToolError
+        ws = str(Path(self.tmp) / "ws"); os.makedirs(ws, exist_ok=True)
+        f = Path(self.tmp) / "src" / "x.mp4"; f.parent.mkdir(parents=True, exist_ok=True); f.write_bytes(b"x")
+        ad = QcAdapter(CliSkill("qc", [sys.executable, str(Path(__file__).resolve().parent / "fake_qc.py")], None, {}), workspace=ws, allowed_inputs=[str(f.parent)])
+        paths = {"v": str(f)}
+        good = {"kind": "delivery_package", "artifacts": [{"artifact_id": "v", "artifact_type": "video", "input": "v"}]}
+        self.assertEqual(ad.build_request("qc/check", good, paths)["request"]["artifacts"], [{"artifact_id": "v", "artifact_type": "video", "path": str(f)}])
+        for bad, msg in ((dict(good, kind="delivery"), "only accepted with kind"), (dict(good, input="v"), "not input"), (dict(good, artifacts=[]), "non-empty"),
+                         (dict(good, artifacts=[{"artifact_id": "v", "artifact_type": "poster", "input": "v"}]), "artifact_type"),
+                         (dict(good, artifacts=[{"artifact_id": "v", "artifact_type": "video", "input": "v", "path": "/etc/passwd"}]), "forbidden"),
+                         (dict(good, rules={"delivery_package": {"artifacts": [{"artifact_id": "w"}]}}), "does not carry")):
+            with self.assertRaises(ToolError, msg=str(bad)) as cm:
+                ad.build_request("qc/check", bad, paths)
+            self.assertIn(msg, str(cm.exception), str(bad))
 
 
 if __name__ == "__main__":

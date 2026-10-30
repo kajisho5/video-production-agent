@@ -71,7 +71,8 @@ class PipelineScenarioTests(unittest.TestCase):
         d = r["ir"].doc
         self.assertEqual(r["validation"].errors, [])
         self.assertIn("transcript", [o["kind"] for o in d["analysis"]["observations"]], "subtitles pull the transcript measurement in")
-        self.assertEqual(skills_of(d), ["silence_cleanup", "subtitle_generation", "loudness_normalization", "delivery_export", "delivery_check", "qc_check", "qc_check"])
+        self.assertEqual(skills_of(d), ["silence_cleanup", "subtitle_generation", "loudness_normalization", "delivery_export", "delivery_check", "qc_check", "qc_check", "qc_check"])
+        self.assertEqual(d["plan"]["steps"][-1]["params"]["kind"], "delivery_package", "ADR-065: the deliverable and its sidecar, checked together")
         gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
         self.assertEqual((gen["format"], gen["language"], [(c["id"], c["start"], c["end"]) for c in gen["cues"]]), ("vtt", "ja", [("c0001", 0.0, 0.35), ("c0002", 1.15, 5.55)]),
                          "segments 0.5–3.2 / 4.0–8.4 of the source, mapped through the trim keep range 2.85–13.85")
@@ -102,7 +103,7 @@ class PipelineScenarioTests(unittest.TestCase):
         r = plan_and_render(svc, [self.a], {"color.target": "bt709", "thumbnail": True, "thumbnail.at": 4.0, "qc": True}, name="s3")
         d = r["ir"].doc
         self.assertEqual(r["validation"].errors, [])
-        self.assertEqual(skills_of(d), ["silence_cleanup", "color_retag", "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check"])
+        self.assertEqual(skills_of(d), ["silence_cleanup", "color_retag", "loudness_normalization", "delivery_export", "delivery_check", "thumbnail_frame", "qc_check", "qc_check"])
         col = d["color"]["operations"][0]
         aid = list(d["assets"])[0]
         self.assertEqual((col["type"], col["input"], col["output"], col["target"]), ("color.retag", f"{aid}_trim", f"{aid}_retag", "bt709"))
@@ -114,7 +115,8 @@ class PipelineScenarioTests(unittest.TestCase):
         self.assertEqual(res["color-grading/run"]["data"]["operation_type"], "RETAG"); self.assertEqual(res["color-grading/run"]["data"]["observation"]["provenance"], "OBSERVED")
         self.assertTrue(res["thumbnail/extract_frame"]["output"].endswith(".png"))
         arts = {a["type"]: a for a in out["artifacts"]}
-        self.assertEqual((arts["THUMBNAIL"]["stage"], arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["qa"].get("qc")), ("candidate", "PASS", None), "a thumbnail is checked by the agent only")
+        self.assertEqual((arts["THUMBNAIL"]["stage"], arts["THUMBNAIL"]["qa_status"], arts["THUMBNAIL"]["qa"].get("qc")), ("approved", "PASS", "PASS"),
+                         "ADR-065: a thumbnail is gated as a member of its deliverable set (the package check), not by a report of its own")
         prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         kinds = [o["kind"] for o in prov["skill_observations"]]
         self.assertIn("media.probe", kinds); self.assertIn("image.probe", kinds); self.assertIn("qc.report", kinds)
@@ -147,7 +149,7 @@ class PipelineScenarioTests(unittest.TestCase):
         r = plan_and_render(svc, [self.a], {"motion.text": "LIVE", "motion.text.position": "top-left", "subtitle": True, "subtitle.burn_in": True, "qc": True}, name="s4")
         d = r["ir"].doc
         self.assertEqual(r["validation"].errors, [])
-        self.assertEqual(skills_of(d), ["silence_cleanup", "motion_graphics", "subtitle_generation", "subtitle_burn_in", "loudness_normalization", "delivery_export", "delivery_check", "qc_check", "qc_check"])
+        self.assertEqual(skills_of(d), ["silence_cleanup", "motion_graphics", "subtitle_generation", "subtitle_burn_in", "loudness_normalization", "delivery_export", "delivery_check", "qc_check", "qc_check", "qc_check"])
         aid = list(d["assets"])[0]
         g = d["graphics"]["operations"][0]
         self.assertEqual((g["type"], g["input"], g["output"]), ("graphics.render", f"{aid}_trim", f"{aid}_graphics"))
@@ -170,14 +172,14 @@ class PipelineScenarioTests(unittest.TestCase):
         d = r["ir"].doc
         self.assertEqual(r["validation"].errors, [])
         self.assertEqual(skills_of(d), ["silence_cleanup", "silence_cleanup", "video_concat", "color_retag", "motion_graphics", "subtitle_generation", "subtitle_burn_in", "loudness_normalization",
-                                        "delivery_export", "delivery_check", "thumbnail_render", "qc_check", "qc_check"])
+                                        "delivery_export", "delivery_check", "thumbnail_render", "qc_check", "qc_check", "qc_check"])
         self.assertEqual(len({t.split("/")[0] for t in tools_of(d)}), 7, "seven Skill packages in one plan")
         gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
         self.assertEqual([(c["id"], c["start"]) for c in gen["cues"]], [("c1_0001", 0.0), ("c1_0002", 1.15), ("c2_0001", 11.0), ("c2_0002", 12.15)], "the second input's cues are offset by the first's 11 s")
         self.assertEqual([e["type"] for e in d["graphics"]["operations"][0]["elements"]], ["title", "text_overlay"], "one render carries every element, in the fixed type order")
         out = r["out"]
         self.assertEqual(out["execution"]["status"], "COMPLETED"); self.assertEqual(out["qa"]["status"], "PASS")
-        self.assertEqual({a["type"]: a["stage"] for a in out["artifacts"]}, {"YOUTUBE": "approved", "CAPTIONS": "approved", "THUMBNAIL": "candidate"})
+        self.assertEqual({a["type"]: a["stage"] for a in out["artifacts"]}, {"YOUTUBE": "approved", "CAPTIONS": "approved", "THUMBNAIL": "approved"}, "the package gate covers the thumbnail (ADR-065)")
         # provenance links every operation to its decision and Skill package
         prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         pk = sorted({e["skill_package"] for e in prov["operations"]})
