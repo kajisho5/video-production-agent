@@ -83,7 +83,12 @@ video-agent approve <project> --decision all                       # v2 を承�
 video-agent diff    <project>                                      # 前版との PlanDiff
 video-agent explain <workspace>/plans/input.youtube.project.json [--decision <id>]
 video-agent check output.mp4 --platform youtube
+video-agent plan /Volumes/CARD_A --set ingest.dest=/Volumes/SSD1/Footage --set ingest.dest=/Volumes/SSD2/Footage --set ingest.project=2026-10-30_event   # カードの offload の plan（何も書かない、ADR-066）
+video-agent approve <workspace>/plans/CARD_A.offload.project.json --decision <id>   # 常に CONFIRM。承認するまでコピーしない
+video-agent render  <workspace>/plans/CARD_A.offload.project.json                   # ingest-skill が全 destination にコピーして read-back。コピーの clip が asset になる
 ```
+
+カードの取り込み（ADR-066、ingest-skill）: カード / レコーダーのフォルダを入力にすると offload の plan になる。コピー先は `ingest.dest` で必ず明示し（マウントされた既存のディレクトリだけ。複数は `--set` を繰り返すか JSON list / カンマ区切り）、`ingest.project` / `ingest.hash=sha256|xxh64` / `ingest.name_by=folder|reel` / `ingest.reel` を任意で足す。plan は ingest-skill の `offload --dry-run` と `inventory` だけを呼び（何も書かない）、decision `ingest.offload` は常に CONFIRM。承認後の render が `ingest offload ... --json` を 1 回だけ実行し（自動の再実行は無い）、全 destination の manifest を確かめたうえで、最初の destination のコピーの inventory（収録ごとの clip、分割収録の member の順、reel / card id、hash、カメラの sidecar）を新しい asset と OBSERVED の `ingest_clip` observation（各 destination の manifest と ASC MHL generation、ingest-skill の version、job）にし、agent 自身の解析（probe / silence / loudness）をコピーに走らせる。失敗は ingest-skill の code のまま、agent の kind（CONFLICT / PARTIAL / COPY_FAILED / HISTORY_DAMAGED / SOURCE_CHANGED / ENGINE_MISSING / INVALID_REQUEST …）と destination ごとの内訳付きで報告する。ingest-skill が無ければ step は BLOCKED で handoff が ingest-skill とインストール方法を名指しする。
 
 終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。revise: 5 = 新版なし。
 

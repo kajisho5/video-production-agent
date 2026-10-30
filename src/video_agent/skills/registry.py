@@ -217,10 +217,9 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 
 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
-# (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages.
+# (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
+# list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships).
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
-    _job("media_ingest", "Verified offload of camera cards / recorders: checksum read-back copies, dual backup, clip inventory",
-         {"source": "card|folder"}, {"artifact": "media"}, "ingest", "offload", "MEDIUM"),
     _job("voice_enhancement", "AI voice isolation, dereverberation and mic-bleed reduction of recorded speech",
          {"asset": "audio|video"}, {"artifact": "INTERMEDIATE"}, "voice-enhance", "enhance", "MEDIUM", deterministic=False),
     _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
@@ -394,6 +393,11 @@ def default_registry() -> SkillRegistry:
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading", f"color-grading:{typ}"], risk, True, "CONFIRM", ["color-grading/run"]))
     r.register(SkillSpec("motion_graphics", "1.0", "Render the motion-graphics elements (titles, lower thirds, text / image / video overlays, bugs, chapters, progress, countdowns, stickers, hooks, memes) onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "motion-graphics"], "MEDIUM", True, "CONFIRM", ["motion-graphics/run"]))
+    # ADR-066 (roadmap step 9, replacing ADR-057's phase-2 `media_ingest`): a card folder copied by ingest-skill to the destinations the user
+    # named, each copy read back; CONFIRM always (it writes the user's drives), never AUTO. The inventory of the copy becomes the new assets.
+    r.register(SkillSpec("media_offload", "1.0", "Verified offload of a camera card / recorder folder to the destinations the user names: checksum read-back copies, "
+                         "dual backup, ingest-manifest.json and ASC MHL per destination, clip inventory of the copy", {"source": "card|folder", "destinations": "list"},
+                         {"assets": "media", "observation": "ingest_clip"}, ["ingest"], "MEDIUM", True, "CONFIRM", ["ingest/offload"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)

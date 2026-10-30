@@ -545,6 +545,117 @@ class IngestFetchRealTests(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "DOWNLOAD_FAILED"); self.assertNotIn("SIGVALUE", str(cm.exception))
 
 
+def make_xdcam_ex_card(base: Path) -> Path:
+    """A small XDCAM EX-like card (ingest-skill's own synthetic card approach, its tests/test_cards.py, with real essence): take
+    709_0001 split over clip folders _01 and _02 (one recording), take 709_0002 in one folder, each clip with a NonRealTimeMeta
+    M01.XML sidecar and a .SMI, plus MEDIAPRO.XML. Each clip is 1 s of 320x180 25p H.264 + AAC with its own tone, so no two files match."""
+    card = base / "EX_CARD"
+    b = card / "BPAV"
+    for i, (clip, frames) in enumerate((("709_0001_01", 25), ("709_0001_02", 25), ("709_0002_01", 25))):
+        d = b / "CLPR" / clip
+        d.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25", "-f", "lavfi", "-i", f"sine=frequency={440 + 110 * i}:sample_rate=48000",
+                        "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(d / f"{clip}.MP4")], check=True)
+        (d / f"{clip}M01.XML").write_text('<?xml version="1.0" encoding="UTF-8"?><NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.00">'
+                                          f'<Duration value="{frames}"/><CreationDate value="2026-10-30T09:00:00+09:00"/>'
+                                          '<Device manufacturer="Sony" modelName="PMW-EX1" serialNo="0012345"/></NonRealTimeMeta>', encoding="utf-8")
+        (d / f"{clip}.SMI").write_text("<smil/>", encoding="utf-8")
+    (b / "MEDIAPRO.XML").write_text('<?xml version="1.0"?><MediaProfile xmlns="http://xmlns.sony.net/pro/metadata/mediaprofile"><Contents/></MediaProfile>', encoding="utf-8")
+    return card
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class IngestOffloadRealTests(unittest.TestCase):
+    """ADR-066 on the real ingest-skill (main): a synthetic XDCAM EX-like card is planned (ingest-skill's dry run and inventory; nothing
+    written), confirmed, copied to two destinations with read-back, and the copy's inventory becomes assets: one per member file, the
+    spanned take's two members in order, OBSERVED `ingest_clip` observations with the reel, hashes, sidecar facts and each destination's
+    manifest and ASC MHL generation; the agent's own probe runs on the copies; ingest verify passes on both. A conflicting file on one
+    drive is reported as CONFLICT, never overwritten, and no asset is admitted."""
+
+    def setUp(self):
+        from video_agent.tools.ingest import locate_ingest
+        if not locate_ingest():
+            raise unittest.SkipTest("needs ingest-skill (VIDEO_AGENT_INGEST_DIR)")
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="va_offload_")))
+        self.card = make_xdcam_ex_card(self.tmp)
+        self.a, self.b = self.tmp / "SSD1", self.tmp / "SSD2"
+        self.a.mkdir()
+        self.b.mkdir()
+        self.svc = Service(workspace=str(self.tmp / "ws"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _plan(self):
+        ir = self.svc.plan_offload(str(self.card), {"ingest.dest": [str(self.a), str(self.b)], "ingest.project": "event"})
+        path = str(self.tmp / "off.project.json")
+        save_ir(ir, path)
+        return ir, path
+
+    def _approve_render(self, path):
+        ir = load_ir(path)
+        self.svc.approve(ir, path, [d["id"] for d in ir.pending_confirmations()])
+        return self.svc.render(load_ir(path), path)
+
+    def test_card_offload_then_inventory_assets(self):
+        from video_agent.tools import ToolRouter  # noqa: F401
+        from video_agent.tools.ingest import IngestAdapter, locate_ingest
+        ir, path = self._plan()
+        self.assertTrue(self.svc.validate(ir).ok, self.svc.validate(ir).errors)
+        self.assertEqual((list(self.a.iterdir()), list(self.b.iterdir())), ([], []), "the plan wrote nothing")
+        inv = next(o for o in ir.doc["analysis"]["observations"] if o["kind"] == "ingest_card_inventory")["data"]
+        self.assertEqual((inv["clip_count"], inv["spanned_count"], inv["file_count"]), (2, 1, 3))
+        self.assertEqual(inv["card"]["structures"][0]["id"], "sony_xdcam_ex")
+        self.assertEqual(self.svc.render(load_ir(path), path)["status"], "WAITING_FOR_APPROVAL")
+        out = self._approve_render(path)
+        self.assertEqual(out["status"], "COMPLETED", json.dumps(out.get("offload"), default=str)[:1500])
+        d = load_ir(path).doc
+        off = d["execution"]["offload"]
+        roots = [self.a / "event" / "EX_CARD", self.b / "event" / "EX_CARD"]
+        self.assertEqual([x["root"] for x in off["summary"]["destinations"]], [str(r) for r in roots])
+        for r in roots:
+            self.assertTrue((r / "ingest-manifest.json").is_file())
+            self.assertTrue(list((r / "ascmhl").glob("*.mhl")), "an ASC MHL generation per destination")
+        clip_obs = [o for o in d["analysis"]["observations"] if o["kind"] == "ingest_clip"]
+        self.assertEqual(len(clip_obs), 3)
+        take = sorted((o for o in clip_obs if o["data"]["clip_id"] == "709_0001"), key=lambda o: o["data"]["member_index"])
+        self.assertEqual([Path(o["data"]["path"]).name for o in take], ["709_0001_01.MP4", "709_0001_02.MP4"])
+        self.assertTrue(all(o["data"]["spanned"] and o["data"]["structure"] == "sony_xdcam_ex" for o in take))
+        self.assertEqual(take[0]["data"]["metadata"]["device"]["model"], "PMW-EX1", "the camera's sidecar facts, as written")
+        self.assertAlmostEqual(take[0]["data"]["member_duration_s"], 1.0, delta=0.1)
+        self.assertEqual((take[0]["data"]["reel"]["source"], take[0]["data"]["reel"]["recorded_source"]), ("manifest", "fingerprint"))
+        man = json.loads((roots[0] / "ingest-manifest.json").read_text(encoding="utf-8"))
+        sha = {e["path"]: e["sha256"] for e in man["files"]}
+        for o in clip_obs:
+            a = d["assets"][o["asset_id"]]
+            self.assertEqual((o["provenance"], a["status"], a["hash"]), ("OBSERVED", "ingested", sha[o["data"]["path"]]))
+            self.assertTrue(o["source"].startswith("ingest/inventory@0.1."))
+            self.assertTrue(all(Path(c["mhl"]).is_file() and Path(c["manifest"]).is_file() for c in o["data"]["copies"]))
+        probes = {o["asset_id"]: o for o in d["analysis"]["observations"] if o["kind"] == "media_probe"}
+        self.assertEqual(set(probes), set(off["asset_ids"]), "the agent's own analysis of the verified copies")
+        self.assertTrue(self.svc.validate(load_ir(path)).ok)
+        ad = IngestAdapter(locate_ingest())
+        self.assertEqual((ad.drift(), ad.breaking_drift()), ([], []), "the pinned contract equals ingest-skill main")
+        for r in roots:
+            v = ad.measure("ingest/verify", {"target": str(r)})
+            self.assertTrue(v.ok and v.data["verified"], v.data.get("failures"))
+
+    def test_conflict_is_named_and_nothing_is_overwritten(self):
+        ir, path = self._plan()
+        clash = self.a / "event" / "EX_CARD" / "BPAV" / "MEDIAPRO.XML"
+        clash.parent.mkdir(parents=True)
+        clash.write_text("not the card's file", encoding="utf-8")
+        out = self._approve_render(path)
+        self.assertEqual(out["status"], "FAILED")
+        err = load_ir(path).doc["execution"]["offload"]["error"]
+        self.assertEqual((err["code"], err["kind"], err["exit_code"]), ("INCOMPLETE", "CONFLICT", 3))
+        self.assertEqual(err["details"]["complete"], [str(self.b / "event" / "EX_CARD")], "the other drive is complete and verified")
+        bad = next(x for x in err["details"]["destinations"] if not x["ok"])
+        self.assertEqual(bad["conflict_files"], ["BPAV/MEDIAPRO.XML"])
+        self.assertEqual(clash.read_text(encoding="utf-8"), "not the card's file", "never overwritten")
+        self.assertFalse([a for a in load_ir(path).doc["assets"].values() if a["status"] == "ingested"])
+
+
 @unittest.skipUnless(locate_ffmpeg_skill(), "needs ffmpeg-skill")
 class FfmpegSkillContractTests(unittest.TestCase):
     """Contract tests: pin the ffmpeg-skill CLI surface the adapter relies on."""

@@ -185,6 +185,60 @@ def _brief_case(case: dict, provider) -> dict:
     return {"case": case["name"], "ok": not failures, "failures": failures}
 
 
+def _offload_case(case: dict) -> dict:
+    """ADR-066: a card folder → an offload plan that copies nothing and waits for a CONFIRM, then (approved) ingest-skill's copy to the
+    named destinations through the fake `ingest` process, and the copy's inventory as new assets with OBSERVED observations; or, when
+    the copy fails, its kind named and no asset admitted."""
+    import os
+    from test_offload import FAKE, MODES, make_card
+    from video_agent.project import load_ir, save_ir
+    from video_agent.tools import ToolRouter
+    from video_agent.tools.ingest import IngestAdapter
+    from video_agent.tools.skill_process import CliSkill
+    for k in MODES:
+        os.environ.pop(k, None)
+    tmp = Path(tempfile.mkdtemp())
+    off = case["offload"]
+    card = make_card(tmp)
+    dests = [tmp / f"SSD{i + 1}" for i in range(int(off.get("destinations", 2)))]
+    for dd in dests:
+        dd.mkdir()
+    svc = Service(workspace=str(tmp / "ws"), adapter=ToolRouter([FakeAdapter(), IngestAdapter(CliSkill("ingest", [sys.executable, FAKE], None, {}))]), caps=FakeCaps(extra=["ingest"]))
+    exp, failures = case["expect"], []
+    ir = svc.plan_offload(str(card), {"ingest.dest": [str(x) for x in dests], **(off.get("requirements") or {})})
+    path = str(tmp / "off.project.json")
+    save_ir(ir, path)
+    dec = next(x for x in ir.doc["decisions"] if x["subject"] == "ingest.offload")
+    for k, v in ((exp.get("plan") or {}).get("decision") or {}).items():
+        if dec.get(k) != v:
+            failures.append(f"decision {k} {dec.get(k)!r} != {v!r}")
+    step = ir.doc["plan"]["steps"][0]
+    for k, v in ((exp.get("plan") or {}).get("step") or {}).items():
+        if step.get(k) != v:
+            failures.append(f"step {k} {step.get(k)!r} != {v!r}")
+    if not svc.validate(ir).ok:
+        failures.append(f"IR invalid: {svc.validate(ir).errors}")
+    early = svc.render(load_ir(path), path)
+    if early["status"] != "WAITING_FOR_APPROVAL" or any(any(dd.iterdir()) for dd in dests):
+        failures.append(f"render before approval {early['status']} or something was copied")
+    for k, v in (off.get("modes") or {}).items():
+        os.environ[k] = v
+    svc.approve(load_ir(path), path, [dec["id"]])
+    out = svc.render(load_ir(path), path)
+    for k in MODES:
+        os.environ.pop(k, None)
+    d = load_ir(path).doc
+    want = exp.get("render") or {}
+    got = {"status": out["status"], "assets": sum(1 for a in d["assets"].values() if a["status"] == "ingested"),
+           "clip_observations": sum(1 for o in d["analysis"]["observations"] if o["kind"] == "ingest_clip" and o["provenance"] == "OBSERVED"),
+           "spanned_clips": len({o["data"]["clip_id"] for o in d["analysis"]["observations"] if o["kind"] == "ingest_clip" and o["data"]["spanned"]}),
+           "error_kind": ((d["execution"].get("offload") or {}).get("error") or {}).get("kind")}
+    for k, v in want.items():
+        if got.get(k) != v:
+            failures.append(f"render {k} {got.get(k)!r} != {v!r}")
+    return {"case": case["name"], "ok": not failures, "failures": failures}
+
+
 def run_case(case: dict) -> dict:
     tmp = tempfile.mkdtemp()
     fake = case.get("fake", {})
@@ -270,6 +324,8 @@ def run_case(case: dict) -> dict:
         os.environ.pop("FAKE_MA_MODE", None); os.environ.pop("FAKE_MA_CACHE", None)
         if not exp.get("intent") and not exp.get("production_plan") and not exp.get("decisions"):
             return {"case": case["name"], "ok": not failures, "failures": failures}
+    if case.get("offload") is not None:   # ADR-066: a card offload is its own plan (no media file input)
+        return _offload_case(case)
     if case.get("brief") is not None:
         return _brief_case(case, provider)
     pipe = case.get("pipeline")

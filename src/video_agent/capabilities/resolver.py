@@ -24,6 +24,7 @@ from ..tools.motion_graphics import MotionGraphicsAdapter, locate_motion_graphic
 from ..tools.qc import QcAdapter, locate_qc
 from ..tools.subtitle import SubtitleAdapter, locate_subtitle
 from ..tools.thumbnail import ThumbnailAdapter, locate_thumbnail
+from ..tools.ingest import IngestAdapter, locate_ingest
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -268,6 +269,9 @@ class CapabilityResolver:
                               "VIDEO_AGENT_MOTION_GRAPHICS_DIR", "motion-graphics-skill", "motion-graphics",
                               per_item=lambda ad, doc: (ad.element_status(doc), {e["type"]: e for e in ad.contract.get("element_types") or []}))
         self._finishing_skill(caps, "qc", locate_qc(self.qc_dir, self.env), lambda sk: QcAdapter(sk, timeout=180.0), "VIDEO_AGENT_QC_DIR", "qc-skill", "qc", per_item=None)
+        # ingest-skill's card offload (ADR-066): the same rule -- contract checked against the pinned one (fatal subset only), its own doctor
+        # ok / degraded (xxhash, ffprobe or yt-dlp missing is degraded, not missing: sha256 offloads need none of them)
+        self._finishing_skill(caps, "ingest", locate_ingest(env=self.env), lambda sk: IngestAdapter(sk), "VIDEO_AGENT_INGEST_DIR", "ingest-skill", "ingest", per_item=None)
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

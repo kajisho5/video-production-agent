@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Python orchestrator (`video-agent`). 10 adapters (ffmpeg-skill, video-editing, audio-production, color-grading, motion-graphics, subtitle, thumbnail, qc, media-analysis, transcription). Brain: deterministic rules + optional AI (Claude API, ADR-049; the chat model through MCP, ADR-050). Handoffs for steps no installed skill can run (ADR-051). 405 unit + 53 integration tests.
+Python orchestrator (`video-agent`). 11 adapters (ffmpeg-skill, video-editing, audio-production, color-grading, motion-graphics, subtitle, thumbnail, qc, media-analysis, transcription, ingest). Brain: deterministic rules + optional AI (Claude API, ADR-049; the chat model through MCP, ADR-050). Handoffs for steps no installed skill can run (ADR-051). 405 unit + 53 integration tests.
 
 ## What this repository owns
 
@@ -14,12 +14,12 @@ Python orchestrator (`video-agent`). 10 adapters (ffmpeg-skill, video-editing, a
 | Owned job | Status | Note |
 |---|---|---|
 | 制作計画 | done | plan / revise / approve / render |
-| スキルの呼び分け | partial | every ecosystem job has a SkillSpec, so a handoff names its package (ADR-057); 17 of them have no adapter yet (step 9) |
+| スキルの呼び分け | partial | every ecosystem job has a SkillSpec, so a handoff names its package (ADR-057); 16 of them have no adapter yet (step 9; ingest has one, ADR-066) |
 | 制作記録(ProductionReceipt) | done | ADR-040 |
 
 ## Wiring
 
-Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052). qc-skill pinned at 0.2.3; its opt-in VMAF / SSIM / PSNR against a master the user names (`qc.reference_video` + `qc.reference_metrics`, ADR-058, [#77](https://github.com/kajisho5/video-production-agent/pull/77)).
+Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052). ingest-skill pinned at 0.1.0 (card offload, ADR-066); qc-skill pinned at 0.2.3; its opt-in VMAF / SSIM / PSNR against a master the user names (`qc.reference_video` + `qc.reference_metrics`, ADR-058, [#77](https://github.com/kajisho5/video-production-agent/pull/77)).
 
 ## Steps
 
@@ -49,8 +49,15 @@ Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
   - Done (ADR-060): `--kind crop_rectangle` runs ffmpeg-skill `cropdetect.py --seconds 10 --samples 5 --round 2` (OBSERVED observation); a rectangle stable across the sampled windows (confidence ≥ 0.9, ≥ 3 windows decoded, rounded inward to even, removing ≥ 1% of a dimension) becomes TRANSFORM `video.crop` with approval floor CONFIRM, and once approved the existing `video_crop` step (ffmpeg-skill `crop.py`) runs; unstable / no bars → KEEP with the reason; no proposal for an explicit `edit.crop`, a multi-input programme or the audio path. `tests/test_crop.py`, evals 113-114, `tests/test_integration.py::CropProposalRealTests` (1920x1080 with a 1920x800 picture → `{x: 0, y: 140, width: 1920, height: 800}`, cropped to 1920x800 after approval)
 - [ ] **8. Speaker ids end to end** — accept diarization output; remove the null-only speaker_id invariants behind an explicit requirement
   - Done when: subtitles and edits carry speaker ids from a diarized transcript
-- [ ] **9. Adapters for the new skills, as they ship** — ingest (media_offload), detection (redact faces), dubbing, voice-enhance, sound-design (via audio-production MIX), publish (CONFIRM after QC), nle-bridge
+- [ ] **9. Adapters for the new skills, as they ship** ([#83](https://github.com/kajisho5/video-production-agent/pull/83) for ingest) — ingest (media_offload), detection (redact faces), dubbing, voice-enhance, sound-design (via audio-production MIX), publish (CONFIRM after QC), nle-bridge
   - Done when: one PR per skill: plan -> run -> provenance, handoff when absent
+  - [x] ingest (media_offload) ([#83](https://github.com/kajisho5/video-production-agent/pull/83)). Done (ADR-066): a card folder as the plan input with explicit `ingest.dest` (existing directories only; `ingest.project` / `.hash` / `.name_by` / `.reel`) → ingest-skill's `offload --dry-run` and `inventory` only (nothing written), one TRANSFORM `ingest.offload` that is always CONFIRM, step `media_offload` → `ingest/offload`; after approval, `render` runs `ingest offload <card> --dest A --dest B ... --json` once (never re-run automatically), checks every destination's manifest, and the first copy's inventory becomes new assets (one per member file, spanned members linked in order) with OBSERVED `ingest_clip` observations (clip, members, reel / card id and its source, hashes, camera sidecar facts, each destination's manifest and ASC MHL generation, ingest-skill version, job); the agent's own probe / silence / loudness then runs on the verified copies. ingest-skill's codes kept verbatim with the agent's kind and recovery class (HASH_UNAVAILABLE → ENGINE_MISSING, VERIFY_MISMATCH → VERIFY_FAILED, MHL_INVALID → HISTORY_DAMAGED, REEL_INVALID → INVALID_REQUEST, exit 3 → CONFLICT / PARTIAL / COPY_FAILED / ... with every destination's counts, failed and conflicting files). Pinned `tools/ingest/contract_0.1.0.json` with DRIFT / FATAL_DRIFT keys; ADR-057's phase-2 `media_ingest` replaced (`job.media_ingest` now points at the offload); ADR-051 handoff naming ingest-skill when it is absent. `tests/test_offload.py` (fake `ingest`), evals 131-132, `IngestOffloadRealTests` on a synthetic XDCAM EX-like card against ingest-skill main
+  - [ ] detection (redact faces)
+  - [ ] dubbing
+  - [ ] voice-enhance
+  - [ ] sound-design (via audio-production MIX)
+  - [ ] publish (CONFIRM after QC)
+  - [ ] nle-bridge
 - [x] **10. Take selection and beat-synced assembly** — group takes of the same line by transcript similarity (transcription-skill); score each take on measured facts (sharpness / exposure / loudness from media-analysis, flubs and fillers from the transcript, faces from detection) and let the AI pick with the evidence recorded as a decision; assemble the picks with cuts snapped to a measured beat grid (ffmpeg-skill `scenes --beats`, `cut --snap beats`) and audio crossfades at the joins (audio-production `concat` crossfade); export OTIO for finishing in an NLE
   - Done when: an eval with several takes per line picks the expected take, every pick carries its scores, and the cuts land on measured beats
   - Done (ADR-053, ADR-054): grouping by transcript similarity, scores from measured facts with their evidence, `takes.pick` per line (an AI `take_selection` recommendation may override, scores kept), concat of the picks in line order, out points snapped to the music bed's measured beat grid (`scenes --beats`, computed in programme time, so `cut --snap beats` is not used), audio crossfades at the joins (default 10 ms, `edit.takes.crossfade`: audio handles at each join, audio-production `CONCAT` crossfade, muxed under the unchanged hard-cut picture by ffmpeg-skill `audio.py --replace`; a join without handle room keeps a hard cut with the reason; A/V sync checked by the validator and on real media), OTIO export of the cut list; evals 103-112

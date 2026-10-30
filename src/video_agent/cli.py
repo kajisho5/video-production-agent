@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .agent.ingest import IngestError, IngestRecord, fetch_url, is_url, url_fetch_handoff
+from .agent import offload as offload_task
 from .capabilities import CapabilityResolver
 from .project import load_ir, save_ir
 from .service import Service
@@ -30,9 +31,14 @@ def _kv(pairs: Optional[List[str]]) -> Dict[str, Any]:
             raise SystemExit(f"--set expects key=value, got {p}")
         k, v = p.split("=", 1)
         try:
-            out[k] = json.loads(v)
+            val = json.loads(v)
         except ValueError:
-            out[k] = v
+            val = v
+        if k == offload_task.KEY_DEST and k in out:   # ADR-066: `--set ingest.dest=A --set ingest.dest=B`, like ingest's own --dest A --dest B
+            prev = out[k] if isinstance(out[k], list) else offload_task._destinations(out[k])
+            out[k] = prev + (val if isinstance(val, list) else offload_task._destinations(val))
+            continue
+        out[k] = val
     return out
 
 
@@ -182,7 +188,55 @@ def _print_analysis(analysis) -> int:
     return 0
 
 
+def _print_handoff(handoff: List[Dict[str, Any]]) -> None:
+    print("Not executable here (no installed skill; the step is BLOCKED until one is installed, or done outside the OS):")
+    for h in handoff:
+        print(f"  {h['step']}  {h['skill']}: {h['job']} -- {h['reason']}; provided by {', '.join(h['repositories'])}")
+        for c in h["install"]:
+            print(f"      install: {c}")
+
+
+def cmd_plan_offload(args, svc: Service) -> int:
+    """ADR-066: a card / recorder folder as the input → the plan of its verified offload (nothing copied until it is approved and rendered)."""
+    if len(args.inputs) != 1:
+        print("error: a card folder is planned on its own (one folder, no other input); plan the edit on the verified copies afterwards", file=sys.stderr)
+        return 2
+    if getattr(args, "brief", None) or getattr(args, "ai_brief", False) or getattr(args, "request", None):
+        print("error: a card offload takes no brief or request text: name the destinations with --set ingest.dest=<dir>", file=sys.stderr)
+        return 2
+    try:
+        ir = svc.plan_offload(args.inputs[0], _kv(getattr(args, "set", None)), project_name=getattr(args, "name", None))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    out = getattr(args, "output", None) or str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).resolve().name}.offload.project.json")
+    save_ir(ir, out)
+    rep = svc.validate(ir)
+    handoff = svc.handoffs(ir)
+    dec = next(d for d in ir.doc["decisions"] if d["type"] == "TRANSFORM")
+    nxt = f"video-agent approve {out} --decision {dec['id']}  then  video-agent render {out}"
+    if args.json:
+        _print({"project": out, "kind": "offload", "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "observations": ir.doc["analysis"]["observations"],
+                "warnings": ir.doc["analysis"]["warnings"], "validation": rep.to_dict(), "handoff": handoff, **({} if handoff else {"next": nxt})}, True)
+    else:
+        print(f"Offload plan: {out}")
+        for line in ir.doc["plan"]["summary"]:
+            print("  " + line)
+        print("Decisions:")
+        for d in ir.doc["decisions"]:
+            print(f"  [{d['approval']:7s} {d['risk']:6s}] {d['id']}  {d['subject']}: {d['decision']}")
+        for w in ir.doc["analysis"]["warnings"]:
+            print("  warning:", w)
+        if handoff:
+            _print_handoff(handoff)
+        else:
+            print("Nothing is copied until you confirm:", nxt)
+    return 3 if handoff else (0 if rep.ok else 2)
+
+
 def cmd_plan(args, svc: Service) -> int:
+    if any(offload_task.is_card_input(i) for i in args.inputs):
+        return cmd_plan_offload(args, svc)
     host = None
     if args.ai_brief:   # ADR-050: the chat model the agent runs in is the reasoning step; this is its brief
         from .providers.host import HostProvider
@@ -334,6 +388,22 @@ def cmd_render(args, svc: Service) -> int:
                 print("  " + out["hint"])
         if out.get("validation") and not out["validation"]["ok"]:
             print("  validation:", *out["validation"]["errors"], sep="\n    ")
+        off = out.get("offload")
+        if off:   # ADR-066: the card offload's outcome, per destination
+            for dd in (off.get("summary") or {}).get("destinations") or []:
+                print(f"  {dd['root']}: copied {dd['copied']}, identical {dd['skipped_identical']}, conflicts {dd['conflicts']}, failed {dd['failed']}"
+                      + (f", ASC MHL {dd['mhl']}" if dd.get("mhl") else "") + ("" if dd.get("ok") else "  INCOMPLETE"))
+                for pr in dd.get("problems") or []:
+                    print(f"    {pr['code']}: {pr['detail']}")
+                for ff in dd.get("failed_files") or []:
+                    print(f"    failed {ff['path']}: {ff['detail']}")
+            if off.get("error"):
+                print(f"  error {off['error'].get('code')}/{off['error'].get('kind')}: {off['error'].get('message')}")
+            if off.get("asset_ids"):
+                print(f"  {len(off['asset_ids'])} verified copy file(s) → assets ({off.get('clip_count')} recording(s), reel {(off.get('reel') or {}).get('id')})")
+                print("  next:", off.get("next"))
+            if out.get("hint") and out["status"] not in ("BLOCKED", "WAITING_FOR_APPROVAL"):
+                print("  " + out["hint"])
         for a in out.get("artifacts", []):
             print(f"  {a['type']}: {a['path']}  qa={a['qa_status']} stage={a['stage']}")
         if out.get("qa"):

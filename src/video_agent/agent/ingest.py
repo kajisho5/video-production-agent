@@ -27,10 +27,8 @@ from urllib.parse import urlparse
 from ..models import Observation, now_iso
 from ..skills.ecosystem import component, install_commands, repository
 from ..tools.base import ToolError
-from ..tools.skill_process import CliSkill, invoke, locate_cli_skill, one_json_document, sha256_file
-
-ENV_DIR = "VIDEO_AGENT_INGEST_DIR"      # an ingest-skill checkout (<dir>/src/ingest_skill), checked before PATH
-PACKAGE = "ingest"                      # the ecosystem package id (skills/ecosystem.py)
+from ..tools.ingest.locate import ENV_DIR, PACKAGE_ID as PACKAGE, locate_ingest  # noqa: F401  (shared with the card offload adapter, ADR-066)
+from ..tools.skill_process import CliSkill, invoke, one_json_document, sha256_file
 TOOL = "ingest/fetch"
 FETCH_SCHEMA = "ingest/fetch@1"
 REPORT_SCHEMA = "ingest/fetch-report@1"
@@ -66,12 +64,6 @@ def is_url(value: str) -> bool:
     except ValueError:
         return False
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-
-
-def locate_ingest(explicit: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Optional[CliSkill]:
-    """An ingest-skill checkout (run as `python -m ingest_skill.cli` with PYTHONPATH=<dir>/src) or the `ingest` console
-    script; the same order as every other Skill CLI (tools/skill_process.locate_cli_skill)."""
-    return locate_cli_skill(PACKAGE, "ingest_skill.cli", "ingest_skill", "ingest", ENV_DIR, explicit, env, ("ingest-skill",))
 
 
 def ingest_doctor(skill: CliSkill, timeout: float = 120.0) -> Dict[str, Any]:
