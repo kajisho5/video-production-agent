@@ -95,13 +95,13 @@
       "operation": "DYNAMICS"
     },
     {
-      "id": "audio.fade",
+      "id": "audio.fade_in",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "FADE_IN"
     },
     {
-      "id": "audio.fade",
+      "id": "audio.fade_out",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "FADE_OUT"
@@ -153,6 +153,21 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "TRIM"
+    }
+  ],
+  "dependencies": [
+    {
+      "skill_id": "ffmpeg-skill",
+      "version_range": ">=1.0 <2.0",
+      "range_of": "contract_version",
+      "required": true,
+      "tools": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/audio",
+        "ffmpeg-skill/cut",
+        "ffmpeg-skill/loudness",
+        "ffmpeg-skill/join"
+      ]
     }
   ],
   "operations": [
