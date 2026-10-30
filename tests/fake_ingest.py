@@ -297,7 +297,7 @@ def inventory(argv) -> int:
         if p.suffix.lower() not in MEDIA:
             continue
         m = re.match(r"^(.+)_(\d\d)$", p.stem)
-        key = m.group(1) if (m and "CLPR" in p.parts) else str(p.with_suffix(""))
+        key = m.group(1) if (m and "CLPR" in p.parts) else p.with_suffix("").as_posix()
         groups.setdefault(key, []).append(r)
     reel = _opt(argv, "--reel")
     if reel:
@@ -316,7 +316,7 @@ def inventory(argv) -> int:
         if OFFLOAD_MODE == "inventory_outside":
             members[0]["path"] = "../escape.mp4"
         first = _fake_facts(root / groups[key][0])
-        side = str(Path(members[0]["path"]).with_suffix("")) + "M01.XML"
+        side = Path(members[0]["path"]).with_suffix("").as_posix() + "M01.XML"   # POSIX-relative, like ingest-skill's inventory
         sidecars = [{"path": side, "kind": "sony_nonrealtimemeta", "parsed": True, "metadata": {"device": {"manufacturer": "Sony", "model": "PMW-EX1"}}}] if side in rels else []
         spanned = len(members) > 1
         dur = round(sum(m["duration_s"] for m in members), 3) if all(m["probed"] and m["duration_s"] is not None for m in members) else None
