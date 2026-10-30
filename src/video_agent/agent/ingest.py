@@ -69,6 +69,12 @@ class YtDlp:
         return self.command[0]
 
 
+def _run_utf8(argv: List[str], **kw: Any) -> "subprocess.CompletedProcess[str]":
+    """yt-dlp is a Python program: PYTHONUTF8 makes it write UTF-8 to a pipe on every platform (a Windows pipe is
+    otherwise the ANSI code page, which cannot hold most titles), and the reply is decoded as UTF-8 to match."""
+    return subprocess.run(argv, text=True, encoding="utf-8", errors="replace", env={**os.environ, "PYTHONUTF8": "1"}, **kw)
+
+
 def locate_yt_dlp(explicit: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Optional[YtDlp]:
     """explicit -> VIDEO_AGENT_YTDLP -> PATH -- the same override order the other external engines resolve their
     own location in (tools/*/locate.py), but with no checkout to find: like those other bare binaries, yt-dlp is a
@@ -79,7 +85,7 @@ def locate_yt_dlp(explicit: Optional[str] = None, env: Optional[Dict[str, str]] 
     if not exe:
         return None
     try:
-        p = subprocess.run([exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20)
+        p = _run_utf8([exe, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if p.returncode != 0 or not p.stdout.strip():
@@ -123,7 +129,7 @@ def probe_url(url: str, yt_dlp: YtDlp, timeout: float = PROBE_TIMEOUT) -> Dict[s
     id / title / duration / webpage_url feed provenance. No media bytes are fetched here."""
     argv = yt_dlp.command + ["--dump-json", "--no-warnings", "--no-playlist", url]
     try:
-        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        p = _run_utf8(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise IngestError("TIMEOUT", f"yt-dlp --dump-json exceeded {timeout}s for {url}")
     if p.returncode != 0 or not p.stdout.strip():
@@ -158,7 +164,7 @@ def download_url(url: str, workspace: str, yt_dlp: Optional[YtDlp] = None, timeo
         argv.append("--live-from-start")   # in-progress stream: capture from its beginning, not from "now"
     argv.append(url)
     try:
-        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        p = _run_utf8(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise IngestError("TIMEOUT", f"yt-dlp download exceeded {timeout}s for {url}")
     if p.returncode != 0:

@@ -369,7 +369,7 @@ class PipelineTests(unittest.TestCase):
         subjects = {d["subject"]: d["id"] for d in ir.doc["decisions"]}
         self.assertTrue(art["operations"], "the real trim operation must be credited, not silently dropped")
         self.assertEqual(set(art["decision_ids"]), {subjects["silence.leading"], subjects["silence.trailing"], subjects["delivery.main"]})
-        self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+        self.assertTrue(os.path.realpath(art["path"]).startswith(os.path.realpath(self.tmp)), "the artifact must live inside the workspace (ADR-022)")
 
     def test_generic_without_preset_and_genuinely_untouched_still_registers_an_artifact(self):
         """A no-preset delivery whose subject nothing ever touched (no silence to trim, no preset) used to have
@@ -394,7 +394,7 @@ class PipelineTests(unittest.TestCase):
         art = out["artifacts"][0]
         self.assertEqual((art["type"], art["format"], art["qa_status"]), ("MASTER", "source", "PASS"))
         self.assertTrue(os.path.isfile(art["path"]))
-        self.assertTrue(art["path"].startswith(self.tmp), "the artifact must live inside the workspace (ADR-022)")
+        self.assertTrue(os.path.realpath(art["path"]).startswith(os.path.realpath(self.tmp)), "the artifact must live inside the workspace (ADR-022)")
         self.assertEqual(art["tool"], "ffmpeg-skill/export", "credited to the real stream-copy op, not left blank")
         subjects = {d["subject"]: d["id"] for d in ir.doc["decisions"]}
         self.assertEqual(set(art["decision_ids"]), {subjects["delivery.main"]})
@@ -6345,7 +6345,7 @@ class UrlIngestTests(unittest.TestCase):
         install_fake_yt_dlp(bin_dir)
         found = locate_yt_dlp(env={"PATH": str(bin_dir)})
         self.assertIsNotNone(found)
-        self.assertEqual(Path(found.command[0]).name, "yt-dlp")
+        self.assertEqual(Path(found.command[0]).stem, "yt-dlp")   # yt-dlp.cmd on Windows
 
     def test_locate_yt_dlp_missing_is_none(self):
         self.assertIsNone(locate_yt_dlp(env={"PATH": ""}))
