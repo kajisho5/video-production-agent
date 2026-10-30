@@ -1,5 +1,5 @@
 """The satellites now report their release version (single-sourced from pyproject.toml) instead of a stale
-constant: motion-graphics 0.2.x, transcription 0.7.x, subtitle 0.2.x. Their contracts are otherwise the pinned ones, so the
+constant: motion-graphics 0.2.x, transcription 0.7.x, subtitle 0.2.x, qc 0.2.x (qc-skill #22). Their contracts are otherwise the pinned ones, so the
 version gates accept those ranges and nothing else.
 
     python -m unittest tests/test_version_gates.py
@@ -13,6 +13,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from video_agent.tools.motion_graphics import adapter as mg  # noqa: E402
+from video_agent.tools.qc import adapter as qc  # noqa: E402
 from video_agent.tools.subtitle import adapter as st  # noqa: E402
 from video_agent.tools.transcription import adapter as tr  # noqa: E402
 
@@ -37,6 +38,16 @@ class VersionGateTests(unittest.TestCase):
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
         for v in ("0.3.0", "0.8.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
+
+    def test_qc_release_versions(self):
+        """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2 on main) instead of a hard-coded 0.1.0."""
+        self.assertEqual(qc.pinned_contract()["version"], "0.2.2")
+        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.9"):
+            live = with_version(qc.pinned_contract(), v)
+            self.assertEqual(qc.check_contract(live), [], v)
+            self.assertEqual(qc.contract_breaking_drift(live), [], v)
+        for v in ("0.3.0", "1.0.0"):
+            self.assertTrue(qc.check_contract(with_version(qc.pinned_contract(), v)), v)
 
     def test_subtitle_release_versions(self):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
