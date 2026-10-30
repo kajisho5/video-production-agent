@@ -148,6 +148,15 @@ class FakeAdapter(ToolAdapter):
                    "confidence": [1.0] + [(_read_fake(p) or {}).get("sync_confidence", 0.9) for p in inputs[1:]],
                    "cuts": [{"start": 0.0, "end": ref_dur, "camera": 0}], "commands": ["ffmpeg multicam"], "probe": probe_doc(out or "", ref_dur)}
             return ToolResult(op.id, op.tool, True, 0, out, doc, doc["commands"], "", 0.3, attempt, dry_run)
+        if script == "audio":
+            # a fake mux (tests only, ADR-054): only --replace is catalogued; the picture is stream-copied, so the output lasts as long as
+            # the video input (the real audio.py pads / trims the new audio to the video's duration)
+            assert set(op.args) <= {"input", "replace", "output"} and op.args.get("replace"), op.args
+            rep = _read_fake(paths.get(op.args["replace"], op.args["replace"])) or {}
+            if out and not dry_run:
+                _write_fake(out, {"duration": in_dur, "lufs": rep.get("lufs", in_meta.get("lufs", self.lufs) if in_meta else self.lufs)})
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": ["ffmpeg audio --replace"], "probe": probe_doc(out or "", in_dur), "video": True},
+                              ["ffmpeg audio --replace"], "", 0.2, attempt, dry_run)
         if script == "look":
             if out and not dry_run:
                 Path(out).parent.mkdir(parents=True, exist_ok=True)

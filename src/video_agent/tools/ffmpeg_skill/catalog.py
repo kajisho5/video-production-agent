@@ -33,6 +33,10 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "multicam": {"positional": ["inputs"], "flags": {"switch": "str", "auto": "float", "audio": "int", "offsets_only": "bool", "max_offset": "float", "analyze_seconds": "float", "fix_drift": "bool",
                                                       "width": "int", "height": "int", "fps": "float", "crf": "int", "output": "path_out", "preset": "str"},
                  "produces_output": True, "result_keys": ["offsets_seconds", "confidence", "cuts"]},
+    # ADR-054 (verified against ffmpeg-skill 2.21.0 --help and source): audio.py --replace FILE swaps the audio track; the video is
+    # stream-copied and the new audio is padded / trimmed to the video's duration (apad,atrim), so the picture is never shortened.
+    # Only --replace is catalogued: the agent uses audio.py as the mux of a take assembly's programme audio, nothing else.
+    "audio": {"positional": ["input"], "flags": {"replace": "path_in", "output": "path_out"}, "produces_output": True, "result_keys": ["output", "probe", "audio", "video"]},
     "report": {"positional": [], "flags": {"after": "path_in", "before": "path_in", "platform": "str", "commands": "path_in", "notes": "path_in", "title": "str", "output": "path_out", "no_sheets": "bool"},
                "produces_output": True, "result_keys": ["report", "check"]},
     # ---- ADR-046 Priority A batch (verified against ffmpeg-skill v0.16.2 --help)

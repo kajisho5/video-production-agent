@@ -37,6 +37,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "audio_cut": ("asset", "remove"), "audio_normalize": ("asset", "target_lufs", "true_peak", "tolerance_lu", "sample_rate"), "audio_gain": ("asset", "gain_db"),
                    "audio_mono": ("asset",), "audio_stereo": ("asset",), "audio_downmix": ("asset",), "audio_fade_in": ("asset", "duration"), "audio_fade_out": ("asset", "duration"),
                    "audio_concat": ("asset", "inputs", "crossfade"),
+                   # take assembly crossfades (ADR-054): the programme audio replaces the assembled picture's hard-cut audio
+                   "audio_mux": ("asset", "video", "audio"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)
                    "color_strip_dovi": ("asset",), "color_hdr_to_sdr": ("asset",), "color_lut": ("asset", "lut", "lut_strength"), "color_retag": ("asset", "target"),
                    "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint"),

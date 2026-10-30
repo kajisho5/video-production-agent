@@ -1,0 +1,119 @@
+{
+ "name": "pipe_takes_crossfade_on_beat_snapped_joins",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.7,
+      4.1,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.6
+     ],
+     [
+      4.3,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.2,
+      "えーと、本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.4,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      3.7,
+      "これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ],
+     [
+      3.9,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "music_bed.mp4",
+    "duration": 20.0,
+    "beat_interval": 0.5,
+    "beat_phase": 0.25,
+    "beat_confidence": 0.96
+   }
+  ],
+  "extra_capabilities": [
+   "audio-production",
+   "audio-production:CUT",
+   "audio-production:CONCAT"
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "edit.takes.music": 3,
+  "edit.takes.crossfade": 0.02
+ },
+ "expect": {
+  "blocked": false,
+  "picks": [
+   "l1_take1.mp4",
+   "l2_take1.mp4"
+  ],
+  "joins_on_beats": 2,
+  "crossfade": {
+   "decision": {
+    "type": "TRANSFORM",
+    "approval": "AUTO",
+    "provenance": "USER"
+   },
+   "reason_contains": "edit.takes.crossfade=0.02s",
+   "joins": [
+    true
+   ],
+   "planned": true,
+   "concats": [
+    [
+     2,
+     0.02
+    ]
+   ]
+  },
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "qa_status": "PASS"
+  }
+ }
+}

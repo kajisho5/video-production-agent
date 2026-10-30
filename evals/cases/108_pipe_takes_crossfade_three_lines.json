@@ -1,0 +1,168 @@
+{
+ "name": "pipe_takes_crossfade_three_lines",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.7,
+      4.1,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.6
+     ],
+     [
+      4.3,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.2,
+      "えーと、本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.4,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      5.95,
+      "これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ]
+    ]
+   },
+   {
+    "name": "l3_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.1,
+      3.0,
+      "最後にご質問をお受けいたします"
+     ]
+    ],
+    "silences": [
+     [
+      3.2,
+      null
+     ]
+    ]
+   }
+  ],
+  "extra_capabilities": [
+   "audio-production",
+   "audio-production:CUT",
+   "audio-production:CONCAT"
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "delivery.timeline": "otio"
+ },
+ "expect": {
+  "blocked": false,
+  "picks": [
+   "l1_take1.mp4",
+   "l2_take1.mp4",
+   "l3_take1.mp4"
+  ],
+  "every_pick_scored": true,
+  "crossfade": {
+   "decision": {
+    "type": "TRANSFORM",
+    "approval": "AUTO",
+    "provenance": "SYSTEM"
+   },
+   "reason_contains": "the default 0.01s click-free crossfade",
+   "joins": [
+    true,
+    false
+   ],
+   "hard_cut_why": "no room for a 0.01s crossfade",
+   "planned": true,
+   "concats": [
+    [
+     2,
+     0.01
+    ],
+    [
+     2,
+     0.0
+    ]
+   ]
+  },
+  "timeline_clips": [
+   [
+    "l1_take1.mp4",
+    0.55,
+    4.25
+   ],
+   [
+    "l2_take1.mp4",
+    0.35,
+    6.0
+   ],
+   [
+    "l3_take1.mp4",
+    0.0,
+    3.15
+   ]
+  ],
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "qa_status": "PASS",
+   "artifacts": {
+    "YOUTUBE": "candidate",
+    "TIMELINE": "candidate"
+   }
+  }
+ },
+ "engine": {
+  "basis": {
+   "takes.crossfade": {
+    "approval_key": "takes.crossfade.approval",
+    "evidence_classes": [
+     "observation",
+     "requirement"
+    ]
+   }
+  },
+  "explain": "takes.crossfade",
+  "explain_kinds": [
+   "observation",
+   "requirement"
+  ]
+ }
+}

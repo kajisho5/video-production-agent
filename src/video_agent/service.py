@@ -373,6 +373,8 @@ class Service:
         d["timeline"] = analysis.timeline.to_dict()
         d["video"] = {"operations": plan["video_ops"]}
         d["audio"] = {"operations": plan["audio_ops"]}
+        if plan.get("take_crossfade"):   # ADR-054: the join crossfades of a take assembly; written only when planned
+            d["audio"]["take_crossfade"] = plan["take_crossfade"]
         # finishing sections (ADR-031) and the QC gate (ADR-032): written only when planned, so an unchanged request keeps its plan hash
         d["captions"] = {"operations": plan["captions_ops"]} if plan.get("captions_ops") else {}
         d["graphics"] = {"operations": plan["graphics_ops"]} if plan.get("graphics_ops") else {}

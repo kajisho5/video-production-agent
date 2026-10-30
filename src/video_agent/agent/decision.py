@@ -23,7 +23,7 @@ from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AU
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requirements, switch_cams
 from .requirements import requirement_map
-from .takes import AI_INTENT as TAKE_AI_INTENT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
+from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 
 # production-skill intent → decision subjects that would already execute it (measured path)
@@ -62,7 +62,9 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO"),
                  # ADR-053: choosing which take of a line is used is editorial (the others are left out), so CONFIRM; the beat snap
                  # moves out points the user asked to put on the music (its explicit edit.takes.music waives CONFIRM)
-                 PICK_SUBJECT: ("takes.pick.approval", "CONFIRM"), SNAP_SUBJECT: ("takes.beat_snap.approval", "CONFIRM")}
+                 PICK_SUBJECT: ("takes.pick.approval", "CONFIRM"), SNAP_SUBJECT: ("takes.beat_snap.approval", "CONFIRM"),
+                 # the join crossfades replace a sample discontinuity with a short ramp and move no cut (what is seen and said is unchanged), so AUTO
+                 CROSSFADE_SUBJECT: ("takes.crossfade.approval", "AUTO")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -98,6 +100,17 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                    reason=f"request/preference {c.attempted.value} conflicts with constraint {c.constraint.id}; constraints are never overridden silently",
                    confidence=1.0, evidence=[c.constraint.id, c.attempted.id], risk="MEDIUM", approval="CONFIRM", provenance="SYSTEM",
                    settings=[resolve_setting(rules, c.key, c.constraint.value)])
+
+    def cap_missing(skill: str) -> Optional[str]:
+        """Why `skill` cannot run here (missing capabilities / no executable tool), or None; decides nothing (cap_block does)."""
+        missing = registry.missing_capabilities(skill, caps)
+        if missing:
+            return f"required capability missing: {', '.join(missing)}"
+        if tool_supports is not None:
+            tool, reason = registry.select_tool(skill, caps, tool_supports, explicit=(explicit_providers or {}).get(skill), default=(default_providers or {}).get(skill))
+            if tool is None:
+                return reason or "no executable tool"
+        return None
 
     def cap_block(skill: str, subject: str) -> Optional[Decision]:
         missing = registry.missing_capabilities(skill, caps)
@@ -153,7 +166,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 cap_block("audio_concat", "capability.audio_concat")
     # ---- take selection (ADR-053): explicit `edit.takes`; the picks (one per line, in line order) become the concat inputs, the other
     # takes and the music bed get no decision and no step of their own
-    takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX)
+    takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX, cap_missing=cap_missing)
     concat_ok = False
     excluded: set = set()
     take_picks: set = set()

@@ -16,6 +16,7 @@ from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, delivery
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import QC_SKILL, QC_TOOL, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, RENDER_TOOL
+from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
@@ -192,6 +193,20 @@ def lower_timeline_export(tool: str, op: Dict[str, Any], project_id: str, out_id
     plan (registry-selected, single candidate); like the other reference-engine-only operations there is no pairing to check."""
     return {"project": project_id, "clips": [{"input": c["asset"], "in": float(c["in"]), "out": float(c["out"])} for c in op["clips"]],
             "output": out_id, "overwrite": True}
+
+
+def lower_take_crossfade(tool: str, kind: str, rec: Dict[str, Any], out_id: str) -> Dict[str, Any]:
+    """ADR-054 take-assembly crossfade records → typed tool arguments: a span is an audio-production CUT of the source (the ranges
+    outside the span removed), a join is an audio-production CONCAT (with the crossfade, or 0 between runs), the mux is the
+    plan's `audio_mux` tool (registry-selected, single candidate: the picture input, the replacing audio, the output; like the
+    timeline export there is no pairing to check here)."""
+    if kind == "mux":
+        return {"input": rec["video"], "replace": rec["audio"], "output": out_id}
+    if tool != AUDIO_TOOL:
+        raise CompileError(f"the take-assembly audio {kind} cannot be executed by {tool}; the only tool of this operation is {AUDIO_TOOL}")
+    if kind == "span":
+        return {"operation": "CUT", "input": rec["asset"], "remove": [[float(x), float(y)] for x, y in rec["remove"]], "output": out_id}
+    return {"operation": "CONCAT", "inputs": list(rec["inputs"]), "crossfade": float(rec["crossfade"]), "output": out_id}
 
 
 def _step_tools(d: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
@@ -496,6 +511,27 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         tool = tool_for("video_concat", subject)
         args = lower_video_edit(tool, concat, inputs, subject)
         add(tool, args, inputs, [subject], list(concat.get("decision_ids") or []), fp, skill="video_concat")
+        xf = (d["audio"].get("take_crossfade") or None)
+        if xf is not None:
+            # ADR-054: the programme audio with crossfaded joins, built beside the picture and muxed under it; the chain continues on the mux
+            xids = list(xf.get("decision_ids") or [])
+            for sp in xf["spans"]:
+                if sp["output"] == sp["asset"]:
+                    continue
+                a_st = state[sp["asset"]]
+                paths[sp["output"]] = str(job / "ops" / f"{a_st['stem']}_xfade_audio" / f"{a_st['stem']}_xfade_audio.wav")
+                tool = tool_for("audio_cut", sp["asset"])
+                add(tool, lower_take_crossfade(tool, "span", sp, sp["output"]), [sp["asset"]], [sp["output"]], xids, a_st["fp"], skill="audio_cut")
+            for c in xf["concats"]:
+                paths[c["output"]] = str(job / "ops" / f"{subject}_xfade" / f"{c['output']}.wav")
+                tool = tool_for("audio_concat", c["output"])
+                add(tool, lower_take_crossfade(tool, "concat", c, c["output"]), list(c["inputs"]), [c["output"]], xids, fp, skill="audio_concat")
+            mux = dict(xf["mux"], video=state[subject]["current"])
+            state[subject]["gen"] += 1
+            paths[mux["output"]] = str(job / "ops" / f"{subject}_{state[subject]['gen']:02d}_xfade" / f"{subject}_xfade.mp4")
+            tool = tool_for(AUDIO_MUX_SKILL, subject)
+            add(tool, lower_take_crossfade(tool, "mux", mux, mux["output"]), [mux["video"], mux["audio"]], [mux["output"]], xids, fp, skill=AUDIO_MUX_SKILL)
+            state[subject]["current"] = mux["output"]
         edits(subject)
         finishing(subject)
         loudness(subject)

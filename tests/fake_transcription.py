@@ -55,6 +55,9 @@ def transcript(params: dict, fp: str) -> dict:
         meta = json.loads(Path(params["input"]).read_bytes().decode("utf-8"))
     except (OSError, ValueError, KeyError, UnicodeDecodeError):
         meta = None
+    side = Path(str(params["input"]) + ".segments.json")   # a real media file may carry its segments in a sidecar (ADR-054 real take assembly)
+    if meta is None and side.is_file():
+        meta = {"fake": True, "segments": json.loads(side.read_text(encoding="utf-8"))}
     if isinstance(meta, dict) and meta.get("fake") and isinstance(meta.get("segments"), list):
         segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7, "words": None, "speaker_id": None}
                 for i, (a, b, t) in enumerate(meta["segments"], 1)]

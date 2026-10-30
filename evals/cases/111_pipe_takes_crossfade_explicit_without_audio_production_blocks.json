@@ -1,0 +1,96 @@
+{
+ "name": "pipe_takes_crossfade_explicit_without_audio_production_blocks",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.7,
+      4.1,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.6
+     ],
+     [
+      4.3,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.2,
+      "えーと、本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.4,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l2_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.5,
+      5.95,
+      "これから新しい製品についてご説明します"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.4
+     ]
+    ]
+   },
+   {
+    "name": "l3_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.1,
+      3.0,
+      "最後にご質問をお受けいたします"
+     ]
+    ],
+    "silences": [
+     [
+      3.2,
+      null
+     ]
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "edit.takes.crossfade": 0.015
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "capability.audio_concat",
+   "capability.audio_cut"
+  ],
+  "plan_status": "BLOCKED"
+ }
+}

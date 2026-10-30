@@ -68,7 +68,7 @@ class ProjectIR:
         rej = {d["id"] for d in self.rejected()}
         out = []
         for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.doc["delivery"]["targets"] \
-                + list(self.doc["delivery"].get("timelines") or []):
+                + list(self.doc["delivery"].get("timelines") or []) + ([self.doc["audio"]["take_crossfade"]] if self.doc["audio"].get("take_crossfade") else []):
             if any(x in rej for x in op.get("decision_ids") or []):
                 out.append(op)
         return out
