@@ -51,6 +51,14 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "grid": {"positional": ["inputs"], "flags": {"cols": "int", "rows": "int", "cell_width": "int", "cell_height": "int", "fps": "float", "label": "str", "font": "str", "font_size": "int",
                                                   "font_color": "str", "pad": "bool", "audio_from": "int", "gap": "int", "background": "str", "crf": "int", "preset": "str", "output": "path_out"},
              "produces_output": True, "result_keys": ["output", "probe"]},
+    # ---- ADR-052 timeline export (verified against ffmpeg-skill v2.21.0 --help and a real --json capture): render.py reads a
+    # project.json and, with --export-timeline FILE, writes the project's cut as an editor timeline (.otio / .fcpxml / .edl by
+    # extension) instead of rendering. The project is never a free-form document: the adapter writes it from the typed
+    # `clips` records (source path, in, out) with "transition": {"type": "none"} (render.py's default is a dissolve on every
+    # cut) and nothing else, inside the workspace. `output` is spelled --export-timeline (FLAG_ALIASES). --json reports
+    # {"output", "timeline": {format, rate, duration, frames, clips, transition, ..., not_exported}, "verification"}.
+    "render": {"positional": ["project"], "flags": {"clips": "timeline_clips", "output": "path_out", "overwrite": "bool"}, "project_document": ("clips",),
+               "requires_flag": "--export-timeline", "produces_output": True, "result_keys": ["output", "timeline", "verification"]},
 }
 
 # The catalog's `crf` key is the encoder quality on the CRF scale. ffmpeg-skill 1.10 renamed the flag to --quality
@@ -61,4 +69,5 @@ QUALITY_FLAG = "--quality"
 # flags whose CLI spelling differs from the underscore->dash rule
 FLAG_ALIASES = {("loudness", "lufs"): "-I", ("*", "output"): "-o",
                  ("cropdetect", "round_to"): "--round",   # --round collides with the python builtin `round`
-                 ("stabilize", "crop_mode"): "--crop"}    # "crop" collides with this vocabulary's own video.crop operation name
+                 ("stabilize", "crop_mode"): "--crop",   # "crop" collides with this vocabulary's own video.crop operation name
+                 ("render", "output"): "--export-timeline"}   # ADR-052: the agent only ever exports a timeline through render.py, never renders with it

@@ -11,6 +11,7 @@ from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELE
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL
+from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
 from typing import Any, Dict, List, Optional
@@ -395,6 +396,46 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def check_timeline_exports(d: Dict[str, Any]) -> List[str]:
+    """ADR-052: one timeline per subject, a known format, clips on known source assets (the timeline references the sources,
+    never an intermediate) with forward ranges inside each source's duration, and the recorded duration their sum."""
+    errs: List[str] = []
+    assets = d.get("assets") or {}
+    subjects = set(assets) | produced_subjects(d)
+    seen: set = set()
+    for op in (d.get("delivery") or {}).get("timelines") or []:
+        subj = op.get("asset")
+        if op.get("type") != TIMELINE_SUBJECT:
+            errs.append(f"unknown timeline operation type {op.get('type')!r}")
+            continue
+        if subj not in subjects:
+            errs.append(f"timeline.export references unknown subject {subj}")
+        if subj in seen:
+            errs.append(f"more than one timeline.export on {subj}")
+        seen.add(subj)
+        if op.get("format") not in TIMELINE_FORMATS:
+            errs.append(f"timeline.export on {subj}: unknown format {op.get('format')!r}")
+        clips = op.get("clips") or []
+        if not clips:
+            errs.append(f"timeline.export on {subj}: no clips")
+        for n, c in enumerate(clips):
+            a = assets.get(c.get("asset"))
+            if a is None:
+                errs.append(f"timeline.export on {subj}: clip {n} names {c.get('asset')!r}, which is not a source asset")
+                continue
+            dur = (a.get("technical") or {}).get("duration")
+            try:
+                s_, e_ = float(c["in"]), float(c["out"])
+            except (KeyError, TypeError, ValueError):
+                errs.append(f"timeline.export on {subj}: clip {n} needs numeric in / out")
+                continue
+            if not 0.0 <= s_ < e_ or (dur is not None and e_ > float(dur) + 0.001):
+                errs.append(f"timeline.export on {subj}: clip {n} range {s_:g}..{e_:g} is not inside its source (0..{dur})")
+        if clips and abs(sum(float(c.get("out", 0)) - float(c.get("in", 0)) for c in clips) - float(op.get("timeline_duration") or 0.0)) > 0.002:
+            errs.append(f"timeline.export on {subj}: timeline_duration does not match its clips")
+    return errs
+
+
 def check_plan_dependencies(d: Dict[str, Any]) -> List[str]:
     """Every step input that is not a source asset must be produced by a step the consuming step (transitively) depends on:
     the plan's dependency graph, not the listing order, is what makes a multi-Skill chain executable in order (ADR-031)."""
@@ -464,7 +505,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     assets = d["assets"]
     ids = {x["id"] for x in d["decisions"]}
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
-    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"]:
+    timelines = list(d["delivery"].get("timelines") or [])
+    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines:
         for did in op.get("decision_ids") or []:
             if did in rejected:
                 rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
@@ -472,7 +514,12 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_video_operations(d)
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
+    rep.errors += check_timeline_exports(d)
     rep.errors += check_plan_dependencies(d)
+    for op in timelines:
+        for did in op.get("decision_ids") or []:
+            if did not in ids:
+                rep.errors.append(f"operation {op.get('type')} cites unknown decision {did}")
     for op in d["video"]["operations"] + d["audio"]["operations"] + finishing_operations(d):
         if op["asset"] not in assets and op["asset"] not in produced_subjects(d):
             rep.errors.append(f"operation {op['type']} references unknown asset {op['asset']}")
@@ -551,6 +598,9 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         want = GENERATE_SKILL if op["type"] == "captions.generate" else BURN_SKILL
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    for op in timelines:
+        if (TIMELINE_SKILL, op.get("asset")) not in step_keys:
+            rep.errors.append(f"timeline.export on {op.get('asset')} has no plan step")
     qc = (d.get("qa") or {}).get("qc") or {}
     if qc.get("enabled"):
         qc_steps = [s for s in d["plan"]["steps"] if s["skill"] == QC_SKILL]

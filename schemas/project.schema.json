@@ -476,6 +476,76 @@
     },
     "naming": {
      "type": "string"
+    },
+    "timelines": {
+     "description": "ADR-052: the cut list of a subject as an editor timeline (ffmpeg-skill/render --export-timeline); clips are kept source ranges in programme order",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "type",
+       "asset",
+       "format",
+       "clips",
+       "output",
+       "decision_ids"
+      ],
+      "properties": {
+       "type": {
+        "const": "timeline.export"
+       },
+       "asset": {
+        "type": "string"
+       },
+       "format": {
+        "enum": [
+         "otio",
+         "fcpxml",
+         "edl"
+        ]
+       },
+       "clips": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "object",
+         "additionalProperties": false,
+         "required": [
+          "asset",
+          "in",
+          "out"
+         ],
+         "properties": {
+          "asset": {
+           "type": "string"
+          },
+          "in": {
+           "type": "number",
+           "minimum": 0
+          },
+          "out": {
+           "type": "number",
+           "minimum": 0
+          }
+         }
+        }
+       },
+       "output": {
+        "type": "string"
+       },
+       "timeline_duration": {
+        "type": "number",
+        "minimum": 0
+       },
+       "decision_ids": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
     }
    }
   },

@@ -3,6 +3,7 @@ incidents for FAILs. Rendering success is not production success."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import os
 from typing import Any, Dict, List, Optional
 
@@ -233,7 +234,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                     rep.items.append(QAItem("visual", "contact_sheet", "PASS", sheet, "generated for human review", artifact=art))
         # finishing outputs of the subject (ADR-031): the subtitle sidecar (cue count as planned, well-formed) and the thumbnail (a non-empty image of the planned format)
         for o in (ir_doc.get("plan") or {}).get("outputs") or []:
-            if (o.get("expected") or {}).get("source") != asset_id or o.get("role") not in ("CAPTIONS", "THUMBNAIL"):
+            if (o.get("expected") or {}).get("source") != asset_id or o.get("role") not in ("CAPTIONS", "THUMBNAIL", "TIMELINE"):
                 continue
             art = o["logical"]
             path = paths.get(art)
@@ -248,10 +249,46 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 rep.items.append(QAItem("delivery", "cues", "PASS" if n == want else "FAIL", n, want, kind="judgement", artifact=art, fix_hint="" if n == want else "the sidecar does not carry the planned cues"))
                 rep.items.append(QAItem("delivery", "format", "PASS" if _looks_like(text, o.get("format") or "") else "FAIL", o.get("format"), "well-formed " + str(o.get("format")), artifact=art))
                 qc_items(art, path, "subtitle")
+            elif o["role"] == "TIMELINE":   # ADR-052: the timeline document the agent itself reads back (the clip count of an OTIO file)
+                rep.items.extend(_timeline_items(art, path, o))
             else:
                 ok = size > 0 and _image_magic(path, o.get("format") or "")
                 rep.items.append(QAItem("delivery", "image", "PASS" if ok else "FAIL", f"{size} bytes", f"non-empty {o.get('format')}", artifact=art))
     return rep
+
+
+def _timeline_items(art: str, path: str, o: Dict[str, Any]) -> List[QAItem]:
+    """An editor timeline: well-formed in its format, and for OpenTimelineIO the planned number of clips (counted in the JSON
+    document itself; the agent has no OTIO dependency). FCPXML / EDL clip counts are not read here (recorded as such)."""
+    fmt, want = o.get("format") or "", int((o.get("expected") or {}).get("clips") or 0)
+    text = _read_text(path)
+    if fmt == "otio":
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            return [QAItem("delivery", "format", "FAIL", "not JSON", "well-formed otio", artifact=art)]
+        n = _otio_clips(doc)
+        ok = isinstance(doc, dict) and str(doc.get("OTIO_SCHEMA", "")).startswith("Timeline.")
+        return [QAItem("delivery", "format", "PASS" if ok else "FAIL", doc.get("OTIO_SCHEMA") if isinstance(doc, dict) else type(doc).__name__, "Timeline.*", artifact=art),
+                QAItem("delivery", "clips", "PASS" if n == want else "FAIL", n, want, kind="judgement", artifact=art, fix_hint="" if n == want else "the timeline does not carry the planned cut list")]
+    if fmt == "fcpxml":
+        import xml.etree.ElementTree as ET
+        try:
+            root = ET.fromstring(text)
+            ok = root.tag == "fcpxml"
+        except ET.ParseError:
+            ok = False
+        return [QAItem("delivery", "format", "PASS" if ok else "FAIL", "fcpxml" if ok else "not fcpxml", "well-formed fcpxml", artifact=art)]
+    ok = text.lstrip().startswith("TITLE:")
+    return [QAItem("delivery", "format", "PASS" if ok else "FAIL", "edl" if ok else "no TITLE: header", "CMX 3600 edl", artifact=art)]
+
+
+def _otio_clips(node: Any) -> int:
+    if isinstance(node, dict):
+        return (1 if str(node.get("OTIO_SCHEMA", "")).startswith("Clip.") else 0) + sum(_otio_clips(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(_otio_clips(v) for v in node)
+    return 0
 
 
 def _sha256(path: str) -> str:

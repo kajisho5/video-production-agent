@@ -68,7 +68,12 @@ class FfmpegSkillAdapter(ToolAdapter):
         return {"name": self.name, "version": self.version, "root": str(self.skill.root), "tools": {PREFIX + k: v for k, v in CATALOG.items()}}
 
     def supports(self, tool: str) -> bool:
-        return tool.startswith(PREFIX) and tool[len(PREFIX):] in CATALOG and tool[len(PREFIX):] in self.skill.scripts
+        if not (tool.startswith(PREFIX) and tool[len(PREFIX):] in CATALOG and tool[len(PREFIX):] in self.skill.scripts):
+            return False
+        # a tool the agent drives through one specific flag (render.py --export-timeline, ADR-052) is unsupported on a checkout
+        # whose --help does not offer it: the decision is BLOCKED at plan time instead of failing at render time
+        flag = CATALOG[tool[len(PREFIX):]].get("requires_flag")
+        return not flag or self.skill.offers_flag(tool[len(PREFIX):], flag)
 
     def package(self) -> SkillPackage:
         return package(self.version)
@@ -102,6 +107,9 @@ class FfmpegSkillAdapter(ToolAdapter):
             flag = FLAG_ALIASES.get((script, key)) or FLAG_ALIASES.get(("*", key)) or "--" + key.replace("_", "-")
             if key == "crf" and self.skill.offers_flag(script, QUALITY_FLAG):
                 flag = QUALITY_FLAG   # ffmpeg-skill 1.10 renamed --crf to --quality (same CRF scale) and 2.x refuses --crf
+            if typ == "timeline_clips":
+                self._timeline_clips(tool, val, paths)   # validated here; written into the project document, never onto the command line
+                continue
             if typ == "bool":
                 if val is not True:
                     raise ToolError(f"{tool}: '{key}' must be bool")
@@ -125,6 +133,39 @@ class FfmpegSkillAdapter(ToolAdapter):
                 argv += [flag, str(val)]
         return argv
 
+    def _timeline_clips(self, tool: str, clips: Any, paths: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Typed clip records {input (artifact id or path), in, out} → render-project clips {src, in, out}; every source must lie
+        inside the allowed input roots and every range must be a forward range of non-negative seconds."""
+        if not isinstance(clips, list) or not clips:
+            raise ToolError(f"{tool}: 'clips' must be a non-empty list")
+        out: List[Dict[str, Any]] = []
+        for n, c in enumerate(clips):
+            if not isinstance(c, dict) or set(c) != {"input", "in", "out"}:
+                raise ToolError(f"{tool}: clip {n} must be exactly {{input, in, out}}")
+            try:
+                start, end = float(c["in"]), float(c["out"])
+            except (TypeError, ValueError):
+                raise ToolError(f"{tool}: clip {n} in / out must be numbers") from None
+            if not (0.0 <= start < end):
+                raise ToolError(f"{tool}: clip {n} must satisfy 0 <= in < out, got {start:g}..{end:g}")
+            src = paths.get(c["input"], c["input"])
+            if self.policy:
+                self.policy.check_input(src)
+            out.append({"src": str(Path(src).resolve()), "in": round(start, 3), "out": round(end, 3)})
+        return out
+
+    def project_document(self, tool: str, args: Dict[str, Any], paths: Dict[str, str]) -> Optional["tuple[str, Dict[str, Any]]"]:
+        """(path, document) of the project a `project_document` tool reads (render.py, ADR-052), built only from the catalogued
+        typed keys: the clips and a hard-cut transition. The path must be a workspace file that is not one of the sources."""
+        spec = CATALOG.get(tool[len(PREFIX):]) or {}
+        if not spec.get("project_document"):
+            return None
+        clips = self._timeline_clips(tool, args.get("clips"), paths)
+        path = paths.get(args["project"], args["project"])
+        if self.policy:
+            self.policy.check_output(path, [c["src"] for c in clips])
+        return path, {"clips": clips, "transition": {"type": "none"}}
+
     def command(self, tool: str, args: Dict[str, Any], paths: Dict[str, str], dry_run: bool = False) -> List[str]:
         script = tool[len(PREFIX):]
         cmd = [self.python, str(self.skill.script(script))] + self.build_argv(tool, args, paths) + ["--json"]
@@ -139,6 +180,10 @@ class FfmpegSkillAdapter(ToolAdapter):
     def run(self, op: Operation, paths: Dict[str, str], timeout: Optional[float] = None, dry_run: bool = False, attempt: int = 1) -> ToolResult:
         cmd = self.command(op.tool, op.args, paths, dry_run=dry_run)
         script = op.tool[len(PREFIX):]
+        doc = self.project_document(op.tool, op.args, paths)
+        if doc is not None:   # an intermediate of this operation inside the workspace (written for a dry run too: render.py reads it then as well)
+            Path(doc[0]).parent.mkdir(parents=True, exist_ok=True)
+            Path(doc[0]).write_text(json.dumps(doc[1], indent=2) + "\n", encoding="utf-8")
         t0 = time.time()
         out_path = paths.get(op.args["output"], op.args["output"]) if isinstance(op.args.get("output"), str) else None
         code, out, err = run_process_group(cmd, timeout)

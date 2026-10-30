@@ -1,0 +1,11 @@
+{
+ "name": "pipe_timeline_unknown_format_refused",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "delivery.timeline": "aaf"
+ },
+ "expect": {
+  "plan_error": "delivery.timeline must be one of none, otio, fcpxml, edl"
+ }
+}

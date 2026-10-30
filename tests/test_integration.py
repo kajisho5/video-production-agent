@@ -1307,6 +1307,58 @@ class PriorityAToolsRealTests(unittest.TestCase):
         self.assertNotIn("crop_filter", r.data, "confirms the original catalog assumption's crop_filter key does not exist")
 
 
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class TimelineExportRealTests(unittest.TestCase):
+    """ADR-052 on the real ffmpeg-skill: `delivery.timeline=otio` → render.py --export-timeline writes the IR's cut list as an
+    OpenTimelineIO document, registered as a TIMELINE Artifact; opentimelineio (when installed) reads it back with the same cuts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="va_timeline_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.a = str(src / "a.mp4")
+        make_media(cls.a)
+
+    def test_otio_timeline_has_the_same_cuts(self):
+        ws = str(Path(self.tmp) / "run_otio")
+        svc = Service(workspace=ws)
+        if not svc.adapter([]).supports("ffmpeg-skill/render"):
+            self.skipTest("this ffmpeg-skill checkout has no render.py --export-timeline")
+        ir = svc.plan([self.a], "generic", user_requirements={"delivery.timeline": "otio"})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        (tl,) = d["delivery"]["timelines"]
+        trim = next((op for op in d["video"]["operations"] if op["type"] == "video.trim"), None)
+        self.assertIsNotNone(trim, "the fixture has leading / trailing silence, so the cut list is a real trim")
+        self.assertEqual([[c["in"], c["out"]] for c in tl["clips"]], trim["keep"])
+        p = str(Path(ws) / "timeline.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out.get("execution"))
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "ffmpeg-skill/render")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((res["data"]["timeline"]["format"], res["data"]["timeline"]["clips"], res["data"]["timeline"]["transition"]), ("otio", len(tl["clips"]), "none"))
+        self.assertEqual(res["commands"], [], "an export runs no ffmpeg command")
+        (art,) = [a for a in out["artifacts"] if a["type"] == "TIMELINE"]
+        self.assertTrue(Path(art["path"]).resolve().is_relative_to(Path(ws).resolve()))
+        self.assertEqual(art["hash"], __import__("video_agent.media.analyzer", fromlist=["sha256_file"]).sha256_file(art["path"]))
+        self.assertEqual(art["qa_status"], "PASS", out["qa"])
+        project = json.loads(next(Path(ws).glob("jobs/*/ops/*_timeline/*_timeline_project.json")).read_text(encoding="utf-8"))
+        self.assertEqual(project["transition"], {"type": "none"})
+        try:
+            import opentimelineio as otio
+        except ImportError:
+            return   # optional: the file's own clip count was checked by QA above
+        timeline = otio.adapters.read_from_file(art["path"])
+        clips = list(timeline.find_clips())
+        self.assertEqual(len(clips), len(tl["clips"]))
+        for clip, want in zip(clips, tl["clips"]):
+            rate = clip.source_range.start_time.rate
+            self.assertAlmostEqual(clip.source_range.start_time.to_seconds(), want["in"], delta=1.0 / rate + 1e-6)
+            self.assertAlmostEqual(clip.source_range.end_time_exclusive().to_seconds(), want["out"], delta=1.0 / rate + 1e-6)
+            self.assertEqual(Path(clip.media_reference.target_url.replace("file://", "")).resolve(), Path(self.a).resolve())
+        self.assertAlmostEqual(timeline.duration().to_seconds(), tl["timeline_duration"], delta=len(clips) / rate + 1e-6)
+
+
 class VideoEditingRealTests(unittest.TestCase):
     """PR #18 (ADR-028) on the real video-editing-skill and ffmpeg-skill 0.9.x: contract discovery and drift against the pinned
     contract, the Skill's doctor as the capability source, video.trim lowered to video-editing/cut, execution through the CLI

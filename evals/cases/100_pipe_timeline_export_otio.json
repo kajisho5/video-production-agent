@@ -1,0 +1,61 @@
+{
+ "name": "pipe_timeline_export_otio",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "delivery.timeline": "otio"
+ },
+ "expect": {
+  "blocked": false,
+  "steps": [
+   "silence_cleanup",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check",
+   "timeline_export"
+  ],
+  "packages": [
+   "ffmpeg-skill"
+  ],
+  "decisions": {
+   "timeline.export": {
+    "type": "DELIVER",
+    "approval": "AUTO",
+    "provenance": "USER"
+   }
+  },
+  "deterministic": true,
+  "render": {
+   "execution_status": "COMPLETED",
+   "qa_status": "PASS",
+   "tools": [
+    "ffmpeg-skill/cut",
+    "ffmpeg-skill/loudness",
+    "ffmpeg-skill/export",
+    "ffmpeg-skill/check",
+    "ffmpeg-skill/render"
+   ],
+   "artifacts": {
+    "YOUTUBE": "candidate",
+    "TIMELINE": "candidate"
+   },
+   "resume": true
+  }
+ },
+ "engine": {
+  "basis": {
+   "timeline.export": {
+    "approval_key": "timeline.export.approval",
+    "evidence_classes": [
+     "observation",
+     "requirement"
+    ]
+   }
+  },
+  "explain": "timeline.export",
+  "explain_kinds": [
+   "observation",
+   "requirement"
+  ]
+ }
+}

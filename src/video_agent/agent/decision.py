@@ -23,6 +23,7 @@ from .audio import OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AU
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, parse_edit_requirements, switch_cams
 from .requirements import requirement_map
+from .timeline import TIMELINE_SUBJECT, decide_timeline
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -54,7 +55,9 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  # something this codebase's AUTO tier is for, so it is CONFIRM like the rest (ADR-046 correction).
                  "video.grid": ("video.grid.approval", "CONFIRM"), "video.redact": ("video.redact.approval", "CONFIRM"),
                  "video.deinterlace": ("video.deinterlace.approval", "CONFIRM"), "video.crop": ("video.crop.approval", "CONFIRM"),
-                 "video.stabilize": ("video.stabilize.approval", "CONFIRM")}
+                 "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
+                 # ADR-052: an editor timeline changes no media (it references the sources and is written next to the deliverables), so AUTO
+                 TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO")}
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -473,6 +476,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and d.subject in OPERATIONS and d.params.get("asset_id") == subject for d in decs) \
             or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
+    # ---- timeline export (ADR-052): the cut list of each video subject as an editor timeline
+    decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")
