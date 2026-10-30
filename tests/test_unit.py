@@ -2711,7 +2711,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         from video_agent.tools.media_analysis import PACKAGE, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.0", "media-analysis/contract@1"))
+        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.3", "media-analysis/contract@1"))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual(set(pkg.tool_ids()), set(ad.contract["kind_to_tool"].values()), "every kind maps to a declared tool (timing serves two kinds)")
@@ -2764,7 +2764,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         ad = self._adapter()
         r = ad.measure("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "kind": "silence"})
         self.assertTrue(r.ok and r.exit_code == 0)
-        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.0")
+        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.3")
         self.assertEqual(r.data["cache"]["status"], "miss")
         self.assertEqual(r.commands, ["ffprobe: metadata"], "the Skill reports what it ran; the agent never built it")
         # through the analyzer: lifted Observation keeps the external identity and provenance; agent cache is not used
@@ -2777,10 +2777,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["duration", "loudness", "media_probe", "scene_detection", "silence"])
         sil = obs["silence"]
-        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.0", "media-analysis/silence", "media-analysis/silence@0.1.0"))
+        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.3", "media-analysis/silence", "media-analysis/silence@0.1.3"))
         self.assertTrue(sil.external_id.startswith("obs_") and sil.external_id != sil.id)
         self.assertEqual(sil.fingerprint, "f" * 64)
-        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.0")
+        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.3")
         self.assertEqual(sil.cache["status"], "miss")
         self.assertEqual(sil.data["segments"][0]["type"], "leading", "facts as measured; no interpretation added")
         rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
@@ -2840,7 +2840,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(tools["scene_analysis"], "media-analysis/scenes")
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["implemented"] and rows["media-analysis"]["available"])
-        self.assertEqual(rows["media-analysis"]["version"], "0.1.0")
+        self.assertEqual(rows["media-analysis"]["version"], "0.1.3")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
         # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
@@ -2854,7 +2854,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"])
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=["duration"])
         d = next(o for o in an.observations if o.kind == "duration")
-        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.0"))
+        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.3"))
         self.assertNotEqual(svc.registry.tool("media-analysis/timing").version, "", "tool version recorded separately from the skill version")
 
     # boundaries: no import, no engine invocation, no event → command; observation ≠ inference
@@ -2928,7 +2928,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.2.0", "transcription-skill"))
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.7.4", "transcription-skill"))
         self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
@@ -3004,7 +3004,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
         t = obs["transcript"]
-        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.2.0", "transcription/transcribe", "transcription/transcribe@0.2.0"))
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.7.4", "transcription/transcribe", "transcription/transcribe@0.7.4"))
         self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
         self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
         self.assertEqual(t.fingerprint, res.assets[0].hash)
@@ -3097,10 +3097,10 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription.adapter import check_transcript
         ok = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1"}).data
         asset = Asset(path=self.src, hash="0" * 64)
-        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.2.0", "k", "transcription/transcribe")
+        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.7.4", "k", "transcription/transcribe")
         self.assertNotEqual(o.fingerprint, asset.hash)
         tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
-        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.2.0", ad.engines, ad.contract["schemas"])))
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.7.4", ad.engines, ad.contract["schemas"])))
 
     # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
     def test_cached_only_policy(self):
@@ -3155,7 +3155,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
-        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.2.0", ["speech_transcription"]))
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.7.4", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
         self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
@@ -3168,7 +3168,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         root = self._checkout()
         cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
         self.assertEqual(cap.status, "AVAILABLE", cap.detail)
-        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.2.0", "faster_whisper", "local", True))
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.7.4", "faster_whisper", "local", True))
         self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
         self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
         os.environ["FAKE_TS_MODE"] = "model_unavailable"
@@ -4134,8 +4134,12 @@ class VideoEditingAdapterTests(unittest.TestCase):
         from video_agent.tools.video_editing import PACKAGE, ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
         self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.4.0", "video-editing", "video-editing/contract@1"))
-        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "overlay", "resize", "rotate", "speed", "trim")])
-        self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.3.0 contract")
+        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "freeze", "overlay", "resize", "reverse", "rotate", "speed", "trim")])
+        self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.4.0 contract")
+        # 0.4.0 + video-editing-skill #20: FREEZE / REVERSE are declared, but this adapter has no lowering for them yet: contract-visible,
+        # never executable (supports() is False), and named as contract-only so the gap is reported rather than silently offered
+        self.assertEqual(ad.lowering.contract_only(), ["FREEZE", "REVERSE", "ROTATE"])
+        self.assertFalse(ad.supports("video-editing/freeze")); self.assertFalse(ad.supports("video-editing/reverse"))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.4.0", "kajisho5/video-editing-skill"))
@@ -4371,9 +4375,9 @@ class VideoEditingAdapterTests(unittest.TestCase):
         # video-editing/rotate (0.3.0, ADR-011 there) is declared by the contract but this adapter's lowering.ARGS
         # has no ROTATE entry yet (AI-video-production-OS follow-up) -- a contract that grew a type this adapter
         # cannot lower never becomes usable by accident (adapter.supports()), so it is contract-visible but not
-        # yet in usable_tools; every other tool remains usable.
+        # yet in usable_tools; every other tool remains usable. FREEZE / REVERSE (0.4.0, video-editing-skill #20) are the same case.
         self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.4.0")
-        self.assertEqual(sorted(pk["usable_tools"]), sorted(t for t in ad.tools if t != "video-editing/rotate"))
+        self.assertEqual(sorted(pk["usable_tools"]), sorted(t for t in ad.tools if t not in ("video-editing/rotate", "video-editing/freeze", "video-editing/reverse")))
         # a tool-level capability the resolver knows and reports missing blocks the tool; names it does not resolve are the Skill's doctor's business
         svc3 = make_service(self.tmp, caps=FakeCaps(missing=["encoder:libx264"], extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
         svc3.registry.get("silence_cleanup").tools = ["video-editing/cut"]

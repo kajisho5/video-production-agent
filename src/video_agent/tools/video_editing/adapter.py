@@ -179,7 +179,7 @@ PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
-    """The contract this adapter was verified against (snapshot of `video-editing contract --json`, 0.3.0). Used for the package
+    """The contract this adapter was verified against (snapshot of `video-editing contract --json`, 0.4.0 with FREEZE / REVERSE). Used for the package
     identity when the Skill is not installed; a live installation always replaces it (and is compared against it: drift)."""
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 

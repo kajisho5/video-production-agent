@@ -69,7 +69,30 @@ SKILL_FORBIDDEN_KEYS = ("command", "commands", "argv", "args", "shell", "cmd", "
 COMMON_ARGS = ("input", "kind", "rules", "parameters", "subtitle", "reference_video", "cache_policy")
 AGENT_CACHE_POLICIES = ("use", "bypass")   # "only" (fail unless cached) is never useful to the agent
 REPORT_ID_PREFIX = "qcreport_"
-_RULE_TYPE_RE = re.compile(r"^(Optional\[)?(int|float|bool|str|[A-Za-z]+Rule)(\])?$")
+_SCALAR_RULE_TYPES = ("int", "float", "bool", "str")
+# qc rule field types, as the contract spells them: [Optional[] T []] where T is a scalar, a named nested rule (AudioRule, TextRegion:
+# needs `nested_rule`), List[scalar | named] or Dict[str, scalar] (qc-skill #20: video.expected_cuts List[float], min_text_height_px
+# Dict[str, float], text_regions List[TextRegion])
+_RULE_TYPE_RE = re.compile(r"^(?:(Optional)\[(?P<o>.+)\]|(?P<p>.+))$")
+_RULE_INNER_RE = re.compile(r"^(?:List\[(?P<l>int|float|bool|str|[A-Z][A-Za-z0-9]*)\]|Dict\[str, ?(?P<d>int|float|bool|str)\]|(?P<b>int|float|bool|str|[A-Z][A-Za-z0-9]*))$")
+MAX_RULE_ITEMS = 4096
+
+
+def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
+    """'Optional[List[float]]' → (True, 'list', 'float'); 'Dict[str, float]' → (False, 'dict', 'float'); 'AudioRule' → (False, None,
+    'AudioRule'); anything else → None (no typed schema: refused)."""
+    m = _RULE_TYPE_RE.match(str(t or ""))
+    if not m:
+        return None
+    optional = m.group(1) is not None
+    inner = _RULE_INNER_RE.match(m.group("o") if optional else m.group("p"))
+    if not inner:
+        return None
+    if inner.group("l"):
+        return optional, "list", inner.group("l")
+    if inner.group("d"):
+        return optional, "dict", inner.group("d")
+    return optional, None, inner.group("b")
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
@@ -138,8 +161,11 @@ def check_contract(contract: Any) -> List[str]:
                 errs.append(f"rules.{section} missing")
                 continue
             for name, spec in fields.items():
-                if not isinstance(spec, dict) or not _RULE_TYPE_RE.match(str(spec.get("type", ""))):
+                parsed = parse_rule_type(str(spec.get("type", ""))) if isinstance(spec, dict) else None
+                if parsed is None:
                     errs.append(f"rules.{section}.{name} has no typed schema")
+                elif parsed[2] not in _SCALAR_RULE_TYPES and spec.get("nested_rule") is None:
+                    errs.append(f"rules.{section}.{name} has no typed schema ({parsed[2]} is not a scalar and names no nested_rule)")
                 elif spec.get("nested_rule") is not None and spec.get("nested_rule") not in rules:
                     errs.append(f"rules.{section}.{name} nests an undeclared rule {spec.get('nested_rule')!r}")
     params = contract.get("parameters")
@@ -316,16 +342,35 @@ class QcAdapter(ToolAdapter):
         return out
 
     def _typed_rule(self, name: str, v: Any, spec: Dict[str, Any]) -> Any:
-        t = str(spec.get("type", ""))
-        m = _RULE_TYPE_RE.match(t)
-        if not m:
+        parsed = parse_rule_type(str(spec.get("type", "")))
+        if parsed is None:
             raise ToolError(f"qc: {name} has no typed schema")
-        optional, base = bool(m.group(1)), m.group(2)
+        optional, container, base = parsed
         if v is None:
             if optional:
                 return None
-            raise ToolError(f"qc: {name} must be a {base}, not null")
+            raise ToolError(f"qc: {name} must be a {spec.get('type')}, not null")
         nested = spec.get("nested_rule")
+        if base not in _SCALAR_RULE_TYPES and nested is None:
+            raise ToolError(f"qc: {name} has no typed schema")
+        if container == "list":
+            if not isinstance(v, list) or len(v) > MAX_RULE_ITEMS:
+                raise ToolError(f"qc: {name} must be a list (at most {MAX_RULE_ITEMS} items)")
+            return [self._rule_value(f"{name}[{i}]", x, base, nested) for i, x in enumerate(v)]
+        if container == "dict":
+            if not isinstance(v, dict) or len(v) > MAX_RULE_ITEMS:
+                raise ToolError(f"qc: {name} must be an object (at most {MAX_RULE_ITEMS} entries)")
+            out: Dict[str, Any] = {}
+            for k, x in v.items():
+                if not isinstance(k, str) or not k or "\n" in k or "\x00" in k or len(k) > 256:
+                    raise ToolError(f"qc: {name} keys must be plain strings")
+                if k.lower() in {f.lower() for f in self.forbidden}:
+                    raise ToolError(f"qc: {name}.{k} is not accepted (forbidden field)")
+                out[k] = self._rule_value(f"{name}.{k}", x, base, None)
+            return out
+        return self._rule_value(name, v, base, nested)
+
+    def _rule_value(self, name: str, v: Any, base: str, nested: Any) -> Any:
         if nested is not None:
             return self._rule_section(str(nested), v, name)
         if base == "bool":

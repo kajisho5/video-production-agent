@@ -3,7 +3,7 @@
   "skill_id": "media-analysis",
   "name": "media-analysis",
   "package": "media-analysis-skill",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Deterministic media observation / analysis. Measures facts about media files; never interprets, decides or edits.",
   "role": "observation / analysis",
   "repository": "kajisho5/media-analysis-skill",
@@ -21,7 +21,7 @@
     {
       "tool_id": "media-analysis/audio",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Audio format of one audio stream (sample rate, channels, layout, codec, sample format, bitrate)",
       "required_capabilities": [
         "ffprobe"
@@ -62,7 +62,7 @@
     {
       "tool_id": "media-analysis/integrity",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Full decode with error counting, per-stream frame counts and timestamp monotonicity; PASS / WARN / FAIL",
       "required_capabilities": [
         "ffprobe",
@@ -104,7 +104,7 @@
     {
       "tool_id": "media-analysis/loudness",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "EBU R128 integrated loudness, loudness range and true peak of one audio stream",
       "required_capabilities": [
         "ffprobe",
@@ -147,7 +147,7 @@
     {
       "tool_id": "media-analysis/probe",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Container and primary stream facts (format, duration, size, bitrate, video/audio summary)",
       "required_capabilities": [
         "ffprobe"
@@ -181,7 +181,7 @@
     {
       "tool_id": "media-analysis/scenes",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Deterministic visual scene-cut detection (scdet score), not semantic scene understanding",
       "required_capabilities": [
         "ffprobe",
@@ -236,7 +236,7 @@
     {
       "tool_id": "media-analysis/silence",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Silence segments of one audio stream with leading / internal / trailing classification",
       "required_capabilities": [
         "ffprobe",
@@ -297,7 +297,7 @@
     {
       "tool_id": "media-analysis/streams",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Every stream with index, type, codec, language, disposition, dimensions, rate, channels",
       "required_capabilities": [
         "ffprobe"
@@ -331,7 +331,7 @@
     {
       "tool_id": "media-analysis/timing",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Duration and timing facts: start times, per-stream durations, A/V mismatch, timestamp discontinuities",
       "required_capabilities": [
         "ffprobe"
@@ -381,7 +381,7 @@
     {
       "tool_id": "media-analysis/video",
       "skill_id": "media-analysis",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "description": "Video format of one video stream (resolution, fps, frame count, pixel format, colour, SAR/DAR, CFR/VFR)",
       "required_capabilities": [
         "ffprobe"
@@ -420,6 +420,68 @@
       "provenance": "OBSERVED"
     }
   ],
+  "provides": [
+    {
+      "id": "measure.audio.probe",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/audio",
+      "kind": "audio_format"
+    },
+    {
+      "id": "measure.media.duration",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/timing",
+      "kind": "duration"
+    },
+    {
+      "id": "measure.audio.integrity",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/integrity",
+      "kind": "integrity"
+    },
+    {
+      "id": "measure.audio.loudness",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/loudness",
+      "kind": "loudness"
+    },
+    {
+      "id": "measure.media.probe",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/probe",
+      "kind": "media_probe"
+    },
+    {
+      "id": "measure.video.scene_detection",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/scenes",
+      "kind": "scene_detection"
+    },
+    {
+      "id": "measure.audio.silence",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/silence",
+      "kind": "silence"
+    },
+    {
+      "id": "measure.media.stream_layout",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/streams",
+      "kind": "stream_layout"
+    },
+    {
+      "id": "measure.video.timing",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/timing",
+      "kind": "timing"
+    },
+    {
+      "id": "measure.video.probe",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "media-analysis/video",
+      "kind": "video_format"
+    }
+  ],
   "analysis_kinds": [
     "media_probe",
     "stream_layout",
@@ -452,8 +514,8 @@
       "<request.json | ->",
       "--json"
     ],
-    "stdin": "AnalysisRequest JSON when the request argument is '-'",
-    "stdout": "exactly one response document (response schema) when --json is given",
+    "stdin": "AnalysisRequest JSON (UTF-8) when the request argument is '-'",
+    "stdout": "exactly one response document (response schema) when --json is given; always UTF-8, independent of the console / pipe encoding",
     "stderr": "diagnostics only; never part of the contract",
     "executables": [
       "ffprobe",
@@ -768,11 +830,28 @@
             },
             "details": {
               "type": "object"
+            },
+            "class": {
+              "type": "string",
+              "enum": [
+                "FATAL",
+                "RETRYABLE",
+                "BLOCKED"
+              ],
+              "description": "retry guidance: FATAL never retry unchanged; RETRYABLE bounded retry may succeed; BLOCKED environment / budget must change"
             }
           }
         },
         "error_kind": {
           "type": "string"
+        },
+        "error_class": {
+          "type": "string",
+          "enum": [
+            "FATAL",
+            "RETRYABLE",
+            "BLOCKED"
+          ]
         },
         "cache": {
           "type": "object",
@@ -1009,11 +1088,28 @@
             },
             "details": {
               "type": "object"
+            },
+            "class": {
+              "type": "string",
+              "enum": [
+                "FATAL",
+                "RETRYABLE",
+                "BLOCKED"
+              ],
+              "description": "retry guidance: FATAL never retry unchanged; RETRYABLE bounded retry may succeed; BLOCKED environment / budget must change"
             }
           }
         },
         "error_kind": {
           "type": "string"
+        },
+        "error_class": {
+          "type": "string",
+          "enum": [
+            "FATAL",
+            "RETRYABLE",
+            "BLOCKED"
+          ]
         }
       }
     },
@@ -1192,6 +1288,44 @@
       "VERIFICATION_FAILED": 12,
       "CACHE_MISS": 13
     },
-    "success_exit_code": 0
+    "classes": {
+      "INVALID_INPUT": "FATAL",
+      "FILE_NOT_FOUND": "FATAL",
+      "PATH_NOT_ALLOWED": "FATAL",
+      "UNSUPPORTED_FORMAT": "FATAL",
+      "ANALYZER_UNAVAILABLE": "BLOCKED",
+      "ANALYZER_TIMEOUT": "RETRYABLE",
+      "ANALYSIS_FAILED": "RETRYABLE",
+      "INVALID_RESULT": "FATAL",
+      "BUDGET_EXCEEDED": "BLOCKED",
+      "CACHE_INVALID": "FATAL",
+      "VERIFICATION_FAILED": "FATAL",
+      "CACHE_MISS": "FATAL"
+    },
+    "success_exit_code": 0,
+    "class_semantics": {
+      "FATAL": "terminal: retrying the unchanged request rejects identically",
+      "RETRYABLE": "a bounded retry of the same request may succeed",
+      "BLOCKED": "the environment (executable, filter) or the caller's budget must change first"
+    }
+  },
+  "security": {
+    "forbidden_keys": [
+      "command",
+      "argv",
+      "args",
+      "shell",
+      "cmd",
+      "exec",
+      "filter_complex",
+      "filter",
+      "api_key",
+      "token",
+      "env"
+    ],
+    "forbidden_keys_scope": "whole request document, recursive, case-insensitive",
+    "shell": false,
+    "executable_override": false,
+    "network": false
   }
 }

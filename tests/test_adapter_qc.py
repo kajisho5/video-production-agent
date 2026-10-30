@@ -77,9 +77,9 @@ class QcAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
         self.assertEqual(ad.version, "0.1.0"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
-        self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery", "delivery_package"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 12)
+        self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery", "delivery_package"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 14)
         self.assertEqual(sorted(ad.rules), ["audio", "delivery", "delivery_package", "delivery_package_artifact", "delivery_package_cross_artifact", "delivery_package_dependency",
-                                            "delivery_package_duration_consistency", "subtitle", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video"]); self.assertTrue(ad.owns_cache)
+                                            "delivery_package_duration_consistency", "subtitle", "text_region", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video"]); self.assertTrue(ad.owns_cache)
         self.assertIn("qc/check", ad.describe()["tools"]); self.assertEqual(ad.describe()["drift"], [])
         pk = ad.package()
         self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "0.1.0", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
@@ -261,6 +261,33 @@ class QcAdapterTests(unittest.TestCase):
         self.assertFalse(os.path.exists(log) and any(json.loads(l)["cmd"] == "run" and "far" in json.dumps(l) for l in Path(log).read_text().splitlines()))
 
     # ---- security
+    def test_list_and_map_rule_types(self):
+        """qc-skill #20 (flash / planned-cut / text legibility) declares rule fields typed List[float], Dict[str, float] and
+        List[TextRegion] (a nested rule per item). The adapter types them like every other field: values are checked item by item,
+        nested items against their own section, and a type outside this grammar is still refused as having no typed schema."""
+        from video_agent.tools.qc.adapter import check_contract, parse_rule_type, pinned_contract
+        self.assertEqual(check_contract(pinned_contract()), [])
+        self.assertIn("TIMEOUT", pinned_contract()["errors"]["codes"])
+        self.assertEqual([parse_rule_type(t) for t in ("Optional[List[float]]", "Dict[str, float]", "List[TextRegion]", "Optional[AudioRule]", "List[List[int]]", "Dict[int, float]", "Optional[int")],
+                         [(True, "list", "float"), (False, "dict", "float"), (False, "list", "TextRegion"), (True, None, "AudioRule"), None, None, None])
+        ad = self._adapter(); paths = self._paths()
+        rules = {"video": {"expected_cuts": [1, 2.5], "min_text_height_px": {"caption": 24}, "text_regions": [{"t": 1, "box": [0, 0, 10.0, 10], "role": "caption"}],
+                           "check_photosensitivity": True}}
+        req = ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video", "rules": rules}, paths)["request"]
+        self.assertEqual(req["rules"]["video"], {"expected_cuts": [1.0, 2.5], "min_text_height_px": {"caption": 24.0},
+                                                 "text_regions": [{"t": 1.0, "box": [0, 0, 10, 10], "role": "caption"}], "check_photosensitivity": True})
+        for bad, msg in (({"expected_cuts": 1.0}, "must be a list"), ({"expected_cuts": [1, "2"]}, "expected_cuts[1] must be a finite number"),
+                         ({"min_text_height_px": [24]}, "must be an object"), ({"min_text_height_px": {"caption": "big"}}, "finite number"), ({"min_text_height_px": {"shell": 1}}, "forbidden"),
+                         ({"text_regions": [{"t": 1, "box": [0, 0.5], "role": "x"}]}, "box[1] must be an integer"), ({"text_regions": [{"t": 1, "box": [0], "role": "x", "cmd": 1}]}, "forbidden"),
+                         ({"text_regions": [{"t": 1, "box": [0], "role": "x", "zz": 1}]}, "not a declared rule field"), ({"text_regions": {"t": 1}}, "must be a list")):
+            with self.assertRaises(ToolError, msg=str(bad)) as cm:
+                ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video", "rules": {"video": bad}}, paths)
+            self.assertIn(msg, str(cm.exception), str(bad))
+        c = json.loads(json.dumps(pinned_contract())); c["rules"]["video"]["expected_cuts"]["type"] = "List[List[float]]"
+        self.assertIn("rules.video.expected_cuts has no typed schema", check_contract(c))
+        c = json.loads(json.dumps(pinned_contract())); c["rules"]["video"]["text_regions"].pop("nested_rule")
+        self.assertIn("rules.video.text_regions has no typed schema (TextRegion is not a scalar and names no nested_rule)", check_contract(c))
+
     def test_security_boundary(self):
         ad = self._adapter(); paths = self._paths()
         log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_QC_CALLS"] = log

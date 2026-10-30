@@ -140,11 +140,11 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.7.4.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
-    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.2.0, engine availability
+    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.7.4, engine availability
     stripped). Used for the package identity when the Skill is not installed; a live installation always replaces it."""
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 
