@@ -105,6 +105,39 @@ def _takes_checks(d: dict, exp: dict) -> list:
                 failures.append(f"joins {sn['params']['joins']} are not {exp['joins_on_beats']} join(s) on measured beats")
             if o is None or o["id"] not in sn["evidence"]:
                 failures.append("the beat snap does not cite the beat measurement")
+    if "crossfade" in exp:
+        # ADR-054: the join crossfades -- which joins got one (the rest keep a hard cut, with the reason), the picture's cut list left as the picks
+        # decided it, and the A/V sync rebuilt from the IR by the validator's own check
+        from video_agent.project.validator import check_take_crossfade
+        want = exp["crossfade"]
+        x = next((x for x in d["decisions"] if x["subject"] == "takes.crossfade"), None)
+        rec = (d.get("audio") or {}).get("take_crossfade")
+        if want.get("decision") is None:
+            if x is not None or rec is not None:
+                failures.append("a crossfade was decided / planned although none was expected")
+        elif x is None:
+            failures.append("no takes.crossfade decision")
+        else:
+            for k, v in (want.get("decision") or {}).items():
+                if x.get(k) != v:
+                    failures.append(f"takes.crossfade.{k} {x.get(k)!r} != {v!r}")
+            if want.get("reason_contains") and want["reason_contains"] not in x["reason"]:
+                failures.append(f"takes.crossfade reason lacks {want['reason_contains']!r}: {x['reason'][:300]}")
+            joins = (rec or {}).get("joins") or x["params"].get("joins") or []
+            if "joins" in want and [j["crossfaded"] for j in joins] != want["joins"]:
+                failures.append(f"crossfaded joins {[j['crossfaded'] for j in joins]} != {want['joins']}")
+            if want.get("hard_cut_why") and any(want["hard_cut_why"] not in (j.get("why") or "") for j in joins if not j["crossfaded"]):
+                failures.append(f"a hard-cut join does not say {want['hard_cut_why']!r}: {[j.get('why') for j in joins]}")
+            if "planned" in want and bool(rec) != want["planned"]:
+                failures.append(f"crossfade record planned {bool(rec)} != {want['planned']}")
+            if "concats" in want and [[len(c["inputs"]), c["crossfade"]] for c in (rec or {}).get("concats") or []] != want["concats"]:
+                failures.append(f"audio joins {[[len(c['inputs']), c['crossfade']] for c in (rec or {}).get('concats') or []]} != {want['concats']}")
+            if rec:
+                picks = {p["params"]["asset_id"]: p["params"]["keep"] for p in d["decisions"] if p["subject"] == "takes.pick" and p["type"] == "TRANSFORM"}
+                for op in (o for o in d["video"]["operations"] if o["type"] == "video.trim" and o["asset"] in picks):
+                    if op["keep"] != [picks[op["asset"]]] or not op["accurate"]:
+                        failures.append(f"the picture of {name[op['asset']]} is {op['keep']} (accurate {op['accurate']}), not its pick {picks[op['asset']]} cut frame-accurately")
+                failures += [f"sync: {e}" for e in check_take_crossfade(d)]
     if "timeline_clips" in exp:
         tl = next(iter((d.get("delivery") or {}).get("timelines") or []), None)
         got = [[name[c["asset"]], c["in"], c["out"]] for c in (tl or {}).get("clips") or []]
@@ -212,7 +245,7 @@ def run_case(case: dict) -> dict:
                   for n, spec in enumerate(pipe.get("inputs") or [{}])]
         for k, v in (pipe.get("modes") or {}).items():
             os.environ[k] = v
-        caps = PipelineCaps(missing=pipe.get("missing_capabilities") or (), unknown=pipe.get("unknown_capabilities") or ())
+        caps = PipelineCaps(missing=pipe.get("missing_capabilities") or (), unknown=pipe.get("unknown_capabilities") or (), extra=pipe.get("extra_capabilities") or ())
         svc = pipeline_service(ptmp, caps=caps, transcription=pipe.get("transcription", True), silences=fake.get("silences", [[0.0, 3.0], [13.7, None]]), lufs=fake.get("lufs", -11.0))
         try:
             ir = svc.plan(inputs, case.get("profile", "youtube"), user_requirements=case.get("requirements"), params={"language": "ja"})

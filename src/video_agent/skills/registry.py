@@ -257,6 +257,10 @@ def default_registry() -> SkillRegistry:
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production", f"audio-production:{typ}"],
                              risk, True, "CONFIRM", ["audio-production/run"]))
+    # ADR-054: the programme audio of a take assembly (crossfaded joins, built by audio-production) replaces the hard-cut audio of the
+    # assembled picture. ffmpeg-skill/audio --replace stream-copies the video and conforms the new audio to the video's duration.
+    r.register(SkillSpec("audio_mux", "1.0", "Replace a video's audio with a programme audio track (video stream-copied, audio conformed to the video duration)",
+                         {"asset": "video", "audio": "audio"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:aac"], "LOW", True, "AUTO", ["ffmpeg-skill/audio"]))
     r.register(SkillSpec("visual_inspection", "1.0", "Contact sheet for human/AI review", {"artifact": "video"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/look"]))
     # measurement skills only media-analysis-skill provides (external observation Skill; tool ids from its contract)

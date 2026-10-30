@@ -15,7 +15,7 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_S
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
-from .takes import PICK_SUBJECT, SNAP_SUBJECT
+from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 
 
@@ -401,6 +401,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     # trim is its decided keep range (speech span + handles, out point on the beat when snapped), cut frame-accurately when snapped.
     pick_decs = [d for d in decisions if d.subject == PICK_SUBJECT and d.type == "TRANSFORM"]
     snap_dec = next((d for d in decisions if d.subject == SNAP_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"), None)
+    # ADR-054: the join crossfades of the assembly; every crossfaded pick is cut frame-accurately (its audio is cut sample-accurately
+    # around the same in / out points, so a keyframe cut would put the picture off its sound)
+    xf_dec = next((d for d in decisions if d.subject == CROSSFADE_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"), None) if concat_dec is not None else None
+    take_crossfade: Optional[Dict[str, Any]] = None
     take_left_out = ({t["asset_id"] for d in pick_decs for t in d.params.get("takes") or []} - {d.params["asset_id"] for d in pick_decs}) \
         | {d.params["music_bed"] for d in pick_decs if d.params.get("music_bed")}
     for asset in analysis.assets:
@@ -425,7 +429,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 removed.append([round(d.params["start"], 3), round(dur, 3)])
             if d.subject == PICK_SUBJECT and d.type == "TRANSFORM":
                 start, end = max(start, float(d.params["keep"][0])), min(end, float(d.params["keep"][1]))
-                dec_ids = dec_ids + [d.id] + ([snap_dec.id] if snap_dec is not None else [])
+                dec_ids = dec_ids + [d.id] + ([snap_dec.id] if snap_dec is not None else []) + ([xf_dec.id] if xf_dec is not None else [])
                 removed += [r for r in ([0.0, round(start, 3)], [round(end, 3), round(dur, 3)]) if r[1] > r[0]]
         internal = sorted(([round(d.params["start"], 3), round(d.params["end"], 3)], d.id) for d in decisions
                           if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
@@ -459,7 +463,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     decision_id=dec_ids[0], temporal_scope={"start": 0.0, "end": kept_after_cut(dur, remove)})
                 scope_of[asset.id] = {"start": 0.0, "end": kept_after_cut(dur, remove)}
             else:
-                accurate = bool(frame_accurate or (snap_dec is not None and snap_dec.id in dec_ids))   # a beat-snapped join must land on its frame, not a keyframe
+                # a beat-snapped join must land on its frame, not a keyframe; a crossfaded pick's picture must start where its audio is cut
+                accurate = bool(frame_accurate or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
                 video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids})
                 st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill="silence_cleanup", tool=tool_for("silence_cleanup"), inputs=[current],
                                     params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate}, outputs=[f"{asset.id}_trim"],
@@ -486,6 +491,68 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             timeline_steps(asset.id, [asset.id])
             thumbnail_steps(asset.id, [asset.id])
             qc_steps(asset.id, qc_tolerance_lu)
+    def crossfade_steps(xd: Decision, concat_step: str, total: float) -> Dict[str, Any]:
+        """ADR-054: each pick's audio span (its picture range + the join handles) cut out of its source (audio-production CUT), the spans
+        of every run of crossfaded joins joined with the crossfade (CONCAT), the runs joined without one, and the result muxed under the
+        assembled picture (skill audio_mux). The picture and its cut list are not touched. Returns the IR record."""
+        nonlocal order
+        xp = xd.params
+        ids = [xd.id]
+        span_out: Dict[str, str] = {}
+        step_of: Dict[str, str] = {}
+        spans: List[Dict[str, Any]] = []
+        for sp in xp["spans"]:
+            a = sp["asset_id"]
+            dur = durations.get(a, 0.0)
+            remove = [[round(x, 6), round(y, 6)] for x, y in ([0.0, sp["audio"][0]], [sp["audio"][1], dur]) if y - x > 1e-6]
+            rec = {"asset": a, "video": list(sp["video"]), "audio": list(sp["audio"]), "in_handle": sp["in_handle"], "out_handle": sp["out_handle"],
+                   "programme_start": sp["programme_start"], "remove": remove}
+            if remove:
+                out_id = f"{a}_xfade_audio"
+                order += 1
+                st_ = ProductionStep(id=f"step_xfade_audio_{a}", order=order, skill="audio_cut", tool=tool_for("audio_cut"), inputs=[a], params={"asset": a, "remove": remove},
+                                     outputs=[out_id], depends_on=[], evidence=evidence_of(ids), decision_ids=ids, decision_id=xd.id,
+                                     temporal_scope={"start": round(sp["audio"][0], 6), "end": round(sp["audio"][1], 6)})
+                steps.append(st_)
+                span_out[a], step_of[out_id] = out_id, st_.id
+                rec["output"] = out_id
+            else:
+                span_out[a] = a   # the whole source is the span: CONCAT reads the source itself
+                rec["output"] = a
+            spans.append(rec)
+        final_id = f"{PROGRAMME}_xfade_audio"
+        concats: List[Dict[str, Any]] = []
+        runs = [list(r) for r in xp["runs"]]
+        elements: List[str] = []
+        for k, run in enumerate(runs):
+            ins = [span_out[xp["spans"][i]["asset_id"]] for i in run]
+            if len(run) == 1:
+                elements.append(ins[0])
+                continue
+            out_id = final_id if len(runs) == 1 else f"{PROGRAMME}_xfade_run{k + 1}"
+            concats.append({"output": out_id, "inputs": ins, "crossfade": float(xp["crossfade"])})
+            elements.append(out_id)
+        if len(elements) >= 2:
+            concats.append({"output": final_id, "inputs": elements, "crossfade": 0.0})
+        for c in concats:
+            order += 1
+            st_ = ProductionStep(id=f"step_xfade_concat_{c['output']}", order=order, skill="audio_concat", tool=tool_for("audio_concat"), inputs=list(c["inputs"]),
+                                 params={"asset": c["output"], "inputs": list(c["inputs"]), "crossfade": c["crossfade"]}, outputs=[c["output"]],
+                                 depends_on=[step_of[i] for i in c["inputs"] if i in step_of], evidence=evidence_of(ids), decision_ids=ids, decision_id=xd.id)
+            steps.append(st_)
+            step_of[c["output"]] = st_.id
+        mux_out = f"{PROGRAMME}_xfade"
+        order += 1
+        st_ = ProductionStep(id=f"step_xfade_mux_{PROGRAMME}", order=order, skill=AUDIO_MUX_SKILL, tool=tool_for(AUDIO_MUX_SKILL), inputs=[current_of[PROGRAMME], final_id],
+                             params={"asset": PROGRAMME, "video": current_of[PROGRAMME], "audio": final_id}, outputs=[mux_out],
+                             depends_on=[concat_step, step_of[final_id]], evidence=evidence_of(ids), decision_ids=ids, decision_id=xd.id,
+                             temporal_scope={"start": 0.0, "end": round(total, 3)})
+        steps.append(st_)
+        current_of[PROGRAMME], last_of[PROGRAMME] = mux_out, st_.id
+        summary.append(f"Crossfade the audio at {xp['crossfaded']} of {len(xp['joins'])} join(s) ({float(xp['crossfade']):g}s; picture cuts unchanged, audio muxed back in sync)")
+        return {"type": CROSSFADE_SUBJECT, "asset": PROGRAMME, "crossfade": float(xp["crossfade"]), "spans": spans, "joins": [dict(j) for j in xp["joins"]], "concats": concats,
+                "audio": final_id, "mux": {"video": PROGRAMME, "audio": final_id, "output": mux_out}, "timeline_duration": round(total, 6), "decision_ids": ids}
+
     if audio_concat_dec is not None:
         # ---- audio programme: the cut audio of every input, in the decided order; later audio operations apply to it
         inputs = list(audio_concat_dec.params["inputs"])
@@ -525,6 +592,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         current_of[PROGRAMME], last_of[PROGRAMME], scope_of[PROGRAMME] = PROGRAMME, st.id, scope
         durations[PROGRAMME] = total
         summary.append(f"Join {' + '.join(inputs)} into one programme ({total:.2f}s)")
+        if xf_dec is not None:
+            take_crossfade = crossfade_steps(xf_dec, st.id, total)
         edit_steps(PROGRAMME, inputs)
         finishing_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
@@ -596,4 +665,4 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
     return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "delivery": delivery,
-            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines}
+            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade}

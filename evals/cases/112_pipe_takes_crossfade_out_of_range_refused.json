@@ -1,0 +1,57 @@
+{
+ "name": "pipe_takes_crossfade_out_of_range_refused",
+ "profile": "youtube",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "l1_take1.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.7,
+      4.1,
+      "本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.6
+     ],
+     [
+      4.3,
+      null
+     ]
+    ]
+   },
+   {
+    "name": "l1_take2.mp4",
+    "duration": 6.0,
+    "segments": [
+     [
+      0.6,
+      4.2,
+      "えーと、本日はお集まりいただきありがとうございます"
+     ]
+    ],
+    "silences": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      4.4,
+      null
+     ]
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "edit.takes": true,
+  "edit.takes.crossfade": 0.5
+ },
+ "expect": {
+  "plan_error": "edit.takes.crossfade must be within 0.0..0.1"
+ }
+}

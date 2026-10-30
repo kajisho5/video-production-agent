@@ -14,6 +14,7 @@ from fake_adapter import FakeAdapter  # noqa: E402
 from video_agent.capabilities.resolver import Capability  # noqa: E402
 from video_agent.service import Service  # noqa: E402
 from video_agent.tools import ToolRouter  # noqa: E402
+from video_agent.tools.audio_production import AudioProductionAdapter, AudioProductionSkill  # noqa: E402
 from video_agent.tools.color_grading import ColorGradingAdapter  # noqa: E402
 from video_agent.tools.motion_graphics import MotionGraphicsAdapter  # noqa: E402
 from video_agent.tools.qc import QcAdapter  # noqa: E402
@@ -25,12 +26,16 @@ from video_agent.tools.video_editing import VideoEditingAdapter, VideoEditingSki
 
 HERE = Path(__file__).resolve().parent
 FAKES = {"subtitle": HERE / "fake_subtitle.py", "thumbnail": HERE / "fake_thumbnail.py", "color-grading": HERE / "fake_color_grading.py",
-         "motion-graphics": HERE / "fake_motion_graphics.py", "qc": HERE / "fake_qc.py", "transcription": HERE / "fake_transcription.py", "video-editing": HERE / "fake_video_editing.py"}
+         "motion-graphics": HERE / "fake_motion_graphics.py", "qc": HERE / "fake_qc.py", "transcription": HERE / "fake_transcription.py", "video-editing": HERE / "fake_video_editing.py",
+         "audio-production": HERE / "fake_audio_production.py"}
 MODE_VARS = ("FAKE_SUBTITLE_MODE", "FAKE_THUMBNAIL_MODE", "FAKE_CG_MODE", "FAKE_MG_MODE", "FAKE_QC_MODE", "FAKE_TS_MODE", "FAKE_TS_SEGMENTS", "FAKE_VE_MODE",
-             "FAKE_SUBTITLE_CALLS", "FAKE_THUMBNAIL_CALLS", "FAKE_CG_CALLS", "FAKE_MG_CALLS", "FAKE_QC_CALLS", "FAKE_TS_CALLS", "FAKE_VE_CALLS")
+             "FAKE_SUBTITLE_CALLS", "FAKE_THUMBNAIL_CALLS", "FAKE_CG_CALLS", "FAKE_MG_CALLS", "FAKE_QC_CALLS", "FAKE_TS_CALLS", "FAKE_VE_CALLS", "FAKE_AP_MODE", "FAKE_AP_CALLS")
 BASE_CAPS = ["python", "ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:libx264", "encoder:libx265", "encoder:prores_ks", "encoder:aac", "filter:loudnorm", "filter:subtitles", "font:cjk-ja"]
 FINISHING_CAPS = ["subtitle", "thumbnail", "color-grading", "motion-graphics", "qc", "transcription", "video-editing", "filter:xfade", "filter:acrossfade"] \
     + [f"color-grading:{t}" for t in ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI")] + [f"motion-graphics:{t}" for t in ("title", "lower_third", "text_overlay", "image_overlay")]
+# ADR-054: the fake audio-production process is always registered, but its capabilities are opt-in (PipelineCaps(extra=AUDIO_PRODUCTION_CAPS)),
+# so a pipeline case is "audio-production not installed" unless it says otherwise (the take-assembly crossfades need CUT + CONCAT)
+AUDIO_PRODUCTION_CAPS = ["audio-production", "audio-production:CUT", "audio-production:CONCAT"]
 
 
 class PipelineCaps:
@@ -71,7 +76,7 @@ def pipeline_service(tmp: str, caps: Optional[Any] = None, engine: Optional[Fake
     adapters: List[Any] = [engine or FakeAdapter(**engine_kw)]
     if transcription:
         adapters.append(TranscriptionAdapter(TranscriptionSkill([sys.executable, str(FAKES["transcription"])], None, {}), workspace=str(Path(ws) / "cache" / "transcription")))
-    want = skills if skills is not None else ["subtitle", "thumbnail", "color-grading", "motion-graphics", "qc", "video-editing"]
+    want = skills if skills is not None else ["subtitle", "thumbnail", "color-grading", "motion-graphics", "qc", "video-editing", "audio-production"]
 
     def cli(name: str) -> CliSkill:
         return CliSkill(name, [sys.executable, str(FAKES[name])], None, {})
@@ -87,6 +92,8 @@ def pipeline_service(tmp: str, caps: Optional[Any] = None, engine: Optional[Fake
         adapters.append(QcAdapter(cli("qc"), workspace=ws, allowed_inputs=roots))
     if "video-editing" in want:
         adapters.append(VideoEditingAdapter(VideoEditingSkill([sys.executable, str(FAKES["video-editing"])], None, {}), workspace=ws, allowed_inputs=roots, ffmpeg_skill_dir=tmp))
+    if "audio-production" in want:
+        adapters.append(AudioProductionAdapter(AudioProductionSkill([sys.executable, str(FAKES["audio-production"])], None, {}), workspace=ws, allowed_inputs=roots, ffmpeg_skill_dir=tmp))
     return Service(workspace=ws, adapter=ToolRouter(adapters), caps=caps or PipelineCaps())
 
 

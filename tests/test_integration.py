@@ -1342,6 +1342,101 @@ class BeatGridRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class TakeCrossfadeRealTests(unittest.TestCase):
+    """ADR-054 on the real Skills (ffmpeg-skill, video-editing-skill, audio-production-skill): three one-take lines assembled with the
+    default join crossfade. The picture is cut frame-accurately at the planned points and joined by video-editing; each pick's audio
+    span (picture range + join handles) is cut by audio-production, the spans are joined with the crossfade where the sources have
+    room (join 1, centred; join 2 has no room on either side and keeps a hard cut), and ffmpeg-skill/audio --replace puts the result
+    under the picture. A 1 kHz burst at a known source time in each take is found in the delivered file where the picture shows it
+    (A/V sync), and the audio lasts as long as the picture. Speech recognition is the fake process reading a sidecar transcript per
+    file (CI has no ASR model); every other tool is real."""
+
+    BURSTS = {"t1.mp4": 1.0, "t2.mp4": 2.0, "t3.mp4": 1.5}
+    SPEECH = {"t1.mp4": [[0.5, 3.0, "the first line of the talk"]], "t2.mp4": [[1.0, 3.9, "now a completely different second sentence"]],
+              "t3.mp4": [[0.05, 3.0, "and finally the closing remark here"]]}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_xfade_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.files = []
+        for name, burst in cls.BURSTS.items():
+            p = str(src / name)
+            tone = f"0.05*sin(2*PI*220*t)+0.6*sin(2*PI*1000*t)*between(t\\,{burst}\\,{burst + 0.1})"
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-f", "lavfi", "-i", f"aevalsrc='{tone}':s=48000",
+                            "-t", "4", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-g", "15", "-c:a", "aac", "-b:a", "128k", p], check=True)
+            Path(p + ".segments.json").write_text(json.dumps(cls.SPEECH[name]), encoding="utf-8")
+            cls.files.append(p)
+
+    def _service(self, ws):
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        fake = [sys.executable, str(Path(__file__).resolve().parent / "fake_transcription.py")]
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill(fake, None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                return self._sync_packages(ToolRouter([ts] + [a for a in r.adapters if a.name != "transcription"]))
+        svc = _Svc(workspace=ws, offline=True)
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                from video_agent.capabilities.resolver import Capability
+                caps = dict(real.resolve(refresh))
+                caps["transcription"] = Capability("transcription", "AVAILABLE", "fake recogniser (sidecar transcripts)", {})
+                ve = caps.get("video-editing")
+                if ve is not None and ve.status != "AVAILABLE" and "contract drift" in (ve.detail or "") and "doctor ok" in (ve.detail or ""):
+                    # video-editing-skill main has grown past the contract pinned here (new operations); CONCAT itself is what this test
+                    # needs and it runs on the live checkout. Re-pinning that contract is separate work, so the verdict is lifted here only.
+                    caps["video-editing"] = Capability("video-editing", "AVAILABLE", ve.detail, dict(ve.evidence or {}))
+                return caps
+        svc.caps = _Caps()
+        return svc
+
+    def _bursts(self, path):
+        """Start times of the 1 kHz bursts in a file's audio (band-passed, then where the silence ends)."""
+        pr = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "bandpass=f=1000:width_type=q:w=4,silencedetect=noise=-25dB:d=0.05", "-f", "null", "-"],
+                            capture_output=True, text=True)
+        return [float(line.split("silence_end:")[1].split("|")[0]) for line in pr.stderr.splitlines() if "silence_end:" in line]
+
+    def _stream_durations(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", path], capture_output=True, text=True, check=True)
+        return {s["codec_type"]: float(s["duration"]) for s in json.loads(pr.stdout)["streams"] if s.get("duration")}
+
+    def test_crossfaded_assembly_stays_in_sync(self):
+        svc = self._service(str(Path(self.tmp) / "ws"))
+        caps = svc.caps.resolve()
+        for need in ("video-editing", "audio-production"):
+            if caps.get(need) is None or caps[need].status != "AVAILABLE":
+                self.skipTest(f"needs {need}: {getattr(caps.get(need), 'detail', 'not resolved')[:120]}")
+        ir = svc.plan(self.files, "generic", user_requirements={"edit.takes": True}, params={"language": "en", "offline": True})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        xf = d["audio"]["take_crossfade"]
+        self.assertEqual([j["crossfaded"] for j in xf["joins"]], [True, False], xf["joins"])
+        self.assertIn("no room", xf["joins"][1]["why"])
+        p = str(Path(svc.workspace) / "xf.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", json.dumps([r for r in out["execution"]["results"] if not r["ok"]])[:1500])
+        tools = [r["tool"] for r in out["execution"]["results"]]
+        self.assertIn("ffmpeg-skill/audio", tools)
+        self.assertEqual(tools.count("audio-production/run"), 5, tools)   # 3 spans (CUT), the crossfaded run t1+t2 (CONCAT), that run + t3 at the hard cut (CONCAT)
+        mux = next(r for r in out["execution"]["results"] if r["tool"] == "ffmpeg-skill/audio")
+        final = mux["output"]
+        durs = self._stream_durations(final)
+        self.assertAlmostEqual(durs["audio"], durs["video"], delta=0.05, msg=durs)
+        self.assertAlmostEqual(durs["video"], xf["timeline_duration"], delta=0.05)
+        names = [Path(d["assets"][sp["asset"]]["path"]).name for sp in xf["spans"]]
+        want = [sp["programme_start"] + self.BURSTS[n] - sp["video"][0] for sp, n in zip(xf["spans"], names)]
+        got = [g for g in self._bursts(final) if g < durs["audio"] - 0.05]   # silencedetect also reports the end of the stream as a silence end
+        self.assertEqual(len(got), 3, got)
+        for g, w in zip(got, want):
+            self.assertAlmostEqual(g, w, delta=0.025, msg=f"burst at {g:.3f}s, picture shows it at {w:.3f}s ({got} vs {want})")
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class TimelineExportRealTests(unittest.TestCase):
     """ADR-052 on the real ffmpeg-skill: `delivery.timeline=otio` → render.py --export-timeline writes the IR's cut list as an
     OpenTimelineIO document, registered as a TIMELINE Artifact; opentimelineio (when installed) reads it back with the same cuts."""

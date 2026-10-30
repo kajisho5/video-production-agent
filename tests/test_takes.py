@@ -12,11 +12,12 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pipeline_harness import clear_modes, fake_media, pipeline_service, plan_and_render  # noqa: E402
+from pipeline_harness import AUDIO_PRODUCTION_CAPS, PipelineCaps, clear_modes, fake_media, pipeline_service, plan_and_render  # noqa: E402
 from video_agent.agent.editing import EditRequirementError  # noqa: E402
 from video_agent.agent.requirements import requirement_map  # noqa: E402
-from video_agent.agent.takes import (HANDLE_SECONDS, UNMEASURED, clean_text, count_fillers, count_restarts, coverage, group_takes,  # noqa: E402
-                                     parse_takes_requirements, score_takes, similarity, snap_joins)
+from video_agent.agent.takes import (CROSSFADE_DEFAULT, HANDLE_SECONDS, UNMEASURED, audio_offsets, clean_text, count_fillers, count_restarts, coverage,  # noqa: E402
+                                     group_takes, parse_takes_requirements, plan_crossfades, score_takes, similarity, snap_joins)
+from video_agent.project.validator import check_take_crossfade  # noqa: E402
 from video_agent.models import Requirement  # noqa: E402
 from video_agent.project import load_ir, save_ir  # noqa: E402
 from video_agent.project.validator import validate_ir  # noqa: E402
@@ -289,6 +290,214 @@ class TakesPipelineTests(unittest.TestCase):
         svc.reject(load_ir(path), path, [pick["id"]], "prefer another take")
         rep = svc.validate(load_ir(path))
         self.assertTrue(any("cites REJECTED decision" in e and "video.concat" in e for e in rep.errors), rep.errors)
+
+
+L3 = "最後にご質問をお受けいたします"
+# three lines for the crossfades (ADR-054): line 2 runs to the end of its source and line 3 starts at 0, so join 2 has no room for handles
+XF_TAKES = [("l1_take1.mp4", {"segments": [[0.7, 4.1, L1]], "silences": [[0.0, 0.6], [4.3, None]]}),
+            ("l2_take1.mp4", {"segments": [[0.5, 5.95, L2]], "silences": [[0.0, 0.4]]}),
+            ("l3_take1.mp4", {"segments": [[0.1, 3.0, L3]], "silences": [[3.2, None]]})]
+
+
+class CrossfadeArithmeticTests(unittest.TestCase):
+    """ADR-054: handles at each join so audio-production's CONCAT overlap does not shorten the programme or move the audio off the picture."""
+
+    def picks(self, *rows):
+        return [{"asset_id": a, "keep": [s, e], "duration": dur} for a, s, e, dur in rows]
+
+    def check_sync(self, xf):
+        offs = audio_offsets(xf["spans"], xf["joins"])
+        for sp, off in zip(xf["spans"], offs):
+            self.assertAlmostEqual(off + sp["in_handle"], sp["programme_start"], places=6, msg="every pick's audio starts with its picture")
+        self.assertAlmostEqual(xf["audio_duration"], xf["programme_duration"], places=6, msg="the programme audio ends with the picture")
+
+    def test_centred_handles_keep_the_picture_and_the_length(self):
+        xf = plan_crossfades(self.picks(("a", 0.5, 4.0, 6.0), ("b", 0.4, 3.0, 6.0), ("c", 1.0, 2.0, 6.0)), 0.01)
+        self.assertEqual(xf["crossfaded"], 2)
+        self.assertEqual([sp["video"] for sp in xf["spans"]], [[0.5, 4.0], [0.4, 3.0], [1.0, 2.0]], "the picture's cut points do not move")
+        self.assertEqual([sp["audio"] for sp in xf["spans"]], [[0.5, 4.005], [0.395, 3.005], [0.995, 2.0]])
+        self.assertTrue(all(j["centred"] for j in xf["joins"]))
+        self.assertEqual([j["window"] for j in xf["joins"]], [[3.495, 3.505], [6.095, 6.105]], "each crossfade is centred on its cut")
+        self.assertEqual(xf["runs"], [[0, 1, 2]])
+        self.assertEqual(xf["programme_duration"], 7.1)
+        self.check_sync(xf)
+
+    def test_one_sided_room_moves_the_overlap_to_the_other_side(self):
+        # b starts at 0.0 of its source: the whole overlap comes from a's tail (still in sync, no longer centred)
+        xf = plan_crossfades(self.picks(("a", 0.5, 4.0, 6.0), ("b", 0.0, 3.0, 6.0)), 0.02)
+        j = xf["joins"][0]
+        self.assertEqual((j["crossfaded"], j["out_handle"], j["in_handle"], j["centred"]), (True, 0.02, 0.0, False))
+        xf2 = plan_crossfades(self.picks(("a", 0.5, 5.995, 6.0), ("b", 1.0, 3.0, 6.0)), 0.02)
+        self.assertEqual((xf2["joins"][0]["out_handle"], xf2["joins"][0]["in_handle"]), (0.005, 0.015))
+        self.check_sync(xf)
+        self.check_sync(xf2)
+
+    def test_a_join_without_room_keeps_a_hard_cut_and_says_why(self):
+        xf = plan_crossfades(self.picks(("a", 0.5, 4.0, 6.0), ("b", 0.4, 6.0, 6.0), ("c", 0.0, 2.0, 6.0)), 0.01)
+        self.assertEqual([j["crossfaded"] for j in xf["joins"]], [True, False])
+        self.assertIn("no room for a 0.01s crossfade", xf["joins"][1]["why"])
+        self.assertIn("keeps a hard cut", xf["joins"][1]["why"])
+        self.assertEqual((xf["spans"][1]["out_handle"], xf["spans"][2]["in_handle"]), (0.0, 0.0))
+        self.assertEqual(xf["runs"], [[0, 1], [2]])
+        self.check_sync(xf)
+        short = plan_crossfades(self.picks(("a", 0.5, 4.0, 6.0), ("b", 1.0, 1.005, 6.0)), 0.01)
+        self.assertFalse(short["joins"][0]["crossfaded"])
+        self.assertIn("not longer than the 0.01s crossfade", short["joins"][0]["why"])
+
+    def test_requirement(self):
+        t = parse_takes_requirements(reqmap(edit__takes=True))
+        self.assertEqual((t["crossfade"], t["crossfade_explicit"]), (CROSSFADE_DEFAULT, None))
+        self.assertEqual(CROSSFADE_DEFAULT, 0.01)
+        t = parse_takes_requirements(reqmap(edit__takes=True, edit__takes__crossfade="0.02"))
+        self.assertEqual((t["crossfade"], t["crossfade_explicit"].key), (0.02, "edit.takes.crossfade"))
+        self.assertEqual(parse_takes_requirements(reqmap(edit__takes=True, edit__takes__crossfade=0))["crossfade"], 0.0)
+        for bad, msg in (({"edit__takes__crossfade": 0.01}, "is set but edit.takes is not"), ({"edit__takes": True, "edit__takes__crossfade": 0.2}, "within 0.0..0.1"),
+                         ({"edit__takes": True, "edit__takes__crossfade": -0.01}, "within 0.0..0.1")):
+            with self.assertRaisesRegex(EditRequirementError, msg):
+                parse_takes_requirements(reqmap(**bad))
+
+
+class TakeCrossfadePipelineTests(unittest.TestCase):
+    """ADR-054 on the fake engine + fake Skills: decision → spans / joins / mux steps → IR record → validator sync check → render."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.takes = [fake_media(self.tmp, n, duration=6.0, **facts) for n, facts in XF_TAKES]
+
+    def tearDown(self):
+        clear_modes()
+
+    def svc(self, audio_production=True):
+        return pipeline_service(self.tmp, caps=PipelineCaps(extra=AUDIO_PRODUCTION_CAPS if audio_production else ()))
+
+    def plan(self, reqs, inputs=None, audio_production=True):
+        svc = self.svc(audio_production)
+        return svc, svc.plan(inputs or self.takes, "youtube", user_requirements=reqs, params={"language": "ja"})
+
+    def test_default_crossfade_plans_spans_joins_and_a_mux_without_moving_a_cut(self):
+        svc, ir = self.plan({"edit.takes": True})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        nm = names(d)
+        x = by_subject(d, "takes.crossfade")[0]
+        self.assertEqual((x["type"], x["approval"], x["provenance"], x["risk"]), ("TRANSFORM", "AUTO", "SYSTEM", "LOW"))
+        self.assertEqual(x["params"]["crossfade"], 0.01)
+        self.assertEqual([j["crossfaded"] for j in x["params"]["joins"]], [True, False])
+        rec = d["audio"]["take_crossfade"]
+        self.assertEqual([c["inputs"] for c in rec["concats"]], [[rec["spans"][0]["output"], rec["spans"][1]["output"]], ["programme_xfade_run1", rec["spans"][2]["output"]]])
+        self.assertEqual([nm[sp["asset"]] for sp in rec["spans"]], ["l1_take1.mp4", "l2_take1.mp4", "l3_take1.mp4"])
+        self.assertEqual([c["crossfade"] for c in rec["concats"]], [0.01, 0.0], "the crossfaded run, then the runs joined at the hard cut")
+        # the picture is exactly what the picks decided, cut frame-accurately; the same request without crossfades has the same cut list
+        _, ir0 = self.plan({"edit.takes": True, "edit.takes.crossfade": 0})
+        keeps = lambda doc: [op["keep"] for op in doc["video"]["operations"] if op["type"] == "video.trim"]
+        self.assertEqual(keeps(d), keeps(ir0.doc))
+        self.assertFalse(by_subject(ir0.doc, "takes.crossfade"), "crossfade 0: nothing decided, hard-cut audio")
+        self.assertNotIn("take_crossfade", ir0.doc["audio"])
+        self.assertTrue(all(op["accurate"] for op in d["video"]["operations"] if op["type"] == "video.trim"))
+        self.assertFalse(any(op["accurate"] for op in ir0.doc["video"]["operations"] if op["type"] == "video.trim"))
+        # steps: three audio spans, two joins, the mux on the assembled picture; later steps continue on the mux output
+        steps = [(s["skill"], s["inputs"], s["outputs"]) for s in d["plan"]["steps"]]
+        self.assertEqual([s[0] for s in steps], ["silence_cleanup"] * 3 + ["video_concat", "audio_cut", "audio_cut", "audio_cut", "audio_concat", "audio_concat", "audio_mux",
+                                                                          "loudness_normalization", "delivery_export", "delivery_check"])
+        mux = next(s for s in d["plan"]["steps"] if s["skill"] == "audio_mux")
+        self.assertEqual((mux["inputs"], mux["outputs"], mux["tool"]), (["programme", "programme_xfade_audio"], ["programme_xfade"], "ffmpeg-skill/audio"))
+        self.assertEqual(next(s for s in d["plan"]["steps"] if s["skill"] == "loudness_normalization")["inputs"], ["programme_xfade"])
+        self.assertEqual(check_take_crossfade(d), [])
+
+    def test_validator_refuses_audio_that_would_drift_or_a_moved_cut(self):
+        svc, ir = self.plan({"edit.takes": True})
+        d = ir.doc
+
+        def errs(mutate):
+            bad = json.loads(json.dumps(d))
+            mutate(bad)
+            ir.doc = bad
+            return svc.validate(ir).errors
+
+        def handle(b):
+            b["audio"]["take_crossfade"]["spans"][1]["in_handle"] = 0.0
+            b["audio"]["take_crossfade"]["spans"][1]["audio"][0] = b["audio"]["take_crossfade"]["spans"][1]["video"][0]
+        self.assertTrue(any("do not make its 0.01s overlap" in e for e in errs(handle)))
+        self.assertTrue(any("ms off its picture" in e for e in errs(handle)), "the replayed CONCAT puts the next pick's audio off its picture")
+
+        def moved(b):
+            tr = next(op for op in b["video"]["operations"] if op["type"] == "video.trim")
+            tr["keep"] = [[tr["keep"][0][0], round(tr["keep"][0][1] - 0.04, 3)]]
+        self.assertTrue(any("the cut list must not move" in e for e in errs(moved)))
+
+        def keyframe(b):
+            next(op for op in b["video"]["operations"] if op["type"] == "video.trim")["accurate"] = False
+        self.assertTrue(any("cut frame-accurately" in e for e in errs(keyframe)))
+
+        def mux(b):
+            b["audio"]["take_crossfade"]["mux"]["audio"] = b["audio"]["take_crossfade"]["spans"][0]["output"]
+        self.assertTrue(any("the mux puts" in e for e in errs(mux)))
+
+        def crossfade(b):
+            b["audio"]["take_crossfade"]["concats"][0]["crossfade"] = 0.02
+        self.assertTrue(any("ms off its picture" in e or "do not match the assembled picture" in e for e in errs(crossfade)))
+
+        def dropped(b):
+            del b["audio"]["take_crossfade"]
+        self.assertTrue(any("no crossfade record" in e for e in errs(dropped)))
+
+    def test_render_runs_the_audio_chain_and_delivers_the_muxed_programme(self):
+        svc = self.svc()
+        r = plan_and_render(svc, self.takes, {"edit.takes": True, "delivery.timeline": "otio"})
+        self.assertEqual(r["validation"].errors, [])
+        self.assertEqual((r["out"]["execution"]["status"], r["out"]["qa"]["status"]), ("COMPLETED", "PASS"))
+        tools = [x["tool"] for x in r["out"]["execution"]["results"]]
+        self.assertEqual(tools.count("audio-production/run"), 5)
+        self.assertLess(tools.index("video-editing/concat"), tools.index("ffmpeg-skill/audio"))
+        self.assertLess(tools.index("ffmpeg-skill/audio"), tools.index("ffmpeg-skill/loudness"))
+        prov = json.loads((Path(svc.workspace) / "jobs" / r["out"]["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        xid = by_subject(r["ir"].doc, "takes.crossfade")[0]["id"]
+        cat = [e for e in prov["operations"] if e["tool"] == "audio-production/run" and e["args"].get("operation") == "CONCAT"]
+        self.assertEqual([e["args"]["crossfade"] for e in cat], [0.01, 0.0])
+        self.assertTrue(all(xid in e["decision"] for e in cat), "every audio join records the crossfade decision it executes")
+        mux = next(e for e in prov["operations"] if e["tool"] == "ffmpeg-skill/audio")
+        self.assertEqual(set(mux["args"]), {"input", "replace", "output"})
+        # the timeline export is the picture's cut list (hard cuts), unchanged by the audio crossfades
+        nm = names(r["ir"].doc)
+        tl = r["ir"].doc["delivery"]["timelines"][0]
+        self.assertEqual([[nm[c["asset"]], c["in"], c["out"]] for c in tl["clips"]], [["l1_take1.mp4", 0.55, 4.25], ["l2_take1.mp4", 0.35, 6.0], ["l3_take1.mp4", 0.0, 3.15]])
+
+    def test_beat_snapped_joins_keep_their_beats_under_the_crossfades(self):
+        music = fake_media(self.tmp, "bed.mp4", duration=20.0, beat_interval=0.5, beat_phase=0.25, beat_confidence=0.96)
+        reqs = {"edit.takes": True, "edit.takes.music": 3}
+        svc, ir = self.plan(reqs, self.takes + [music])
+        _, ir0 = self.plan(dict(reqs, **{"edit.takes.crossfade": 0}), self.takes + [music])
+        self.assertEqual(svc.validate(ir).errors, [])
+        keeps = lambda doc: [op["keep"] for op in doc["video"]["operations"] if op["type"] == "video.trim"]
+        self.assertEqual(keeps(ir.doc), keeps(ir0.doc), "the snapped cut points are the same with and without crossfades")
+        snap = by_subject(ir.doc, "takes.beat_snap")[0]
+        rec = ir.doc["audio"]["take_crossfade"]
+        self.assertEqual([j["at"] for j in rec["joins"]], [j["to"] for j in snap["params"]["joins"]][:-1], "each crossfade sits on its beat-snapped cut")
+
+    def test_no_room_anywhere_or_no_audio_production(self):
+        # two picks whose only join has no room: KEEP with the reason, no audio chain
+        _, ir = self.plan({"edit.takes": True}, self.takes[1:])
+        x = by_subject(ir.doc, "takes.crossfade")[0]
+        self.assertEqual((x["type"], x["params"]["crossfaded"]), ("KEEP", 0))
+        self.assertIn("no join has room", x["reason"])
+        self.assertNotIn("take_crossfade", ir.doc["audio"])
+        # the default without audio-production here: KEEP (hard-cut audio, the reason names what is missing); explicit: BLOCK
+        _, ir = self.plan({"edit.takes": True}, audio_production=False)
+        x = by_subject(ir.doc, "takes.crossfade")[0]
+        self.assertEqual((x["type"], x["params"]["unavailable"]), ("KEEP", ["audio_cut", "audio_concat"]))
+        self.assertIn("set edit.takes.crossfade=0", x["reason"])
+        self.assertFalse(ir.blocked())
+        _, ir = self.plan({"edit.takes": True, "edit.takes.crossfade": 0.02}, audio_production=False)
+        self.assertEqual(sorted(b["subject"] for b in ir.blocked()), ["capability.audio_concat", "capability.audio_cut"])
+
+    def test_rejected_crossfade_is_rejected_cited(self):
+        svc, ir = self.plan({"edit.takes": True})
+        path = str(Path(self.tmp) / "x.json"); save_ir(ir, path)
+        x = by_subject(ir.doc, "takes.crossfade")[0]
+        svc.reject(load_ir(path), path, [x["id"]], "keep the hard cuts")
+        rep = svc.validate(load_ir(path))
+        self.assertTrue(any("cites REJECTED decision" in e and "takes.crossfade" in e for e in rep.errors), rep.errors)
 
 
 class _TakePreference(AIProvider):

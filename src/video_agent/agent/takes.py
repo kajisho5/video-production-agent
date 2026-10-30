@@ -43,10 +43,11 @@ from ..media.analysis import loudness_facts
 from .editing import PROGRAMME, EditRequirementError, _bool, _number
 
 TAKES_KEY = "edit.takes"
-REQUIREMENT_KEYS = ("edit.takes", "edit.takes.similarity", "edit.takes.music", "edit.takes.snap_max_shift")
+REQUIREMENT_KEYS = ("edit.takes", "edit.takes.similarity", "edit.takes.music", "edit.takes.snap_max_shift", "edit.takes.crossfade")
 PICK_SUBJECT = "takes.pick"
 GROUP_SUBJECT = "takes.group"          # BLOCKs about the take set as a whole (a take without speech, a conflicting request)
 SNAP_SUBJECT = "takes.beat_snap"
+CROSSFADE_SUBJECT = "takes.crossfade"  # audio crossfades at the joins of the assembly (the picture keeps its hard cuts)
 AI_INTENT = "take_selection"           # the intent an AI recommendation names to prefer one take of a line
 BEAT_KIND = "beats"                    # the analysis kind of the music bed's beat grid (ffmpeg-skill scenes --beats)
 SIMILARITY_DEFAULT = 0.6
@@ -55,6 +56,16 @@ SNAP_SHIFT_DEFAULT = 0.5
 SNAP_SHIFT_RANGE = (0.01, 2.0)
 HANDLE_SECONDS = 0.15                  # kept before the first word and after the last word of a pick
 MIN_TAIL_SECONDS = 0.05                # a snapped out point never lands closer than this after the last word
+# Crossfade at each join (seconds). A chosen default, not taken from a published source: a butt join of two non-zero waveforms is
+# a step in the signal, heard as a click; any short ramp removes the step, and 10 ms (one period of 100 Hz, well under the length
+# of a spoken syllable) is long enough to do that without audibly blending two words. 0 turns the crossfades off (hard-cut audio).
+CROSSFADE_DEFAULT = 0.010
+CROSSFADE_RANGE = (0.0, 0.1)
+# Planned A/V offset the validator accepts at every pick (seconds). Far below what a viewer can notice (ITU-R BT.1359-1: detectability
+# thresholds about +45 ms sound-before-picture / -125 ms sound-after-picture); it only absorbs the IR's rounding.
+SYNC_TOLERANCE = 0.001
+AUDIO_MUX_SKILL = "audio_mux"          # the programme audio replaces the hard-cut audio of the assembled picture (ffmpeg-skill/audio --replace)
+CONCAT_MAX_INPUTS = 32                 # audio-production CONCAT takes 2..32 inputs
 BEAT_MIN_CONFIDENCE = 0.5              # ffmpeg-skill's own default refusal threshold for snapping (cut.py --min-confidence)
 CLIP_TRUE_PEAK_DBTP = -0.1             # a measured true peak at or above this counts as clipped
 LOUDNESS_SPREAD_LU = 3.0               # loudness differences within this from the line's median are not penalised
@@ -82,7 +93,8 @@ def parse_takes_requirements(m: Dict[str, Requirement]) -> Optional[Dict[str, An
             raise EditRequirementError(f"{refinements[0].key} is set but {TAKES_KEY} is not: refusing an ambiguous request")
         return None
     vals = {r.key: r.value for r in refinements}
-    out: Dict[str, Any] = {"similarity": SIMILARITY_DEFAULT, "music": None, "snap_max_shift": SNAP_SHIFT_DEFAULT, "requirements": [main] + refinements}
+    out: Dict[str, Any] = {"similarity": SIMILARITY_DEFAULT, "music": None, "snap_max_shift": SNAP_SHIFT_DEFAULT, "crossfade": CROSSFADE_DEFAULT, "crossfade_explicit": None,
+                           "requirements": [main] + refinements}
     if "edit.takes.similarity" in vals:
         out["similarity"] = float(_number(vals["edit.takes.similarity"], "edit.takes.similarity", *SIMILARITY_RANGE))
     if "edit.takes.music" in vals:
@@ -94,6 +106,9 @@ def parse_takes_requirements(m: Dict[str, Requirement]) -> Optional[Dict[str, An
         if out["music"] is None:
             raise EditRequirementError("edit.takes.snap_max_shift needs edit.takes.music (the beat grid comes from the music bed)")
         out["snap_max_shift"] = float(_number(vals["edit.takes.snap_max_shift"], "edit.takes.snap_max_shift", *SNAP_SHIFT_RANGE))
+    if "edit.takes.crossfade" in vals:
+        out["crossfade"] = float(_number(vals["edit.takes.crossfade"], "edit.takes.crossfade", *CROSSFADE_RANGE))
+        out["crossfade_explicit"] = next(r for r in refinements if r.key == "edit.takes.crossfade")
     return out
 
 
@@ -282,9 +297,81 @@ def snap_joins(picks: List[Dict[str, Any]], beats: List[float], max_shift: float
     return out
 
 
+def plan_crossfades(picks: List[Dict[str, Any]], crossfade: float) -> Dict[str, Any]:
+    """The audio of a hard-cut assembly with a crossfade at each join, in sync with the picture. picks: [{"asset_id", "keep": [s, e]
+    (the picture's cut list, final: after the beat snap), "duration" (source)}] in programme order.
+
+    audio-production CONCAT starts each clip `crossfade` seconds before the previous one ends, so n clips come out
+    (n-1)·crossfade shorter than their sum. To keep the picture's cut points and the programme length, every join gets that
+    overlap as audio handles: the outgoing pick's audio runs `out_handle` past its picture out point, the incoming pick's
+    audio starts `in_handle` before its picture in point, out_handle + in_handle = crossfade (centred: half each; when one
+    source has less room, the other side takes the rest). Then each pick's audio starts exactly `in_handle` before its picture
+    starts in the programme, and the audio ends with the picture. A join where the two sources together have less than
+    `crossfade` of room (or a pick not longer than the crossfade) keeps a hard cut, with the reason; the picks between two hard
+    cuts form one run (one CONCAT with the crossfade), and the runs are joined by a CONCAT without one.
+    Returns {"crossfade", "joins": [...], "spans": [...], "runs": [[pick index, ...]], "crossfaded", "programme_duration", "audio_duration"}."""
+    d = float(crossfade)
+    n = len(picks)
+    vid = [(float(p["keep"][0]), float(p["keep"][1])) for p in picks]
+    hin, hout = [0.0] * n, [0.0] * n
+    joins: List[Dict[str, Any]] = []
+    t = 0.0
+    starts: List[float] = []
+    for i, (s, e) in enumerate(vid):
+        starts.append(round(t, 6))
+        t += e - s
+    total = round(t, 6)
+    for i in range(n - 1):
+        a, b = picks[i], picks[i + 1]
+        room_out = round(float(a["duration"]) - vid[i][1], 6)
+        room_in = round(vid[i + 1][0], 6)
+        at = starts[i + 1]
+        rec: Dict[str, Any] = {"after": a["asset_id"], "before": b["asset_id"], "at": round(at, 6), "room_out": room_out, "room_in": room_in}
+        short = [p["asset_id"] for p, (s, e) in ((a, vid[i]), (b, vid[i + 1])) if e - s <= d + 1e-9]
+        if short:
+            why = f"{', '.join(short)} is not longer than the {d:g}s crossfade"
+        elif room_out + room_in + 1e-9 < d:
+            why = (f"no room for a {d:g}s crossfade: {a['asset_id']} has {room_out:g}s of source after its out point and "
+                   f"{b['asset_id']} {room_in:g}s before its in point")
+        else:
+            why = ""
+        if why:
+            rec.update({"crossfade": 0.0, "out_handle": 0.0, "in_handle": 0.0, "crossfaded": False, "why": why + "; this join keeps a hard cut"})
+        else:
+            ho = round(min(room_out, max(d / 2.0, d - room_in)), 6)
+            hi = round(d - ho, 6)
+            hout[i], hin[i + 1] = ho, hi
+            rec.update({"crossfade": d, "out_handle": ho, "in_handle": hi, "crossfaded": True, "centred": abs(ho - hi) <= 1e-6,
+                        "window": [round(at - hi, 6), round(at + ho, 6)]})
+        joins.append(rec)
+    spans = [{"asset_id": p["asset_id"], "video": [round(vid[i][0], 6), round(vid[i][1], 6)], "audio": [round(vid[i][0] - hin[i], 6), round(vid[i][1] + hout[i], 6)],
+              "in_handle": hin[i], "out_handle": hout[i], "programme_start": starts[i]} for i, p in enumerate(picks)]
+    runs: List[List[int]] = [[0]] if n else []
+    for i, j in enumerate(joins):
+        if j["crossfaded"]:
+            runs[-1].append(i + 1)
+        else:
+            runs.append([i + 1])
+    audio = round(sum(sp["audio"][1] - sp["audio"][0] for sp in spans) - sum(j["crossfade"] for j in joins), 6)
+    return {"crossfade": d, "joins": joins, "spans": spans, "runs": runs, "crossfaded": sum(1 for j in joins if j["crossfaded"]),
+            "programme_duration": total, "audio_duration": audio}
+
+
+def audio_offsets(spans: List[Dict[str, Any]], joins: List[Dict[str, Any]]) -> List[float]:
+    """Where each pick's audio starts in the programme when the spans are concatenated with the joins' crossfades (the CONCAT
+    arithmetic of audio-production: each clip starts `crossfade` before the previous one ends)."""
+    out: List[float] = []
+    t = 0.0
+    for i, sp in enumerate(spans):
+        out.append(round(t, 6))
+        t += float(sp["audio"][1]) - float(sp["audio"][0]) - (float(joins[i]["crossfade"]) if i < len(joins) else 0.0)
+    return out
+
+
 # ---- decisions ------------------------------------------------------------------------------------------------------------
 def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences: List[Any], edits: Dict[str, Any], approval_for: Callable[..., Dict[str, Any]],
-                 probe_ids_of: Callable[[List[str]], List[str]], cap_block: Callable[[str, str], Any], ai_prefix: str) -> Optional[Dict[str, Any]]:
+                 probe_ids_of: Callable[[List[str]], List[str]], cap_block: Callable[[str, str], Any], ai_prefix: str,
+                 cap_missing: Optional[Callable[[str], Optional[str]]] = None) -> Optional[Dict[str, Any]]:
     """`edit.takes` → groups, scores, one `takes.pick` per line, the `video.concat` of the picks (and `takes.beat_snap` with a music
     bed). Returns None when not requested, else {"ok", "picks": [asset ids in line order], "excluded": {asset ids with no step}}.
     Appends to `eng.decisions`. A conflicting or unsupported request is a BLOCK, never a guess."""
@@ -416,5 +503,45 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
                    params={"asset_id": PROGRAMME, "music": music.id, "tempo_bpm": float(g["tempo_bpm"]), "interval": g.get("interval"), "confidence": float(g["confidence"]),
                            "max_shift": tk["snap_max_shift"], "joins": joins, "snapped": n_snap},
                    requirements=reqs, serves_intent=None)
+    if len(res["picks"]) >= 2 and tk["crossfade"] > 0:
+        decide_crossfades(eng, tk, [rec for _, rec, _ in picks], pick_ids, ev_req + probe_ids_of(res["picks"]), approval_for, cap_block, cap_missing)
     res["ok"] = True
     return res
+
+
+def decide_crossfades(eng: Any, tk: Dict[str, Any], recs: List[Dict[str, Any]], pick_ids: List[str], evidence: List[str], approval_for: Callable[..., Dict[str, Any]],
+                      cap_block: Callable[[str, str], Any], cap_missing: Optional[Callable[[str], Optional[str]]]) -> None:
+    """`takes.crossfade`: the audio crossfades at the joins of the assembly (plan_crossfades). TRANSFORM when at least one join
+    gets one; KEEP (hard-cut audio, nothing planned) when no join has room, or when the default crossfade cannot run here because
+    audio-production / the mux tool is unavailable. An explicit `edit.takes.crossfade` that cannot run is a BLOCK (never dropped)."""
+    explicit = tk.get("crossfade_explicit")
+    reqs = tk["requirements"]
+    xf = plan_crossfades([{"asset_id": r["pick"], "keep": list(r["keep"]), "duration": r["duration"]} for r in recs], tk["crossfade"])
+    params: Dict[str, Any] = {"asset_id": PROGRAMME, "crossfade": xf["crossfade"], "default": explicit is None, "joins": xf["joins"], "spans": xf["spans"], "runs": xf["runs"],
+                              "crossfaded": xf["crossfaded"], "programme_duration": xf["programme_duration"], "audio_duration": xf["audio_duration"],
+                              "sync_tolerance": SYNC_TOLERANCE, "picks": list(pick_ids), "curve": "the audio-production CONCAT crossfade (its own default curve)"}
+    source = f"edit.takes.crossfade={xf['crossfade']:g}s ({explicit.source})" if explicit is not None else f"the default {CROSSFADE_DEFAULT:g}s click-free crossfade (edit.takes.crossfade)"
+    hard = [j for j in xf["joins"] if not j["crossfaded"]]
+    hard_note = "".join(f"; join {j['after']} → {j['before']}: {j['why']}" for j in hard)
+    unavailable = [(sk, why) for sk, why in ((sk, cap_missing(sk) if cap_missing else None) for sk in ("audio_cut", "audio_concat", AUDIO_MUX_SKILL)) if why]
+    too_many = len(recs) > CONCAT_MAX_INPUTS
+    if xf["crossfaded"] == 0 or too_many or (unavailable and explicit is None):
+        if too_many:
+            why = f"{len(recs)} picks: audio-production CONCAT joins at most {CONCAT_MAX_INPUTS} inputs, so the joins keep hard cuts"
+        elif xf["crossfaded"] == 0:
+            why = f"no join has room for {source}" + hard_note
+        else:
+            why = f"{source} needs " + "; ".join(f"{sk} ({w})" for sk, w in unavailable) + ", which is unavailable here, so the joins keep hard-cut audio (set edit.takes.crossfade=0 to say so explicitly)"
+        params.update({"crossfaded": 0, "unavailable": [sk for sk, _ in unavailable]})
+        eng.decide(subject=CROSSFADE_SUBJECT, type="KEEP", decision=f"keep hard-cut audio at all {len(xf['joins'])} join(s)", reason=why + " (not guessed)", confidence=1.0,
+                   evidence=evidence, risk="LOW", approval="AUTO", provenance="USER" if explicit is not None else "SYSTEM", params=params, requirements=reqs, serves_intent=None)
+        return
+    eng.decide(subject=CROSSFADE_SUBJECT, type="TRANSFORM",
+               decision=f"crossfade the audio at {xf['crossfaded']} of {len(xf['joins'])} join(s) ({xf['crossfade']:g}s, picture cuts unchanged)",
+               reason=(f"{source}: each crossfaded join takes its overlap from audio handles (the outgoing take's audio continues past its out point, the incoming "
+                       f"take's starts before its in point), so the picture's cut points and the programme length ({xf['programme_duration']:g}s) stay as cut and every pick's "
+                       f"audio stays in sync with its picture; the programme audio replaces the hard-cut audio of the assembled picture" + hard_note),
+               confidence=1.0, evidence=evidence, risk="LOW", approval=approval_for(CROSSFADE_SUBJECT, explicit=explicit if explicit is not None else reqs[0]),
+               provenance="USER" if explicit is not None else "SYSTEM", params=params, requirements=reqs, serves_intent=None)
+    for sk in ("audio_cut", "audio_concat", AUDIO_MUX_SKILL):
+        cap_block(sk, f"capability.{sk}")

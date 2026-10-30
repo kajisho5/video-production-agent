@@ -11,11 +11,11 @@ from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELE
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL
-from ..agent.takes import BEAT_KIND, PICK_SUBJECT, SNAP_SUBJECT
+from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .ir import ProjectIR
 
@@ -483,6 +483,103 @@ def check_take_assembly(d: Dict[str, Any]) -> List[str]:
                 errs.append(f"takes.beat_snap {sn['id']}: join after {j.get('asset_id')} at {j.get('to')}s is not a supported beat of the measurement")
             elif trim is not None and abs(t - float(j["to"])) > 0.002:
                 errs.append(f"takes.beat_snap {sn['id']}: the cut list ends {j.get('asset_id')} at {t:.3f}s in the programme, not on its beat {j.get('to')}s")
+    return errs + check_take_crossfade(d)
+
+
+def check_take_crossfade(d: Dict[str, Any]) -> List[str]:
+    """ADR-054: the join crossfades of a take assembly keep the picture and stay in sync with it. Rebuilt from the IR itself (the
+    picture's cut list = the video.trim ranges, the audio = the recorded CUT spans and CONCAT joins), never from the decision's
+    own arithmetic: the picture of every pick is exactly its trim (frame-accurate); its audio span is that range plus the join
+    handles, inside the source; at each join out_handle + in_handle = that join's crossfade; replaying the CONCATs puts every
+    pick's audio at its picture's programme time (within SYNC_TOLERANCE) and the programme audio ends with the picture; the mux
+    puts that audio under the assembled picture."""
+    errs: List[str] = []
+    decs = {x["id"]: x for x in d.get("decisions") or []}
+    rec = (d.get("audio") or {}).get("take_crossfade")
+    live = [x for x in decs.values() if x.get("subject") == CROSSFADE_SUBJECT and x.get("type") == "TRANSFORM" and x.get("status") != "REJECTED"]
+    ops = (d.get("video") or {}).get("operations") or []
+    concat = next((o for o in ops if o.get("type") == "video.concat"), None)
+    if rec is None:
+        if live and concat is not None and any(x["id"] in (concat.get("decision_ids") or []) for x in decs.values() if x.get("subject") == PICK_SUBJECT):
+            errs.append(f"takes.crossfade {live[0]['id']} is decided but the plan has no crossfade record (the joins would keep hard-cut audio)")
+        return errs
+    if not live or not set(x["id"] for x in live) & set(rec.get("decision_ids") or []):
+        return errs + ["take_crossfade: the record cites no live takes.crossfade decision"]
+    if concat is None:
+        return errs + ["take_crossfade: there is no assembled picture (video.concat) to put the audio under"]
+    assets = d.get("assets") or {}
+    spans = rec.get("spans") or []
+    joins = rec.get("joins") or []
+    cf = float(rec.get("crossfade") or 0.0)
+    if [sp.get("asset") for sp in spans] != list(concat.get("inputs") or []):
+        errs.append(f"take_crossfade: spans {[sp.get('asset') for sp in spans]} are not the assembly's inputs {concat.get('inputs')}")
+        return errs
+    if len(joins) != len(spans) - 1:
+        return errs + [f"take_crossfade: {len(joins)} join(s) for {len(spans)} pick(s)"]
+    t = 0.0
+    starts: List[float] = []
+    for n, sp in enumerate(spans):
+        a = sp["asset"]
+        trim = next((o for o in ops if o.get("type") == "video.trim" and o.get("asset") == a), None)
+        dur = float(((assets.get(a) or {}).get("technical") or {}).get("duration") or 0.0)
+        keep = [[float(x), float(y)] for x, y in (trim or {}).get("keep") or []] or [[0.0, dur]]
+        if len(keep) != 1 or any(abs(float(u) - v) > 0.001 for u, v in zip(sp["video"], keep[0])):
+            errs.append(f"take_crossfade: the picture of {a} is {keep}, the span's picture range {sp['video']} (the cut list must not move)")
+        if trim is not None and not trim.get("accurate"):
+            errs.append(f"take_crossfade: {a} is cut at keyframes; a crossfaded pick's picture must be cut frame-accurately to stay on its audio")
+        starts.append(t)
+        t += keep[0][1] - keep[0][0]
+        ai, ao = float(sp["audio"][0]), float(sp["audio"][1])
+        if not (-1e-9 <= ai < ao <= dur + 1e-6):
+            errs.append(f"take_crossfade: audio span {sp['audio']} of {a} is not inside its source (0..{dur:g})")
+        if abs((float(sp["video"][0]) - ai) - float(sp.get("in_handle", 0))) > 1e-6 or abs((ao - float(sp["video"][1])) - float(sp.get("out_handle", 0))) > 1e-6 \
+                or float(sp.get("in_handle", 0)) < 0 or float(sp.get("out_handle", 0)) < 0:
+            errs.append(f"take_crossfade: audio span {sp['audio']} of {a} is not its picture range {sp['video']} plus its handles")
+        want_remove = [[x, y] for x, y in ([0.0, ai], [ao, dur]) if y - x > 1e-6]
+        if sp.get("output") != a and [[round(float(x), 6), round(float(y), 6)] for x, y in sp.get("remove") or []] != [[round(x, 6), round(y, 6)] for x, y in want_remove]:
+            errs.append(f"take_crossfade: the CUT of {a} removes {sp.get('remove')}, not everything outside its span {sp['audio']}")
+    if spans and (float(spans[0].get("in_handle", 0)) > 1e-9 or float(spans[-1].get("out_handle", 0)) > 1e-9):
+        errs.append("take_crossfade: the programme audio must start with the first picture and end with the last (no handle outside the programme)")
+    for n, j in enumerate(joins):
+        c = float(j.get("crossfade") or 0.0)
+        if c not in (0.0, cf):
+            errs.append(f"take_crossfade: join {n + 1} has a {c:g}s crossfade, not {cf:g}s or a hard cut")
+        if abs(float(spans[n].get("out_handle", 0)) + float(spans[n + 1].get("in_handle", 0)) - c) > 1e-6:
+            errs.append(f"take_crossfade: join {n + 1} ({j.get('after')} → {j.get('before')}): handles {spans[n].get('out_handle')} + {spans[n + 1].get('in_handle')} "
+                        f"do not make its {c:g}s overlap, so the audio after it would drift off the picture")
+        if not j.get("crossfaded") and not j.get("why"):
+            errs.append(f"take_crossfade: hard-cut join {n + 1} does not say why")
+    # replay the CONCATs (audio-production: each input starts `crossfade` before the previous one ends) → where each pick's audio lands
+    placed: Dict[str, Tuple[float, List[Tuple[int, float]]]] = {sp["output"]: (float(sp["audio"][1]) - float(sp["audio"][0]), [(n, 0.0)]) for n, sp in enumerate(spans)}
+    for c in rec.get("concats") or []:
+        x = float(c.get("crossfade") or 0.0)
+        off, members = 0.0, []
+        ins = list(c.get("inputs") or [])
+        if any(i not in placed for i in ins) or len(ins) < 2:
+            errs.append(f"take_crossfade: concat {c.get('output')} joins {ins}, which are not earlier spans / joins")
+            return errs
+        for k, i in enumerate(ins):
+            length, mem = placed.pop(i)
+            if x > 0 and length <= x + 1e-9:
+                errs.append(f"take_crossfade: concat {c.get('output')} input {i} ({length:.3f}s) is not longer than its {x:g}s crossfade")
+            members += [(n, off + o) for n, o in mem]
+            off += length - (x if k < len(ins) - 1 else 0.0)
+        placed[c["output"]] = (off, members)
+    if len(placed) != 1 or rec.get("audio") not in placed:
+        return errs + [f"take_crossfade: the joins do not end in one programme audio {rec.get('audio')!r} ({sorted(placed)})"]
+    length, members = placed[rec["audio"]]
+    total = float(concat.get("timeline_duration") or t)
+    if [n for n, _ in members] != list(range(len(spans))):
+        errs.append("take_crossfade: the programme audio does not hold the picks in programme order")
+    for n, off in members:
+        drift = off + float(spans[n].get("in_handle", 0)) - starts[n]
+        if abs(drift) > SYNC_TOLERANCE:
+            errs.append(f"take_crossfade: the audio of {spans[n]['asset']} lands {drift * 1000:+.1f} ms off its picture (A/V sync tolerance {SYNC_TOLERANCE * 1000:g} ms)")
+    if abs(length - total) > SYNC_TOLERANCE or abs(t - total) > SYNC_TOLERANCE or abs(float(rec.get("timeline_duration") or 0.0) - total) > SYNC_TOLERANCE:
+        errs.append(f"take_crossfade: programme audio {length:.4f}s / cut list {t:.4f}s / record {rec.get('timeline_duration')} do not match the assembled picture {total:.4f}s")
+    mux = rec.get("mux") or {}
+    if mux.get("video") != concat.get("output") or mux.get("audio") != rec.get("audio") or not mux.get("output"):
+        errs.append(f"take_crossfade: the mux puts {mux.get('audio')!r} under {mux.get('video')!r}, not the programme audio under the assembled picture {concat.get('output')!r}")
     return errs
 
 
@@ -556,7 +653,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     ids = {x["id"] for x in d["decisions"]}
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
-    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines:
+    xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
+    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
                 rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
