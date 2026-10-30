@@ -36,7 +36,8 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.",)      # 0.2.x: the contract this adapter was verified against
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+                                             # contract, now reporting the release version instead of a stale "0.2.0"
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
