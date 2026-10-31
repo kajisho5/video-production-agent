@@ -1055,7 +1055,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                         needed.update(ts.required_capabilities)
         if d["video"]["operations"] or any(t.get("preset") for t in d["delivery"]["targets"]):
             needed.add("encoder:libx264")
-        _REFERENCE_ENGINE_ONLY_OPS = ("video.switch", "video.grid", "video.redact", "video.deinterlace", "video.crop", "video.stabilize")   # ADR-045 / ADR-046: no "tool" key in OPERATIONS
+        _REFERENCE_ENGINE_ONLY_OPS = ("video.switch", "video.grid", "video.redact", "video.deinterlace", "video.stabilize")   # ADR-045 / ADR-046: no "tool" key in OPERATIONS (video.crop moved to video-editing, ADR-079)
         if any(op["type"] in SKILL_OF and op["type"] not in _REFERENCE_ENGINE_ONLY_OPS for op in d["video"]["operations"]):
             needed.add("video-editing")   # the editing operations exist only in video-editing-skill (ADR-029): UNKNOWN is not AVAILABLE
                                            # (the reference-engine-only ops above are the exception -- their own capability need already came from the registry above)

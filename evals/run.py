@@ -1030,6 +1030,13 @@ def run_case(case: dict) -> dict:
                 failures.append(f"IR with transcript is invalid: {svc.validate(ir).errors}")
         os.environ.pop("FAKE_TS_MODE", None); os.environ.pop("FAKE_TS_CACHE", None)
         return {"case": case["name"], "ok": not failures, "failures": failures}
+    elif case.get("crop_through_video_editing"):
+        # ADR-079: the crop runs through video-editing-skill's CROP, so a case that plans one adds the fake video-editing process
+        from video_agent.tools import ToolRouter
+        from video_agent.tools.video_editing import VideoEditingAdapter, VideoEditingSkill
+        skill = VideoEditingSkill([sys.executable, str(ROOT / "tests" / "fake_video_editing.py")], None, {})
+        ad = VideoEditingAdapter(skill, workspace=tmp, allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
+        svc = Service(workspace=tmp, adapter=ToolRouter([FakeAdapter(**fake), ad]), caps=FakeCaps(case.get("missing_capabilities", ()), extra=["video-editing"]), provider=provider)
     else:
         svc = Service(workspace=tmp, adapter=FakeAdapter(**fake), caps=FakeCaps(case.get("missing_capabilities", ())), provider=provider)
     ir = svc.plan([str(src)], case.get("profile", "generic"), request_text=case.get("request", ""), user_requirements=case.get("requirements"), kinds=case.get("kinds"))

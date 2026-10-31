@@ -5,7 +5,7 @@ proposes `video.crop` with the measured rectangle. Never applied without the use
   registry-selected cropdetect tool (`cropdetect.py`), which samples `--samples` windows spread across the file
   (`--seconds` of footage in all), reads the cropdetect filter per frame, and reports the most common rectangle, the share of readings that agree with it
   (`confidence`) and how many windows it could not decode. The agent asks for `--round 2` (media/analysis.py CROP_TOOL_ARGS): the active picture to the
-  nearest even pixel (crop.py needs even sizes) instead of cropdetect's default multiple of 16, which cuts up to 14 px
+  nearest even pixel (the crop needs even sizes) instead of cropdetect's default multiple of 16, which cuts up to 14 px
   into the picture. The agent never reads frames itself.
 - **Stable rectangle** (all of): a rectangle was reported; at least `MIN_WINDOWS` windows decoded; `confidence` ≥
   `MIN_CONFIDENCE` (one window in five disagreeing is already below it); after rounding the rectangle inward to even
@@ -14,7 +14,7 @@ proposes `video.crop` with the measured rectangle. Never applied without the use
 - **Decision**: a stable rectangle smaller than the frame → TRANSFORM `video.crop` on that asset, approval CONFIRM
   (floor: a profile cannot make it AUTO; the measurement is the agent's, not the user's request), provenance OBSERVED,
   evidence the measurement and the probe. Approved, the planner's existing `video.crop` step runs the registry-selected crop
-  tool (`crop.py`) with the rectangle; rejected, `revise` drops it. Anything else → KEEP (full frame) with the reason, no operation.
+  tool (video-editing-skill's CROP since ADR-079) with the rectangle; rejected, `revise` drops it. Anything else → KEEP (full frame) with the reason, no operation.
 - **Not proposed at all**: an explicit `edit.crop` (the user's rectangle wins), a programme built from several inputs
   (concat / switch / grid / takes: one input's bars do not describe the programme), the audio production path (no
   picture is delivered)."""
@@ -28,7 +28,7 @@ CROP_SKILL = "video_crop"
 MIN_CONFIDENCE = 0.9      # share of per-frame readings across every sampled window that agree with the reported rectangle
 MIN_WINDOWS = 3           # decoded windows the rectangle must rest on
 MIN_BAR_FRACTION = 0.01   # the bars must remove at least this share of the width or of the height
-MIN_SIDE = 16             # crop.py / the validator: width and height at least 16 px
+MIN_SIDE = 16             # the validator: width and height at least 16 px
 
 
 def crop_facts(data: Dict[str, Any]) -> Dict[str, Any]:
