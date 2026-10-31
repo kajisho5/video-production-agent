@@ -27,7 +27,7 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        self.assertEqual(mg.pinned_contract()["version"], "0.2.7")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false)
+        self.assertEqual(mg.pinned_contract()["version"], "0.2.8")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range
         for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9"):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
