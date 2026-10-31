@@ -44,7 +44,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
+from ..skill_process import (ENGINE_CONTRACT_VERSIONS, FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift, drift_report, error_table, failed_result, fingerprint_matches, invoke, one_json_document,
                              remove_fresh, same_file, scan_forbidden, scrub, strip_sha_prefix)
 from .locate import locate_thumbnail
 
@@ -110,8 +110,8 @@ def check_contract(contract: Any) -> List[str]:
     if list(ex.get("canonical_invocation") or []) != CANONICAL_INVOCATION:
         errs.append(f"canonical_invocation {ex.get('canonical_invocation')!r} != {CANONICAL_INVOCATION}")
     fs = contract.get("ffmpeg_skill") or {}
-    if str(fs.get("contract_version")) != "1.0" or not {"probe", "look"} <= {str(t) for t in fs.get("tools_used") or []}:
-        errs.append("ffmpeg_skill.contract_version 1.0 / tools_used probe+look missing")
+    if str(fs.get("contract_version")) not in ENGINE_CONTRACT_VERSIONS or not {"probe", "look"} <= {str(t) for t in fs.get("tools_used") or []}:
+        errs.append(f"ffmpeg_skill.contract_version {ENGINE_CONTRACT_VERSIONS} / tools_used probe+look missing")
     tools = {str(t.get("tool_id")): t for t in contract.get("tools") or [] if isinstance(t, dict)}
     for tid in TOOLS:
         t = tools.get(tid)

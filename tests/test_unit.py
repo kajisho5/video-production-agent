@@ -116,12 +116,13 @@ class AdapterTests(unittest.TestCase):
         0.10.0: per-tool doctor fields, contract reencodes_video/reencodes_audio, join.py's audio-less multi-clip
         fix -- no media behaviour changed for either); 0.11.x/0.12.x are accepted after this session's full
         real-Skill integration run against a live 0.12.3 checkout found no failures traced to ffmpeg-skill itself;
-        anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit."""
+        anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit.
+        ADR-082: 3.x is accepted (CI's integration runs the real-Skill suite against ffmpeg-skill main = 3.x and v2.24.1); 4.0.0 is not."""
         from video_agent.tools.ffmpeg_skill.locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (3, 0, 0)))
-        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9", "0.11.0", "0.12.2", "0.12.3", "1.10.0", "2.20.0"):
+        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (4, 0, 0)))
+        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9", "0.11.0", "0.12.2", "0.12.3", "1.10.0", "2.20.0", "2.24.1", "3.0.0", "3.9.9"):
             self.assertTrue(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
-        for v in ("0.8.3", "0.7.9", "3.0.0", "unknown", "", "0.9.x"):
+        for v in ("0.8.3", "0.7.9", "4.0.0", "unknown", "", "0.9.x"):
             self.assertFalse(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
 
     def test_argv_typed_and_catalog_enforced(self):
@@ -6277,7 +6278,7 @@ def _rename_flag(contract, tool, old, new):
 class FfmpegSkillContractCatalogTests(unittest.TestCase):
     """ADR-056 (roadmap step 3): the hand-maintained catalog is checked against ffmpeg-skill's own contract at locate time. A
     renamed / missing flag makes just that tool unavailable with a reason (capability `ffmpeg-skill:<tool>`, selection reason,
-    plan handoff) instead of an argparse error at run time; a contract that is not 1.x is refused as a whole."""
+    plan handoff) instead of an argparse error at run time; a contract that is not 1.x / 2.x is refused as a whole (ADR-082)."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -6335,14 +6336,21 @@ class FfmpegSkillContractCatalogTests(unittest.TestCase):
         self.assertIn("not published", chk.tool_reason("grid"))
         self.assertIn("positionals", chk.tool_reason("sync"))
 
-    def test_contract_version_2_is_refused(self):
+    def test_contract_version_2_is_read_and_3_is_refused(self):
+        """ADR-082: contract_version 2.0 (ffmpeg-skill 3.x) has the 1.0 shape and is checked the same way; any other major is refused."""
         from video_agent.tools.ffmpeg_skill.catalog import CATALOG
         from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
-        for bad in ("2.0", "0.9", None, "x"):
+        for good in ("1.0", "2.0", "2.1"):
+            chk = check_catalog(fake_ffmpeg_contract(good))
+            self.assertEqual((chk.status, chk.contract_version, chk.unavailable), ("checked", good, {}), good)
+        broken = fake_ffmpeg_contract("2.0")
+        broken["tools"] = [t for t in broken["tools"] if t["name"] != "cut"]
+        self.assertIn("not published", check_catalog(broken).tool_reason("cut"), "a 2.0 contract is checked tool by tool, not waved through")
+        for bad in ("3.0", "0.9", None, "x"):
             chk = check_catalog(fake_ffmpeg_contract(bad))
             self.assertEqual(chk.status, "refused", bad)
             self.assertTrue(all(chk.tool_reason(n) for n in CATALOG), "a refused contract rules out every tool")
-        self.assertIn("contract_version '2.0' is not 1.x", check_catalog(fake_ffmpeg_contract("2.0")).reason)
+        self.assertIn("contract_version '3.0' is not 1.x / 2.x", check_catalog(fake_ffmpeg_contract("3.0")).reason)
         c = fake_ffmpeg_contract()
         c["skill"]["id"] = "other-skill"
         self.assertEqual(check_catalog(c).status, "refused")
@@ -6397,17 +6405,25 @@ class FfmpegSkillContractCatalogTests(unittest.TestCase):
         self.assertEqual(a.build_argv("ffmpeg-skill/export", {"input": "/x/in.mp4", "preset": "youtube"}, {}), ["/x/in.mp4", "--preset", "youtube"])
         self.assertEqual(a.describe()["contract"]["unavailable"], {"cut": a.unavailable_reason("ffmpeg-skill/cut")})
 
-    def test_located_checkout_with_contract_version_2_is_refused(self):
+    def test_satellite_engine_declaration_accepts_contract_1_and_2(self):
+        """ADR-082: a satellite may declare it targets ffmpeg-skill contract 1.0 (2.x) or 2.0 (3.x); anything else is refused."""
+        from video_agent.tools.skill_process import engine_compat_errors
+        for cv in ("1.0", "2.0"):
+            self.assertEqual(engine_compat_errors({"contract_version": cv, "compatibility": {"model": "capability detection"}}), [], cv)
+        for cv in ("3.0", "1", None):
+            self.assertTrue(engine_compat_errors({"contract_version": cv, "compatibility": {"model": "capability detection"}}), cv)
+
+    def test_located_checkout_with_contract_version_3_is_refused(self):
         from video_agent.capabilities.resolver import ffmpeg_skill_capabilities
         from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
-        skill = locate_ffmpeg_skill(str(self._checkout(fake_ffmpeg_contract("2.0"))), env={})
+        skill = locate_ffmpeg_skill(str(self._checkout(fake_ffmpeg_contract("3.0"))), env={})
         caps = dict(FakeCaps().resolve())
         caps.update(ffmpeg_skill_capabilities(skill))
         self.assertEqual(caps["ffmpeg-skill"].status, "MISSING")
-        self.assertIn("contract_version '2.0'", caps["ffmpeg-skill"].detail)
+        self.assertIn("contract_version '3.0'", caps["ffmpeg-skill"].detail)
         tool, reason = self._registry().select_tool("loudness_normalization", caps, lambda t: t.startswith("ffmpeg-skill/"))
         self.assertIsNone(tool)
-        self.assertIn("contract_version '2.0' is not 1.x", reason)
+        self.assertIn("contract_version '3.0' is not 1.x / 2.x", reason)
         with self.assertRaises(ToolError):
             FfmpegSkillAdapter(skill).build_argv("ffmpeg-skill/probe", {"inputs": ["/x/in.mp4"]}, {})
 
