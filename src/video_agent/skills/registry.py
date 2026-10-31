@@ -376,6 +376,20 @@ def default_registry() -> SkillRegistry:
     # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is not in agent/editing.py's
     # OPERATIONS / EDIT_ORDER; it is the analysis kind `crop_rectangle` (ADR-060), whose stable rectangle becomes a
     # CONFIRM decision proposing video_crop (agent/crop.py).
+    # ---- blur faces (ADR-090): detection-skill's face boxes linked into redact rectangles (analysis kind face_tracks, a measurement that
+    # needs the package and its own FACES readiness `detection:FACES` from its doctor: opencv, the YuNet file and ffmpeg-skill frames), then
+    # an approved video.redact_faces executed by ffmpeg-skill: each segment cut out frame-accurately, its rectangles redacted, every piece
+    # put back over the source at its own time by broll (A's timeline and audio unchanged). Never an identity; no text / object redaction.
+    r.register(SkillSpec("face_detection", "1.0", "Face boxes on frames sampled every N seconds, linked over time into redact rectangles (detection-skill faces + tracks); "
+                                                    "measurement only, never an identity",
+                         {"asset": "video"}, {"observation": "face_tracks"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", ["detection/faces"]))
+    r.register(SkillSpec("face_redact_segment", "1.0", "Cut a time segment that holds measured faces out of the source, frame-accurately, to be blurred",
+                         {"asset": "video", "segments": "str"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/cut"]))
+    r.register(SkillSpec("face_redact_blur", "1.0", "Blur / pixelate one measured face rectangle on a cut segment (the segment is the rectangle's own span)",
+                         {"asset": "video", "x": "int", "y": "int", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/redact"]))
+    r.register(SkillSpec("face_redact_composite", "1.0", "Put every blurred segment back over the source at its own time (broll cutaways; the source's timeline and audio unchanged)",
+                         {"asset": "video", "inserts": "artifact[]"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/broll"]))
     r.register(SkillSpec("cropdetect_analysis", "1.0", "Measure black letterbox/pillarbox bars and report the crop rectangle that removes them (measurement only, no output file)",
                          {"asset": "video"}, {"observation": "crop_rectangle"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/cropdetect"]))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited

@@ -14,6 +14,7 @@ from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO
 from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
                       kept_duration)
 from .image_insert import still_frame
+from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
 from .handoffs import JOB_PREFIX
@@ -342,6 +343,33 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(d.decision)
 
+    def face_steps(asset: Any, current: str) -> "tuple[str, Optional[str]]":
+        """ADR-090: an approved (or pending) video.redact_faces on a source, before its trim (the rectangles are on the source timeline):
+        one IR operation and three steps -- the segments cut out, their rectangles redacted, the pieces put back over the source."""
+        nonlocal order
+        d = next((x for x in decisions if x.subject == FACE_SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == asset.id), None)
+        if d is None:
+            return current, None
+        op = ir_redact_faces(asset.id, current, d)
+        video_ops.append(op)
+        scope = {"start": 0.0, "end": round(durations.get(asset.id, 0.0), 3)}
+        segs = op["regions"]
+        seg_ids = [f"{asset.id}_faces_seg{n:02d}" for n in range(1, len(segs) + 1)]
+        blurred = [f"{asset.id}_faces_blur{n:02d}_{k}" for n, reg in enumerate(segs, start=1) for k in range(1, len(reg["rects"]) + 1)]
+        last_pieces = [f"{asset.id}_faces_blur{n:02d}_{len(reg['rects'])}" for n, reg in enumerate(segs, start=1)]
+        rp = {k: op[k] for k in ("mode", "blur_strength", "block_size") if k in op}
+        prev: Optional[str] = None
+        for sid, skill, params, ins, outs in (
+                (f"step_faces_segment_{asset.id}", FACE_SEGMENT_SKILL, {"segments": len(segs)}, [current], seg_ids),
+                (f"step_faces_blur_{asset.id}", FACE_BLUR_SKILL, {"rects": sum(len(x["rects"]) for x in segs), **rp}, seg_ids, blurred),
+                (f"step_faces_composite_{asset.id}", FACE_COMPOSITE_SKILL, {"inserts": len(segs)}, [current] + last_pieces, [op["output"]])):
+            order += 1
+            steps.append(ProductionStep(id=sid, order=order, skill=skill, tool=tool_for(skill), inputs=ins, params={"asset": asset.id, **params}, outputs=outs,
+                                        depends_on=[prev] if prev else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope))
+            prev = sid
+        summary.append(d.decision)
+        return op["output"], prev
+
     def image_insert_steps(subject: str, sources: List[str]) -> None:
         """ADR-070: the still of a `video.image_insert` decision → a silent clip at the picture's own frame / rate (video_image_insert),
         then the join of that clip and the finished picture in the decided order (video_concat). One IR operation records both; it runs
@@ -568,6 +596,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
         current = asset.id
         last_step: Optional[str] = None
+        if asset.id not in audio_subjects:   # ADR-090: faces are blurred on the source timeline, before anything re-times it
+            current, last_step = face_steps(asset, current)
         audio_remove: List[List[float]] = []   # ADR-072: what this plan cuts out of the input's audio (the filler words' times follow it)
         if (dec_ids or internal) and end > start:
             keep = [[round(start, 3), round(end, 3)]]
@@ -594,7 +624,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 cut_ids = dec_ids + extract_ids(asset.id)
                 audio_ops.append(ir_audio_operation("audio.cut", asset.id, {"remove": remove}, cut_ids, scope={"start": 0.0, "end": kept_after_cut(dur, remove)}, input=current, output=f"{asset.id}_cut"))
                 st = ProductionStep(id=f"step_cut_{asset.id}", order=order, skill="audio_cut", tool=tool_for("audio_cut"), inputs=[current],
-                                    params={"asset": asset.id, "remove": remove}, outputs=[f"{asset.id}_cut"], depends_on=[], evidence=evidence_of(cut_ids), decision_ids=cut_ids,
+                                    params={"asset": asset.id, "remove": remove}, outputs=[f"{asset.id}_cut"], depends_on=[last_step] if last_step else [], evidence=evidence_of(cut_ids), decision_ids=cut_ids,
                                     decision_id=dec_ids[0], temporal_scope={"start": 0.0, "end": kept_after_cut(dur, remove)})
                 scope_of[asset.id] = {"start": 0.0, "end": kept_after_cut(dur, remove)}
             else:
@@ -606,7 +636,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids})
                 st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill=trim_skill, tool=tool_for(trim_skill), inputs=[current],
                                     params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate}, outputs=[f"{asset.id}_trim"],
-                                    depends_on=[], evidence=evidence_of(dec_ids), decision_ids=dec_ids, decision_id=dec_ids[0],
+                                    depends_on=[last_step] if last_step else [], evidence=evidence_of(dec_ids), decision_ids=dec_ids, decision_id=dec_ids[0],
                                     temporal_scope={"start": keep[0][0], "end": keep[-1][1]})
                 scope_of[asset.id] = {"start": 0.0, "end": round(kept_total, 3)}
             steps.append(st)
@@ -830,12 +860,13 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         qc_steps(PROGRAMME, qc_tolerance_lu)
     # ---- ecosystem jobs handed off (ADR-057): one step per requested job, on the request's assets, with no tool (BLOCKED; the
     # plan's handoff names the owning package and its install command). It waits on nothing and produces nothing the agent tracks.
-    for d in [x for x in decisions if x.subject.startswith(JOB_PREFIX) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
+    # ADR-083 / ADR-090: a measurement an explicit requirement asked for that no tool can run here (`handoff: true`) takes the same step
+    for d in [x for x in decisions if (x.subject.startswith(JOB_PREFIX) or x.params.get("handoff") is True) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
         skill = d.params["skill"]
         order += 1
         steps.append(ProductionStep(id=f"step_job_{skill}", order=order, skill=skill, tool=tool_for(skill), inputs=[a.id for a in analysis.assets],
                                     params={}, outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
-        summary.append(f"Hand off {skill} ({d.subject}): no adapter here; see the plan's handoff")
+        summary.append(f"Hand off {skill} ({d.subject}): " + ("not runnable here" if d.params.get("handoff") else "no adapter here") + "; see the plan's handoff")
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:

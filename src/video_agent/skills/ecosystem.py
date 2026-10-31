@@ -85,7 +85,9 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),
               package_install=_clone_pip("diarization-skill", "pyannote")),
     Component("detection", "detection-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("顔検出", "文字検出(OCR)", "物体検出"),
-              package_install=_clone_pip("detection-skill", "all")),
+              package_install=_clone_pip("detection-skill", "all"),
+              note="face tracks to blur as the analysis kind face_tracks (ADR-090); faces also need the YuNet model file face_detection_yunet_2026may.onnx "
+                   "in DETECTION_MODELS_DIR (`detection doctor` prints where to get it; the Skill never downloads)"),
     Component("slide-sync", "slide-sync-skill", "recognize", "pip", "active", plugin=True, owns=("スライド取込", "スライド切替検出"),
               package_install=_clone_pip("slide-sync-skill", "pdf")),
     Component("artifacts", "artifacts-skill", "verify", "pip", "active", plugin=True, owns=("生成文書の検証",), package_install=_clone_pip("artifacts-skill", "all")),

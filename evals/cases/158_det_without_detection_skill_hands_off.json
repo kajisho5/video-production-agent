@@ -1,0 +1,33 @@
+{
+ "name": "det_without_detection_skill_hands_off",
+ "faces": {
+  "installed": false,
+  "faces": [
+   {
+    "start": 2.0,
+    "end": 6.0,
+    "box": [
+     101.0,
+     61.0,
+     81.0,
+     99.0
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "edit.redact_faces": true
+ },
+ "expect": {
+  "plan_status": "BLOCKED",
+  "decision": null,
+  "handoffs": [
+   [
+    "face_detection",
+    [
+     "detection-skill"
+    ]
+   ]
+  ]
+ }
+}

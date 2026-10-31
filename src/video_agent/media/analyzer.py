@@ -158,6 +158,11 @@ class MediaAnalyzer(Analyzer):
                         continue
                     kp = dict(CROP_TOOL_ARGS)   # the agent's fixed sampling: the observation's parameters and part of its cache key
                     args = {"input": asset.path, **kp}
+                elif kind == "face_tracks":
+                    if not asset.technical.get("video"):
+                        rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no video stream"})
+                        continue
+                    args = {"input": asset.path}
                 else:
                     args = {"input": asset.path}
                 o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
@@ -293,6 +298,12 @@ class MediaAnalyzer(Analyzer):
             row["cache"] = (r.data or {}).get("cache")
             row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
             row["engine"] = (r.data or {}).get("engine")
+        elif kind == "face_tracks" and isinstance(r.data, dict) and isinstance(r.data.get("tracks"), dict):
+            o = self._lift_face_tracks(r.data, asset, req, source, key, tool, kparams)
+            if asset.hash and o.fingerprint != asset.hash:   # the boxes are about this file's bytes (detection-skill's source.fingerprint)
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"face tracks fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+                return None, row
+            row["engine"] = (r.data or {}).get("engine")
         elif isinstance(ext_obs, dict) and isinstance(ext_obs.get("analysis"), dict):
             o = self._lift(ext_obs, r.data, kind, asset, req, source, key)
             row["cache"] = (r.data or {}).get("cache")
@@ -344,6 +355,24 @@ class MediaAnalyzer(Analyzer):
                            analyzer=f"{tr.get('engine')}@{tr.get('engine_version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
                            skill_version=str(sk.get("version") or prov.get("skill_version") or ""), tool=tool, external_id=str(tr.get("id") or ""),
                            fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp, parameters=params, cache=dict(data.get("cache") or {}))
+
+    @staticmethod
+    def _lift_face_tracks(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """Lift detection-skill's face tracks (detection-skill/tracks@1 made from its detections@1, ADR-090) into an Observation of kind
+        `face_tracks`: the tracks with their redact rectangles as the Skill wrote them, how frames were sampled, the counts, the engine /
+        model / sha256, and the two files the agent wrote into its workspace. OBSERVED: a detector's boxes, never an identity."""
+        tr = dict(data["tracks"])
+        det = dict(data.get("detections") or {})
+        eng = det.get("engine") or {}
+        sk = data.get("skill") or {}
+        fp = str((tr.get("source") or {}).get("fingerprint") or "")
+        body = {"tracks": tr.get("tracks") or [], "counts": tr.get("counts") or {}, "frame_size": tr.get("frame_size") or {}, "method": {k: v for k, v in (tr.get("method") or {}).items() if k != "note"},   # the Skill's prose note quotes flags in backticks (not a fact)
+                "parameters": tr.get("parameters") or {}, "detections": det, "detections_file": data.get("detections_file"), "tracks_file": data.get("tracks_file"),
+                "warnings": list(data.get("warnings") or [])}
+        return Observation(kind="face_tracks", asset_id=asset.id, source=source, data=body, observed_at=str(tr.get("created_at") or now_iso()),
+                           analysis_id=req.analysis_id, analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
+                           skill_version=str(sk.get("version") or tr.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                           parameters={**dict(kparams), "model": eng.get("model"), "model_sha256": eng.get("model_sha256")})
 
     @staticmethod
     def _shape(kind: str, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:

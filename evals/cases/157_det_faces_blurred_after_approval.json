@@ -1,0 +1,61 @@
+{
+ "name": "det_faces_blurred_after_approval",
+ "faces": {
+  "faces": [
+   {
+    "start": 2.0,
+    "end": 6.0,
+    "box": [
+     101.0,
+     61.0,
+     81.0,
+     99.0
+    ]
+   },
+   {
+    "start": 4.0,
+    "end": 9.0,
+    "box": [
+     600.0,
+     200.0,
+     50.0,
+     60.0
+    ]
+   }
+  ]
+ },
+ "requirements": {
+  "edit.redact_faces": true
+ },
+ "expect": {
+  "plan_status": "REVIEW",
+  "decision": [
+   "TRANSFORM",
+   "CONFIRM"
+  ],
+  "regions": [
+   [
+    1.5,
+    3.5,
+    1
+   ],
+   [
+    3.5,
+    6.5,
+    2
+   ],
+   [
+    6.5,
+    9.5,
+    1
+   ]
+  ],
+  "handoffs": [],
+  "rendered_tools": [
+   "ffmpeg-skill/broll",
+   "ffmpeg-skill/cut",
+   "ffmpeg-skill/redact"
+  ],
+  "status": "COMPLETED"
+ }
+}

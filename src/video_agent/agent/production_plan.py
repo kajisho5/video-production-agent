@@ -61,6 +61,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    # card offload (ADR-066): the card, the destinations the user named and the copy folder ingest-skill makes in each
                    "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots"),
                    # voice-enhance-skill (ADR-073): the subject (the programme for bleed reduction, with its tracks) and the typed engine parameters
+                   # ADR-090: blur faces -- how many segments are cut, how many rectangles redacted (with redact.py's mode / strength), how many pieces put back
+                   "face_redact_segment": ("asset", "segments"), "face_redact_blur": ("asset", "rects", "mode", "blur_strength", "block_size"),
+                   "face_redact_composite": ("asset", "inserts"),
                    "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db")}
 
 

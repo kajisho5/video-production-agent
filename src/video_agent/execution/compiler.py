@@ -20,6 +20,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKI
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepared_id
+from ..agent.faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, TOOL_NAMES as FACE_TOOL_NAMES
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
 from ..tools.voice_enhance.adapter import stem_name as voice_stem_name
 from ..models import Operation, stable_hash
@@ -123,6 +124,34 @@ def lower_image_insert(tool: str, join_tool: str, op: Dict[str, Any], image_id: 
     still = {"input": image_id, "duration": float(op["duration"]), **frame, "output": still_id}
     join = {"inputs": [still_id, current] if op["position"] == "before" else [current, still_id], **frame, "output": out_id}
     return still, join
+
+
+def lower_redact_faces(tools: Dict[str, str], op: Dict[str, Any], current: str, seg_ids: List[str], blur_ids: List[List[str]], out_id: str
+                       ) -> Tuple[List[Dict[str, Any]], List[List[Dict[str, Any]]], Dict[str, Any]]:
+    """ADR-090: IR `video.redact_faces` → (one cut per region, the redacts of each region in order, the broll). Each region is cut out of the
+    source frame-accurately ([start, end] as decided), each of its rectangles redacted on that piece (redact.py's x / y / width / height,
+    mode and its one parameter), and every last piece shown over the source at its own [start, end] with the source's own audio (`audio: a`).
+    The tools are the plan's; each skill has exactly one."""
+    for skill, want in FACE_TOOL_NAMES.items():
+        if str(tools.get(skill) or "").split("/", 1)[-1] != want:
+            raise CompileError(f"{FACE_SUBJECT} needs a {want} tool for {skill}, the plan names {tools.get(skill)}")
+    cuts: List[Dict[str, Any]] = []
+    blurs: List[List[Dict[str, Any]]] = []
+    last: List[str] = []
+    extra = {k: op[k] for k in ("blur_strength", "block_size") if op.get(k) is not None}
+    for reg, seg_id, ids in zip(op["regions"], seg_ids, blur_ids):
+        if len(ids) != len(reg["rects"]):
+            raise CompileError(f"{FACE_SUBJECT}: {len(reg['rects'])} rectangle(s) but {len(ids)} output id(s)")
+        cuts.append({"input": current, "segments": f"{float(reg['start']):.3f}-{float(reg['end']):.3f}", "accurate": True, "output": seg_id})
+        prev, row = seg_id, []
+        for r, bid in zip(reg["rects"], ids):
+            row.append({"input": prev, "x": int(r["x"]), "y": int(r["y"]), "width": int(r["width"]), "height": int(r["height"]), "mode": op["mode"], **extra, "output": bid})
+            prev = bid
+        blurs.append(row)
+        last.append(prev)
+    broll = {"input": current, "insert": last, "at": [f"{float(r['start']):.3f}" for r in op["regions"]], "end": [f"{float(r['end']):.3f}" for r in op["regions"]],
+             "audio": "a", "output": out_id}
+    return cuts, blurs, broll
 
 
 def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -599,6 +628,25 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         stem = f"{idx:02d}_{Path(asset['path']).stem}"  # index keeps two inputs with the same file name apart
         state[asset_id] = {"current": asset_id, "gen": 0, "stem": stem, "fp": fp}
         st = state[asset_id]
+        faces = next((op for op in d["video"]["operations"] if op["asset"] == asset_id and op["type"] == FACE_SUBJECT), None)
+        if faces is not None:   # ADR-090: faces blurred on the source timeline, before the trim re-times it
+            ids = list(faces.get("decision_ids") or [])
+            seg_ids = [f"{asset_id}_faces_seg{n:02d}" for n in range(1, len(faces["regions"]) + 1)]
+            blur_ids = [[f"{asset_id}_faces_blur{n:02d}_{k}" for k in range(1, len(reg["rects"]) + 1)] for n, reg in enumerate(faces["regions"], start=1)]
+            out_id = faces.get("output") or f"{asset_id}_redact_faces"
+            ftools = {sk: tool_for(sk, asset_id) for sk in FACE_TOOL_NAMES}
+            cuts, blurs, broll = lower_redact_faces(ftools, faces, st["current"], seg_ids, blur_ids, out_id)
+            st["gen"] += 1
+            fdir = job / "ops" / f"{stem}_{st['gen']:02d}_redact_faces"
+            for c, row in zip(cuts, blurs):
+                paths[c["output"]] = str(fdir / f"{c['output']}.mp4")
+                add(ftools[FACE_SEGMENT_SKILL], c, [c["input"]], [c["output"]], ids, fp, skill=FACE_SEGMENT_SKILL)
+                for b in row:
+                    paths[b["output"]] = str(fdir / f"{b['output']}.mp4")
+                    add(ftools[FACE_BLUR_SKILL], b, [b["input"]], [b["output"]], ids, fp, skill=FACE_BLUR_SKILL)
+            paths[out_id] = str(fdir / f"{stem}_redact_faces.mp4")
+            add(ftools[FACE_COMPOSITE_SKILL], broll, [broll["input"]] + list(broll["insert"]), [out_id], ids, fp, skill=FACE_COMPOSITE_SKILL)
+            st["current"] = out_id
         for op in d["video"]["operations"]:
             if op["asset"] != asset_id or op["type"] != "video.trim":
                 continue

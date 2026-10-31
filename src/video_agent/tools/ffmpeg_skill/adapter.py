@@ -126,6 +126,13 @@ class FfmpegSkillAdapter(ToolAdapter):
             elif typ == "list[str]":
                 for v in val:
                     argv += [flag, str(v)]
+            elif typ == "list[path_in]":   # ADR-090: broll --insert, one input file per cutaway
+                for v in val:
+                    p = paths.get(v, v)
+                    if self.policy:
+                        self.policy.check_input(p)
+                    inputs.append(p)
+                    argv += [flag, p]
             elif typ in ("path_in", "path_out"):
                 p = paths.get(val, val)
                 if self.policy:

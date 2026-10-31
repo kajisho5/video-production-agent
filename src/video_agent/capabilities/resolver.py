@@ -28,6 +28,7 @@ from ..tools.thumbnail import ThumbnailAdapter, locate_thumbnail
 from ..tools.ingest import IngestAdapter, locate_ingest
 from ..tools.voice_enhance import VoiceEnhanceAdapter, locate_voice_enhance
 from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
+from ..tools.detection import DetectionAdapter, locate_detection
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -301,6 +302,12 @@ class CapabilityResolver:
         # resize / pad but not strip). Each tool gets `imagemagick-skill:<TYPE>` from the doctor's `tools.<name>.usable`, with the backend.
         self._finishing_skill(caps, "imagemagick-skill", locate_imagemagick(env=self.env), lambda sk: ImageMagickAdapter(sk), "VIDEO_AGENT_IMAGEMAGICK_DIR", "imagemagick-skill",
                               "npx imagemagick-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # detection-skill (ADR-090): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (tracks / check run, an
+        # engine or model missing). `detection:FACES` follows the doctor's ready.faces and ready.video_frames (ffmpeg-skill named: the agent's own checkout),
+        # with the code its faces command would return (FFMPEG_SKILL_NOT_FOUND / ENGINE_UNAVAILABLE / MODEL_NOT_FOUND) and the doctor's install lines.
+        self._finishing_skill(caps, "detection", locate_detection(env=self.env), lambda sk: DetectionAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_DETECTION_DIR", "detection-skill", "detection", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:
