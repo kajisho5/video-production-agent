@@ -93,7 +93,7 @@ GRAPHICS_SKILL = "motion_graphics"
 # ADR-064: the vocabulary is read from the pinned motion-graphics contract (the data file the adapter pins, read as data so the agent
 # layer never imports a tool package): every element type it offers, each with every parameter it declares, by the contract's names
 # and ranges. A re-pin that adds an element or a parameter changes this vocabulary with it (tests/test_satellite_params.py says so).
-MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.7.json"
+MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.8.json"
 _MOTION_CONTRACT: Dict[str, Any] = json.loads(MOTION_CONTRACT_PATH.read_text(encoding="utf-8"))
 MOTION_ELEMENT_SPECS: Dict[str, Dict[str, Any]] = {str(e["type"]): e for e in _MOTION_CONTRACT["element_types"]}
 # element type → (its `--set` key, the contract parameter that key's value sets; None = the key is a plain switch: the element has no

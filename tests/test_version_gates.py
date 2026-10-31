@@ -27,7 +27,7 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        self.assertEqual(mg.pinned_contract()["version"], "0.2.7")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false)
+        self.assertEqual(mg.pinned_contract()["version"], "0.2.8")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range
         for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9"):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
@@ -42,7 +42,7 @@ class VersionGateTests(unittest.TestCase):
 
     def test_qc_release_versions(self):
         """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
-        self.assertEqual(qc.pinned_contract()["version"], "0.2.5")   # ADR-078: qc-skill #25 (per-operation tool_ids)
+        self.assertEqual(qc.pinned_contract()["version"], "0.2.6")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only
         for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.9"):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
@@ -52,7 +52,7 @@ class VersionGateTests(unittest.TestCase):
 
     def test_subtitle_release_versions(self):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
-        self.assertEqual(st.pinned_contract()["version"], "0.4.0")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines
+        self.assertEqual(st.pinned_contract()["version"], "0.4.1")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only
         for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3"):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)

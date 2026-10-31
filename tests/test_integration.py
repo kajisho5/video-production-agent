@@ -438,8 +438,16 @@ class RealMediaTests(unittest.TestCase):
         time.sleep(0.5)
         ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
         self.assertNotIn(str(job_dir), ps, "an ffmpeg writing into the job dir survived the timeout")
-        partial = list((job_dir / "ops").rglob("*.mp4"))
-        self.assertEqual(partial, [], "half-written outputs must not be left for a retry to collide with")
+        # ADR-082: which ops finish inside the 1 s / doubled 2 s retry depends on the engine's speed (ffmpeg-skill 3.x's cut.py and
+        # loudness.py do; 2.x's did not), so the check is exact rather than "nothing at all": every file left under ops/ is the output
+        # of an attempt that completed (exit 0), and an attempt that timed out left no file behind for a retry to collide with.
+        results = out["execution"]["results"]
+        completed = {os.path.realpath(r["output"]) for r in results if r["ok"] and r["exit_code"] == 0 and r["output"]}
+        left = {os.path.realpath(str(x)) for x in (job_dir / "ops").rglob("*.mp4")}
+        self.assertEqual(left, completed, "half-written outputs must not be left for a retry to collide with")
+        failed = out["execution"]["failed_op"]
+        self.assertTrue(failed and not any(r["ok"] for r in results if r["op_id"] == failed), out["execution"])
+        self.assertTrue(all(r["exit_code"] == 124 for r in results if r["op_id"] == failed))
 
     def test_hdr_and_vfr_are_observed_and_decided(self):
         hdr = str(Path(self.tmp) / "src" / "hdr.mp4")
@@ -689,14 +697,17 @@ class FfmpegSkillContractTests(unittest.TestCase):
         self.assertTrue(bad.approve(load_ir(p), p, ["all"])["renderable"])
 
     def test_contract_publishes_every_catalog_flag(self):
-        """ADR-056 (roadmap step 3): ffmpeg-skill main's own `_contract.py --json --static` is contract_version 1.x and every flag,
+        """ADR-056 (roadmap step 3): ffmpeg-skill main's own `_contract.py --json --static` is contract_version 1.x (ffmpeg-skill 2.x) or
+        2.x (ffmpeg-skill 3.x, ADR-082) and every flag,
         switch arity and positional the hand-maintained catalog uses is in that tool's input_schema -- so on main no catalogued
         tool is ruled out by the contract (doctor's per-tool verdict depends on this machine's ffmpeg and is checked apart)."""
         from video_agent.tools.ffmpeg_skill.contract_check import check_catalog, read_catalog_check, read_contract
         skill = locate_ffmpeg_skill()
         contract, err = read_contract(skill.root)
         self.assertIsInstance(contract, dict, err)
-        self.assertTrue(str(contract["contract_version"]).startswith("1."), contract["contract_version"])
+        want_major = {"2": "1.", "3": "2."}.get(str(skill.version).split(".", 1)[0])
+        self.assertIsNotNone(want_major, f"ffmpeg-skill {skill.version} is outside the 2.x / 3.x this test knows")
+        self.assertTrue(str(contract["contract_version"]).startswith(want_major), (skill.version, contract["contract_version"]))
         chk = check_catalog(contract, None, skill.scripts)
         self.assertEqual((chk.status, chk.unavailable), ("checked", {}))
         self.assertEqual(set(CATALOG) - set(skill.scripts), set())
@@ -1951,7 +1962,7 @@ class VideoEditingRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.1"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.2"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
         # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
@@ -2051,7 +2062,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
         self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.1")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.2")
         self.assertEqual(len(prov["skill_observations"]), len(rows))
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
@@ -2106,7 +2117,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
-        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.1" for e in rows.values()))
+        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.2" for e in rows.values()))
 
     def test_image_insert_before_the_picture_end_to_end(self):
         """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
@@ -2144,7 +2155,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
         self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
         self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
-        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.1")
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.2")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")

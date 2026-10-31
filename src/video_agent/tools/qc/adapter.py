@@ -64,6 +64,7 @@ DOCTOR_SCHEMA = "qc/doctor@1"
 # nothing else in the contract changed, so the gate widens to 0.2.x and the pin is re-taken from main (ADR-056, qc の追記).
 # 0.2.3 (qc-skill #23): opt-in VMAF / SSIM / PSNR against request.reference_video; the pin is re-taken from main (ADR-058).
 # 0.2.5 (qc-skill #25): provides[] carry per-operation tool_ids (qc/check, qc/inspect; qc/run an alias) and a top-level tools list; nothing the adapter sends changed (ADR-078).
+# 0.2.6 (qc-skill #26, roadmap docs only): version-only; the pin is re-taken from main (ADR-081).
 SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
 CANONICAL_INVOCATION = ["qc", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False}
@@ -106,7 +107,7 @@ def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.5.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.6.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

@@ -57,6 +57,7 @@ REQUEST_SCHEMA = "motion-graphics/request@1"
 RESPONSE_SCHEMA = "motion-graphics/response@1"
 DOCTOR_SCHEMA = "motion-graphics/doctor@1"
 SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.x: the same contract, now reporting its release version (0.2.4 adds colors / alpha: false, ADR-067)
+# 0.2.8: dependencies[0].version_range ffmpeg-skill ">=1.0 <3.0" (was <2.0); nothing else changed; re-pinned (ADR-083).
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["motion-graphics", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
@@ -71,7 +72,7 @@ DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_ele
               "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors",
               "colors")   # ADR-067: 0.2.4's colour-name table, which the agent's planning reads from the pin
 DRIFT_ELEMENT_KEYS = ("type", "tool", "animation", "parameters", "required_capabilities", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.7.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.8.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
