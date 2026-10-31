@@ -366,9 +366,10 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/redact"]))
     r.register(SkillSpec("video_deinterlace", "1.0", "Deinterlace (yadif); quality-only but re-encodes the whole file (lossy), so it is CONFIRM not AUTO",
                          {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "CONFIRM", ["ffmpeg-skill/deinterlace"]))
+    # ADR-079: video-editing-skill 0.4.1's CROP (it owns the pixel-rectangle crop now; it calls ffmpeg-skill crop.py itself), not crop.py directly
     r.register(SkillSpec("video_crop", "1.0", "Crop to a caller-supplied exact pixel rectangle; no auto letterbox/aspect detection (that is video_fit/video_fill)",
-                         {"asset": "video", "x": "float", "y": "float", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
-                         ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/crop"]))
+                         {"asset": "video", "x": "int", "y": "int", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/crop"]))
     r.register(SkillSpec("video_stabilize", "1.0", "Stabilize shaky footage (vidstab, two-pass analysis + render)",
                          {"asset": "video"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "MEDIUM", True, "CONFIRM", ["ffmpeg-skill/stabilize"]))
     # cropdetect is deliberately NOT a pipeline edit op (ADR-046): it is a read-only measurement (reports a crop

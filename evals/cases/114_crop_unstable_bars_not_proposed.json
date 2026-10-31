@@ -1,6 +1,7 @@
 {
  "name": "crop_unstable_bars_not_proposed",
  "profile": "generic",
+ "crop_through_video_editing": true,
  "kinds": [
   "crop_rectangle"
  ],
