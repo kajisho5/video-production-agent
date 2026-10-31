@@ -20,6 +20,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKI
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepared_id
+from ..agent.documents import SKILL as DOCUMENT_SKILL, TOOL_NAME as DOCUMENT_TOOL_NAME
 from ..agent.remotion import FILE_KEYS as REMOTION_FILE_KEYS, PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
 from ..tools.remotion.adapter import render_name as remotion_render_name
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, TOOL_NAMES as BGM_TOOL_NAMES, skill_of as bgm_skill_of
@@ -880,4 +881,11 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         delivery(subject)
         thumbnail(subject)
         qc_gate(subject)
+    for doc in (d.get("qa") or {}).get("documents") or []:   # ADR-095: artifacts-skill verifies the document read-only; QA gates on its checks
+        tool = tool_for(DOCUMENT_SKILL, "")
+        if tool.rsplit("/", 1)[-1] != DOCUMENT_TOOL_NAME:
+            raise CompileError(f"{DOCUMENT_SKILL} needs a verify tool, the plan names {tool}")
+        paths[doc["id"]], keys[doc["id"]] = doc["path"], ""
+        add(tool, {"input": doc["id"], **({"preset": doc["preset"]} if doc.get("preset") else {})}, [doc["id"]], [], list(doc.get("decision_ids") or []), "", kind="qa",
+            skill=DOCUMENT_SKILL)
     return ops, paths

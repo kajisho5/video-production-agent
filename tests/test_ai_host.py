@@ -101,6 +101,7 @@ ECOSYSTEM_JOBS = {
     "dubbing": ("dubbing", "dubbing-skill", f"git clone {_GH}dubbing-skill && pip install -e 'dubbing-skill'"),
     # sound_design (sound-design) too (ADR-092): the implemented music bed bgm_library / bgm_generate (tests/test_bgm.py)
     # measured_motion_graphics (remotion-ffmpeg-skill) too (ADR-093): the implemented measured_motion (tests/test_remotion.py)
+    # document_verification (artifacts-skill) too (ADR-095): the implemented document_verify (tests/test_documents.py)
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
@@ -108,7 +109,6 @@ ECOSYSTEM_JOBS = {
     # ADR-080: blender-skill / hyperframes-skill are named by their own skill_id (the prefix of the tool id their pinned contract provides)
     "render_3d": ("blender-skill", "blender-skill", "npx blender-skill"),
     "html_scene_render": ("hyperframes-skill", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
-    "document_verification": ("artifacts", "artifacts-skill", f"git clone {_GH}artifacts-skill && pip install -e 'artifacts-skill[all]'"),
     "bluray_authoring": ("bdmvkit", "bdmvkit", "pip install bdmvkit"),
     "dvd_authoring": ("vtskit", "vtskit", "pip install vtskit"),
     "disc_image": ("udfkit", "udfkit", "pip install udfkit"),
@@ -263,8 +263,15 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_html_scene_render(self):
         self.assert_handoff("html_scene_render")
 
-    def test_document_verification(self):
-        self.assert_handoff("document_verification")
+    def test_document_verification_moved_to_the_artifacts_adapter(self):
+        """ADR-095: `job.document_verification` is no longer a handoff switch; it is refused with how the implemented step is asked for."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.document_verification": True})
+        self.assertIn("document.verify", str(cm.exception))
+        self.assertNotIn("document_verification", svc.registry.names())
+        self.assertEqual(svc.registry.get("document_verify").tools, ["artifacts-skill/verify"])
 
     def test_bluray_authoring(self):
         self.assert_handoff("bluray_authoring")

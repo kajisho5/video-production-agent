@@ -3610,3 +3610,53 @@ class RemotionRealTests(unittest.TestCase):
         [blk] = [d for d in ir.doc["decisions"] if d["subject"] == "video.measured_motion"]
         self.assertEqual(blk["type"], "BLOCK")
         self.assertIn("npm install", blk["reason"])
+
+
+class DocumentVerifyRealTests(unittest.TestCase):
+    """ADR-095 on the real artifacts-skill (main, contract 0.3.0) run from its checkout: the live contract equals the pin, its doctor has a format's
+    structural verification ready (Markdown needs only the standard library), and a video rendered with a Markdown script beside it ends COMPLETED when
+    the script is clean and in REVIEW (QA FAIL, `leftover_placeholder_text`) when it still carries a TODO -- the roadmap's done-when."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.artifacts import locate_artifacts
+        cls.af = locate_artifacts()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_af_"))
+
+    def setUp(self):
+        if not self.af:
+            self.skipTest("needs an artifacts-skill checkout (VIDEO_AGENT_ARTIFACTS_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_and_doctor(self):
+        from video_agent.tools.artifacts import ArtifactsAdapter
+        ad = ArtifactsAdapter(self.af)
+        self.assertEqual(ad.drift(), [], "the installed artifacts-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(ad.operation_status(doc)["VERIFY"], "supported", doc.get("problems"))
+        self.assertIn("markdown", doc["formats"])
+
+    def test_placeholder_in_the_script_fails_qa_end_to_end(self):
+        src = str(Path(self.tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        make_media(src)
+        docs = Path(self.tmp) / "docs"
+        docs.mkdir(parents=True, exist_ok=True)
+        results = {}
+        for name, text in (("clean.md", "# Script\n\n- Hello.\n- The end.\n"), ("draft.md", "# Script\n\n- Hello.\n- TODO: write the ending.\n")):
+            (docs / name).write_text(text, encoding="utf-8")
+            svc = Service(workspace=str(Path(self.tmp) / f"ws_{name}"))
+            ir = svc.plan([src], "generic", user_requirements={"document.verify": str(docs / name)})
+            step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "document_verify")
+            self.assertEqual(step["tool"], "artifacts-skill/verify")
+            p = str(Path(self.tmp) / f"{name}.json")
+            save_ir(ir, p)
+            results[name] = svc.render(load_ir(p), p, approve=["all"])
+        clean, draft = results["clean.md"], results["draft.md"]
+        self.assertEqual(clean["status"], "COMPLETED", clean.get("qa"))
+        self.assertEqual([(i["name"], i["status"]) for i in clean["qa"]["items"] if i["layer"] == "document"], [("verdict", "PASS")])
+        self.assertEqual(draft["status"], "REVIEW", draft.get("qa"))
+        items = {i["name"]: i for i in draft["qa"]["items"] if i["layer"] == "document"}
+        self.assertEqual((items["verdict"]["status"], items["leftover_placeholder_text"]["status"], items["leftover_placeholder_text"]["observed"]), ("FAIL", "FAIL", ["todo"]))

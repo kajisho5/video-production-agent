@@ -793,6 +793,53 @@
        }
       }
      }
+    },
+    "documents": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "id",
+       "path",
+       "name",
+       "sha256",
+       "decision_ids"
+      ],
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "path": {
+        "type": "string",
+        "minLength": 1
+       },
+       "name": {
+        "type": "string",
+        "minLength": 1
+       },
+       "sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+       },
+       "preset": {
+        "enum": [
+         "print-a4",
+         "print-letter",
+         "slides-16x9",
+         "spreadsheet-no-cached-errors",
+         "web-no-external"
+        ]
+       },
+       "decision_ids": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
     }
    }
   },

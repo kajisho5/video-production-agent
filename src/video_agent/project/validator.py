@@ -17,6 +17,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
+from ..agent.documents import SKILL as DOCUMENT_SKILL, document_problems
 from ..agent.remotion import SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT, remotion_problems
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
 from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
@@ -1127,6 +1128,10 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 if not any((s.get("params") or {}).get("asset") == subj and (s.get("params") or {}).get("target") == target and (s.get("params") or {}).get("kind") == "delivery_package"
                            for s in qc_steps):
                     rep.errors.append(f"qa.qc: package {subj}/{target} has no qc_check step")
+    for doc in (d.get("qa") or {}).get("documents") or []:   # ADR-095: each verified document has its step, by id
+        rep.errors.extend(document_problems(doc))
+        if not any(s["skill"] == DOCUMENT_SKILL and (s.get("params") or {}).get("document") == doc.get("id") for s in d["plan"]["steps"]):
+            rep.errors.append(f"qa.documents: {doc.get('id')} has no {DOCUMENT_SKILL} step")
     # temporal layer: events are validated domain objects on existing assets, within their duration, with real evidence
     durations = {aid: (a.get("technical") or {}).get("duration") for aid, a in assets.items()}
     known_evidence = {o.get("id") for o in d["analysis"].get("observations") or []} | {x.get("id") for x in d["decisions"]} | {i.get("id") for i in d["analysis"].get("inferences") or []}
@@ -1227,6 +1232,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("subtitle")
         if ((d.get("qa") or {}).get("qc") or {}).get("enabled"):
             needed.add("qc")
+        if (d.get("qa") or {}).get("documents"):
+            needed.add("artifacts-skill")   # ADR-095
         if any(t.get("preset") == "prores" for t in d["delivery"]["targets"]):
             needed.add("encoder:prores_ks")
         if any(t.get("preset") == "h265" for t in d["delivery"]["targets"]):

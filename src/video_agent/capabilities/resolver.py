@@ -35,6 +35,7 @@ from ..tools.diarization import DiarizationAdapter, locate_diarization
 from ..tools.slide_sync import SlideSyncAdapter, locate_slide_sync
 from ..tools.remotion import RemotionAdapter, locate_remotion
 from ..tools.sound_design import SoundDesignAdapter, locate_sound_design
+from ..tools.artifacts import ArtifactsAdapter, locate_artifacts
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -345,6 +346,9 @@ class CapabilityResolver:
         self._finishing_skill(caps, "sound-design", locate_sound_design(env=self.env), lambda sk: SoundDesignAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
                               "VIDEO_AGENT_SOUND_DESIGN_DIR", "sound-design-skill", "sound-design", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
                               item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # artifacts-skill (ADR-095): the same rule; `artifacts-skill:VERIFY` follows its doctor (some format's structural verification available)
+        self._finishing_skill(caps, "artifacts-skill", locate_artifacts(env=self.env), lambda sk: ArtifactsAdapter(sk), "VIDEO_AGENT_ARTIFACTS_DIR", "artifacts-skill",
+                              "artifacts-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

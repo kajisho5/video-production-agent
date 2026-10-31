@@ -224,7 +224,8 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # `platform_publish` (publish) left it the same way: the implemented `publish_upload` below. ADR-091:
 # `slide_sync` (slide-sync) too: the implemented measurement of the same name below (analysis kind slide_timeline). ADR-092: `sound_design`
 # (sound-design) too: its music bed is the implemented bgm_library / bgm_generate below (sound effects are not wired). ADR-093:
-# `measured_motion_graphics` (remotion-ffmpeg-skill) too: the implemented `measured_motion` below.
+# `measured_motion_graphics` (remotion-ffmpeg-skill) too: the implemented `measured_motion` below. ADR-095: `document_verification` (artifacts-skill)
+# too: the implemented `document_verify` below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
     _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
@@ -240,8 +241,6 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
          {"model": "glb|gltf|fbx|obj|stl|usd|usdz|ply|abc|blend"}, {"artifact": "image|video"}, "blender-skill", "render", "MEDIUM"),
     _job("html_scene_render", "Render an HTML scene folder to verified video with HyperFrames (h264 / vp9, or ProRes 4444 with alpha), to join with "
          "video-editing/concat or composite with ffmpeg-skill/overlay", {"scene": "dir with index.html"}, {"artifact": "video"}, "hyperframes-skill", "render", "MEDIUM"),
-    _job("document_verification", "Verify an AI-generated document (script, captions, report) and issue an evidence-backed receipt",
-         {"document": "file"}, {"receipt": "verification"}, "artifacts", "verify", "LOW", approval="AUTO"),
     _job("bluray_authoring", "Author a Blu-ray (BDMV): titles, chapters, menus, subtitles",
          {"asset": "video"}, {"artifact": "BDMV"}, "bdmvkit", "build", "MEDIUM"),
     _job("dvd_authoring", "Author a DVD-Video (VIDEO_TS): titles, menus, subtitles",
@@ -388,6 +387,11 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("slide_sync", "1.0", "Slide changes of a talk recording (picture cuts held a minimum time) and, with the deck, the page on screen in each slide; measurement only",
                          {"asset": "video", "deck": "pdf|pptx|key|odp"}, {"observation": "slide_timeline", "events": "SLIDE"}, ["slide-sync", "slide-sync:DETECT"], "LOW", True, "AUTO",
                          ["slide-sync/detect"]))
+    # document verification (ADR-095, replacing ADR-057's phase-2 `document_verification`): artifacts-skill's structural checks of a document that goes
+    # out with the video, with a policy forbidding leftover placeholder text; read-only, so AUTO. QA gates on its checks (a FAIL check: REVIEW)
+    r.register(SkillSpec("document_verify", "1.0", "Structural verification of a document that goes out with the video (script, report, slides): leftover placeholder text, "
+                                                     "page / slide facts, encryption, scripts; read-only, writes nothing",
+                         {"document": "file"}, {"qa": "document"}, ["artifacts-skill", "artifacts-skill:VERIFY"], "LOW", True, "AUTO", ["artifacts-skill/verify"]))
     # measured motion graphics (ADR-093, replacing ADR-057's phase-2 `measured_motion_graphics`): remotion-ffmpeg-skill's pipeline (analyze → render, verified)
     # draws one composition that keeps the source's clock over the edited picture, on the user's own Remotion project; never delivers (the agent does)
     r.register(SkillSpec("measured_motion", "1.0", "One Remotion composition (captions, pulses on peaks / beats, titles, picture-in-picture) over the picture, timed from ffmpeg-skill "

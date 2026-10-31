@@ -27,6 +27,7 @@ from .agent.publish import check_publish_keys
 from .agent.slides import check_slide_keys, slide_kind
 from .agent.bgm import check_bgm_keys
 from .agent.remotion import check_remotion_keys
+from .agent.documents import SKILL as DOCUMENT_SKILL, check_document_keys
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -70,6 +71,7 @@ from .tools.detection import PACKAGE as DETECTION_PACKAGE, DetectionAdapter, loc
 from .tools.diarization import PACKAGE as DIARIZATION_PACKAGE, DiarizationAdapter, locate_diarization
 from .tools.slide_sync import PACKAGE as SLIDE_SYNC_PACKAGE, SlideSyncAdapter, locate_slide_sync
 from .tools.remotion import PACKAGE as REMOTION_PACKAGE, RemotionAdapter, locate_remotion
+from .tools.artifacts import PACKAGE as ARTIFACTS_PACKAGE, ArtifactsAdapter, locate_artifacts
 from .tools.sound_design import PACKAGE as SOUND_DESIGN_PACKAGE, SoundDesignAdapter, lift_observation as lift_bgm_observation, locate_sound_design
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
@@ -118,6 +120,7 @@ class Service:
         self.diarization_dir = os.environ.get("VIDEO_AGENT_DIARIZATION_DIR")   # ADR-086: diarization-skill (speaker turns)
         self.slide_sync_dir = os.environ.get("VIDEO_AGENT_SLIDE_SYNC_DIR")   # ADR-091: slide-sync-skill (slide timeline, deck pages)
         self.remotion_dir = os.environ.get("VIDEO_AGENT_REMOTION_DIR")   # ADR-093: remotion-ffmpeg-skill (measured motion graphics)
+        self.artifacts_dir = os.environ.get("VIDEO_AGENT_ARTIFACTS_DIR")   # ADR-095: artifacts-skill (verification of a document that goes out with the video)
         self.sound_design_dir = os.environ.get("VIDEO_AGENT_SOUND_DESIGN_DIR")   # ADR-092: sound-design-skill (the music bed of the mix)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
@@ -144,6 +147,7 @@ class Service:
         self.registry.register_package(DIARIZATION_PACKAGE)   # diarization-skill (ADR-086): same rule
         self.registry.register_package(SLIDE_SYNC_PACKAGE)   # slide-sync-skill (ADR-091): same rule
         self.registry.register_package(REMOTION_PACKAGE)   # remotion-ffmpeg-skill (ADR-093): same rule
+        self.registry.register_package(ARTIFACTS_PACKAGE)   # artifacts-skill (ADR-095): same rule
         self.registry.register_package(SOUND_DESIGN_PACKAGE)   # sound-design-skill (ADR-092): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
@@ -200,6 +204,8 @@ class Service:
             (locate_slide_sync(self.slide_sync_dir), lambda sk: SlideSyncAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots, ffmpeg_skill_dir=engine)),
             # ADR-093: its scripts run as `python <checkout>/scripts/<tool>.py`; the source, the project and the user's files inside the allowed roots
             (locate_remotion(self.remotion_dir), lambda sk: RemotionAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
+            # ADR-095: a read-only plan step (QA gates on its checks); the document is a user file inside the allowed roots
+            (locate_artifacts(self.artifacts_dir), lambda sk: ArtifactsAdapter(sk, allowed_inputs=roots)),
             # ADR-092: a plan step writing the bed into the job; the library is a user folder inside the allowed roots
             (locate_sound_design(self.sound_design_dir), lambda sk: SoundDesignAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
         ):
@@ -758,6 +764,10 @@ class Service:
             d["qa"]["qc"] = plan["qc"]
         else:
             d["qa"].pop("qc", None)
+        if plan.get("documents"):   # ADR-095: written only when planned, so an unchanged request keeps its plan hash
+            d["qa"]["documents"] = plan["documents"]
+        else:
+            d["qa"].pop("documents", None)
         # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)]
@@ -765,6 +775,7 @@ class Service:
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         images += [op[k] for op in plan["video_ops"] if op.get("type") == "video.measured_motion" for k in ("captions", "options", "font_file") if op.get(k)]   # ADR-093
         images += [str(Path(op["project"]) / "package.json") for op in plan["video_ops"] if op.get("type") == "video.measured_motion"]
+        images += [doc["path"] for doc in plan.get("documents") or []]   # ADR-095: the document artifacts-skill verifies
         images += [str(Path(op["library"]) / "sound-library.json") for op in plan["audio_ops"] if op.get("type") == "audio.bgm" and op.get("library")]   # ADR-092: the library folder
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
@@ -1022,7 +1033,9 @@ class Service:
             qa_reqs = ((ir.doc.get("request") or {}).get("args") or {}).get("requirements")
             qa_tools = self.tools_for(adapter, qa_reqs)
             self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter, qa_reqs)
-            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results, qc_packages=qc_packages)
+            documents = {op.args["input"]: next((r for r in result.results if r.op_id == op.id), None) for op in ops if op.skill == DOCUMENT_SKILL}   # ADR-095
+            qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results, qc_packages=qc_packages,
+                        documents=documents)
             out["qa"] = qa.to_dict()
             try:
                 artifacts = self._register_artifacts(ir, ir_path, job, ops, paths, qa)
@@ -1573,7 +1586,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", "document.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1685,6 +1698,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
     check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
     check_slide_keys(user_requirements)   # ADR-091: slides.* keys known, in range, the deck an existing file of a type slide-sync imports
+    check_document_keys(user_requirements)   # ADR-095: document.verify an existing non-caption file, the preset one of artifacts-skill's names
     check_remotion_keys(user_requirements)   # ADR-093: remotion.* keys known, a composition that keeps the clock, the user's project and files exist
     check_bgm_keys(user_requirements)   # ADR-092: bgm.* keys known, one mode, a library folder that is a sound-design library, with audio.production + audio.mix
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs

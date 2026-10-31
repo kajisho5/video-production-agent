@@ -98,7 +98,9 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("slide-sync", "slide-sync-skill", "recognize", "pip", "active", plugin=True, owns=("スライド取込", "スライド切替検出"),
               package_install=_clone_pip("slide-sync-skill", "pdf"),
               note="slide timeline (and the deck page on screen) as the analysis kind slide_timeline (ADR-091); a pptx / key / odp deck also needs LibreOffice"),
-    Component("artifacts", "artifacts-skill", "verify", "pip", "active", plugin=True, owns=("生成文書の検証",), package_install=_clone_pip("artifacts-skill", "all")),
+    # ADR-095: the package id is the contract's skill_id `artifacts-skill`, the prefix of its provides[].tool_id (ADR-077's rule)
+    Component("artifacts-skill", "artifacts-skill", "verify", "pip", "active", plugin=True, owns=("生成文書の検証",), package_install=_clone_pip("artifacts-skill", "all"),
+              note="a document that goes out with the video verified before the job is done (skill document_verify, ADR-095)"),
     Component("publish", "publish-skill", "delivery", "pip", "scaffold", owns=("配信先アップロード", "アップロード制限"),
               package_install=_clone_pip("publish-skill"),
               note="ecosystem.json still says scaffold, but plan / upload ship (README, 0.1.0 unreleased, EXPERIMENTAL) with the uploaders its contract names; "
