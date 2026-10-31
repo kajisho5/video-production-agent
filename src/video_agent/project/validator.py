@@ -17,6 +17,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
+from ..agent.remotion import SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT, remotion_problems
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
 from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
@@ -324,6 +325,11 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"video.trim keep range {k} is empty")
                 if dur and k[1] > dur + 0.01:
                     errs.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
+            continue
+        if t == REMOTION_SUBJECT:   # ADR-093: after the edits, before the finishing; keeps the clock and the frame
+            errs.extend(remotion_problems(op))
+            if subj not in known:
+                errs.append(f"{t} references {subj!r} before it exists")
             continue
         if t == FACE_SUBJECT:   # ADR-090: blurred on the source, before anything re-times it (its own vocabulary, not an editing op)
             errs.extend(face_problems(op, assets))
@@ -1059,6 +1065,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 if (sk, op["asset"]) not in step_keys:
                     rep.errors.append(f"the overlay image's {sk} on {op['asset']} has no plan step")
         if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] == REMOTION_SUBJECT and (REMOTION_SKILL, op["asset"]) not in step_keys:   # ADR-093
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] == FACE_SUBJECT:   # ADR-090: the cut, the redacts and the composite each have their step
             for sk in FACE_EXEC_SKILLS:

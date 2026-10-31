@@ -14,6 +14,8 @@ from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO
 from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
                       kept_duration)
 from .image_insert import still_frame
+from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
+from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
 from .bgm import BGM_INPUT, BGM_OUTPUT, SUBJECT as BGM_SUBJECT, ir_bgm, skill_of as bgm_skill_of
 from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
@@ -366,6 +368,21 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             steps.append(st)
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(d.decision)
+        rd = next((x for x in decisions if x.subject == REMOTION_SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == subject), None)
+        if rd is not None:   # ADR-093: one Remotion composition over the edited picture (it keeps the clock: same scope), before the finishing
+            out_id = f"{subject}_measured_motion"
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            p_ = {k: rd.params[k] for k in REMOTION_PARAMS if rd.params.get(k) is not None}
+            video_ops.append({"type": REMOTION_SUBJECT, "asset": subject, "input": current_of[subject], "output": out_id, **p_, "decision_ids": [rd.id],
+                              "temporal_scope": {"start": round(scope["start"], 3), "end": round(scope["end"], 3)}})
+            order += 1
+            st = ProductionStep(id=f"step_measured_motion_{subject}", order=order, skill=REMOTION_SKILL, tool=tool_for(REMOTION_SKILL), inputs=[current_of[subject]],
+                                params={"asset": subject, **{k: (os.path.basename(v) if isinstance(v, str) and k != "comp" else v) for k, v in p_.items()}}, outputs=[out_id],
+                                depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([rd.id]), decision_ids=[rd.id], decision_id=rd.id,
+                                temporal_scope=scope)
+            steps.append(st)
+            current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
+            summary.append(rd.decision)
 
     def face_steps(asset: Any, current: str) -> "tuple[str, Optional[str]]":
         """ADR-090: an approved (or pending) video.redact_faces on a source, before its trim (the rectangles are on the source timeline):
