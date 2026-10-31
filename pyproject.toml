@@ -25,4 +25,4 @@ video-agent-mcp = "video_agent.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-video_agent = ["../../schemas/*.json", "../../profiles/*.json", "tools/*/contract_*.json"]   # pinned Skill contracts (read at import time)
+video_agent = ["../../schemas/*.json", "../../profiles/*.json", "tools/*/contract_*.json", "skills/pins/*.json"]   # pinned Skill contracts (read at import time)

@@ -98,7 +98,7 @@
   "dependencies": [
     {
       "skill_id": "ffmpeg-skill",
-      "version_range": ">=1.0 <2.0",
+      "version_range": ">=1.0 <3.0",
       "range_of": "contract_version",
       "required": true,
       "tools": [
@@ -638,6 +638,10 @@
   },
   "ffmpeg_skill": {
     "contract_version": "1.0",
+    "contract_versions_known": [
+      "1.0",
+      "2.0"
+    ],
     "version_window": null,
     "compatibility": "capability detection, no version window: a checkout of any version is used when every required flag is present in its contract (or --help); doctor reports what was detected (docs/decisions.md ADR-19)",
     "tools_used": [

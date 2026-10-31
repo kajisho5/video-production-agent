@@ -18,6 +18,8 @@ from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
+from ..agent.dubbing import FILES as DUB_FILES, OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL
+from ..tools.dubbing.adapter import engines as dub_engines, parameters as dub_parameters, unfit_policies as dub_unfit_policies
 from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -444,6 +446,76 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def speech_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list((d.get("speech") or {}).get("operations") or [])
+
+
+def check_speech_operations(d: Dict[str, Any]) -> List[str]:
+    """ADR-085: the `speech` section (dubbing-skill DUB). One dub per video subject, on its picture after the edits (input: the subject itself or
+    the output of one of its video operations), output `<subject>_dub`; the user's files without traversal, of their kind, inside the allowed
+    input roots; a reference voice only with its consent record; engine / on_unfit / numbers inside the pinned dubbing contract; never on the
+    audio production path (no picture there)."""
+    errs: List[str] = []
+    ops = speech_operations(d)
+    if not ops:
+        return errs
+    assets = d["assets"]
+    subjects_known = set(assets) | produced_subjects(d)
+    allowed_roots = [str(Path(r)) for r in (d.get("execution") or {}).get("allowed_inputs") or []]
+    video_outputs: Dict[str, set] = {}
+    for op in d["video"]["operations"]:
+        if op.get("output"):
+            video_outputs.setdefault(op.get("asset"), set()).add(op["output"])
+        if op.get("type") == "video.trim":   # a trim's output is implicit: <asset>_trim
+            video_outputs.setdefault(op.get("asset"), set()).add(f"{op.get('asset')}_trim")
+    on_audio_path = {op.get("asset") for op in d["audio"]["operations"] if "input" in op or op.get("type") != "audio.loudness"}
+    seen: set = set()
+    ranges = dub_parameters()
+    for op in ops:
+        t, subj = op.get("type"), op.get("asset")
+        if t != DUB_OP:
+            errs.append(f"unknown speech operation type {t!r}")
+            continue
+        extra = sorted(k for k in op if k not in ("type", "asset", "input", "output", "temporal_scope", "decision_ids") + DUB_PARAMS)
+        if extra:
+            errs.append(f"{t}: parameters {extra} are not in the operation's vocabulary")
+        if subj not in subjects_known:
+            continue   # reported by the caller
+        if subj in seen:
+            errs.append(f"{t}: more than one dub of {subj}")
+        seen.add(subj)
+        if on_audio_path:
+            errs.append(f"{t} on {subj}: the audio production path delivers no picture to dub")
+        if op.get("input") != subj and op.get("input") not in video_outputs.get(subj, set()):
+            errs.append(f"{t} on {subj} must take the subject's picture after its edits, not {op.get('input')!r}")
+        if op.get("output") != f"{subj}_dub":
+            errs.append(f"{t} on {subj} must write {subj}_dub")
+        for k, exts in DUB_FILES.items():
+            name = k.split(".", 1)[1]
+            f = op.get(name)
+            if f is None:
+                if name in ("cues",):
+                    errs.append(f"{t} needs {name} (the user's translated cues)")
+                continue
+            if any(part == ".." for part in str(f).replace("\\", "/").split("/")):
+                errs.append(f"{t} {name} path contains '..'")
+            elif Path(f).suffix.lower() not in exts:
+                errs.append(f"{t} {name} must be one of {', '.join(exts)}: {Path(f).name}")
+            elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
+                errs.append(f"{t} {name} is outside the allowed input roots: {Path(f).name}")
+        if (op.get("reference") is None) != (op.get("consent") is None):
+            errs.append(f"{t}: a reference voice only together with its owner's consent record (both from the user)")
+        if op.get("engine") is not None and op["engine"] not in dub_engines():
+            errs.append(f"{t}: engine {op['engine']!r} is not one dubbing-skill's DUB takes ({', '.join(dub_engines())})")
+        if op.get("on_unfit") is not None and op["on_unfit"] not in dub_unfit_policies():
+            errs.append(f"{t}: on_unfit {op['on_unfit']!r} must be one of {', '.join(dub_unfit_policies())}")
+        for name, (lo, hi) in ranges.items():
+            v = op.get(name)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= float(v) <= hi):
+                errs.append(f"{t}: {name} {v!r} must be within [{lo:g}, {hi:g}] (the dubbing contract's limits)")
+    return errs
+
+
 def finishing_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for sec in ("color", "graphics", "captions") for op in (d.get(sec) or {}).get("operations") or []]
 
@@ -857,7 +929,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
-    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
+    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + speech_operations(d) + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
                 rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
@@ -865,6 +937,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_video_operations(d)
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
+    rep.errors += check_speech_operations(d)   # ADR-085
     rep.errors += check_timeline_exports(d)
     rep.errors += check_take_assembly(d)
     rep.errors += check_plan_dependencies(d)
@@ -872,7 +945,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         for did in op.get("decision_ids") or []:
             if did not in ids:
                 rep.errors.append(f"operation {op.get('type')} cites unknown decision {did}")
-    for op in d["video"]["operations"] + d["audio"]["operations"] + finishing_operations(d):
+    for op in d["video"]["operations"] + d["audio"]["operations"] + finishing_operations(d) + speech_operations(d):
         if op["asset"] not in assets and op["asset"] not in produced_subjects(d):
             rep.errors.append(f"operation {op['type']} references unknown asset {op['asset']}")
             continue
@@ -941,6 +1014,9 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if op["type"] in ("audio.mono", "audio.stereo", "audio.downmix") and (AUDIO_SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    for op in speech_operations(d):   # ADR-085
+        if (DUB_SKILL, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
@@ -1065,6 +1141,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("imagemagick-skill")   # ADR-077: the overlay image's preparation exists only in imagemagick-skill
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
+        if speech_operations(d):
+            needed.add("dubbing")   # ADR-085: dubbing exists only in dubbing-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

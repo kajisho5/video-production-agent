@@ -222,8 +222,9 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-086:
 # `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns).
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
-    _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
-         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "dub", "HIGH", deterministic=False),
+    # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
+    _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
+         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "narrate", "HIGH", deterministic=False),
     _job("sound_design", "Generate a music bed (BGM) or sound effects",
          {"brief": "text"}, {"artifact": "audio"}, "sound-design", "generate", "MEDIUM", deterministic=False),
     _job("visual_detection", "Face, text (OCR) and object detection on the picture",
@@ -236,12 +237,13 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
          {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, "imagemagick-skill", "edit", "LOW"),
-    _job("render_3d", "3D assets with headless Blender: inspect, convert, optimise and render",
-         {"model": "gltf|glb|fbx|obj|usd|blend"}, {"artifact": "image|video|model"}, "blender", "render", "MEDIUM"),
+    # ADR-080: the Skill's own skill_id and provides[].tool_id from a pinned contract (skills/handoff_contracts.py); still a handoff, CONFIRM
+    _job("render_3d", "Render a 3D model with headless Blender (still, turntable or 4-view sheet; with alpha for compositing) as a B-roll asset for ffmpeg-skill/overlay",
+         {"model": "glb|gltf|fbx|obj|stl|usd|usdz|ply|abc|blend"}, {"artifact": "image|video"}, "blender-skill", "render", "MEDIUM"),
     _job("measured_motion_graphics", "Remotion motion graphics on the footage, timed from ffmpeg-skill measurements (captions, jump cuts, beat-synced motion)",
          {"asset": "video"}, {"artifact": "video"}, "remotion-ffmpeg", "pipeline", "MEDIUM"),
-    _job("html_scene_render", "Render HTML scenes to verified video with HyperFrames",
-         {"scene": "html"}, {"artifact": "video"}, "hyperframes", "render", "MEDIUM"),
+    _job("html_scene_render", "Render an HTML scene folder to verified video with HyperFrames (h264 / vp9, or ProRes 4444 with alpha), to join with "
+         "video-editing/concat or composite with ffmpeg-skill/overlay", {"scene": "dir with index.html"}, {"artifact": "video"}, "hyperframes-skill", "render", "MEDIUM"),
     _job("document_verification", "Verify an AI-generated document (script, captions, report) and issue an evidence-backed receipt",
          {"document": "file"}, {"receipt": "verification"}, "artifacts", "verify", "LOW", approval="AUTO"),
     _job("bluray_authoring", "Author a Blu-ray (BDMV): titles, chapters, menus, subtitles",
@@ -439,6 +441,13 @@ def default_registry() -> SkillRegistry:
          {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
+    # ADR-085 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): the programme's dialogue replaced by the
+    # user's translated cues, spoken by a local engine over the programme's own sound. Needs ffmpeg-skill (the Skill's media engine), the package and its
+    # own readiness of DUB (`dubbing:DUB`, from its doctor: the engine installed). CONFIRM always: EXPERIMENTAL, and a synthetic voice replaces someone's words.
+    r.register(SkillSpec("speech_dub", "1.0", "Dub the programme's dialogue: the user's translated cues spoken by a local TTS engine, fitted to each source segment, over the "
+                         "programme's own sound (ducked), picture stream-copied; a reference voice only with its owner's consent record; EXPERIMENTAL",
+                         {"asset": "video", "cues": "srt|vtt|json", "lang": "bcp47"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "dubbing", "dubbing:DUB"], "HIGH", False, "CONFIRM",
+                         ["dubbing/dub"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)

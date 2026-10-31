@@ -45,6 +45,7 @@ REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"
 DOCTOR_SCHEMA = "video-editing/doctor@1"
 SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
+# 0.4.2 (video-editing-skill #26): passes cut.py --no-keep-hevc where ffmpeg-skill 3.x offers it (engine.compatibility.detected gains that line); nothing else changed; re-pinned (ADR-083).
                                                # yet lowered here -- a real follow-up, not implemented by this
                                                # widening alone) and outputs[].encoding named directly in
                                                # request_shape (already accepted since 0.1.0, no lowering change
@@ -177,7 +178,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic video editing (typed operations, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.2.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

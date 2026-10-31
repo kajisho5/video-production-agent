@@ -25,7 +25,12 @@ SUPPORTED_MIN = (0, 8, 4)
 # Widened to 2.x (2026-10-29, ADR-048): ffmpeg-skill 1.10 renamed --crf to --quality on the re-encoding tools and
 # 2.x refuses --crf there; the adapter now picks the spelling from the installed script's --help. The full
 # real-Skill integration suite was re-run against a live 2.20.0 checkout with every satellite Skill at origin/main.
-SUPPORTED_MAX_EXCLUSIVE = (3, 0, 0)
+# Widened to 3.x (2026-10-31, ADR-082): 3.0.0 removed Python 3.9 / FFmpeg 5.x and changed cut.py's defaults (edit list
+# kept on a single-file stream copy, SDR HEVC re-encodes stay HEVC, --vfr-guard sampled); every catalogued tool, flag,
+# positional and switch arity is unchanged, contract_version is 2.0 with the 1.0 shape, and the agent reads only
+# `output` from cut.py's result. CI's integration job runs the whole real-Skill suite against ffmpeg-skill main (3.x)
+# and against v2.24.1 (the last 2.x).
+SUPPORTED_MAX_EXCLUSIVE = (4, 0, 0)
 
 
 @dataclass
