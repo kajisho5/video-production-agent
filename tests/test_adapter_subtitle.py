@@ -98,7 +98,7 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.4.0")
+        self.assertEqual(a.version, "0.4.1")
         self.assertEqual(a.contract_version, "1.0.0")
         self.assertEqual(a.tools, {TOOL_GENERATE, TOOL_RENDER})
         self.assertTrue(a.supports(TOOL_RENDER) and not a.supports("subtitle/transcribe"))
@@ -338,7 +338,7 @@ class RunTests(Base):
             self.assertTrue(r.ok, r.data)
             self.assertEqual(r.output, self.paths[key])
             d = r.data
-            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.4.0"})
+            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.4.1"})
             self.assertEqual(d["status"], "completed")
             self.assertEqual(d["operation_type"], "generate")
             self.assertEqual(d["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
@@ -350,7 +350,7 @@ class RunTests(Base):
             self.assertEqual(d["warnings"], [])
             self.assertEqual(d["commands"], [])
             self.assertEqual(r.commands, [])
-            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.4.0", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
+            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.4.1", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
             self.assertNotIn("engine", d)
             self.assertNotIn("observation", d)
             text = Path(r.output).read_text(encoding="utf-8")

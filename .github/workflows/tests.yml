@@ -24,13 +24,22 @@ jobs:
       - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py tests/test_image_prepare.py
       - run: python evals/run.py
   integration:
+    # ADR-082: the real-Skill suite against ffmpeg-skill main (3.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0) and against
+    # v2.24.1 (the last 2.x, contract_version 1.0), both inside SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg
+    # (>= 6.1) satisfy both. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg_skill: ["main", "v2.24.1"]
+    name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core imagemagick   # imagemagick: ADR-077's ImagePrepareRealTests (imagemagick-skill uses IM6's convert / identify)
-      - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: git clone --depth 1 --branch "${{ matrix.ffmpeg_skill }}" https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: python3 ../ffmpeg-skill/scripts/_contract.py --json --static | python3 -c "import json,sys; d=json.load(sys.stdin); print('ffmpeg-skill', d['skill']['version'], 'contract', d['contract_version'])"
       - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
       - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
       # video-editing-skill (ADR-028): main (PR #1 merged); no install needed, the checkout is run as `python -m video_editing_skill.cli`
