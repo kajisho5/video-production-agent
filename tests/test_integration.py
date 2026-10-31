@@ -1482,17 +1482,17 @@ class PriorityAToolsRealTests(unittest.TestCase):
         self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
         self.assertEqual(svc.validate(ir).errors, [])
         step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_crop")
-        self.assertEqual(step["tool"], "ffmpeg-skill/crop")
+        self.assertEqual(step["tool"], "video-editing/crop")   # ADR-079: video-editing-skill's CROP (it runs ffmpeg-skill crop.py itself)
         p = str(Path(ws) / "crop.json"); save_ir(ir, p)
         out = svc.render(load_ir(p), p, approve=["all"])
         self.assertEqual(out["status"], "COMPLETED", out)
-        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/crop")
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "video-editing/crop")
         self.assertTrue(op_result["ok"], op_result)
         self.assertEqual(artifact_qa(out, out["artifacts"][0]), "PASS", out["qa"])
         out_path = Path(op_result["output"])
         pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(out_path)],
                              capture_output=True, text=True, check=True)
-        self.assertEqual(pr.stdout.strip(), "1280x440", "the real crop.py output is exactly the requested rectangle")
+        self.assertEqual(pr.stdout.strip(), "1280x440", "the real video-editing CROP output is exactly the requested rectangle")
 
     def test_cropdetect_real_json_shape(self):
         """Resolves the ADR-046 open item: catalog.py's cropdetect result_keys were originally an unverified guess
@@ -1554,7 +1554,7 @@ class CropProposalRealTests(unittest.TestCase):
         self.assertIn(obs["id"], dec["evidence"])
         self.assertEqual(svc.validate(ir).errors, [])
         step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_crop")
-        self.assertEqual(step["tool"], "ffmpeg-skill/crop")
+        self.assertEqual(step["tool"], "video-editing/crop")   # ADR-079: video-editing-skill's CROP (it runs ffmpeg-skill crop.py itself)
         p = str(Path(ws) / "crop.json"); save_ir(ir, p)
         waiting = svc.render(load_ir(p), p)
         self.assertEqual(waiting["status"], "WAITING_FOR_APPROVAL", waiting)
@@ -1562,12 +1562,12 @@ class CropProposalRealTests(unittest.TestCase):
         svc.approve(load_ir(p), p, [dec["id"]])
         out = svc.render(load_ir(p), p)
         self.assertEqual(out["status"], "COMPLETED", out)
-        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "ffmpeg-skill/crop")
+        op_result = next(o for o in out["execution"]["results"] if o["tool"] == "video-editing/crop")
         self.assertTrue(op_result["ok"], op_result)
         self.assertEqual(artifact_qa(out, out["artifacts"][0]), "PASS", out["qa"])
         pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", op_result["output"]],
                             capture_output=True, text=True, check=True)
-        self.assertEqual(pr.stdout.strip(), "1920x800", "the real crop.py output is the measured rectangle")
+        self.assertEqual(pr.stdout.strip(), "1920x800", "the real video-editing CROP output is the measured rectangle")
 
     def test_full_frame_clip_proposes_nothing(self):
         svc = Service(workspace=str(Path(self.tmp) / "run_full"))

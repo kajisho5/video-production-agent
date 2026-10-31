@@ -5000,8 +5000,10 @@ class PriorityAToolsTests(unittest.TestCase):
         self.assertIn(dec["id"], out["artifacts"][0]["decision_ids"])
 
     def test_single_source_ops_plan_ir_and_render(self):
-        """redact / deinterlace / crop / stabilize apply to a single asset (no programme needed), in the fixed EDIT_ORDER."""
-        svc = self._svc()
+        """redact / deinterlace / crop / stabilize apply to a single asset (no programme needed), in the fixed EDIT_ORDER. The crop runs
+        through video-editing-skill's CROP (ADR-079), the other three through the engine."""
+        from pipeline_harness import pipeline_service
+        svc = pipeline_service(self.tmp, transcription=False, skills=["video-editing"], allowed=[str(Path(self.tmp) / "src")])
         rect = {"x": 0, "y": 0, "width": 100, "height": 100}
         ir = svc.plan([self.a], "generic", user_requirements={"edit.deinterlace": True, "edit.stabilize": True, "edit.crop": rect, "edit.redact": rect})
         d = ir.doc
@@ -5020,7 +5022,7 @@ class PriorityAToolsTests(unittest.TestCase):
         p = str(Path(self.tmp) / "single.json"); save_ir(ir, p)
         out = svc.render(load_ir(p), p, approve=["all"])
         self.assertEqual(out["status"], "COMPLETED", out)
-        for tool in ("ffmpeg-skill/deinterlace", "ffmpeg-skill/stabilize", "ffmpeg-skill/crop", "ffmpeg-skill/redact"):
+        for tool in ("ffmpeg-skill/deinterlace", "ffmpeg-skill/stabilize", "video-editing/crop", "ffmpeg-skill/redact"):
             r = next(o for o in out["execution"]["results"] if o["tool"] == tool)
             self.assertTrue(r["ok"], r)
         self.assertEqual(out["artifacts"][0]["qa_status"], "PASS")
@@ -5030,10 +5032,17 @@ class PriorityAToolsTests(unittest.TestCase):
         from video_agent.agent.editing import EditRequirementError, parse_edit_requirements
         from video_agent.agent.requirements import requirement_map
         from video_agent.models import Requirement
-        for bad in ({"x": 0, "y": 0, "width": 101, "height": 100}, {"x": 0, "y": 0, "width": 100, "height": 101}):
+        for bad in ({"x": 0, "y": 0, "width": 101, "height": 100}, {"x": 0, "y": 0, "width": 100, "height": 101},
+                    {"x": 0.5, "y": 0, "width": 100, "height": 100}):   # ADR-079: video-editing CROP takes whole pixels
             reqs = [Requirement(key="edit.crop", value=bad, provenance="USER", source="cli")]
             with self.assertRaises(EditRequirementError):
                 parse_edit_requirements(requirement_map(reqs))
+        got = parse_edit_requirements(requirement_map([Requirement(key="edit.crop", value={"x": 2.0, "y": 4, "width": 100, "height": 100}, provenance="USER", source="cli")]))
+        self.assertEqual({k: got["video.crop"]["params"][k] for k in ("x", "y")}, {"x": 2, "y": 4}); self.assertIsInstance(got["video.crop"]["params"]["x"], int)
+        # ADR-079: edit.crop.fps is gone (CROP keeps the input's frame rate), refused like any unknown key
+        with self.assertRaises(Exception) as cm:
+            self._svc().plan([self.a], "generic", user_requirements={"edit.crop": {"x": 0, "y": 0, "width": 100, "height": 100}, "edit.crop.fps": 25})
+        self.assertIn("edit.crop.fps", str(cm.exception))
 
     def test_validator_rejects_tampered_grid_ir(self):
         svc = self._svc()
@@ -5066,7 +5075,7 @@ class PriorityAToolsTests(unittest.TestCase):
         from video_agent.skills.registry import default_registry
         r = default_registry()
         for name, tool in (("video_grid", "ffmpeg-skill/grid"), ("video_redact", "ffmpeg-skill/redact"), ("video_deinterlace", "ffmpeg-skill/deinterlace"),
-                           ("video_crop", "ffmpeg-skill/crop"), ("video_stabilize", "ffmpeg-skill/stabilize"), ("cropdetect_analysis", "ffmpeg-skill/cropdetect")):
+                           ("video_crop", "video-editing/crop"), ("video_stabilize", "ffmpeg-skill/stabilize"), ("cropdetect_analysis", "ffmpeg-skill/cropdetect")):   # video_crop: ADR-079
             spec = r.get(name)
             self.assertEqual(spec.tools, [tool])
             self.assertEqual(spec.phase, 1, f"{name} must be phase 1 (actually implemented, not a placeholder)")

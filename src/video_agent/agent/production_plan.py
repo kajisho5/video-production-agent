@@ -28,7 +28,7 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "video_grid": ("asset", "inputs", "cols", "rows", "cell_width", "cell_height", "fps", "label", "font", "font_size", "font_color", "pad", "audio_from", "gap", "background"),
                    "video_redact": ("asset", "x", "y", "width", "height", "mode", "blur_strength", "block_size", "audio_stream", "fps"),
                    "video_deinterlace": ("asset", "mode", "parity", "only_interlaced", "audio_stream"),
-                   "video_crop": ("asset", "x", "y", "width", "height", "fps"),
+                   "video_crop": ("asset", "x", "y", "width", "height"),
                    "video_stabilize": ("asset", "shakiness", "smoothing", "zoom", "crop_mode", "tripod"),
                    "video_trim": ("asset", "keep", "removed", "accurate"),   # ADR-062: the same domain parameters as silence_cleanup (one kept range)
                    "video_rotate": ("asset", "degrees", "flip"),

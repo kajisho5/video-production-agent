@@ -1,8 +1,9 @@
 """Black-bar crop proposal (ADR-060, ECOSYSTEM_ROADMAP step 7): analysis kind `crop_rectangle` (ffmpeg-skill cropdetect.py,
 fake engine here; tests/test_integration.py measures a real letterboxed clip) → OBSERVED observation → a CONFIRM decision
-proposing `video.crop` with the measured rectangle → the existing video_crop step (ffmpeg-skill/crop) once approved."""
+proposing `video.crop` with the measured rectangle → the existing video_crop step (video-editing/crop since ADR-079) once approved."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -112,7 +113,7 @@ class CropPlanTests(unittest.TestCase):
 
     def plan(self, inputs, requirements=None, kinds=("crop_rectangle",), engine=None):
         self.engine = engine or FakeAdapter()
-        self.svc = make_service(self.tmp, adapter=self.engine)
+        self.svc = pipeline_service(self.tmp, engine=self.engine, transcription=False, skills=["video-editing"])   # ADR-079: the crop is video-editing's CROP
         return self.svc.plan(list(inputs), "generic", user_requirements=requirements, kinds=list(kinds))
 
     @staticmethod
@@ -133,7 +134,7 @@ class CropPlanTests(unittest.TestCase):
         self.assertIn(obs["id"], dec["evidence"])
         self.assertEqual(dec["basis"]["approval"]["key"], "video.crop.approval")
         step = next(s for s in d["plan"]["steps"] if s["skill"] == "video_crop")
-        self.assertEqual((step["tool"], step["decision_id"]), ("ffmpeg-skill/crop", dec["id"]))
+        self.assertEqual((step["tool"], step["decision_id"]), ("video-editing/crop", dec["id"]))
         self.assertEqual({k: step["params"][k] for k in ("x", "y", "width", "height")}, LETTERBOX)
         op = next(o for o in d["video"]["operations"] if o["type"] == "video.crop")
         self.assertEqual({k: op[k] for k in ("x", "y", "width", "height")}, LETTERBOX)
@@ -147,7 +148,8 @@ class CropPlanTests(unittest.TestCase):
         p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
         out = self.svc.render(load_ir(p), p)
         self.assertNotEqual(out["status"], "COMPLETED", out)
-        self.assertFalse(any(c.tool == "ffmpeg-skill/crop" for c in self.engine.calls), "nothing is cropped before the approval")
+        self.assertFalse(any(r["tool"] == "video-editing/crop" for r in (out.get("execution") or {}).get("results") or []), "nothing is cropped before the approval")
+        self.assertFalse(any(c.tool == "ffmpeg-skill/crop" for c in self.engine.calls), "the engine's crop.py is never called directly (ADR-079)")
 
     def test_approved_proposal_runs_crop_with_the_rectangle(self):
         ir = self.plan([self.media(crop=LETTERBOX)])
@@ -156,8 +158,13 @@ class CropPlanTests(unittest.TestCase):
         self.svc.approve(load_ir(p), p, [dec["id"]])
         out = self.svc.render(load_ir(p), p)
         self.assertEqual(out["status"], "COMPLETED", out)
-        call = next(c for c in self.engine.calls if c.tool == "ffmpeg-skill/crop")
-        self.assertEqual({k: int(call.args[k]) for k in ("x", "y", "width", "height")}, LETTERBOX)
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/crop")   # ADR-079: video-editing-skill's CROP
+        self.assertTrue(res["ok"], res)
+        prov = json.loads((Path(self.svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        row = next(e for e in prov["operations"] if e["tool"] == "video-editing/crop")
+        self.assertEqual({k: row["args"][k] for k in ("x", "y", "width", "height")}, LETTERBOX)
+        self.assertTrue(all(isinstance(row["args"][k], int) for k in ("x", "y", "width", "height")), "whole pixels, as the contract's CROP takes them")
+        self.assertFalse(any(c.tool == "ffmpeg-skill/crop" for c in self.engine.calls))
         self.assertIn(dec["id"], out["artifacts"][0]["decision_ids"])
 
     def test_rejected_proposal_is_dropped_on_revise(self):

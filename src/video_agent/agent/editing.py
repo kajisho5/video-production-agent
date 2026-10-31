@@ -60,7 +60,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     # ADR-046: fixed-pixel-rectangle / quality ops, all ffmpeg-skill-only (same "no tool key" pattern).
     "video.redact":      {"skill": "video_redact",      "params": ("x", "y", "width", "height", "mode", "blur_strength", "block_size", "audio_stream", "fps"), "risk": "HIGH"},
     "video.deinterlace": {"skill": "video_deinterlace",  "params": ("mode", "parity", "only_interlaced", "audio_stream"), "risk": "LOW"},
-    "video.crop":        {"skill": "video_crop",         "params": ("x", "y", "width", "height", "fps"), "risk": "MEDIUM"},
+    # ADR-079: the crop is video-editing-skill's CROP (0.4.1), no longer ffmpeg-skill crop.py: one pixel rectangle, the input's own fps
+    "video.crop":        {"skill": "video_crop",  "tool": "video-editing/crop",  "params": ("x", "y", "width", "height"), "risk": "MEDIUM"},
     "video.stabilize":   {"skill": "video_stabilize",    "params": ("shakiness", "smoothing", "zoom", "crop_mode", "tripod"), "risk": "MEDIUM"},
     # ADR-062: video-editing-skill ROTATE (0.3.0): a clockwise turn of 90 / 180 / 270 and / or a mirror; nothing scaled or cut
     "video.rotate":  {"skill": "video_rotate",  "tool": "video-editing/rotate",  "params": ("degrees", "flip"), "risk": "LOW"},
@@ -89,7 +90,7 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     # being the image path -- there is no sensible "on/off" switch for a redaction or crop without the rectangle it acts on.
     "video.redact": ("edit.redact", "edit.redact.mode", "edit.redact.blur_strength", "edit.redact.block_size", "edit.redact.audio_stream", "edit.redact.fps"),
     "video.deinterlace": ("edit.deinterlace", "edit.deinterlace.mode", "edit.deinterlace.parity", "edit.deinterlace.only_interlaced", "edit.deinterlace.audio_stream"),
-    "video.crop": ("edit.crop", "edit.crop.fps"),
+    "video.crop": ("edit.crop",),   # ADR-079: no edit.crop.fps (video-editing CROP keeps the input's frame rate; edit.resize.fps / edit.fit.fps set one)
     "video.stabilize": ("edit.stabilize", "edit.stabilize.shakiness", "edit.stabilize.smoothing", "edit.stabilize.zoom", "edit.stabilize.crop_mode", "edit.stabilize.tripod"),
     "video.rotate": ("edit.rotate", "edit.rotate.flip"),
     "video.speed": ("edit.speed",),
@@ -323,8 +324,12 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
             rect = vals[base]
             if not isinstance(rect, dict) or set(rect) != {"x", "y", "width", "height"}:
                 raise EditRequirementError(f"{base} must be a rectangle {{x, y, width, height}} in source pixels")
-            p["x"] = float(_number(rect["x"], f"{base}.x", 0, 16384))
-            p["y"] = float(_number(rect["y"], f"{base}.y", 0, 16384))
+            if op == "video.crop":   # ADR-079: video-editing CROP takes whole pixels
+                for k in ("x", "y"):
+                    if isinstance(rect[k], bool) or not isinstance(rect[k], (int, float)) or float(rect[k]) != int(rect[k]):
+                        raise EditRequirementError(f"{base}.{k} must be a whole number of pixels, got {rect[k]!r}")
+            p["x"] = float(_number(rect["x"], f"{base}.x", 0, 16384)) if op == "video.redact" else int(_number(rect["x"], f"{base}.x", 0, 16384))
+            p["y"] = float(_number(rect["y"], f"{base}.y", 0, 16384)) if op == "video.redact" else int(_number(rect["y"], f"{base}.y", 0, 16384))
             p["width"] = _even_int(rect["width"], f"{base}.width")
             p["height"] = _even_int(rect["height"], f"{base}.height")
             if f"{base}.fps" in vals:
