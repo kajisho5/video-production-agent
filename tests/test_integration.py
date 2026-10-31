@@ -2848,3 +2848,187 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self._gate_coherent(out2, art2)
         qc2 = next(r for r in out2["execution"]["results"] if r["tool"] == "qc/check")
         self.assertEqual(qc2["data"]["fingerprint"], art2["hash"], "the QC gate measured the real, delivered (processed) bytes, not the untouched source")
+
+
+_FAKE_DEEP_FILTER = '''import os, shutil, sys
+args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    print("deep-filter 0.5.6")
+    sys.exit(0)
+out, files, i = "out", [], 0
+while i < len(args):
+    a = args[i]
+    if a in ("-m", "-o", "-a", "--atten-lim-db", "--model", "--output-dir"):
+        if a in ("-o", "--output-dir"):
+            out = args[i + 1]
+        i += 2
+        continue
+    if not a.startswith("-"):
+        files.append(a)
+    i += 1
+os.makedirs(out, exist_ok=True)
+shutil.copyfile(files[0], os.path.join(out, os.path.basename(files[0])))   # identity: a stand-in for the engine, never a model
+'''
+_FAKE_WPE = '''def wpe_v8(Y, taps=10, delay=3, iterations=3, psd_context=0, statistics_mode="full", inplace=False):
+    return Y.copy()   # identity: a stand-in for nara_wpe (voice-enhance-skill's own tests do the same), never the real engine
+'''
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class VoiceEnhanceRealTests(unittest.TestCase):
+    """ADR-073 on the real voice-enhance-skill (main; no release tag) with fake engines (a `deep-filter` that copies its input, a `nara_wpe` whose
+    wpe_v8 is the identity, the real `crosstalk` on NumPy), the real ffmpeg-skill and the real audio-production-skill: the live contract equals
+    the pin, a missing engine and a non-48 kHz isolate block with the Skill's own codes, dereverb → isolate after the cut and bleed reduction
+    before the mix render after confirmation, and the delivered files are what the Skill promises (48 kHz mono for isolate)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.voice_enhance import locate_voice_enhance
+        from video_agent.tools.audio_production import locate_audio_production
+        cls.ve, cls.ap = locate_voice_enhance(), locate_audio_production()
+        cls.tmp = tempfile.mkdtemp(prefix="va_ve_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        speech = "0.3*sin(2*PI*220*t)*between(t\\,1\\,5)*gt(sin(2*PI*3*t)\\,-0.3)"
+        cls.talk, cls.talk44 = str(src / "talk.wav"), str(src / "talk44.wav")
+        cls.lav_a, cls.lav_b = str(src / "lav_a.wav"), str(src / "lav_b.wav")
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"aevalsrc='{speech}|{speech}':s=48000:c=stereo", "-t", "6", "-c:a", "pcm_s16le", cls.talk], check=True)
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"aevalsrc='{speech}':s=44100:c=mono", "-t", "6", "-c:a", "pcm_s16le", cls.talk44], check=True)
+        a, b = "0.3*sin(2*PI*200*t)*between(t\\,0\\,3)", "0.3*sin(2*PI*330*t)*between(t\\,2\\,5)"
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"aevalsrc='{a}+0.1*{b}':s=48000:c=mono", "-t", "5", "-c:a", "pcm_s16le", cls.lav_a], check=True)
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"aevalsrc='{b}+0.1*{a}':s=48000:c=mono", "-t", "5", "-c:a", "pcm_s16le", cls.lav_b], check=True)
+        eng = Path(cls.tmp) / "engines"; eng.mkdir()
+        df = eng / "deep-filter"
+        df.write_text(f"#!{sys.executable}\n" + _FAKE_DEEP_FILTER, encoding="utf-8"); df.chmod(0o755)
+        model = eng / "DeepFilterNet3_onnx.tar.gz"; model.write_bytes(b"\x1f\x8b fake model")
+        site = eng / "site"; (site / "nara_wpe").mkdir(parents=True)
+        (site / "nara_wpe" / "__init__.py").write_text("", encoding="utf-8")
+        (site / "nara_wpe" / "wpe.py").write_text(_FAKE_WPE, encoding="utf-8")
+        (site / "nara_wpe-0.0.11.dist-info").mkdir()
+        (site / "nara_wpe-0.0.11.dist-info" / "METADATA").write_text("Metadata-Version: 2.1\nName: nara_wpe\nVersion: 0.0.11\n", encoding="utf-8")
+        cls.engines = {"VOICE_ENHANCE_DEEP_FILTER": str(df), "VOICE_ENHANCE_DFN_MODEL": str(model)}
+        cls.site = str(site)
+
+    def setUp(self):
+        if not self.ve or not self.ap:
+            self.skipTest("needs voice-enhance-skill and audio-production-skill checkouts (VIDEO_AGENT_VOICE_ENHANCE_DIR / VIDEO_AGENT_AUDIO_PRODUCTION_DIR); CI clones both")
+        self._env = {k: os.environ.get(k) for k in self.engines}
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _with_engines(self):
+        """The fake engines where voice-enhance-skill looks for them: deep-filter + model by its environment variables, nara_wpe on the
+        Skill's own import path (the checkout's PYTHONPATH plus the stand-in package; a real install puts nara_wpe in the same environment)."""
+        from unittest import mock
+        from video_agent.tools.skill_process import CliSkill
+        from video_agent.tools.voice_enhance import locate_voice_enhance
+        os.environ.update(self.engines)
+        ve = locate_voice_enhance()
+        with_site = CliSkill(ve.skill_id, ve.command, ve.root, {"PYTHONPATH": os.pathsep.join([ve.env.get("PYTHONPATH", ""), self.site]).strip(os.pathsep)})
+        return mock.patch.multiple("video_agent.service", locate_voice_enhance=lambda *a, **k: with_site), \
+            mock.patch.multiple("video_agent.capabilities.resolver", locate_voice_enhance=lambda *a, **k: with_site)
+
+    def _probe(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,channels,sample_rate", "-of", "json", path], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        a = next(s for s in doc["streams"] if s.get("codec_type") == "audio")
+        return float(doc["format"]["duration"]), int(a["channels"]), int(a["sample_rate"])
+
+    def test_live_contract_equals_the_pin_and_missing_engines_carry_the_skills_codes(self):
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.tools.voice_enhance import VoiceEnhanceAdapter, drift, pinned_contract
+        for k in self.engines:
+            os.environ.pop(k, None)
+        ad = VoiceEnhanceAdapter(self.ve, ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.version, pinned_contract()["version"])
+        self.assertEqual(drift(ad.contract), [], "voice-enhance-skill main drifted from the pin (no release tag: the pin follows main): re-verify the adapter")
+        doc = ad.doctor()
+        self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
+        ev = ad.operation_evidence(doc)
+        if not shutil.which("deep-filter"):
+            self.assertEqual(ev["ISOLATE"]["code"], "ENGINE_UNAVAILABLE")
+            self.assertIn("DeepFilterNet3_onnx.tar.gz", ev["ISOLATE"]["install"])
+        caps = CapabilityResolver(str(locate_ffmpeg_skill().root)).resolve()
+        self.assertEqual(caps["voice-enhance"].status, "AVAILABLE", caps["voice-enhance"].detail)
+        self.assertEqual(caps["voice-enhance"].evidence["drift"], [])
+        svc = Service(workspace=str(Path(self.tmp) / "ws_missing"))
+        ir = svc.plan([self.talk], "generic", user_requirements={"audio.production": True, "voice.isolate": True})
+        b = next(x for x in ir.doc["decisions"] if x["subject"] == "voice.isolate")
+        if caps["voice-enhance:ISOLATE"].status != "AVAILABLE":
+            self.assertEqual((b["type"], b["params"]["code"]), ("BLOCK", "ENGINE_UNAVAILABLE"))
+            self.assertIn("VOICE_ENHANCE_DFN_MODEL", b["reason"])
+            self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+
+    def test_isolate_off_48_khz_follows_the_engine_skills_resample_flag(self):
+        """Tripwire like ADR-071's: today's ffmpeg-skill has no `audio --sample-rate`, so a 44.1 kHz isolate blocks with the Skill's
+        FFMPEG_SKILL_UNAVAILABLE; once ffmpeg-skill declares it, the same plan must be a TRANSFORM (and voice-enhance converts)."""
+        p1, p2 = self._with_engines()
+        with p1, p2:
+            svc = Service(workspace=str(Path(self.tmp) / "ws_44"))
+            caps = svc.caps.resolve()
+            ir = svc.plan([self.talk44], "generic", user_requirements={"audio.production": True, "voice.isolate": True})
+        self.assertEqual(caps["voice-enhance:ISOLATE"].status, "AVAILABLE", caps["voice-enhance:ISOLATE"].detail)
+        d = next(x for x in ir.doc["decisions"] if x["subject"] == "voice.isolate")
+        if caps["voice-enhance:ISOLATE"].evidence.get("resample"):
+            self.assertEqual(d["type"], "TRANSFORM")
+        else:
+            self.assertEqual((d["type"], d["params"]["code"], d["params"]["sample_rate"]), ("BLOCK", "FFMPEG_SKILL_UNAVAILABLE", 44100))
+
+    def test_dereverb_then_isolate_after_the_cut_end_to_end(self):
+        p1, p2 = self._with_engines()
+        with p1, p2:
+            svc = Service(workspace=str(Path(self.tmp) / "ws_iso"))
+            ir = svc.plan([self.talk], "generic", user_requirements={"audio.production": True, "voice.dereverb": True, "voice.dereverb.taps": 12, "voice.isolate": True,
+                                                                     "audio.gain": -3})
+            d = ir.doc
+            self.assertEqual(svc.validate(ir).errors, [])
+            self.assertEqual(d["plan"]["status"], "REVIEW", d["plan"]["summary"])
+            self.assertEqual(sorted(x["subject"] for x in ir.pending_confirmations()), ["voice.dereverb", "voice.isolate"])
+            types = [op["type"] for op in d["audio"]["operations"]]
+            self.assertEqual([t for t in types if t != "audio.cut"], ["voice.dereverb", "voice.isolate", "audio.gain"])
+            p = str(Path(self.tmp) / "iso.json"); save_ir(ir, p)
+            waiting = svc.render(load_ir(p), p)
+            self.assertEqual(waiting["status"], "WAITING_FOR_APPROVAL")
+            out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [r for r in out["execution"]["results"] if r["tool"].startswith("voice-enhance/")]
+        self.assertEqual([(r["data"]["op"], r["data"]["engine"]["id"], r["data"]["engine"]["version"]) for r in res],
+                         [("dereverb", "nara_wpe", "0.0.11"), ("isolate", "deepfilternet", "0.5.6")])
+        self.assertEqual(res[0]["data"]["parameters"]["taps"], 12)
+        self.assertTrue(all(r["data"]["lifecycle"] == "EXPERIMENTAL" for r in res))
+        self.assertEqual(self._probe(res[1]["output"])[1:], (1, 48000), "isolate writes a 48 kHz mono stem")
+        art = out["artifacts"][0]
+        dur, ch, rate = self._probe(art["path"])
+        self.assertEqual((ch, rate), (1, 48000))
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertEqual(items["duration"]["status"], "PASS", items["duration"])
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        obs = [o for o in prov["skill_observations"] if o["kind"].startswith("voice.")]
+        self.assertEqual([o["kind"] for o in obs], ["voice.dereverb", "voice.isolate"])
+        self.assertIn("DeepFilterNet", obs[1]["data"]["engine"]["attribution"])
+        self.assertFalse(any(self.tmp in json.dumps(o["data"]["engine"]) for o in obs), "the engine block carries no local path")
+
+    def test_bleed_reduction_before_the_mix_end_to_end(self):
+        p1, p2 = self._with_engines()
+        with p1, p2:
+            svc = Service(workspace=str(Path(self.tmp) / "ws_br"))
+            ir = svc.plan([self.lav_a, self.lav_b], "generic", user_requirements={"audio.production": True, "audio.mix": True, "voice.bleed_reduce": True})
+            d = ir.doc
+            self.assertEqual(svc.validate(ir).errors, [])
+            self.assertEqual([op["type"] for op in d["audio"]["operations"]], ["voice.bleed_reduce", "audio.mix"])
+            p = str(Path(self.tmp) / "br.json"); save_ir(ir, p)
+            out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        [br] = [r for r in out["execution"]["results"] if r["tool"] == "voice-enhance/bleed-reduce"]
+        self.assertEqual((br["data"]["engine"]["id"], len(br["data"]["outputs"])), ("crosstalk", 2))
+        self.assertEqual([os.path.basename(o["file"]) for o in br["data"]["outputs"]], ["lav_a_a0.wav", "lav_b_a0.wav"])
+        for o in br["data"]["outputs"]:
+            self.assertEqual(self._probe(o["file"])[1], 1)
+        mix = next(r for r in out["execution"]["results"] if r["tool"] == "audio-production/run" and r["data"]["operation_type"] == "MIX")
+        self.assertTrue(mix["ok"])
+        self.assertEqual(self._probe(out["artifacts"][0]["path"])[1], 1)

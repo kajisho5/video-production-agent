@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Python orchestrator (`video-agent`). 11 adapters (ffmpeg-skill, video-editing, audio-production, color-grading, motion-graphics, subtitle, thumbnail, qc, media-analysis, transcription, ingest). Brain: deterministic rules + optional AI (Claude API, ADR-049; the chat model through MCP, ADR-050). Handoffs for steps no installed skill can run (ADR-051). 405 unit + 53 integration tests.
+Python orchestrator (`video-agent`). 12 adapters (ffmpeg-skill, video-editing, audio-production, color-grading, motion-graphics, subtitle, thumbnail, qc, media-analysis, transcription, ingest, voice-enhance). Brain: deterministic rules + optional AI (Claude API, ADR-049; the chat model through MCP, ADR-050). Handoffs for steps no installed skill can run (ADR-051). 405 unit + 53 integration tests.
 
 ## What this repository owns
 
@@ -14,12 +14,12 @@ Python orchestrator (`video-agent`). 11 adapters (ffmpeg-skill, video-editing, a
 | Owned job | Status | Note |
 |---|---|---|
 | 制作計画 | done | plan / revise / approve / render |
-| スキルの呼び分け | partial | every ecosystem job has a SkillSpec, so a handoff names its package (ADR-057); 16 of them have no adapter yet (step 9; ingest has one, ADR-066) |
+| スキルの呼び分け | partial | every ecosystem job has a SkillSpec, so a handoff names its package (ADR-057); 15 of them have no adapter yet (step 9; ingest has one, ADR-066; voice-enhance, ADR-073) |
 | 制作記録(ProductionReceipt) | done | ADR-040 |
 
 ## Wiring
 
-Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052). ingest-skill pinned at 0.1.0 (card offload, ADR-066); qc-skill pinned at 0.2.3; its opt-in VMAF / SSIM / PSNR against a master the user names (`qc.reference_video` + `qc.reference_metrics`, ADR-058, [#77](https://github.com/kajisho5/video-production-agent/pull/77)).
+Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (19 entries; fit, report unreachable; scenes for `--beats` only, ADR-053). Reads ffmpeg-skill's `_contract.py --json --static` and `doctor --json` at locate time to check the catalog (ADR-056). NLE interchange (OTIO / FCPXML / EDL) through ffmpeg-skill `render --export-timeline` (ADR-052). ingest-skill pinned at 0.1.0 (card offload, ADR-066); voice-enhance-skill pinned from main at 0.1.0 (no release tag; isolate / dereverb / bleed-reduce on the audio path, ADR-073); qc-skill pinned at 0.2.3; its opt-in VMAF / SSIM / PSNR against a master the user names (`qc.reference_video` + `qc.reference_metrics`, ADR-058, [#77](https://github.com/kajisho5/video-production-agent/pull/77)).
 
 ## Steps
 
@@ -57,7 +57,7 @@ Uses 17 of ffmpeg-skill's 42 tools directly through a hand-maintained catalog (1
   - [x] ingest (media_offload) ([#83](https://github.com/kajisho5/video-production-agent/pull/83)). Done (ADR-066): a card folder as the plan input with explicit `ingest.dest` (existing directories only; `ingest.project` / `.hash` / `.name_by` / `.reel`) → ingest-skill's `offload --dry-run` and `inventory` only (nothing written), one TRANSFORM `ingest.offload` that is always CONFIRM, step `media_offload` → `ingest/offload`; after approval, `render` runs `ingest offload <card> --dest A --dest B ... --json` once (never re-run automatically), checks every destination's manifest, and the first copy's inventory becomes new assets (one per member file, spanned members linked in order) with OBSERVED `ingest_clip` observations (clip, members, reel / card id and its source, hashes, camera sidecar facts, each destination's manifest and ASC MHL generation, ingest-skill version, job); the agent's own probe / silence / loudness then runs on the verified copies. ingest-skill's codes kept verbatim with the agent's kind and recovery class (HASH_UNAVAILABLE → ENGINE_MISSING, VERIFY_MISMATCH → VERIFY_FAILED, MHL_INVALID → HISTORY_DAMAGED, REEL_INVALID → INVALID_REQUEST, exit 3 → CONFLICT / PARTIAL / COPY_FAILED / ... with every destination's counts, failed and conflicting files). Pinned `tools/ingest/contract_0.1.0.json` with DRIFT / FATAL_DRIFT keys; ADR-057's phase-2 `media_ingest` replaced (`job.media_ingest` now points at the offload); ADR-051 handoff naming ingest-skill when it is absent. `tests/test_offload.py` (fake `ingest`), evals 131-132, `IngestOffloadRealTests` on a synthetic XDCAM EX-like card against ingest-skill main
   - [ ] detection (redact faces)
   - [ ] dubbing
-  - [ ] voice-enhance
+  - [x] voice-enhance ([#88](https://github.com/kajisho5/video-production-agent/pull/88)). Done (ADR-073): `voice.isolate` / `voice.dereverb` / `voice.bleed_reduce` (+ the Skill's own parameters; `--set` only, never a profile / brief; `audio.production=true`, bleed also `audio.mix=true`) → always-CONFIRM decisions (every op EXPERIMENTAL) → steps after each input's cut / filler removal and before every audio-production operation (bleed reduction once for all mixed inputs as recorded, then WPE, then DeepFilterNet3) → `voice-enhance isolate|dereverb|bleed-reduce` with `--flag=value`, inputs after `--`, ffmpeg-skill always named; BLOCK with the Skill's own codes (`FFMPEG_SKILL_UNAVAILABLE` for a non-48 kHz isolate, `ENGINE_UNAVAILABLE` / `MODEL_NOT_FOUND` with the install line); engine attribution in provenance; pinned `tools/voice_enhance/contract_0.1.0.json` from main with DRIFT / FATAL_DRIFT keys; ADR-057's phase-2 `voice_enhancement` replaced; handoff naming voice-enhance-skill when it is absent. `tests/test_voice_enhance.py` (fake `voice-enhance`), evals 142-146, `VoiceEnhanceRealTests` on the real Skill with stand-in engines
   - [ ] sound-design (via audio-production MIX)
   - [ ] publish (CONFIRM after QC)
   - [ ] nle-bridge

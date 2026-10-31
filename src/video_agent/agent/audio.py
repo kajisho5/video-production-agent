@@ -88,6 +88,9 @@ AUDIO_ORDER = ("audio.voice_cleanup", "audio.noise_reduction", "audio.gain", "au
 PROGRAMME_OPS = ("audio.concat", "audio.mix")   # the two ways to build PROGRAMME_AUDIO from 2+ inputs (mutually exclusive)
 SOURCE_OPS = ("audio.cut", "audio.filler_remove")   # per source asset, in this order, before the programme and the AUDIO_ORDER chain
 CHANNEL_SKILLS = ("audio_mono", "audio_stereo", "audio_downmix")
+# ADR-073: voice-enhance-skill's operations on this path (agent/voice.py holds their vocabulary); ISOLATE and BLEED_REDUCE write mono
+VOICE_OP_TYPES = ("voice.bleed_reduce", "voice.dereverb", "voice.isolate")
+VOICE_MONO_TYPES = ("voice.bleed_reduce", "voice.isolate")
 # ADR-063: the pinned contract's parameters (audio-production 0.4.3, which added VOICE_CLEANUP; tests/test_satellite_params.py checks them against it)
 MAX_MIX_INPUTS = 8                                   # contract max_mix_inputs / MIX.inputs.max
 MIX_GAIN_RANGE = (-60.0, 60.0)                       # MIX.levels[].gain_db
@@ -493,7 +496,10 @@ def audio_subjects(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     assets = doc.get("assets") or {}
     aops = (doc.get("audio") or {}).get("operations") or []
     on_path = {op["asset"] for op in aops if op.get("type") in OPERATIONS and op.get("type") != "audio.loudness"} | \
-              {op["asset"] for op in aops if op.get("type") == "audio.loudness" and op.get("input") is not None}
+              {op["asset"] for op in aops if op.get("type") == "audio.loudness" and op.get("input") is not None} | \
+              {op["asset"] for op in aops if op.get("type") in VOICE_OP_TYPES}   # ADR-073 (bleed reduction's subject is the programme: its inputs are the mix's)
+    mono_sources = {op["asset"] for op in aops if op.get("type") in VOICE_MONO_TYPES} | \
+                   {a for op in aops if op.get("type") == "voice.bleed_reduce" for a in op.get("inputs") or []}
     out: Dict[str, Dict[str, Any]] = {}
     concat = next((op for op in aops if op.get("type") in PROGRAMME_OPS), None)   # ADR-063: a mix builds the programme the same way
     for aid in on_path:
@@ -510,7 +516,7 @@ def audio_subjects(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     fillers = {op["asset"] for op in aops if op.get("type") == "audio.filler_remove"}
     for sid, row in out.items():
         row["filler_sources"] = [a for a in row["sources"] if a in fillers]   # ADR-072: what the Skill removes there is known only after it ran
-        chans = [audio_channels((assets.get(a) or {}).get("technical") or {}) for a in row["sources"]]
+        chans = [1 if a in mono_sources else audio_channels((assets.get(a) or {}).get("technical") or {}) for a in row["sources"]]   # ADR-073: an isolated / bleed-reduced source is mono
         known_chans = [c for c in chans if c is not None]
         expected: Optional[int] = max(known_chans) if chans and len(known_chans) == len(chans) else None
         if concat is not None and concat.get("type") == "audio.mix" and sid == concat.get("output", PROGRAMME_AUDIO):

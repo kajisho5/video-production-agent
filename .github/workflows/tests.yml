@@ -20,8 +20,8 @@ jobs:
       # Phase 3 (ADR-031 / ADR-032): the five finishing-Skill adapters against their fake processes, and the integrated pipeline on the fake engine + fake Skills
       - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
       - run: python -m unittest -v tests/test_pipeline.py
-      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`
-      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py
+      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`; ADR-073: voice-enhance through a fake `voice-enhance`
+      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py
       - run: python evals/run.py
   integration:
     runs-on: ubuntu-latest
@@ -45,7 +45,10 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill
       # ingest-skill (ADR-059): URL inputs go through `ingest fetch`; its fetch extra installs yt-dlp. The test downloads from 127.0.0.1 only. ADR-066: the card offload (IngestOffloadRealTests) runs on a synthetic XDCAM EX-like card
       - run: git clone --depth 1 https://github.com/kajisho5/ingest-skill ../ingest-skill
-      - run: pip install -e . Pillow opentimelineio -e "../ingest-skill[fetch]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
+      # voice-enhance-skill (ADR-073): main (no release tag); run from the checkout. No engine in CI: the tests stand in a deep-filter that copies its input
+      # and a nara_wpe whose wpe_v8 is the identity (as voice-enhance-skill's own tests do); numpy is for those engines' STFT and the real crosstalk engine
+      - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill
+      - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - run: python -m unittest -v tests/test_integration.py
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
@@ -59,6 +62,7 @@ jobs:
           VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
           VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
+          VIDEO_AGENT_VOICE_ENHANCE_DIR: "${{ github.workspace }}/../voice-enhance-skill"
       # ADR-058: the qc adapter against qc-skill main (contract drift, reference metrics SSIM / PSNR); the fake-based tests of the same file run in the unit job
       - run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
         env:

@@ -1296,12 +1296,12 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["audio-production", "color-grading", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"],
+        self.assertEqual(list(pkgs), ["audio-production", "color-grading", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"],
                          "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18), the audio production Skill (ADR-030) and the five finishing Skills (ADR-031 / ADR-032)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
-        self.assertEqual(sorted(rows), ["audio-production", "color-grading", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
+        self.assertEqual(sorted(rows), ["audio-production", "color-grading", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
         self.assertTrue(rows["video-editing"]["implemented"] and not rows["video-editing"]["available"], "adapter exists; no installation in unit tests")
         self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
         self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
@@ -1384,7 +1384,7 @@ class EcosystemContractTests(unittest.TestCase):
         # fake-skill and ffmpeg-skill are now usable candidates (a real collision), so which one runs is an
         # explicit provider.<skill> choice (docs/CAPABILITY_MODEL.md's collision policy), not declaration order.
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "fake-skill", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "fake-skill", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube", user_requirements={"provider.silence_cleanup": "fake-skill"})
         self.assertTrue(svc.validate(ir).ok)
@@ -1407,7 +1407,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "color-grading", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "color-grading", "ffmpeg-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):

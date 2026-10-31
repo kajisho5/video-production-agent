@@ -29,6 +29,7 @@ from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT,
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 from .brief import decide_brief
 from .handoffs import decide_jobs
+from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -151,6 +152,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
 
     # ---- audio production path (ADR-030): explicit `audio.production` + `audio.*` requirements; the audio of the asset becomes the subject
     audio = parse_audio_requirements(m)
+    vreq = parse_voice_requirements(m)   # ADR-073: voice-enhance ops, opt-in on the request; refused here without audio.production
     audio_assets = [a for a in analysis.assets if is_audio_capable(a.technical)] if audio["production"] else []
     audio_programme_ok = False   # an audio programme is built from the inputs (audio.concat, or audio.mix since ADR-063)
     audio_mix_ok = False
@@ -214,6 +216,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 cap_block("audio_mix", "capability.audio_mix")
         if audio.get("filler_remove") is not None:   # ADR-072: per input, at the transcript's word timings
             decide_filler_remove(eng, audio, m, analysis, audio_assets, audio_mix_ok, lambda aid: a_ev + probe_ids_of([aid]), approval_for, cap_block)
+        if vreq["ops"]:   # ADR-073: voice-enhance-skill per input after its cut / filler removal (bleed reduction: all mixed inputs), always CONFIRM
+            decide_voice(eng, vreq, analysis, audio_assets, audio_mix_ok, [a.id for a in audio_assets] if audio_mix_ok else [], caps,
+                         lambda aid: a_ev + probe_ids_of([aid]), approval_for, cap_block)
     # ---- take selection (ADR-053): explicit `edit.takes`; the picks (one per line, in line order) become the concat inputs, the other
     # takes and the music bed get no decision and no step of their own
     takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX, cap_missing=cap_missing)
@@ -573,10 +578,10 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="MEDIUM", approval=approval_for("audio.extract", explicit=extract_req), provenance="USER",
                                params={"asset_id": a.id}, requirements=audio["requirements"], serves_intent=None)
             cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove"))
-                              or (d.subject == "audio.filler_remove" and d.type == "TRANSFORM") for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
+                              or (d.subject in ("audio.filler_remove",) + tuple(VOICE_OPERATIONS) and d.type == "TRANSFORM") for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
             if not planned_ops and subject not in normalised and not cut_planned and not audio_programme_ok and any(has_video(a.technical) for a in src):
                 eng.decide(subject="audio.production", type="BLOCK", decision=f"BLOCK: nothing to do on the audio path for {subject}",
-                           reason="a video container on the audio path needs at least one audio operation (cut / filler removal / normalise / voice clean-up / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
+                           reason="a video container on the audio path needs at least one audio operation (cut / filler removal / voice enhancement / normalise / voice clean-up / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
                            evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=audio["requirements"])
             for sk in planned_ops:
                 cap_block(sk, f"capability.{sk}")

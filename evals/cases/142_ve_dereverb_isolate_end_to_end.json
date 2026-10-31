@@ -1,0 +1,69 @@
+{
+ "name": "ve_dereverb_isolate_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0,
+    "sample_rate": 48000
+   }
+  ],
+  "voice_enhance": {}
+ },
+ "requirements": {
+  "audio.production": true,
+  "voice.dereverb": true,
+  "voice.isolate": true,
+  "voice.isolate.atten_lim_db": 20,
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "REVIEW",
+  "ir_ops": [
+   "audio.cut",
+   "voice.dereverb",
+   "voice.isolate",
+   "audio.loudness"
+  ],
+  "steps": [
+   "audio_cut",
+   "voice_dereverb",
+   "voice_isolate",
+   "audio_normalize"
+  ],
+  "render": {
+   "pending": [
+    "voice.dereverb",
+    "voice.isolate"
+   ],
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "CUT",
+    "NORMALIZE"
+   ],
+   "voice_operations": [
+    "dereverb",
+    "isolate"
+   ],
+   "qa_status": "PASS"
+  },
+  "note": "ADR-073: explicit voice.* keys only; after the cut, before every audio-production operation; EXPERIMENTAL, so CONFIRM even though the user asked"
+ }
+}

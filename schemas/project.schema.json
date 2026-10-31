@@ -1592,7 +1592,10 @@
       "audio.noise_reduction",
       "audio.dynamics",
       "audio.voice_cleanup",
-      "audio.filler_remove"
+      "audio.filler_remove",
+      "voice.bleed_reduce",
+      "voice.dereverb",
+      "voice.isolate"
      ]
     },
     "asset": {
@@ -1975,6 +1978,39 @@
        "maximum": 9000.0
       }
      }
+    },
+    "outputs": {
+     "type": "array",
+     "minItems": 2,
+     "maxItems": 8,
+     "items": {
+      "type": "string"
+     }
+    },
+    "atten_lim_db": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "maximum": 100
+    },
+    "taps": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 50
+    },
+    "delay": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 20
+    },
+    "iterations": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 20
+    },
+    "dominance_db": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 30
     }
    }
   },

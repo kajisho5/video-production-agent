@@ -7,7 +7,7 @@ from pathlib import Path
 from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STAGES, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH,
                            FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
-                           PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
+                           PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
 from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, SKILL_OF, switch_cams
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
                                VIDEO_EXTENSIONS, picture_size, placement_problems)
@@ -16,6 +16,8 @@ from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
+from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
+from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
 from typing import Any, Dict, List, Optional, Tuple
@@ -71,6 +73,9 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
                 if seen_rank.get(subj, -1) >= rank:
                     errs.append(f"audio.loudness on {subj} is out of the fixed audio order {AUDIO_ORDER}")
                 seen_rank[subj] = rank
+            continue
+        if t in VOICE_OPERATIONS:   # ADR-073: voice-enhance-skill, per input after its cut / filler removal (bleed reduction: the mix's inputs as recorded)
+            errs.extend(_voice_problems(op, assets, programme, seen_rank, on_audio_path))
             continue
         if t not in AUDIO_OPERATIONS:
             errs.append(f"unknown audio operation type {t!r}")
@@ -196,6 +201,48 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
     for op in d["video"]["operations"]:
         if op.get("asset") in on_audio_path:
             errs.append(f"{op.get('type')} on {op.get('asset')}: the asset is on the audio production path (audio deliverable), video operations conflict")
+    return errs
+
+
+def _voice_problems(op: Dict[str, Any], assets: Dict[str, Any], programme: Optional[Dict[str, Any]], seen_rank: Dict[str, float], on_audio_path: set) -> List[str]:
+    """ADR-073: a voice.* record: its vocabulary, the parameters inside voice-enhance-skill's ranges, its place in the chain (after the input's
+    cut / filler removal, before every audio-production operation: bleed reduction → dereverberation → isolation), and for bleed reduction
+    the inputs of the decided mix exactly, uncut, one `<asset>_bleed_reduce` output per input."""
+    errs: List[str] = []
+    t, subj = op.get("type"), op.get("asset")
+    spec = VOICE_OPERATIONS[t]
+    refs = ("inputs", "outputs") if t == "voice.bleed_reduce" else ("input", "output", "temporal_scope")
+    extra = sorted(k for k in op if k not in ("type", "asset", "decision_ids") + refs and k not in spec["params"])
+    if extra:
+        errs.append(f"{t}: parameters {extra} are not in the operation's vocabulary")
+    for k, (lo, hi, integer, open_lo) in VOICE_PARAMETERS[spec["tool"]].items():
+        v = op.get(k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or (integer and float(v) != int(v)) or (v <= lo if open_lo else v < lo) or v > hi):
+            errs.append(f"{t} on {subj}: {k} {v!r} must be within {'(' if open_lo else '['}{lo:g}, {hi:g}]")
+    rank = -0.5 + 0.1 * (VOICE_ORDER.index(t) + 1)   # cut -1 < filler removal -0.5 < bleed -0.4 < dereverb -0.3 < isolate -0.2 < the AUDIO_ORDER chain (0..)
+    if t == "voice.bleed_reduce":
+        ins, outs = list(op.get("inputs") or []), list(op.get("outputs") or [])
+        mix_in = list((programme or {}).get("inputs") or []) if (programme or {}).get("type") == "audio.mix" else None
+        if subj != PROGRAMME_AUDIO or mix_in is None or ins != mix_in:
+            errs.append(f"voice.bleed_reduce must reduce the cross-talk between exactly the inputs of the audio mix (subject {PROGRAMME_AUDIO})")
+        if not 2 <= len(ins) <= VOICE_MAX_TRACKS or len(set(ins)) != len(ins) or any(a not in assets for a in ins):
+            errs.append(f"voice.bleed_reduce takes 2..{VOICE_MAX_TRACKS} distinct source assets")
+        if outs != [f"{a}_bleed_reduce" for a in ins]:
+            errs.append("voice.bleed_reduce must name one <asset>_bleed_reduce output per input, in input order")
+        for a in ins:
+            if a in seen_rank:
+                errs.append(f"voice.bleed_reduce on {a}: a track is cleaned as recorded (time-aligned), before anything else on it")
+            seen_rank[a] = rank
+            on_audio_path.add(a)
+        return errs
+    if subj not in assets:
+        errs.append(f"{t} on {subj!r}: only a source asset's speech is enhanced (per input, before the programme)")
+    elif seen_rank.get(subj, -1) >= rank:
+        errs.append(f"{t} on {subj} must come after its cut / filler removal / bleed reduction and before every other audio operation ({' → '.join(VOICE_ORDER)})")
+    seen_rank[subj] = rank
+    on_audio_path.add(subj)
+    if op.get("input") is None or op.get("output") is None:
+        errs.append(f"{t} on {subj}: input / output reference missing")
     return errs
 
 
@@ -883,6 +930,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in ("audio.mono", "audio.stereo", "audio.downmix") and (AUDIO_SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
             rep.errors.append(f"delivery target {t['id']} has no export step")
@@ -1002,6 +1051,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                                            # (the reference-engine-only ops above are the exception -- their own capability need already came from the registry above)
         if any(op["type"] in AUDIO_OPERATIONS and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]):
             needed.add("audio-production")   # the audio production path exists only in audio-production-skill (ADR-030)
+        if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
+            needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

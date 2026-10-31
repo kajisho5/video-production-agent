@@ -76,7 +76,10 @@ _COMPONENTS: Tuple[Component, ...] = (
               package_install=_clone_pip("ingest-skill", "fetch"),
               note="ecosystem.json still says scaffold, but offload / verify / inventory ship (README); `ingest fetch` (URL download, ingest-skill #9) "
                    "needs the fetch extra (yt-dlp), and the agent hands URL inputs to it (ADR-059)"),
-    Component("voice-enhance", "voice-enhance-skill", "audio", "pip", "scaffold", owns=("声の分離(AI)", "残響除去", "マイク被り低減")),
+    Component("voice-enhance", "voice-enhance-skill", "audio", "pip", "scaffold", owns=("声の分離(AI)", "残響除去", "マイク被り低減"),
+              package_install=_clone_pip("voice-enhance-skill"),
+              note="ecosystem.json still says scaffold, but isolate / dereverb / bleed-reduce ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and "
+                   "each engine is its own install (deep-filter + the DeepFilterNet3 model, `[wpe]`, `[bleed]`) that `voice-enhance doctor` names (ADR-073)"),
     Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説")),
     Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),

@@ -1,0 +1,33 @@
+{
+ "name": "ve_without_audio_production_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   }
+  ],
+  "voice_enhance": {}
+ },
+ "requirements": {
+  "voice.isolate": true
+ },
+ "expect": {
+  "plan_error": "audio.production=true",
+  "note": "voice enhancement runs on the audio production path; a voice.* key alone is an ambiguous request"
+ }
+}

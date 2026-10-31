@@ -56,7 +56,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    # timeline export (ADR-052): the subject, the editor format and how many clips its cut list has
                    "timeline_export": ("asset", "format", "clips"),
                    # card offload (ADR-066): the card, the destinations the user named and the copy folder ingest-skill makes in each
-                   "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots")}
+                   "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots"),
+                   # voice-enhance-skill (ADR-073): the subject (the programme for bleed reduction, with its tracks) and the typed engine parameters
+                   "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db")}
 
 
 @dataclass

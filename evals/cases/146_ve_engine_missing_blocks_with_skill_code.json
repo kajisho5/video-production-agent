@@ -1,0 +1,40 @@
+{
+ "name": "ve_engine_missing_blocks_with_skill_code",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   }
+  ],
+  "voice_enhance": {
+   "engines": "nara_wpe"
+  }
+ },
+ "requirements": {
+  "audio.production": true,
+  "voice.dereverb": true
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "voice.dereverb"
+  ],
+  "plan_status": "BLOCKED",
+  "note": "voice-enhance-skill installed, nara_wpe not: BLOCK with the Skill's ENGINE_UNAVAILABLE and its install line, nothing downloaded"
+ }
+}

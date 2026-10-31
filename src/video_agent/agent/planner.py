@@ -21,6 +21,7 @@ from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
+from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -387,6 +388,54 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 current_of[subject], last_of[subject] = st.outputs[0], st.id
                 summary.append(f"Normalise audio to {d.params['target_lufs']:g} LUFS / {d.params['true_peak']:g} dBTP" + (" (audio-production)" if audio_path else ""))
 
+    # ADR-073: voice-enhance-skill on the audio path -- bleed reduction once for all mixed inputs (as recorded), then per input
+    # dereverberation and isolation, each right after that input's cut / filler removal and before the programme and the chain
+    voice_decs = {op: [d for d in decisions if d.subject == op and d.type == "TRANSFORM" and d.status != "REJECTED"] for op in VOICE_OPERATIONS} if audio_production else {}
+    bleed_dec = (voice_decs.get("voice.bleed_reduce") or [None])[0]
+    if bleed_dec is not None and (audio_concat_dec is None or audio_concat_dec.subject != "audio.mix" or list(bleed_dec.params.get("inputs") or []) != list(audio_concat_dec.params.get("inputs") or [])):
+        summary.append("voice.bleed_reduce not planned: it runs on exactly the inputs of the decided audio mix")
+        bleed_dec = None
+    bleed_step: List[str] = []
+
+    def voice_steps(asset_id: str, current: str, last_step: Optional[str]) -> "tuple[str, Optional[str]]":
+        """The voice-enhance steps of one input on the audio path, chained on its current output; returns the new (current, last step)."""
+        nonlocal order
+        if bleed_dec is not None and asset_id in (bleed_dec.params.get("inputs") or []):
+            if not bleed_step:
+                ins = list(bleed_dec.params["inputs"])
+                ids = [bleed_dec.id] + [x for a in ins for x in extract_ids(a)]
+                outs = [f"{a}_bleed_reduce" for a in ins]
+                params = {k: bleed_dec.params[k] for k in VOICE_OPERATIONS["voice.bleed_reduce"]["params"] if bleed_dec.params.get(k) is not None}
+                audio_ops.append(ir_voice_operation("voice.bleed_reduce", PROGRAMME_AUDIO, params, ids, inputs=ins, outputs=outs))
+                order += 1
+                st = ProductionStep(id=f"step_bleed_reduce_{PROGRAMME_AUDIO}", order=order, skill=VOICE_OPERATIONS["voice.bleed_reduce"]["skill"],
+                                    tool=tool_for(VOICE_OPERATIONS["voice.bleed_reduce"]["skill"]), inputs=ins, params={"asset": PROGRAMME_AUDIO, "inputs": ins, **params},
+                                    outputs=outs, depends_on=[], evidence=evidence_of(ids), decision_ids=ids, decision_id=bleed_dec.id)
+                steps.append(st)
+                bleed_step.append(st.id)
+                summary.append(bleed_dec.decision + " -- EXPERIMENTAL, needs confirmation")
+            current, last_step = f"{asset_id}_bleed_reduce", bleed_step[0]
+        for op in VOICE_PER_INPUT:
+            d = next((x for x in voice_decs.get(op) or [] if x.params.get("asset_id") == asset_id), None)
+            if d is None:
+                continue
+            spec = VOICE_OPERATIONS[op]
+            name = op.split(".", 1)[1]
+            out_id = f"{asset_id}_{name}"
+            scope = dict(scope_of.get(asset_id) or {"start": 0.0, "end": round(durations.get(asset_id, 0.0), 3)})
+            ids = [d.id] + extract_ids(asset_id)
+            params = {k: d.params[k] for k in spec["params"] if d.params.get(k) is not None}
+            audio_ops.append(ir_voice_operation(op, asset_id, params, ids, scope=scope, input=current, output=out_id))
+            order += 1
+            st = ProductionStep(id=f"step_{name}_{asset_id}", order=order, skill=spec["skill"], tool=tool_for(spec["skill"]), inputs=[current],
+                                params={"asset": asset_id, **params}, outputs=[out_id], depends_on=[last_step] if last_step else [], evidence=evidence_of(ids),
+                                decision_ids=ids, decision_id=d.id, temporal_scope=scope)
+            steps.append(st)
+            current, last_step = out_id, st.id
+            scope_of[asset_id] = scope
+            summary.append(d.decision + " -- EXPERIMENTAL, needs confirmation")
+        return current, last_step
+
     def audio_steps(subject: str) -> None:
         """Audio production operations decided for `subject` (noise reduction → gain → channels → dynamics → fade in → fade out), chained on
         its current audio output."""
@@ -574,6 +623,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 current, last_step = out_id, st.id
                 summary.append(f"Remove filler words from {asset.path.split('/')[-1]} at {len(words)} recognised word timing(s)" + (f" ({dropped} word(s) inside the cut left out)" if dropped else "")
                                + f"; at most {scope['end']:.2f}s remain (what is removed is matched by audio-production)")
+        if asset.id in audio_subjects and voice_decs:
+            current, last_step = voice_steps(asset.id, current, last_step)
         current_of[asset.id] = current
         if last_step:
             last_of[asset.id] = last_step

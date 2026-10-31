@@ -218,10 +218,9 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
 # (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
-# list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships).
+# list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
+# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
-    _job("voice_enhancement", "AI voice isolation, dereverberation and mic-bleed reduction of recorded speech",
-         {"asset": "audio|video"}, {"artifact": "INTERMEDIATE"}, "voice-enhance", "enhance", "MEDIUM", deterministic=False),
     _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
          {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "dub", "HIGH", deterministic=False),
     _job("sound_design", "Generate a music bed (BGM) or sound effects",
@@ -408,6 +407,18 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("media_offload", "1.0", "Verified offload of a camera card / recorder folder to the destinations the user names: checksum read-back copies, "
                          "dual backup, ingest-manifest.json and ASC MHL per destination, clip inventory of the copy", {"source": "card|folder", "destinations": "list"},
                          {"assets": "media", "observation": "ingest_clip"}, ["ingest"], "MEDIUM", True, "CONFIRM", ["ingest/offload"]))
+    # ADR-073 (roadmap step 9, voice-enhance-skill's roadmap step 8; replacing ADR-057's phase-2 `voice_enhancement`): one skill per operation,
+    # each needing ffmpeg-skill (the Skill's media engine), the package and the Skill's own per-operation readiness (`voice-enhance:<TYPE>`,
+    # from its doctor: the engine installed). CONFIRM always: every operation is EXPERIMENTAL in voice-enhance-skill 0.1.0.
+    for name, typ, tool, desc, inputs in (
+        ("voice_isolate", "ISOLATE", "voice-enhance/isolate", "AI voice isolation (DeepFilterNet3): noise and background removed, a 48 kHz mono stem; EXPERIMENTAL",
+         {"asset": "audio", "atten_lim_db": "float"}),
+        ("voice_dereverb", "DEREVERB", "voice-enhance/dereverb", "Dereverberation (WPE, nara_wpe): late room reverberation removed at the stream's own rate and channels; EXPERIMENTAL",
+         {"asset": "audio", "taps": "int", "delay": "int", "iterations": "int"}),
+        ("voice_bleed_reduce", "BLEED_REDUCE", "voice-enhance/bleed-reduce", "Mic-bleed reduction between time-aligned microphone tracks (crosstalk, no weights): one mono track per mic; EXPERIMENTAL",
+         {"assets": "audio[]", "dominance_db": "float"}),
+    ):
+        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "voice-enhance", f"voice-enhance:{typ}"], "MEDIUM", True, "CONFIRM", [tool]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)
