@@ -233,8 +233,10 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
          {"asset": "video", "deck": "pdf|pptx|key"}, {"observation": "slide_segments"}, "slide-sync", "match", "LOW", approval="AUTO"),
     _job("platform_publish", "Upload a QC-passed deliverable with its metadata to a delivery platform",
          {"artifact": "delivery", "platform": "str"}, {"receipt": "upload"}, "publish", "upload", "HIGH"),
+    # ADR-077: imagemagick-skill's package id is its own `skill.id` (imagemagick-skill), the prefix of its provides[].tool_id; the overlay
+    # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
-         {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, "imagemagick", "edit", "LOW"),
+         {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, "imagemagick-skill", "edit", "LOW"),
     _job("render_3d", "3D assets with headless Blender: inspect, convert, optimise and render",
          {"model": "gltf|glb|fbx|obj|usd|blend"}, {"artifact": "image|video|model"}, "blender", "render", "MEDIUM"),
     _job("measured_motion_graphics", "Remotion motion graphics on the footage, timed from ffmpeg-skill measurements (captions, jump cuts, beat-synced motion)",
@@ -419,6 +421,19 @@ def default_registry() -> SkillRegistry:
          {"assets": "audio[]", "dominance_db": "float"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "voice-enhance", f"voice-enhance:{typ}"], "MEDIUM", True, "CONFIRM", [tool]))
+    # ADR-077 (imagemagick-skill's roadmap step 4, agent side): an `edit.overlay` image prepared before video-editing composites it -- GPS / EXIF
+    # stripped (orientation baked in), resized to the user's box (fit | fill | exact), padded to that canvas -- each a new file, the user's never
+    # written. Each needs the package and the Skill's own per-tool readiness (`imagemagick-skill:<TYPE>`, from its doctor's tools.<name>.usable);
+    # they run as part of the overlay decision (its approval, CONFIRM by default).
+    for name, typ, tool, desc, inputs in (
+        ("image_strip", "STRIP", "imagemagick-skill/strip", "Remove GPS / EXIF from an overlay image, baking its EXIF orientation into the pixels (ImageMagick only)",
+         {"image": "png|jpg"}),
+        ("image_prepare", "RESIZE", "imagemagick-skill/resize", "Resize an overlay image to the user's box: fit (inside, no distortion), fill (cover and centre-crop) or exact",
+         {"image": "png|jpg", "width": "int", "height": "int", "mode": "fit|fill|exact"}),
+        ("image_pad", "PAD", "imagemagick-skill/pad", "Pad a fitted overlay image to the user's exact canvas with a given colour (or transparency)",
+         {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
+    ):
+        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)

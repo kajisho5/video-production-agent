@@ -3056,3 +3056,110 @@ class VoiceEnhanceRealTests(unittest.TestCase):
         mix = next(r for r in out["execution"]["results"] if r["tool"] == "audio-production/run" and r["data"]["operation_type"] == "MIX")
         self.assertTrue(mix["ok"])
         self.assertEqual(self._probe(out["artifacts"][0]["path"])[1], 1)
+
+
+def _imagemagick_installed() -> bool:
+    """ImageMagick 7 `magick`, or ImageMagick 6's `convert` + `identify` (not on Windows, where `convert` is a system tool), as imagemagick-skill reads it."""
+    return bool(shutil.which("magick") or (os.name != "nt" and shutil.which("convert") and shutil.which("identify")))
+
+
+def _png(path: str, w: int, h: int) -> str:
+    """A real RGB PNG written with the standard library (no ImageMagick involved in making the fixture)."""
+    import struct
+    import zlib
+    rows = b"".join(b"\x00" + bytes((200, 40, 40)) * w for _ in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+    return path
+
+
+class ImagePrepareRealTests(unittest.TestCase):
+    """ADR-077 on the real imagemagick-skill (main, contract 0.8.1): the live contract equals the pin, its doctor finds a backend, and an
+    `edit.overlay` asked at a size is stripped / resized / padded by imagemagick-skill/strip / resize / pad before the real video-editing-skill
+    composites it. Runs whenever an imagemagick-skill checkout and ImageMagick are installed (the CI integration job installs both)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.imagemagick import locate_imagemagick
+        cls.im = locate_imagemagick()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_im_"))
+        cls.png = _png(str(Path(cls.tmp) / "src" / "logo.png"), 640, 320)
+
+    def setUp(self):
+        if not self.im:
+            self.skipTest("needs an imagemagick-skill checkout (VIDEO_AGENT_IMAGEMAGICK_DIR)")
+        if not _imagemagick_installed():
+            self.skipTest("needs ImageMagick (magick, or ImageMagick 6 convert / identify)")
+
+    def test_live_contract_and_each_tool(self):
+        import hashlib
+        from video_agent.models import Operation
+        from video_agent.tools.imagemagick import ImageMagickAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        ad = ImageMagickAdapter(self.im, workspace=ws, allowed_inputs=[str(Path(self.png).parent)])
+        self.assertEqual(ad.drift(), [], "the installed imagemagick-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(doc["status"], "ok", doc.get("problems"))
+        self.assertEqual(ad.operation_status(doc), {"RESIZE": "supported", "PAD": "supported", "STRIP": "supported"})
+        before = hashlib.sha256(Path(self.png).read_bytes()).hexdigest()
+        paths = {"img": self.png, "s": str(Path(ws) / "ops" / "s" / "logo_strip.png"), "r": str(Path(ws) / "ops" / "r" / "logo_resize.png"), "p": str(Path(ws) / "ops" / "p" / "logo_pad.png"),
+                 "f": str(Path(ws) / "ops" / "f" / "logo_fill.png")}
+        steps = (("imagemagick-skill/strip", {"input": "img", "output": "s"}),
+                 ("imagemagick-skill/resize", {"input": "s", "output": "r", "width": 200, "height": 200, "mode": "fit"}),
+                 ("imagemagick-skill/pad", {"input": "r", "output": "p", "width": 200, "height": 200, "color": "none", "gravity": "center"}),
+                 ("imagemagick-skill/resize", {"input": "img", "output": "f", "width": 100, "height": 100, "mode": "fill"}))
+        for k in ("s", "r", "p", "f"):
+            Path(paths[k]).parent.mkdir(parents=True, exist_ok=True)   # as the executor does before each operation
+        got = {}
+        for tool, args in steps:
+            r = ad.run(Operation(tool=tool, args=args, inputs=[args["input"]], outputs=[args["output"]], id=f"op_{args['output']}"), paths, timeout=120)
+            self.assertTrue(r.ok, r.data)
+            self.assertEqual(r.data["output"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
+            got[args["output"]] = r.data
+        self.assertFalse(got["s"]["result"]["has_gps"])
+        self.assertEqual((got["r"]["output"]["width"], got["r"]["output"]["height"]), (200, 100), "fit: 640x320 inside 200x200")
+        self.assertEqual((got["p"]["output"]["width"], got["p"]["output"]["height"]), (200, 200))
+        self.assertEqual(got["p"]["result"]["offset"], {"x": 0, "y": 50})
+        self.assertEqual((got["f"]["output"]["width"], got["f"]["output"]["height"]), (100, 100))
+        self.assertEqual(hashlib.sha256(Path(self.png).read_bytes()).hexdigest(), before, "the user's image is never written")
+        bad = ad.run(Operation(tool="imagemagick-skill/resize", args={"input": "img", "output": "f", "width": 10, "height": 10, "mode": "stretch"}, inputs=["img"], outputs=["f"]), paths)
+        self.assertEqual(bad.data["error"]["code"], "INVALID_REQUEST", "refused against the live contract's enum before the Skill runs")
+
+    def test_overlay_prepared_then_composited_end_to_end(self):
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+        from video_agent.tools.video_editing import locate_video_editing
+        if not locate_video_editing():
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        a = str(Path(self.tmp) / "src" / "a.mp4")
+        if not os.path.exists(a):
+            make_media(a)
+        ws = str(Path(self.tmp) / "ws_pipeline")
+        svc = Service(workspace=ws)
+        ir = svc.plan([a], "generic", user_requirements={"edit.overlay": self.png, "edit.overlay.position": "top-right", "edit.overlay.prepare.width": 160,
+                                                         "edit.overlay.prepare.height": 160, "edit.overlay.prepare.pad": "none", "edit.overlay.prepare.strip": True})
+        d = ir.doc
+        steps = {s["skill"]: s for s in d["plan"]["steps"]}
+        self.assertEqual((steps["image_strip"]["tool"], steps["image_prepare"]["tool"], steps["image_pad"]["tool"]),
+                         ("imagemagick-skill/strip", "imagemagick-skill/resize", "imagemagick-skill/pad"))
+        self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual(svc.handoffs(ir), [])
+        p = str(Path(self.tmp) / "im.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = {r["tool"]: r for r in out["execution"]["results"]}
+        pad = res["imagemagick-skill/pad"]
+        self.assertEqual((pad["data"]["output"]["width"], pad["data"]["output"]["height"]), (160, 160))
+        self.assertEqual((res["imagemagick-skill/resize"]["data"]["output"]["width"], res["imagemagick-skill/resize"]["data"]["output"]["height"]), (160, 80))
+        self.assertTrue(res["video-editing/overlay"]["ok"])
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        row = next(e for e in prov["operations"] if e["tool"] == "video-editing/overlay")
+        self.assertIn(pad["output"], row["input"], "the overlay composites the prepared image")
+        self.assertEqual([o["kind"] for o in prov["skill_observations"] if o["kind"].startswith("image.")], ["image.strip", "image.resize", "image.pad"])
+        dur = float(json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", res["video-editing/overlay"]["output"]],
+                                              capture_output=True, text=True, check=True).stdout)["format"]["duration"])
+        self.assertGreater(dur, 1.0)

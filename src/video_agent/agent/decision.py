@@ -29,6 +29,7 @@ from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT,
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 from .brief import decide_brief
 from .handoffs import decide_jobs
+from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
 
 # production-skill intent → decision subjects that would already execute it (measured path)
@@ -607,12 +608,18 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 eng.decide(subject=op, type="BLOCK", decision=f"BLOCK: {op} on {subject} (no video stream)", reason=f"{subject} has no video stream; {op} is a video operation (unsupported input, not guessed)",
                            confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=req)
                 continue
-            words = ", ".join(f"{k}={v}" for k, v in p.items() if k != "image") or "defaults"
-            eng.decide(subject=op, type="TRANSFORM", decision=f"{op} on {subject}: {words}" + (f" (image {Path(p['image']).name})" if op == "video.overlay" else ""),
-                       reason=f"user asked for {op} ({req[0].source}); applied to {'the joined programme' if subject == PROGRAMME else 'the input'} after the trims",
+            words = ", ".join(f"{k}={v}" for k, v in p.items() if k not in ("image", "prepare")) or "defaults"
+            prep = p.get("prepare")   # ADR-077: the overlay image prepared by imagemagick-skill first (part of this decision: same request, same approval)
+            eng.decide(subject=op, type="TRANSFORM", decision=f"{op} on {subject}: {words}" + (f" (image {Path(p['image']).name}" + (f", {describe_prepare(prep)} first" if prep else "") + ")"
+                                                                                            if op == "video.overlay" else ""),
+                       reason=f"user asked for {op} ({req[0].source}); applied to {'the joined programme' if subject == PROGRAMME else 'the input'} after the trims"
+                              + (f"; the image is prepared by {IMAGE_PACKAGE} into a new file beforehand (the user's file is never written)" if prep else ""),
                        confidence=1.0, evidence=ev, risk=OPERATIONS[op]["risk"], approval=approval_for(op, explicit=req[0]), provenance="USER",
                        params={"asset_id": subject, **p}, requirements=req, serves_intent=None)
         cap_block(OPERATIONS[op]["skill"], f"capability.{OPERATIONS[op]['skill']}")
+        if op == "video.overlay" and p.get("prepare"):   # ADR-077: without imagemagick-skill each preparation step is handed off (ADR-051)
+            for sk, _tool, _params in prepare_chain(p["prepare"]):
+                cap_block(sk, f"capability.{sk}")
     # ---- finishing (ADR-031 / ADR-032): subtitles, colour, motion graphics, thumbnail, QC gate — on the programme or each asset, after the edits
     def has_edit(subject: str) -> bool:
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]

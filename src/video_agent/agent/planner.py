@@ -4,6 +4,7 @@ contract the compiler lowers). The planner never emits tool arguments, never exe
 but the registry map it is given (ADR-021)."""
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from ..media.analyzer import AnalysisResult
@@ -21,6 +22,7 @@ from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
+from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
 
 
@@ -316,13 +318,25 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             refs: Dict[str, Any] = {"input": current_of[subject], "output": out_id}
             if op_type == "video.speed":
                 scope = {"start": 0.0, "end": round((scope["end"] - scope["start"]) / float(params["factor"]), 3)}
+            prep_last: Optional[str] = None
             if op_type == "video.overlay":
                 refs["image"] = d.params["image"]
+                if d.params.get("prepare"):   # ADR-077: the image prepared by imagemagick-skill (strip → resize → pad) before the overlay composites it
+                    refs["prepare"] = dict(d.params["prepare"])
+                    prev: Optional[str] = None
+                    for sk, tool_name, tparams in prepare_chain(d.params["prepare"]):
+                        order += 1
+                        pst = ProductionStep(id=f"step_{sk}_{subject}", order=order, skill=sk, tool=tool_for(sk), inputs=[prev] if prev else [],
+                                             params={"asset": subject, "image": d.params["image"], **tparams}, outputs=[prepared_id(subject, tool_name)],
+                                             depends_on=[prep_last] if prep_last else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
+                        steps.append(pst)   # no scope on the subject's timeline: the image is its own source
+                        prev, prep_last = prepared_id(subject, tool_name), pst.id
+                    summary.append(f"Prepare the overlay image {os.path.basename(d.params['image'])}: {describe_prepare(d.params['prepare'])} ({IMAGE_PACKAGE})")
             video_ops.append(ir_operation(op_type, subject, params, [d.id], scope=scope, **refs))
             order += 1
             st = ProductionStep(id=f"step_{op_type.split('.', 1)[1]}_{subject}", order=order, skill=spec["skill"], tool=tool_for(spec["skill"]), inputs=[current_of[subject]],
                                 params={"asset": subject, **params, **({"image": d.params["image"]} if op_type == "video.overlay" else {})}, outputs=[out_id],
-                                depends_on=[last_of[subject]] if last_of.get(subject) else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                depends_on=[x for x in (last_of.get(subject), prep_last) if x], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
                                 temporal_scope=scope)
             steps.append(st)
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope

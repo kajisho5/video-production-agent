@@ -16,6 +16,7 @@ from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
+from ..agent.image_prepare import prepare_chain, prepare_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
 from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
@@ -301,6 +302,8 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
     for op in ops:
         t = op.get("type")
         subj = op.get("asset")
+        if "prepare" in op and t != "video.overlay":   # ADR-077: only an overlay's image is prepared
+            errs.append(f"{t}: parameters ['prepare'] are not in the operation's vocabulary (only video.overlay prepares its image)")
         if t == "video.trim":
             if subj not in assets:
                 continue   # reported by the caller
@@ -315,7 +318,8 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
             errs.append(f"unknown video operation type {t!r}")
             continue
         spec = OPERATIONS[t]
-        extra = sorted(k for k in op if k not in ("type", "asset", "input", "inputs", "output", "image", "segments", "timeline_duration", "temporal_scope", "decision_ids") and k not in spec["params"])
+        extra = sorted(k for k in op if k not in ("type", "asset", "input", "inputs", "output", "image", "segments", "timeline_duration", "temporal_scope", "decision_ids")
+                       and k not in spec["params"] and not (k == "prepare" and t == "video.overlay"))   # ADR-077: checked below
         if extra:
             errs.append(f"{t}: parameters {extra} are not in the operation's vocabulary")
         rank = EDIT_ORDER.index(t)
@@ -403,6 +407,8 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"video.overlay image is outside the allowed input roots: {Path(img).name}")
             if op.get("start") is not None and op.get("end") is not None and not float(op["start"]) < float(op["end"]):
                 errs.append("video.overlay: start must be before end")
+            if "prepare" in op:   # ADR-077: the image's preparation by imagemagick-skill, in the vocabulary read from its pinned contract
+                errs.extend(f"video.overlay on {subj}: {e}" for e in prepare_problems(op["prepare"]))
         if t == IMAGE_INSERT_OP:   # ADR-070: an image still, its duration and frame, joined before / after the picture it names as input
             img = op.get("image")
             if not isinstance(img, str) or not img:
@@ -921,6 +927,10 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     for op in d["video"]["operations"]:
         if op["type"] == "video.trim" and ("silence_cleanup", op["asset"]) not in step_keys and ("video_trim", op["asset"]) not in step_keys:   # ADR-062: either skill runs it
             rep.errors.append(f"video.trim on {op['asset']} has no plan step")
+        if op["type"] == "video.overlay" and isinstance(op.get("prepare"), dict):   # ADR-077: every preparation of the image has its step
+            for sk, _tool, _params in prepare_chain(op["prepare"]):
+                if (sk, op["asset"]) not in step_keys:
+                    rep.errors.append(f"the overlay image's {sk} on {op['asset']} has no plan step")
         if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in d["audio"]["operations"]:
@@ -1051,6 +1061,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                                            # (the reference-engine-only ops above are the exception -- their own capability need already came from the registry above)
         if any(op["type"] in AUDIO_OPERATIONS and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]):
             needed.add("audio-production")   # the audio production path exists only in audio-production-skill (ADR-030)
+        if any(op.get("prepare") for op in d["video"]["operations"] if op["type"] == "video.overlay"):
+            needed.add("imagemagick-skill")   # ADR-077: the overlay image's preparation exists only in imagemagick-skill
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
         if d["audio"]["operations"]:

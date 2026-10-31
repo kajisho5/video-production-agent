@@ -1565,6 +1565,50 @@
       "h",
       "v"
      ]
+    },
+    "prepare": {
+     "type": "object",
+     "additionalProperties": false,
+     "minProperties": 1,
+     "properties": {
+      "width": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 16384
+      },
+      "height": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 16384
+      },
+      "mode": {
+       "enum": [
+        "fit",
+        "fill",
+        "exact"
+       ]
+      },
+      "pad": {
+       "type": "string",
+       "pattern": "^(none|[a-z]{1,32}|#[0-9A-Fa-f]{6}|#[0-9A-Fa-f]{8})$"
+      },
+      "gravity": {
+       "enum": [
+        "northwest",
+        "north",
+        "northeast",
+        "west",
+        "center",
+        "east",
+        "southwest",
+        "south",
+        "southeast"
+       ]
+      },
+      "strip": {
+       "const": true
+      }
+     }
     }
    },
    "additionalProperties": false
