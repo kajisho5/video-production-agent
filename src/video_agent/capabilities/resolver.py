@@ -52,6 +52,22 @@ class Capability:
         return {"name": self.name, "status": self.status, "detail": self.detail, "evidence": self.evidence}
 
 
+# ADR-071: ffmpeg-skill #380 (release 2.22.4): export.py keeps the source's subtitle streams (every preset but gif)
+EXPORT_KEEPS_SUBTITLES_FROM = (2, 22, 4)
+
+
+def export_keeps_subtitles(caps: Dict[str, Any]) -> bool:
+    """Whether the located ffmpeg-skill's platform export keeps subtitle streams, from the version the resolver read (a suffix such
+    as -fake is dropped; anything that is not three numbers is unknown and answers False: nothing guessed)."""
+    cap = caps.get("ffmpeg-skill")
+    ev = getattr(cap, "evidence", None) or (cap.get("evidence") if isinstance(cap, dict) else None) or {}
+    try:
+        v = tuple(int(x) for x in str(ev.get("version") or "").split("-")[0].split(".")[:3])
+    except ValueError:
+        return False
+    return len(v) == 3 and v >= EXPORT_KEEPS_SUBTITLES_FROM
+
+
 def ffmpeg_skill_capabilities(skill: Any) -> Dict[str, Capability]:
     """`ffmpeg-skill` and one `ffmpeg-skill:<tool>` per catalogued script of a located checkout. version_supported() only flags a
     version outside the verified range (DEGRADED, not MISSING). ADR-056: the catalog checked against the checkout's own contract

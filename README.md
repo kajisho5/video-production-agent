@@ -112,7 +112,7 @@ video-agent explain <project.json> --pipeline
 video-agent check <artifact.mp4> --platform youtube --qc
 ```
 
-字幕を焼き込まずにソフト字幕トラック（プレイヤーで切り替えられる字幕）として入れるなら `--set subtitle.mode=mux`（ADR-063。subtitle-skill の render の `mode` そのもの。`subtitle.mode=burn` は `subtitle.burn_in=true` と同じ）。絵と音はコピーのまま。platform preset の書き出し（youtube など）は字幕ストリームを落とすので、preset のある profile では BLOCK になる（generic などで納品する）。納品物にトラックが残っているかは QA が確かめる。
+字幕を焼き込まずにソフト字幕トラック（プレイヤーで切り替えられる字幕）として入れるなら `--set subtitle.mode=mux`（ADR-063。subtitle-skill の render の `mode` そのもの。`subtitle.mode=burn` は `subtitle.burn_in=true` と同じ）。絵と音はコピーのまま。ffmpeg-skill 2.22.4 より前の platform preset の書き出し（youtube など）は字幕ストリームを落とすので、その engine と gif preset では BLOCK になる（generic などで納品する）。2.22.4 以上なら preset の書き出しもトラックを残すので BLOCK しない（ADR-071）。納品物にトラックが残っているかは QA が確かめる。
 
 編集ソフトへの受け渡し（ADR-052）: `--set delivery.timeline=otio`（または `fcpxml` / `edl`、既定 `none`）で、IR の cut list（trim が残す範囲を programme の順に並べたもの、hard cut、source は元の場所を参照）を ffmpeg-skill `render.py --export-timeline` が書き出し、type `TIMELINE` の Artifact になる。speed / colour / graphics などはタイムラインに載らず、decision に名指しされる。switch / grid / audio path は BLOCK。
 

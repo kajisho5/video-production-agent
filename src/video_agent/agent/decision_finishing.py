@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ..capabilities.resolver import Capability
+from ..capabilities.resolver import Capability, export_keeps_subtitles
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Requirement
 from ..policy.rules import RuleSet
@@ -27,6 +27,11 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION,
                         planned_picture_size, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, parse_subtitle_requirements, valid_language
+
+# ADR-071: the engine's export keeps subtitle streams from release 2.22.4 (engine #380) for every preset but gif; older engines (measured
+# in SubtitleMuxRealTests) and an engine whose version cannot be read keep the ADR-063 BLOCK of a soft track with an export preset.
+EXPORT_PRESETS_DROPPING_SUBTITLES = ("gif",)
+
 
 APPROVAL_KEYS = {"subtitle.generate": ("subtitle.generate.approval", "CONFIRM"), "subtitle.burn_in": ("subtitle.burn_in.approval", "CONFIRM"),
                  "subtitle.mux": ("subtitle.mux.approval", "CONFIRM"),   # ADR-063: a soft subtitle track in the deliverable
@@ -186,13 +191,17 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                 mr = m["subtitle.mode"]
                 targets_req = m.get("delivery.targets")
                 presets = sorted({str(t.get("preset")) for t in ((targets_req.value if targets_req else None) or []) if isinstance(t, dict) and t.get("preset")})
-                if presets:
-                    # measured on the real Skills (tests/test_integration.py::SubtitleMuxRealTests): the platform export re-encodes the picture
-                    # and the audio only and leaves every subtitle stream behind, so the track would never reach the deliverable
-                    eng.decide(subject="subtitle.mux", type="BLOCK", decision=f"BLOCK: soft subtitle track on {subject} with an export preset ({', '.join(presets)})",
-                               reason="the delivery export of this profile writes the picture and the audio only and drops subtitle streams: a muxed track would not reach "
-                                      "the deliverable (use a profile without a preset, e.g. generic, or a burn-in); handed over to the engine, not worked around here",
-                               confidence=1.0, evidence=ev + [mr.id, targets_req.id], risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "presets": presets},
+                # ADR-071: an engine whose export keeps subtitle streams (release 2.22.4+) carries the track through every preset but gif
+                dropping = [p_ for p_ in presets if p_ in EXPORT_PRESETS_DROPPING_SUBTITLES or not export_keeps_subtitles(caps)]
+                if dropping:
+                    # measured on the real Skills (tests/test_integration.py::SubtitleMuxRealTests): before engine release 2.22.4 the platform export
+                    # re-encodes the picture and the audio only and leaves every subtitle stream behind, so the track would never reach the deliverable
+                    eng.decide(subject="subtitle.mux", type="BLOCK", decision=f"BLOCK: soft subtitle track on {subject} with an export preset ({', '.join(dropping)})",
+                               reason=("the gif export holds no subtitle stream" if all(p_ in EXPORT_PRESETS_DROPPING_SUBTITLES for p_ in dropping) else
+                                       "the delivery export of this engine (a release older than 2.22.4, or its version unknown) writes the picture and the audio only and drops "
+                                       "subtitle streams") + ": a muxed track would not reach the deliverable (use a profile without a preset, e.g. generic, or a burn-in, "
+                                      "or engine release 2.22.4+); handed over to the engine, not worked around here",
+                               confidence=1.0, evidence=ev + [mr.id, targets_req.id], risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "presets": dropping},
                                requirements=req + [mr, targets_req])
                 elif not finished.get(subject):
                     eng.decide(subject="subtitle.mux", type="BLOCK", decision=f"BLOCK: soft subtitle track on {subject} without an intermediate",

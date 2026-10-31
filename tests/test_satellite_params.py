@@ -494,13 +494,16 @@ class AudioMixNoiseDynamicsTests(unittest.TestCase):
         clear_modes()
 
     def test_vocabulary_matches_the_pinned_contract(self):
-        """Every range / enum / arity here is the pinned 0.4.2 contract's own; MIX has no ducking parameter, so none is offered."""
+        """Every range / enum / arity here is the pinned contract's own; MIX's ducking (0.4.6) is not offered yet."""
         c = audio_contract()
         ops = {o["type"]: o for o in c["operations"]}
         self.assertEqual((ops["MIX"]["inputs"]["max"], c["max_mix_inputs"]), (MAX_MIX_INPUTS, MAX_MIX_INPUTS))
         gain = ops["MIX"]["parameters"]["levels"]["items"]["properties"]["gain_db"]
         self.assertEqual((gain["min"], gain["max"]), MIX_GAIN_RANGE)
-        self.assertEqual(set(ops["MIX"]["parameters"]), {"levels"}, "the pinned MIX has no ducking / sidechain parameter")
+        # 0.4.6 (ADR-071) added MIX.duck (sidechain ducking); the agent does not offer it yet: its MIX carries levels only
+        self.assertEqual(set(ops["MIX"]["parameters"]), {"levels", "duck"})
+        from video_agent.agent.audio import OPERATIONS as AUDIO_OPS
+        self.assertEqual(AUDIO_OPS["audio.mix"]["params"], ("levels",))
         nr = ops["NOISE_REDUCTION"]["parameters"]
         self.assertEqual(tuple(nr["mode"]["enum"]), NOISE_REDUCTION_MODES)
         self.assertEqual((nr["strength_db"]["min"], nr["strength_db"]["max"]), NOISE_REDUCTION_CONTRACT_STRENGTH)
@@ -720,6 +723,30 @@ class SubtitleMuxTests(unittest.TestCase):
         self.assertEqual([x["subject"] for x in blk], ["subtitle.mux"]); self.assertIn("drops subtitle streams", blk[0]["reason"])
         self.assertEqual(blk[0]["params"]["presets"], ["youtube"]); self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
+    def test_an_engine_whose_export_keeps_subtitles_lifts_the_block(self):
+        """ADR-071: ffmpeg-skill 2.22.4 (#380) keeps subtitle streams through every export preset but gif; older or unreadable versions still block."""
+        from video_agent.capabilities.resolver import export_keeps_subtitles
+        from video_agent.capabilities.resolver import Capability
+
+        class Caps(PipelineCaps):
+            def __init__(self, version):
+                super().__init__()
+                self.version = version
+
+            def resolve(self, refresh=False):
+                out = super().resolve(refresh)
+                out["ffmpeg-skill"] = Capability("ffmpeg-skill", "AVAILABLE", "fake", {"version": self.version})
+                return out
+        for v, keeps in (("2.22.4", True), ("2.23.0", True), ("3.0.0", True), ("2.22.3", False), ("0.8.4-fake", False), ("", False), ("dev", False)):
+            self.assertEqual(export_keeps_subtitles(Caps(v).resolve()), keeps, v)
+        svc = pipeline_service(self.tmp, caps=Caps("2.22.4"))
+        ir = svc.plan([self._media()], "youtube", user_requirements={"subtitle": True, "subtitle.mode": "mux"}, kinds=["transcript"], params={"language": "ja"})
+        self.assertEqual([x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"], [])
+        self.assertEqual(next(x for x in ir.doc["decisions"] if x["subject"] == "subtitle.mux")["type"], "TRANSFORM")
+        svc = pipeline_service(self.tmp, caps=Caps("2.22.3"))
+        ir = svc.plan([self._media()], "youtube", user_requirements={"subtitle": True, "subtitle.mode": "mux"}, kinds=["transcript"], params={"language": "ja"})
+        self.assertEqual([x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"], ["subtitle.mux"])
+
     def test_qa_fails_when_the_track_is_dropped(self):
         os.environ["FAKE_DROPS_SUBS"] = "1"   # a later step loses the stream: QA catches it in the deliverable
         svc = pipeline_service(self.tmp)
@@ -764,7 +791,7 @@ class AudioVoiceCleanupTests(unittest.TestCase):
     def test_vocabulary_matches_the_pinned_contract(self):
         from video_agent.agent.audio import AUDIO_ORDER, OPERATIONS, VOICE_CLEANUP_LEVELS
         c = audio_contract()
-        self.assertEqual(c["version"], "0.4.5")
+        self.assertEqual(c["version"], "0.4.6")
         vc = {o["type"]: o for o in c["operations"]}["VOICE_CLEANUP"]
         self.assertEqual(set(vc["parameters"]), {"level", "audio_stream"})
         self.assertEqual((tuple(vc["parameters"]["level"]["enum"]), vc["parameters"]["level"]["required"], "default" in vc["parameters"]["level"]), (VOICE_CLEANUP_LEVELS, True, False))
