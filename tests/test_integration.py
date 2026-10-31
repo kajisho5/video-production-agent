@@ -2600,6 +2600,30 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         dur, size, audio, _ = self._probe(res["output"])
         self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
 
+    def test_primary_correction_every_contract_parameter(self):
+        """ADR-076: every color.* PRIMARY_CORRECTION key (read from the pinned color-grading contract: the five of ADR-031 and the eight of
+        ADR-062) planned at once, each at a value inside the contract's range, → one PRIMARY_CORRECTION request on the real color-grading-skill;
+        the live contract still declares the same colour parameters, and the Skill reports every value back as applied."""
+        self._need("color-grading")
+        from video_agent.agent.finishing import COLOR_CORRECTION_PARAMS, PRIMARY_CORRECTION_NOT_GRADING
+        from video_agent.tools.color_grading import ColorGradingAdapter, locate_color_grading
+        live = ColorGradingAdapter(locate_color_grading()).operations["PRIMARY_CORRECTION"]["parameters"]
+        self.assertEqual({n: s for n, s in live.items() if n not in PRIMARY_CORRECTION_NOT_GRADING}, COLOR_CORRECTION_PARAMS, "re-pin color-grading")
+        svc = self._svc("pc_all")
+        want = {"exposure": -0.25, "contrast": 1.2, "saturation": 1.1, "temperature": 5600.0, "tint": -0.1, "gamma": 0.9, "lift": -0.05, "gain": 0.05,
+                "levels_in_black": 8, "levels_in_white": 245, "levels_out_black": 16, "levels_out_white": 235, "curves": "lighter"}
+        self.assertEqual(sorted(want), sorted(COLOR_CORRECTION_PARAMS))
+        ir, p = self._plan(svc, [self.a], {f"color.{k}": v for k, v in want.items()}, profile="generic", name="pc_all")
+        op = ir.doc["color"]["operations"][0]
+        self.assertEqual((op["type"], {k: op[k] for k in want}), ("color.primary_correction", want))
+        out = self._render(svc, p)
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "color-grading/run")
+        self.assertTrue(res["ok"] and os.path.isfile(res["output"]), res)
+        applied = res["data"]["operation"]["parameters"]
+        self.assertEqual({k: applied[k] for k in want}, want)
+        dur, size, audio, _ = self._probe(res["output"])
+        self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
+
     def test_every_motion_graphics_element(self):
         """ADR-064: all twelve element types of the real motion-graphics-skill 0.2.x in one render, each with parameters beyond its text
         (a chroma-keyed picture-in-picture clip, a registry font, a meme's two lines, a countdown's start number): the Skill renders every

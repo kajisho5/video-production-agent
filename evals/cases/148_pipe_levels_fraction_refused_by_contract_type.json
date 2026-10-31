@@ -1,0 +1,11 @@
+{
+ "name": "pipe_levels_fraction_refused_by_contract_type",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "color.levels_out_black": 16.5
+ },
+ "expect": {
+  "plan_error": "must be an integer"
+ }
+}

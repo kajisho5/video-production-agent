@@ -42,36 +42,50 @@ from .editing import IMAGE_EXTENSIONS, NAMED_POSITIONS, EditRequirementError, _b
 
 # ---- colour
 COLOR_TOOL = "color-grading/run"
+# ADR-076: PRIMARY_CORRECTION's vocabulary (which `color.<parameter>` keys exist, each one's type, range, enum and "unchanged" default) is
+# read from the pinned color-grading contract (the data file the adapter pins, read as data so the agent layer never imports a tool
+# package), the way ADR-064 reads motion-graphics. A re-pin that adds or narrows a parameter changes the keys and the plan-time check with
+# it; tests/test_satellite_params.py::ColorContractVocabularyTests says so, and the IR schema is checked against the same contract there.
+COLOR_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "color_grading" / "contract_0.4.0.json"
+_COLOR_CONTRACT: Dict[str, Any] = json.loads(COLOR_CONTRACT_PATH.read_text(encoding="utf-8"))
+PRIMARY_CORRECTION_SPEC: Dict[str, Dict[str, Any]] = next(
+    o for o in _COLOR_CONTRACT["operations"] if o.get("type") == "PRIMARY_CORRECTION")["parameters"]
+# parameters of the same operation that are encoding / stream selection, not colour treatment: never `color.*` keys (the encode settings
+# stay the Skill's own defaults; audio_stream is chosen by the agent's audio path, not per colour operation)
+PRIMARY_CORRECTION_NOT_GRADING = ("crf", "preset", "audio_stream")
+
+
+def _grading_param(spec: Dict[str, Any]) -> bool:
+    """A shape the plan-time check can validate exactly: a bounded number / integer, or a string enum. Anything else a future contract
+    declares is left out of the vocabulary (no key, so it is never sent) until it is decided, and the vocabulary test fails to say so."""
+    t = spec.get("type")
+    if t in ("number", "integer"):
+        return isinstance(spec.get("min"), (int, float)) and isinstance(spec.get("max"), (int, float)) and not spec.get("required")
+    return t == "string" and bool(spec.get("enum")) and not spec.get("required")
+
+
+COLOR_CORRECTION_PARAMS: Dict[str, Dict[str, Any]] = {
+    n: s for n, s in PRIMARY_CORRECTION_SPEC.items() if n not in PRIMARY_CORRECTION_NOT_GRADING and _grading_param(s)}
 COLOR_ORDER = ("color.strip_dovi", "color.hdr_to_sdr", "color.primary_correction", "color.lut", "color.retag")
 COLOR_OPERATIONS: Dict[str, Dict[str, Any]] = {
     "color.strip_dovi": {"skill": "color_strip_dovi", "type": "STRIP_DOVI", "params": (), "risk": "LOW"},
     "color.hdr_to_sdr": {"skill": "color_hdr_to_sdr", "type": "HDR_TO_SDR", "params": (), "risk": "MEDIUM"},
     "color.primary_correction": {"skill": "color_primary_correction", "type": "PRIMARY_CORRECTION",
-                                  "params": ("exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
-                                             "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves"), "risk": "MEDIUM"},
+                                  "params": tuple(COLOR_CORRECTION_PARAMS), "risk": "MEDIUM"},
     "color.lut":        {"skill": "color_lut",        "type": "LUT_APPLY",  "params": ("lut_strength",), "risk": "MEDIUM"},
     "color.retag":      {"skill": "color_retag",      "type": "RETAG",      "params": ("target",), "risk": "LOW"},
 }
 COLOR_SKILL_OF = {k: v["skill"] for k, v in COLOR_OPERATIONS.items()}
 COLOR_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
-COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi",
-              "color.exposure", "color.contrast", "color.saturation", "color.temperature", "color.tint",
-              "color.gamma", "color.lift", "color.gain", "color.levels_in_black", "color.levels_in_white", "color.levels_out_black",
-              "color.levels_out_white", "color.curves")
-# PRIMARY_CORRECTION's own safe ranges (color-grading-skill's guaranteed subset, docs/ffmpeg-skill.md there): key -> (lo, hi).
-# gamma / lift / gain / levels_* (ADR-062): the ranges color-grading-skill 0.4.0's contract declares for the same parameter names
+COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi") + tuple(f"color.{n}" for n in COLOR_CORRECTION_PARAMS)
+# key -> (lo, hi) for the numeric parameters, the contract's own min / max (exposure / contrast / saturation / temperature / tint since
+# ADR-031, gamma / lift / gain / levels_* since ADR-062; hand-copied until ADR-076, the same numbers)
 COLOR_CORRECTION_RANGES: Dict[str, Tuple[float, float]] = {
-    "color.exposure": (-3.0, 3.0), "color.contrast": (0.0, 2.0), "color.saturation": (0.0, 2.0),
-    "color.temperature": (2000.0, 12000.0), "color.tint": (-1.0, 1.0),
-    "color.gamma": (0.1, 10.0), "color.lift": (-1.0, 1.0), "color.gain": (-1.0, 1.0),
-    "color.levels_in_black": (0, 255), "color.levels_in_white": (0, 255), "color.levels_out_black": (0, 255), "color.levels_out_white": (0, 255),
-}
-# colorlevels points are integers in 8-bit units (the contract types them `integer`); unset ones keep the Skill's default
-COLOR_LEVELS_DEFAULTS: Dict[str, int] = {"levels_in_black": 0, "levels_in_white": 255, "levels_out_black": 0, "levels_out_white": 255}
-# the curves filter's built-in presets color-grading-skill 0.4.0 accepts (its contract's enum; the filter's own "none" is not one:
-# leaving color.curves unset adds no curves term)
-COLOR_CURVES_PRESETS = ("color_negative", "cross_process", "darker", "increase_contrast", "lighter", "linear_contrast", "medium_contrast",
-                        "negative", "strong_contrast", "vintage")
+    f"color.{n}": (s["min"], s["max"]) for n, s in COLOR_CORRECTION_PARAMS.items() if s["type"] in ("number", "integer")}
+# colorlevels points are integers in 8-bit units (the contract types them `integer`); unset ones keep the Skill's default (the contract's)
+COLOR_LEVELS_DEFAULTS: Dict[str, int] = {n: int(s["default"]) for n, s in COLOR_CORRECTION_PARAMS.items() if n.startswith("levels_")}
+# the curves filter's built-in presets (the contract's enum; the filter's own "none" is not one: leaving color.curves unset adds no curves term)
+COLOR_CURVES_PRESETS = tuple(PRIMARY_CORRECTION_SPEC["curves"]["enum"])
 
 # ---- motion graphics
 GRAPHICS_TOOL = "motion-graphics/run"
@@ -175,19 +189,23 @@ def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, A
     # parameters (no single "main" key the way color.lut/color.target have) -- any one of them, explicitly set, asks
     # for PRIMARY_CORRECTION; unset ones are left for the Skill's own defaults (unchanged), never guessed here.
     # ADR-062: gamma / lift / gain / levels_* / curves are more parameters of the same operation, read the same way.
-    active = [k for k in list(COLOR_CORRECTION_RANGES) + ["color.curves"] if k in m and m[k].provenance != "DEFAULT"]
+    # ADR-076: the keys, types, ranges and enums are the pinned contract's (COLOR_CORRECTION_PARAMS); only explicit keys are sent.
+    active = [f"color.{n}" for n in COLOR_CORRECTION_PARAMS if f"color.{n}" in m and m[f"color.{n}"].provenance != "DEFAULT"]
     if active:
         p = {}
         for k in active:
             name = k.split(".", 1)[1]
-            if k == "color.curves":
-                p[name] = _token(m[k].value, k, re.compile("^(" + "|".join(COLOR_CURVES_PRESETS) + ")$"), "one of " + ", ".join(COLOR_CURVES_PRESETS))
+            spec = COLOR_CORRECTION_PARAMS[name]
+            if spec["type"] == "string":
+                enum = tuple(str(x) for x in spec["enum"])
+                p[name] = _token(m[k].value, k, re.compile("^(" + "|".join(re.escape(x) for x in enum) + ")$"), "one of " + ", ".join(enum))
                 continue
-            lo, hi = COLOR_CORRECTION_RANGES[k]
+            lo, hi = spec["min"], spec["max"]
             v = _number(m[k].value, k, lo, hi)
-            if name in COLOR_LEVELS_DEFAULTS:
+            if spec["type"] == "integer":
                 if float(v) != int(v):
-                    raise EditRequirementError(f"{k} must be an integer from {lo} to {hi} (8-bit units), got {m[k].value!r}")
+                    unit = " (8-bit units)" if name in COLOR_LEVELS_DEFAULTS else ""
+                    raise EditRequirementError(f"{k} must be an integer from {lo} to {hi}{unit}, got {m[k].value!r}")
                 p[name] = int(v)
             else:
                 p[name] = float(v)

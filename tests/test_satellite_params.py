@@ -3,7 +3,7 @@ gamma / lift / gain / levels / curves, and video-editing-skill's TRIM (an explic
 with FREEZE / REVERSE). Part 2 (ADR-063): audio-production-skill 0.4.2's MIX / NOISE_REDUCTION / DYNAMICS and subtitle-skill 0.2.0's
 render `mode: "mux"` (a soft subtitle track). Part 3 (ADR-064): every element of motion-graphics-skill 0.2.3, with every parameter. Part 4 (ADR-065): qc-skill 0.2.3's
 delivery_package check of the deliverable set (the deliverable + its subtitle sidecar / thumbnail) as part of the QC gate. ADR-072: audio-production-skill
-0.4.6's FILLER_REMOVE (at the transcript's word timings) and MIX.duck. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
+0.4.6's FILLER_REMOVE (at the transcript's word timings) and MIX.duck. ADR-076: the colour keys, ranges and enums read from the pinned color-grading contract. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
 key, ADR-061), a decision, an IR record, a plan step and the compiled Skill request, on the fake engine and the fake Skills
 (tests/test_integration.py runs them on the real Skills)."""
 from __future__ import annotations
@@ -39,7 +39,9 @@ from pipeline_harness import AUDIO_PRODUCTION_CAPS, PipelineCaps  # noqa: E402
 from video_agent.models import Requirement  # noqa: E402
 from video_agent.project import load_ir, save_ir  # noqa: E402
 from video_agent.service import BRIEF_REQUIREMENT_KEYS, _check_requirement_keys  # noqa: E402
+from video_agent.tools.color_grading.adapter import PINNED_CONTRACT_PATH as COLOR_PINNED_CONTRACT_PATH  # noqa: E402
 from video_agent.tools.color_grading.adapter import pinned_contract as color_contract  # noqa: E402
+from video_agent.agent import finishing  # noqa: E402
 from video_agent.tools.video_editing.adapter import pinned_contract as editing_contract  # noqa: E402
 from video_agent.tools.video_editing.lowering import ARGS, Lowering, params_for  # noqa: E402
 
@@ -133,6 +135,141 @@ class ColorParameterTests(unittest.TestCase):
         errs = " ".join(svc.validate(ir).errors)
         self.assertIn("gamma", errs); self.assertIn("curves", errs)
         clear_modes()
+
+
+# ADR-076: the PRIMARY_CORRECTION parameter table as color-grading-skill 0.4.0's contract declares it (name: type, min, max, default / enum).
+# Written out here on purpose: a re-pin that changes any of it changes the agent's vocabulary with it, and this table says so.
+PRIMARY_CORRECTION_TABLE = {
+    "exposure": ("number", -3.0, 3.0, 0.0), "contrast": ("number", 0.0, 2.0, 1.0), "saturation": ("number", 0.0, 2.0, 1.0),
+    "temperature": ("number", 2000.0, 12000.0, 6500.0), "tint": ("number", -1.0, 1.0, 0.0),
+    "gamma": ("number", 0.1, 10.0, 1.0), "lift": ("number", -1.0, 1.0, 0.0), "gain": ("number", -1.0, 1.0, 0.0),
+    "levels_in_black": ("integer", 0, 255, 0), "levels_in_white": ("integer", 0, 255, 255),
+    "levels_out_black": ("integer", 0, 255, 0), "levels_out_white": ("integer", 0, 255, 255),
+    "curves": ("string", None, None, ("color_negative", "cross_process", "darker", "increase_contrast", "lighter", "linear_contrast",
+                                      "medium_contrast", "negative", "strong_contrast", "vintage")),
+}
+
+
+class ColorContractVocabularyTests(unittest.TestCase):
+    """ADR-076: the color.* PRIMARY_CORRECTION keys, their types, ranges and enums are read from the pinned color-grading contract and
+    checked at plan time; nothing is sent unless the user sets a key."""
+
+    def _pc(self):
+        return next(o for o in color_contract()["operations"] if o["type"] == "PRIMARY_CORRECTION")["parameters"]
+
+    def test_vocabulary_is_the_pinned_contract(self):
+        pc = self._pc()
+        self.assertEqual(finishing.COLOR_CONTRACT_PATH.resolve(), COLOR_PINNED_CONTRACT_PATH.resolve(), "the agent layer reads the contract the adapter pins")
+        grading = [n for n in pc if n not in finishing.PRIMARY_CORRECTION_NOT_GRADING]
+        self.assertEqual(list(finishing.COLOR_CORRECTION_PARAMS), grading, "every colour parameter of the contract has a key (none left out for an unhandled shape)")
+        self.assertEqual(finishing.COLOR_OPERATIONS["color.primary_correction"]["params"], tuple(grading))
+        for n in grading:
+            spec = pc[n]
+            self.assertIn(f"color.{n}", finishing.COLOR_KEYS)
+            if spec["type"] in ("number", "integer"):
+                self.assertEqual(finishing.COLOR_CORRECTION_RANGES[f"color.{n}"], (spec["min"], spec["max"]), n)
+            else:
+                self.assertEqual(finishing.COLOR_CURVES_PRESETS, tuple(spec["enum"]))
+        for n in finishing.PRIMARY_CORRECTION_NOT_GRADING:
+            self.assertIn(n, pc, "the excluded names are real contract parameters")
+            self.assertNotIn(f"color.{n}", finishing.COLOR_KEYS)
+            with self.assertRaises(ValueError):
+                _check_requirement_keys({f"color.{n}": 18})
+        self.assertEqual(finishing.COLOR_LEVELS_DEFAULTS, {n: pc[n]["default"] for n in pc if n.startswith("levels_")})
+
+    def test_parameter_table(self):
+        pc = self._pc()
+        self.assertEqual(sorted(finishing.COLOR_CORRECTION_PARAMS), sorted(PRIMARY_CORRECTION_TABLE))
+        for n, (t, lo, hi, extra) in PRIMARY_CORRECTION_TABLE.items():
+            spec = pc[n]
+            self.assertEqual(spec["type"], t, n)
+            if t == "string":
+                self.assertEqual(tuple(spec["enum"]), extra, n); self.assertIsNone(spec["default"], n)
+            else:
+                self.assertEqual((spec["min"], spec["max"], spec["default"]), (lo, hi, extra), n)
+
+    def test_ir_schema_matches_the_contract(self):
+        """The validator's second look at the IR (project.schema.json, $defs/color_op) declares the same type / range / enum."""
+        schema = json.loads((Path(__file__).resolve().parents[1] / "schemas" / "project.schema.json").read_text(encoding="utf-8"))
+        props = schema["$defs"]["color_op"]["properties"]
+        for n, spec in finishing.COLOR_CORRECTION_PARAMS.items():
+            if spec["type"] == "string":
+                self.assertEqual(props[n], {"enum": list(spec["enum"])}, n)
+            else:
+                self.assertEqual((props[n]["type"], props[n]["minimum"], props[n]["maximum"]), (spec["type"], spec["min"], spec["max"]), n)
+
+    def test_boundaries_and_types_at_plan_time(self):
+        """The contract's own min / max are accepted, just outside is refused (by the parser and the --set gate), an integer parameter
+        refuses a fraction, a number parameter is sent as a float, every enum value is accepted."""
+        pair = {"levels_in_black": "levels_in_white", "levels_in_white": "levels_in_black", "levels_out_black": "levels_out_white", "levels_out_white": "levels_out_black"}
+        for n, spec in finishing.COLOR_CORRECTION_PARAMS.items():
+            k = f"color.{n}"
+            if spec["type"] == "string":
+                for v in spec["enum"]:
+                    self.assertEqual(parse_color_requirements(reqs({k: v}))["color.primary_correction"]["params"], {n: v})
+                for bad in ("NONE", "vintage;", "", 3):
+                    with self.assertRaises(EditRequirementError, msg=f"{k}={bad!r}"):
+                        parse_color_requirements(reqs({k: bad}))
+                continue
+            lo, hi = spec["min"], spec["max"]
+            for v in (lo, hi):
+                d = {k: v}
+                if n in pair:   # keep black below white: the other point at its far end
+                    d[f"color.{pair[n]}"] = hi if "black" in n else lo
+                    if d[k] == d[f"color.{pair[n]}"]:
+                        continue
+                got = parse_color_requirements(reqs(d))["color.primary_correction"]["params"][n]
+                self.assertEqual(got, v, k); self.assertIsInstance(got, int if spec["type"] == "integer" else float, k)
+                _check_requirement_keys(d)
+            step = 1 if spec["type"] == "integer" else 0.01
+            for bad in (lo - step, hi + step):
+                with self.assertRaises(EditRequirementError, msg=f"{k}={bad}") as cm:
+                    parse_color_requirements(reqs({k: bad}))
+                self.assertIn("within", str(cm.exception))
+                with self.assertRaises(ValueError):
+                    _check_requirement_keys({k: bad})
+            for bad in ("bright", True, float("nan")):
+                with self.assertRaises(EditRequirementError, msg=f"{k}={bad!r}"):
+                    parse_color_requirements(reqs({k: bad}))
+            if spec["type"] == "integer":
+                with self.assertRaises(EditRequirementError) as cm:
+                    parse_color_requirements(reqs({k: lo + 0.5}))
+                self.assertIn("integer", str(cm.exception))
+            else:
+                self.assertIsInstance(parse_color_requirements(reqs({k: int(max(lo, min(hi, 1)))}))["color.primary_correction"]["params"][n], float)
+
+    def test_no_production_defaults(self):
+        """No key → no PRIMARY_CORRECTION; a DEFAULT-provenance value (a policy default) never asks for one; no shipped profile sets a
+        color.* key; and a plan on every profile without colour keys has no colour operation."""
+        self.assertEqual(parse_color_requirements(requirement_map([])), {})
+        dflt = requirement_map([Requirement(key=f"color.{n}", value=(s["enum"][0] if s["type"] == "string" else s["max"]), provenance="DEFAULT", source="policy")
+                                for n, s in finishing.COLOR_CORRECTION_PARAMS.items()])
+        self.assertEqual(parse_color_requirements(dflt), {})
+        only_gamma = parse_color_requirements(reqs({"color.gamma": 2.0}))["color.primary_correction"]["params"]
+        self.assertEqual(only_gamma, {"gamma": 2.0}, "only the key the user set is sent; the Skill keeps its own defaults for the rest")
+        prof_dir = Path(__file__).resolve().parents[1] / "profiles"
+        profiles = sorted(p.stem for p in prof_dir.glob("*.json"))
+        self.assertTrue(profiles)
+        for p in profiles:
+            self.assertNotIn('"color.', (prof_dir / f"{p}.json").read_text(encoding="utf-8"), p)
+        clear_modes()
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        svc = pipeline_service(tmp)
+        a = pipeline_media(tmp, "a.mp4")
+        for p in profiles:
+            ir = svc.plan([a], p)
+            self.assertEqual((ir.doc.get("color") or {}).get("operations") or [], [], p)
+            self.assertFalse([x for x in ir.doc["decisions"] if x["subject"].startswith("color.")], p)
+        clear_modes()
+
+    def test_unhandled_shapes_are_left_out(self):
+        """A parameter shape the plan-time check cannot validate exactly gets no key (fails closed) until it is decided."""
+        g = finishing._grading_param
+        self.assertTrue(g({"type": "number", "min": 0, "max": 1})); self.assertTrue(g({"type": "integer", "min": 0, "max": 9}))
+        self.assertTrue(g({"type": "string", "enum": ["a"]}))
+        for spec in ({"type": "number", "min": 0}, {"type": "integer"}, {"type": "string"}, {"type": "boolean"}, {"type": "path"},
+                     {"type": "number", "min": 0, "max": 1, "required": True}, {"type": "number", "min": "0", "max": 1}):
+            self.assertFalse(g(spec), spec)
 
 
 class LoweringTests(unittest.TestCase):
