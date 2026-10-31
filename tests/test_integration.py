@@ -3171,7 +3171,7 @@ class ImagePrepareRealTests(unittest.TestCase):
 
 
 class PublishRealTests(unittest.TestCase):
-    """ADR-083 on the real publish-skill (main; no release tag) and the real ffmpeg-skill, offline: the live contract against the pin, the
+    """ADR-084 on the real publish-skill (main; no release tag) and the real ffmpeg-skill, offline: the live contract against the pin, the
     offline plan and the dry run of a real deliverable through the adapter's argv (every option `--flag=value`, the file after `--`): a
     confirm_token bound to the file's sha256, nothing uploaded, no network. No credentials are present and no upload is attempted."""
 

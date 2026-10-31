@@ -1,5 +1,5 @@
 """Locate an installed publish-skill (kajisho5/publish-skill): a checkout (<dir>/src/publish_skill, run as `python -m publish_skill.cli` with
-PYTHONPATH=<dir>/src, without the current directory on sys.path) or the console script `publish`. The agent never imports it (ADR-083)."""
+PYTHONPATH=<dir>/src, without the current directory on sys.path) or the console script `publish`. The agent never imports it (ADR-084)."""
 from __future__ import annotations
 
 from typing import Dict, Optional

@@ -597,7 +597,7 @@ def cmd_deliver(args, svc: Service) -> int:
 
 
 def cmd_publish(args, svc: Service) -> int:
-    """ADR-083: the one upload of a delivered artifact with the dry run's confirmation token -- for a human to type (not an MCP tool)."""
+    """ADR-084: the one upload of a delivered artifact with the dry run's confirmation token -- for a human to type (not an MCP tool)."""
     try:
         res = svc.publish(args.artifact_id, args.confirm, who=args.by)
     except Exception as e:  # noqa: BLE001 — every refusal is reported, nothing was uploaded

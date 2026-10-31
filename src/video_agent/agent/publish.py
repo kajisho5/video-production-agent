@@ -1,4 +1,4 @@
-"""Publishing a QC-passed deliverable to a platform (ADR-083; publish-skill roadmap step 6, agent side: SkillSpec publish_upload).
+"""Publishing a QC-passed deliverable to a platform (ADR-084; publish-skill roadmap step 6, agent side: SkillSpec publish_upload).
 
     Requirement (`--set publish.platform=<id>` + metadata, explicit only) → Decision `publish.upload` (DELIVER, always CONFIRM: outward-facing
     and irreversible) → step `publish_upload` after the QC gate → IR `delivery.publish` → render: publish-skill's offline `plan` and the dry

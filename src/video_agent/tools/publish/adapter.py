@@ -1,4 +1,4 @@
-"""PublishAdapter: the agent's boundary to publish-skill (ADR-083; publish-skill roadmap step 6, agent side: SkillSpec publish_upload).
+"""PublishAdapter: the agent's boundary to publish-skill (ADR-084; publish-skill roadmap step 6, agent side: SkillSpec publish_upload).
 
     video-production-agent ─(a QC-passed, delivered artifact + the plan's approved metadata)─→ PublishAdapter ─(argv list, never a shell)─→
         `publish plan --json --platform=P --ffmpeg-skill=<dir> [--title=… --description=… --tag=… --privacy=… --thumbnail=… --caption=… --caption-language=…] -- <file>`

@@ -298,7 +298,7 @@ class CapabilityResolver:
         self._finishing_skill(caps, "voice-enhance", locate_voice_enhance(env=self.env),
                               lambda sk: VoiceEnhanceAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None), "VIDEO_AGENT_VOICE_ENHANCE_DIR", "voice-enhance-skill",
                               "voice-enhance", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
-        # publish-skill (ADR-083): the same rule -- contract against the pinned one (fatal subset: the confirmation gate included), its own doctor
+        # publish-skill (ADR-084): the same rule -- contract against the pinned one (fatal subset: the confirmation gate included), its own doctor
         # ok / degraded (no ffmpeg-skill for plan, no keychain: degraded). Each implemented platform gets `publish:<PLATFORM>` with the fields it
         # takes and whether its credentials are present (reported only: they are the user's, checked by the Skill at upload time).
         self._finishing_skill(caps, "publish", locate_publish(env=self.env), lambda sk: PublishAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),

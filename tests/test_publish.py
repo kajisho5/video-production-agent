@@ -1,4 +1,4 @@
-"""ADR-083 (publish-skill roadmap step 6, agent side: SkillSpec publish_upload): publishing a QC-passed deliverable is an always-CONFIRM step after
+"""ADR-084 (publish-skill roadmap step 6, agent side: SkillSpec publish_upload): publishing a QC-passed deliverable is an always-CONFIRM step after
 the QC gate; render runs publish-skill's offline plan and dry run only; the upload is `video-agent publish <artifact> --confirm <token>` by a human
 after `deliver`, sent once and never retried. Against a fake `publish` process (tests/fake_publish.py) that speaks publish-skill main's contract,
 doctor and result shapes; nothing touches a network."""

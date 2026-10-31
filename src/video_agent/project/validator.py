@@ -447,7 +447,7 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
 
 
 def check_publish(d: Dict[str, Any]) -> List[str]:
-    """ADR-083: `delivery.publish`. A planned deliverable of a delivery target of this plan, after the QC gate of its subject; a platform the
+    """ADR-084: `delivery.publish`. A planned deliverable of a delivery target of this plan, after the QC gate of its subject; a platform the
     pinned publish-skill contract implements with an uploader; only the metadata fields that platform takes, its privacy values; an attached
     thumbnail / sidecar that this plan produces for the subject (captions with a BCP-47 language)."""
     pub = (d.get("delivery") or {}).get("publish")
@@ -897,7 +897,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
-    xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-083: a rejected publish decision is rejected-cited
+    xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-084: a rejected publish decision is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
@@ -908,7 +908,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_finishing_operations(d)
     rep.errors += check_timeline_exports(d)
     rep.errors += check_take_assembly(d)
-    rep.errors += check_publish(d)   # ADR-083
+    rep.errors += check_publish(d)   # ADR-084
     rep.errors += check_plan_dependencies(d)
     for op in timelines:
         for did in op.get("decision_ids") or []:
@@ -984,7 +984,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
-    if d["delivery"].get("publish") and (PUBLISH_SKILL, d["delivery"]["publish"].get("asset")) not in step_keys:   # ADR-083
+    if d["delivery"].get("publish") and (PUBLISH_SKILL, d["delivery"]["publish"].get("asset")) not in step_keys:   # ADR-084
         rep.errors.append(f"delivery.publish of {d['delivery']['publish'].get('asset')} has no plan step")
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
@@ -1110,7 +1110,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
         if d["delivery"].get("publish"):
-            needed.add("publish")   # ADR-083: uploading exists only in publish-skill
+            needed.add("publish")   # ADR-084: uploading exists only in publish-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

@@ -1297,7 +1297,7 @@ class EcosystemContractTests(unittest.TestCase):
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
         self.assertEqual(list(pkgs), ["audio-production", "color-grading", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "publish", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"],
-                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18), the audio production Skill (ADR-030) and the five finishing Skills (ADR-031 / ADR-032), ingest (ADR-066), voice-enhance (ADR-073), imagemagick-skill (ADR-077), publish (ADR-083)")
+                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18), the audio production Skill (ADR-030) and the five finishing Skills (ADR-031 / ADR-032), ingest (ADR-066), voice-enhance (ADR-073), imagemagick-skill (ADR-077), publish (ADR-084)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
