@@ -7,13 +7,17 @@ gets a step for it, BLOCKED with a handoff naming the package and its install co
 - **Decision**: one TRANSFORM `job.<skill>` (what was asked, CONFIRM, grounded on the requirement) and one BLOCK on the same
   subject (no adapter here), so the plan is BLOCKED. The agent never runs, records or verifies the job itself.
 - **Plan**: one step per requested job (`step_job_<skill>`, inputs: the request's assets, tool None) that `Service.handoffs`
-  reports with the owning package, repository and install commands."""
+  reports with the owning package, repository and install commands.
+- **Parameters** (ADR-080): a job whose Skill contract is pinned (skills/handoff_contracts.py) also takes `job.<skill>.<name>`
+  (e.g. `job.render_3d.model=robot.glb`, `job.render_3d.preset=1080p`), checked against the pin before analysis and only with
+  `job.<skill>=true`. They become the step's params and the handoff's `contract.args` (by the contract's own names); still nothing runs."""
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
 from ..models import Requirement
 from ..skills.ecosystem import repository
+from ..skills.handoff_contracts import HandoffParameterError, parse_param, pin
 from ..skills.registry import ECOSYSTEM_JOB_SKILLS
 from .editing import EditRequirementError
 
@@ -38,11 +42,22 @@ def check_job_keys(user_requirements: Dict[str, Any]) -> None:
     for k, v in user_requirements.items():
         if not k.startswith(JOB_PREFIX):
             continue
-        name = k[len(JOB_PREFIX):]
+        name, _, param = k[len(JOB_PREFIX):].partition(".")
         if name in MOVED_JOBS:
             raise EditRequirementError(f"{k}: {MOVED_JOBS[name]}")
         if name not in JOB_SKILLS:
             raise EditRequirementError(f"unknown job {k!r}; known: {', '.join(JOB_PREFIX + n for n in sorted(JOB_SKILLS))}")
+        if param:   # ADR-080: a typed parameter of a job whose Skill contract is pinned
+            p = pin(name)
+            if p is None:
+                raise EditRequirementError(f"{k}: {JOB_PREFIX}{name} takes no parameters (only {JOB_PREFIX}{name}=true)")
+            try:
+                parse_param(p, param, v)
+            except HandoffParameterError as e:
+                raise EditRequirementError(str(e))
+            if _value(user_requirements.get(JOB_PREFIX + name)) not in _ON:
+                raise EditRequirementError(f"{k} needs {JOB_PREFIX}{name}=true")
+            continue
         if _value(v) not in _ON + _OFF:
             raise EditRequirementError(f"{k} is a switch (true / false), got {v!r}")
 
@@ -57,16 +72,33 @@ def requested_jobs(m: Dict[str, Requirement]) -> List[Requirement]:
     return out
 
 
+def job_params(m: Dict[str, Requirement], name: str) -> Dict[str, Any]:
+    """The checked `job.<name>.<param>` values the user gave (ADR-080), by the agent's parameter names; {} for a job without a pin."""
+    p = pin(name)
+    if p is None:
+        return {}
+    out: Dict[str, Any] = {}
+    for hp in p.params:
+        r = m.get(f"{JOB_PREFIX}{name}.{hp.name}")
+        if r is not None and r.provenance == "USER":
+            out[hp.name] = parse_param(p, hp.name, r.value)
+    return out
+
+
 def decide_jobs(eng: Any, m: Dict[str, Requirement], asset_ids: List[str], probe_ids_of: Callable[[List[str]], List[str]]) -> None:
     """One TRANSFORM per requested job (the ask, cited by its plan step) and one BLOCK (no adapter here: the plan cannot run it)."""
     for r in requested_jobs(m):
         name = r.key[len(JOB_PREFIX):]
         spec = JOB_SKILLS[name]
         pkg = spec.tools[0].split("/", 1)[0]
+        p = pin(name)
+        args = job_params(m, name)
+        arg_reqs = [m[f"{JOB_PREFIX}{name}.{k}"] for k in args]
+        via = f" ({p.tool}, contract {p.version} pinned)" if p else ""
         eng.decide(subject=r.key, type="TRANSFORM", decision=f"{name}: {spec.description}",
-                   reason=f"user asked for {name} ({r.source}); the job belongs to the {pkg} package, which this agent has no adapter for, so it is handed off",
-                   confidence=1.0, evidence=[r.id] + probe_ids_of(asset_ids), risk=spec.risk_level, approval="CONFIRM", provenance="USER",
-                   params={"skill": name}, requirements=[r])
+                   reason=f"user asked for {name} ({r.source}); the job belongs to the {pkg} package{via}, which this agent has no adapter for, so it is handed off",
+                   confidence=1.0, evidence=[r.id] + [q.id for q in arg_reqs] + probe_ids_of(asset_ids), risk=spec.risk_level, approval="CONFIRM", provenance="USER",
+                   params={"skill": name, **({"args": args} if args else {})}, requirements=[r] + arg_reqs)
         eng.decide(subject=r.key, type="BLOCK", decision=f"BLOCK: {name} is handed off to {repository(pkg)}",
                    reason=f"skill {name} is declared for phase {spec.phase} and not implemented in this agent (no adapter); "
                           f"install {repository(pkg)} and do the job there, or plan without it (see the plan's handoff)",

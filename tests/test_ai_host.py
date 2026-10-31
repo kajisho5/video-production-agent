@@ -103,9 +103,10 @@ ECOSYSTEM_JOBS = {
     "platform_publish": ("publish", "publish-skill", f"none yet: publish-skill is a scaffold repository with no released package ({_GH}publish-skill)"),
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
-    "render_3d": ("blender", "blender-skill", "npx blender-skill"),
+    # ADR-080: blender-skill / hyperframes-skill are named by their own skill_id (the prefix of the tool id their pinned contract provides)
+    "render_3d": ("blender-skill", "blender-skill", "npx blender-skill"),
     "measured_motion_graphics": ("remotion-ffmpeg", "remotion-ffmpeg-skill", "npx remotion-ffmpeg-skill"),
-    "html_scene_render": ("hyperframes", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
+    "html_scene_render": ("hyperframes-skill", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
     "document_verification": ("artifacts", "artifacts-skill", f"git clone {_GH}artifacts-skill && pip install -e 'artifacts-skill[all]'"),
     "bluray_authoring": ("bdmvkit", "bdmvkit", "pip install bdmvkit"),
     "dvd_authoring": ("vtskit", "vtskit", "pip install vtskit"),
