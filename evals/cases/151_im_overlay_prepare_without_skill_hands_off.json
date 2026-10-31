@@ -35,7 +35,7 @@
      "imagemagick-skill"
     ],
     [
-     "/plugin install imagemagick-skill@ai-video-production-os",
+     "/plugin install imagemagick-skill@velisa",
      "npx imagemagick-skill"
     ]
    ]

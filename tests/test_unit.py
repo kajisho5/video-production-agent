@@ -6995,7 +6995,7 @@ class UrlIngestTests(unittest.TestCase):
         h = doc["handoff"][0]
         self.assertEqual((h["skill"], h["provided_by"], h["repositories"], h["inputs"]), ("url_fetch", ["ingest"], ["ingest-skill"], ["https://example.com/watch?v=abc"]))
         self.assertIn("git clone https://github.com/kajisho5/ingest-skill && pip install -e 'ingest-skill[fetch]'", h["install"])
-        self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"]); self.assertIn("ingest-skill not found", h["reason"])
+        self.assertIn("/plugin install ingest-skill@velisa", h["install"]); self.assertIn("ingest-skill not found", h["reason"])
         self.assertFalse((Path(self.tmp) / "downloads").exists() and any((Path(self.tmp) / "downloads").iterdir()), "nothing downloaded")
         # ingest-skill present but without its fetch extra: the same handoff, with ingest-skill's own reason
         os.environ[INGEST_ENV_DIR] = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
