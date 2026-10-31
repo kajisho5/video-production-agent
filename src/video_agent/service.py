@@ -17,6 +17,7 @@ from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
+from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
@@ -202,10 +203,14 @@ class Service:
             pkgs = sorted({t.split("/", 1)[0] for t in spec.tools})
             # ADR-057: repository and install commands from the ecosystem snapshot (skills/ecosystem.py), not a guessed `-skill` suffix
             install = list(dict.fromkeys(c for p in pkgs for c in install_commands(p)))
-            out.append({"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
-                        "reason": reason, "provided_by": pkgs, "repositories": [repository(p) for p in pkgs],
-                        "packages": [component(p).to_dict() if component(p) else {"package": p, "repository": repository(p)} for p in pkgs],
-                        "install": install})
+            h = {"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
+                 "reason": reason, "provided_by": pkgs, "repositories": [repository(p) for p in pkgs],
+                 "packages": [component(p).to_dict() if component(p) else {"package": p, "repository": repository(p)} for p in pkgs],
+                 "install": install}
+            req = handoff_request(spec.name, st.get("params") or {})   # ADR-080: the pinned Skill's tool, its arguments and where the output goes next
+            if req is not None:
+                h["contract"] = req
+            out.append(h)
         return out
 
     def packages(self) -> List[Dict[str, Any]]:
