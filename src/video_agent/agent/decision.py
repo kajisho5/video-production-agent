@@ -28,7 +28,7 @@ from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 from .brief import decide_brief
-from .handoffs import decide_jobs
+from .handoffs import decide_jobs, decide_measurement_handoffs
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
 
@@ -634,6 +634,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
     # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here
     decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)
+    # ---- measurements an explicit requirement asks for that cannot run here (ADR-083): recorded and BLOCKED with a handoff, never dropped
+    decide_measurement_handoffs(eng, m, analysis, probe_ids_of, cap_missing)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")

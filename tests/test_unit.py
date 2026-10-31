@@ -1296,12 +1296,12 @@ class EcosystemContractTests(unittest.TestCase):
         from video_agent.tools.ffmpeg_skill import PACKAGE
         svc = make_service(self.tmp)
         pkgs = {p.skill_id: p for p in svc.registry.packages()}
-        self.assertEqual(list(pkgs), ["audio-production", "color-grading", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"],
-                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18), the audio production Skill (ADR-030) and the five finishing Skills (ADR-031 / ADR-032), ingest (ADR-066), voice-enhance (ADR-073), imagemagick-skill (ADR-077)")
+        self.assertEqual(list(pkgs), ["audio-production", "color-grading", "diarization", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"],
+                         "implemented packages: the Reference Skill, the observation Skill (PR #12), the recognition Skill (PR #13), the editing Skill (PR #18), the audio production Skill (ADR-030) and the five finishing Skills (ADR-031 / ADR-032), ingest (ADR-066), voice-enhance (ADR-073), imagemagick-skill (ADR-077), diarization (ADR-083)")
         self.assertEqual(PACKAGE.validate(), [])
         self.assertEqual((PACKAGE.repository, PACKAGE.capabilities), ("kajisho5/ffmpeg-skill", ["ffmpeg", "ffprobe", "ffmpeg-skill"]))
         rows = {r["skill_id"]: r for r in svc.packages()}
-        self.assertEqual(sorted(rows), ["audio-production", "color-grading", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
+        self.assertEqual(sorted(rows), ["audio-production", "color-grading", "diarization", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
         self.assertTrue(rows["video-editing"]["implemented"] and not rows["video-editing"]["available"], "adapter exists; no installation in unit tests")
         self.assertTrue(rows["ffmpeg-skill"]["implemented"] and rows["ffmpeg-skill"]["available"])
         self.assertEqual(rows["ffmpeg-skill"]["version"], "0.8.4-fake", "version comes from the adapter that detected the checkout")
@@ -1384,7 +1384,7 @@ class EcosystemContractTests(unittest.TestCase):
         # fake-skill and ffmpeg-skill are now usable candidates (a real collision), so which one runs is an
         # explicit provider.<skill> choice (docs/CAPABILITY_MODEL.md's collision policy), not declaration order.
         svc.registry.get("silence_cleanup").tools = ["fake-skill/tool", "ffmpeg-skill/cut"]
-        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "fake-skill", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
+        self.assertEqual([p.skill_id for p in svc.registry.packages()], ["audio-production", "color-grading", "diarization", "fake-skill", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
         self.assertEqual(svc.registry.unknown_tool_candidates(), [])
         ir = svc.plan([self.src], "youtube", user_requirements={"provider.silence_cleanup": "fake-skill"})
         self.assertTrue(svc.validate(ir).ok)
@@ -1407,7 +1407,7 @@ class EcosystemContractTests(unittest.TestCase):
         rep = validate_ir(ir, svc.caps.resolve(), registry=svc.registry, supports=lambda t: True)
         self.assertTrue(any("not declared by any registered skill package" in e for e in rep.errors), rep.errors)
         # production registry of a fresh service knows nothing about the fake package
-        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "color-grading", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
+        self.assertEqual([p.skill_id for p in make_service(self.tmp).registry.packages()], ["audio-production", "color-grading", "diarization", "ffmpeg-skill", "imagemagick-skill", "ingest", "media-analysis", "motion-graphics", "qc", "subtitle", "thumbnail", "transcription", "video-editing", "voice-enhance"])
 
     # Static architecture test — engine knowledge stays in skills/ tools/ recovery.py and the composition root
     def test_no_engine_leakage_in_orchestration(self):
@@ -1660,7 +1660,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         from video_agent.media import AnalysisRequest, AnalysisError, ANALYSIS_KINDS
         from video_agent.media.analysis import CORE_KINDS
         self.assertEqual(CORE_KINDS, ("media_probe", "silence", "loudness"), "FULL runs the core kinds")
-        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "beats", "crop_rectangle", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "stream_layout", "sync", "timing", "transcript", "video_format"],
+        self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "beats", "crop_rectangle", "duration", "integrity", "loudness", "media_probe", "scene_detection", "silence", "speaker_turns", "stream_layout", "sync", "timing", "transcript", "video_format"],
                          "every kind maps to a production skill with a real tool (media-analysis-skill contract@1)")
         r = AnalysisRequest(inputs=[self.src], kinds=["silence"], strategy="FULL_ANALYSIS")
         self.assertEqual((r.strategy, r.kinds, r.cache_policy), ("FULL", ["media_probe", "silence"], "use"))
@@ -1678,7 +1678,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         self.assertIsInstance(an, Analyzer)
         self.assertEqual((an.id, an.version, an.identity), ("media", "1.0", "media@1.0"))
         self.assertEqual(an.supported_kinds[:3], ("media_probe", "silence", "loudness"))
-        self.assertEqual(len(an.supported_kinds), 14)   # + beats (ADR-053), crop_rectangle (ADR-060)
+        self.assertEqual(len(an.supported_kinds), 15)   # + beats (ADR-053), crop_rectangle (ADR-060), speaker_turns (ADR-083)
         with self.assertRaises(NotImplementedError):
             Analyzer().analyze(None)
         self.assertFalse(any(hasattr(Analyzer, m) for m in ("decide", "approve", "compile", "render", "complete")))
@@ -1974,7 +1974,8 @@ class TemporalEventSessionTests(unittest.TestCase):
         from video_agent.models import Event, TimeRange
         from video_agent.temporal import EVENT_CODES, EVENT_TYPES, IMPLEMENTED_CODES, classify, validate_event
         self.assertEqual(sorted(EVENT_TYPES), ["AudioEvent", "CameraEvent", "CaptionEvent", "IncidentEvent", "SceneEvent", "SlideEvent", "SpeakerEvent", "SpeechEvent", "UserDecisionEvent"])
-        self.assertEqual(IMPLEMENTED_CODES, ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH", "USER_DECISION"), "only codes with a real generator")
+        self.assertEqual(IMPLEMENTED_CODES, ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH", "SPEAKER", "USER_DECISION"),
+                         "only codes with a real generator (SPEAKER: diarization-skill's turns, ADR-083)")
         for code, (et, st) in EVENT_CODES.items():
             self.assertIn(st, EVENT_TYPES[et])
         assets = {"a": 16.0, "nodur": None}
@@ -3253,7 +3254,8 @@ class TranscriptionAdapterTests(unittest.TestCase):
             self.assertNotIn("SPEECH", text, f"{rel}: SpeechEvents must not feed decisions, plans or commands")
             self.assertNotIn("speaker", text.lower(), f"{rel}: no speaker identity anywhere")
         from video_agent.temporal.events import EVENT_CODES, IMPLEMENTED_CODES
-        self.assertIn("SPEECH", IMPLEMENTED_CODES); self.assertNotIn("SPEAKER", IMPLEMENTED_CODES)
+        self.assertIn("SPEECH", IMPLEMENTED_CODES)
+        self.assertIn("SPEAKER", IMPLEMENTED_CODES, "ADR-083: diarization-skill's anonymous turns (a measurement); no decision above reads them")
         self.assertEqual(EVENT_CODES["SPEECH"], ("SpeechEvent", "speech"))
 
 

@@ -95,9 +95,9 @@ _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
     # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload;
     # voice_enhancement (voice-enhance) left it the same way (ADR-073): the implemented skills voice_isolate / voice_dereverb / voice_bleed_reduce
+    # speaker_diarization (diarization) too (ADR-083): the implemented measurement speaker_turns (tests/test_diarization.py)
     "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
-    "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
     "platform_publish": ("publish", "publish-skill", f"none yet: publish-skill is a scaffold repository with no released package ({_GH}publish-skill)"),
@@ -186,8 +186,21 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_sound_design(self):
         self.assert_handoff("sound_design")
 
-    def test_speaker_diarization(self):
-        self.assert_handoff("speaker_diarization")
+    def test_speaker_diarization_moved_to_the_diarization_adapter(self):
+        """ADR-083: `job.speaker_diarization` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a
+        plan asking for it without diarization-skill still hands the step over naming diarization-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.speaker_diarization": True})
+        self.assertIn("speakers.diarize=true", str(cm.exception))
+        self.assertEqual(svc.registry.get("speaker_diarization").phase, 1)
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"speakers.diarize": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
+        self.assertEqual((h["step"], h["provided_by"], h["repositories"]), ("step_job_speaker_diarization", ["diarization"], ["diarization-skill"]))
+        self.assertIn(f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'", h["install"])
+        self.assertIn("/plugin install diarization-skill@ai-video-production-os", h["install"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_visual_detection(self):
         self.assert_handoff("visual_detection")

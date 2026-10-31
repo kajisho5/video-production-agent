@@ -219,14 +219,13 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
 # (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
-# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below.
+# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-083:
+# `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns).
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
          {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "dub", "HIGH", deterministic=False),
     _job("sound_design", "Generate a music bed (BGM) or sound effects",
          {"brief": "text"}, {"artifact": "audio"}, "sound-design", "generate", "MEDIUM", deterministic=False),
-    _job("speaker_diarization", "Speaker diarization: who spoke when, filling the Transcript speaker_id that transcription leaves null",
-         {"asset": "media", "transcript": "observation"}, {"observation": "diarization"}, "diarization", "diarize", "LOW", approval="AUTO", deterministic=False),
     _job("visual_detection", "Face, text (OCR) and object detection on the picture",
          {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
     _job("slide_sync", "Import a slide deck, detect slide changes in the recording and match each segment to its slide",
@@ -342,6 +341,11 @@ def default_registry() -> SkillRegistry:
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
     r.register(SkillSpec("speech_transcription", "1.0", "Speech → timestamped Transcript (segments, language, optional word timestamps); recognition only",
                          {"asset": "media"}, {"observation": "transcript", "events": "SPEECH"}, ["ffmpeg", "ffprobe", "transcription"], "LOW", True, "AUTO", ["transcription/transcribe"]))
+    # who spoke when (ADR-083, replacing ADR-057's phase-2 declaration of the same name): diarization-skill's anonymous exclusive speaker turns,
+    # a measurement (analysis kind speaker_turns) that needs the package and its own DIARIZE readiness (`diarization:DIARIZE`, from its
+    # doctor: pyannote.audio, torch and the local pipeline directory). Never a name; nothing is decided from it here.
+    r.register(SkillSpec("speaker_diarization", "1.0", "Who spoke when: anonymous exclusive speaker turns (SPEAKER_nn) of a recording, overlapping speech kept apart; measurement only",
+                         {"asset": "media"}, {"observation": "speaker_turns", "events": "SPEAKER"}, ["diarization", "diarization:DIARIZE"], "LOW", False, "AUTO", ["diarization/diarize"]))
     # multi-source sync measurement (ADR-035): the offset / drift of a recording relative to the reference, by ffmpeg-skill/sync (audio
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
