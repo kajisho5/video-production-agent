@@ -8,7 +8,10 @@ with `brief`) returns `host_request`, the model answers it, and `plan` takes the
 `--set`. Approval and rendering stay separate tools: the
 server never approves on its own, and `render` has no inline approve.
 
-    python -m video_agent.mcp_server [--workspace DIR] [--ffmpeg-skill-dir DIR]
+The child is started without the current directory on its import path (ADR-075): the host's working directory may be any
+folder, and a `json.py` or `video_agent/` there must not run as the agent.
+
+    video-agent-mcp [--workspace DIR] [--ffmpeg-skill-dir DIR]      (or python -m video_agent.mcp_server, see ADR-075)
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ import tempfile
 from typing import Any, Dict, List, Optional
 
 from . import __version__
+from .tools.discovery import python_module_command
 
 PROTOCOL_VERSION = "2024-11-05"
 TOOL_TIMEOUT_S = 6 * 3600   # a render of a long recording can take hours; the client may cancel sooner
@@ -186,7 +190,7 @@ class Server:
             except ValueError as exc:
                 return _text(str(exc), error=True)
             try:
-                p = subprocess.run([self.python, "-m", "video_agent.cli", *self.global_args, *argv], capture_output=True, text=True,
+                p = subprocess.run([*python_module_command("video_agent.cli", self.python), *self.global_args, *argv], capture_output=True, text=True,
                                    encoding="utf-8", errors="replace", timeout=TOOL_TIMEOUT_S, stdin=subprocess.DEVNULL)
             except subprocess.TimeoutExpired:
                 return _text(f"{name}: timed out after {TOOL_TIMEOUT_S} s", error=True)

@@ -19,6 +19,7 @@ from video_agent.mcp_server import TOOLS, Server, tool_argv  # noqa: E402
 from video_agent.project import save_ir  # noqa: E402
 from video_agent.providers.host import HostProvider, load_recommendations  # noqa: E402
 from video_agent.service import Service  # noqa: E402
+from video_agent.tools.discovery import MODULE_BOOTSTRAP, python_module_command  # noqa: E402
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 
@@ -305,8 +306,9 @@ class McpServerTests(unittest.TestCase):
         with mock.patch("video_agent.mcp_server.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "")) as run:
             server.call_tool("plan", args)
         cmd = run.call_args[0][0]
-        self.assertEqual(cmd[1:3], ["-m", "video_agent.cli"])
-        ns = build_parser().parse_args(cmd[3:])
+        prefix = python_module_command("video_agent.cli", sys.executable)
+        self.assertEqual(cmd[:len(prefix)], prefix)
+        ns = build_parser().parse_args(cmd[len(prefix):])
         self.assertEqual(ns.inputs, args["inputs"], "every element is an input, including the option-looking ones")
         self.assertIsNone(getattr(ns, "output", None))
         self.assertFalse(ns.no_hash)
@@ -344,6 +346,70 @@ class McpServerTests(unittest.TestCase):
         reply = json.loads(p.stdout.splitlines()[0])
         self.assertTrue(reply["result"]["isError"], "a missing project is reported as a tool error, not a protocol error")
         self.assertIn("exit code", reply["result"]["content"][0]["text"])
+
+
+class CwdIndependentAgentLaunchTests(unittest.TestCase):
+    """ADR-075 (ADR-074's follow-up): the MCP server starts `video-agent` itself without the current directory on the
+    child's import path. An MCP host (Claude Desktop, Claude Code) starts the server in whatever folder it likes, and the
+    child inherits it; with the old `python -m video_agent.cli` a `json.py` or a `video_agent/` package planted there ran
+    as the agent. Each planted module appends its name to a marker file outside that folder when imported."""
+
+    def setUp(self):
+        import shutil
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.untrusted = self.tmp / "untrusted"   # the host's working directory (an unpacked project, a download)
+        self.marker = self.tmp / "imported.txt"
+        planted = self.untrusted / "video_agent"
+        planted.mkdir(parents=True)
+        note = "with open({path!r}, 'a') as _f:\n    _f.write({name!r} + '\\n')\n"
+        (self.untrusted / "json.py").write_text(note.format(path=str(self.marker), name="json") + "def dumps(*a, **k):\n    return 'PLANTED'\n", encoding="utf-8")
+        for name in ("__init__", "cli", "__main__"):
+            (planted / f"{name}.py").write_text(note.format(path=str(self.marker), name=f"video_agent.{name}") + "print('PLANTED')\n", encoding="utf-8")
+        self._old_cwd = os.getcwd()
+        os.chdir(self.untrusted)
+        self.addCleanup(os.chdir, self._old_cwd)
+        old = os.environ.get("PYTHONPATH")   # the real package, as an install would provide it (CI also runs `pip install -e .`)
+        os.environ["PYTHONPATH"] = SRC + (os.pathsep + old if old else "")
+        self.addCleanup(lambda: os.environ.pop("PYTHONPATH", None) if old is None else os.environ.__setitem__("PYTHONPATH", old))
+        self.ws = str(self.tmp / "ws")
+
+    def imported(self):
+        return self.marker.read_text(encoding="utf-8").split() if self.marker.exists() else []
+
+    def test_planted_modules_run_under_plain_dash_m(self):
+        """The control: the planting is effective -- the old launch runs the planted package instead of the agent."""
+        p = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "--workspace", self.ws, "artifacts"],
+                           capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        self.assertIn("video_agent.__init__", self.imported())
+        self.assertIn("PLANTED", p.stdout)
+
+    def test_server_launch_shape(self):
+        from unittest import mock
+        server = Server(workspace=self.ws, python="py")
+        with mock.patch("video_agent.mcp_server.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+            server.call_tool("artifacts", {})
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd, ["py", "-c", MODULE_BOOTSTRAP, "video_agent.cli", "--json", "--workspace", self.ws, "artifacts", "--"])
+        self.assertNotIn("-m", cmd)
+        self.assertIsNone(run.call_args[1].get("cwd"), "the working directory is inherited as before (relative paths resolve the same way)")
+
+    def test_server_child_does_not_import_from_the_current_directory(self):
+        """The real call: the child is the installed agent with the stdlib json, run from the planted directory."""
+        res = Server(workspace=self.ws).call_tool("artifacts", {})
+        text = res["content"][0]["text"]
+        self.assertEqual(self.imported(), [], "nothing from the current directory was imported")
+        self.assertNotIn("PLANTED", text)
+        self.assertFalse(res["isError"], text)
+        self.assertIsInstance(json.loads(text), (dict, list), "the real CLI's --json output")
+
+    def test_relative_paths_still_resolve_against_the_working_directory(self):
+        """A relative project path in a tool call is resolved by the child against the inherited working directory."""
+        res = Server(workspace=self.ws).call_tool("explain", {"project": "missing.project.json"})
+        text = res["content"][0]["text"]
+        self.assertEqual(self.imported(), [])
+        self.assertTrue(res["isError"], text)
+        self.assertIn("missing.project.json", text)
 
 
 if __name__ == "__main__":
