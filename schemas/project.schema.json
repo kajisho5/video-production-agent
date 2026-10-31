@@ -2486,6 +2486,79 @@
      "items": {
       "type": "string"
      }
+    },
+    "texts": {
+     "description": "ADR-085: more text elements of a graphics.thumbnail",
+     "type": "array",
+     "maxItems": 8,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "text"
+      ],
+      "properties": {
+       "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+       },
+       "font_size": {
+        "type": "integer",
+        "minimum": 6,
+        "maximum": 400
+       },
+       "color": {
+        "type": "string",
+        "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
+       },
+       "position": {
+        "enum": [
+         "center",
+         "top",
+         "bottom"
+        ]
+       }
+      }
+     }
+    },
+    "logo": {
+     "description": "ADR-085: a logo image of a graphics.thumbnail, its box on the canvas",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "image",
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "properties": {
+      "image": {
+       "type": "string"
+      },
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 7680
+      },
+      "height": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 7680
+      },
+      "opacity": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 1
+      }
+     }
     }
    }
   },

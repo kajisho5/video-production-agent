@@ -552,8 +552,18 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             sc = scope_of(subj)
             if sc and float(op.get("timestamp", 0)) > float(sc["end"]) + 0.01:
                 errs.append(f"graphics.thumbnail on {subj}: timestamp {op.get('timestamp')} is after the picture ends ({sc['end']:.3f})")
-            if op.get("text") is not None and not (op.get("width") and op.get("height")):
-                errs.append(f"graphics.thumbnail on {subj}: a caption needs the canvas size (width / height)")
+            if (op.get("text") is not None or op.get("texts") or op.get("logo")) and not (op.get("width") and op.get("height")):
+                errs.append(f"graphics.thumbnail on {subj}: a caption / text / logo needs the canvas size (width / height)")
+            lg = op.get("logo")
+            if isinstance(lg, dict):   # ADR-085: the logo image is the user's file, inside the allowed input roots, and its box touches the canvas
+                img = str(lg.get("image") or "")
+                if any(part == ".." for part in img.replace("\\", "/").split("/")) or Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo must be a PNG / JPEG path without '..'")
+                elif allowed_roots and not any(_under(img, r) for r in allowed_roots):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo image is outside the allowed input roots: {Path(img).name}")
+                if op.get("width") and op.get("height") and not (int(lg.get("x", 0)) < int(op["width"]) and int(lg.get("y", 0)) < int(op["height"])
+                                                                 and int(lg.get("x", 0)) + int(lg.get("width", 0)) > 0 and int(lg.get("y", 0)) + int(lg.get("height", 0)) > 0):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo box lies outside the canvas")
         else:
             errs.append(f"unknown graphics operation type {t!r}")
     for op in (d.get("captions") or {}).get("operations") or []:

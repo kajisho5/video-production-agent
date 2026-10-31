@@ -231,22 +231,31 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             ratio, tsettings = max(0.0, min(1.0, float(r_["value"]))), tsettings + [r_]
         font_size = th["font_size"]
         position = th["position"]
-        if th["text"] is not None:
+        if th["text"] is not None or th.get("texts"):   # ADR-085: the extra texts take the caption's size / position when they do not name their own
             if font_size is None:
                 f_ = resolve_setting(rules, "thumbnail.font_size", 48)
                 font_size, tsettings = int(f_["value"]), tsettings + [f_]
             if position is None:
                 p_ = resolve_setting(rules, "thumbnail.position", "bottom")
                 position, tsettings = (str(p_["value"]) if str(p_["value"]) in ("center", "top", "bottom") else "bottom"), tsettings + [p_]
-        skill = THUMBNAIL_RENDER_SKILL if th["text"] is not None else THUMBNAIL_FRAME_SKILL
+        full = bool(th.get("texts") or th.get("logo"))   # ADR-085: more texts and / or a logo → the full ThumbnailDocument
+        skill = THUMBNAIL_RENDER_SKILL if (th["text"] is not None or full) else THUMBNAIL_FRAME_SKILL
         for subject, sources in subjects:
             if not video_ok(subject, sources, "thumbnail.render", req):
                 continue
             params: Dict[str, Any] = {"asset_id": subject, "format": fmt, "at": th["at"], "at_ratio": ratio, "skill": skill}
             if th["text"] is not None:
-                params.update({"text": th["text"], "font_size": font_size, "position": position, "font_id": "sans-bold", "color": "#FFFFFF"})
+                params.update({"text": th["text"], "font_size": font_size, "position": position, "font_id": "sans-bold", "color": th.get("color") or "#FFFFFF"})
+            elif full:
+                params.update({"font_size": font_size, "position": position})
+            if th.get("texts"):
+                params["texts"] = [dict(t) for t in th["texts"]]
+            if th.get("logo"):
+                params["logo"] = dict(th["logo"])
             where = f"at {th['at']:g}s" if th["at"] is not None else f"at {ratio:g} of the delivered timeline"
-            eng.decide(subject="thumbnail.render", type="TRANSFORM", decision=f"thumbnail ({fmt}) of {subject} {where}" + (" with a caption" if th["text"] is not None else ""),
+            extras = ([f"{1 + len(th['texts'])} text element(s)"] if th.get("texts") else []) + ([f"logo {Path(th['logo']['image']).name}"] if th.get("logo") else [])
+            eng.decide(subject="thumbnail.render", type="TRANSFORM", decision=f"thumbnail ({fmt}) of {subject} {where}" + (" with a caption" if th["text"] is not None else "")
+                       + (f" ({', '.join(extras)})" if extras else ""),
                        reason=f"user asked for a thumbnail ({req[0].source}); the frame is taken from the finished picture" + (" (position from policy defaults)" if ratio is not None else ""),
                        confidence=1.0, evidence=[r.id for r in req] + probe_ids_of(sources), risk="LOW", approval=approval_for("thumbnail.render", explicit=req[0], keys=APPROVAL_KEYS),
                        provenance="USER", params=params, settings=tsettings, requirements=req, serves_intent=None)
