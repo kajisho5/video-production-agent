@@ -32,6 +32,7 @@ from ..tools.publish import PublishAdapter, locate_publish
 from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
 from ..tools.detection import DetectionAdapter, locate_detection
 from ..tools.diarization import DiarizationAdapter, locate_diarization
+from ..tools.slide_sync import SlideSyncAdapter, locate_slide_sync
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -328,6 +329,11 @@ class CapabilityResolver:
         # code its diarize would return (ENGINE_UNAVAILABLE / PIPELINE_NOT_FOUND / FFMPEG_NOT_FOUND) and the doctor's install lines.
         self._finishing_skill(caps, "diarization", locate_diarization(env=self.env), lambda sk: DiarizationAdapter(sk), "VIDEO_AGENT_DIARIZATION_DIR", "diarization-skill",
                               "diarization", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # slide-sync-skill (ADR-091): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (the engine is ready, deck
+        # import is not). `slide-sync:DETECT` / `:MATCH` follow the doctor's engine, `:IMPORT_PDF` / `:IMPORT_OFFICE` its import readiness (with the install line).
+        self._finishing_skill(caps, "slide-sync", locate_slide_sync(env=self.env), lambda sk: SlideSyncAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_SLIDE_SYNC_DIR", "slide-sync-skill", "slide-sync", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

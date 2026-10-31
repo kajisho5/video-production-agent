@@ -221,7 +221,8 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
 # `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-086:
 # `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns). ADR-087:
-# `platform_publish` (publish) left it the same way: the implemented `publish_upload` below.
+# `platform_publish` (publish) left it the same way: the implemented `publish_upload` below. ADR-091:
+# `slide_sync` (slide-sync) too: the implemented measurement of the same name below (analysis kind slide_timeline).
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
     _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
@@ -230,8 +231,6 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
          {"brief": "text"}, {"artifact": "audio"}, "sound-design", "generate", "MEDIUM", deterministic=False),
     _job("visual_detection", "Face, text (OCR) and object detection on the picture",
          {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
-    _job("slide_sync", "Import a slide deck, detect slide changes in the recording and match each segment to its slide",
-         {"asset": "video", "deck": "pdf|pptx|key"}, {"observation": "slide_segments"}, "slide-sync", "match", "LOW", approval="AUTO"),
     # ADR-077: imagemagick-skill's package id is its own `skill.id` (imagemagick-skill), the prefix of its provides[].tool_id; the overlay
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
@@ -381,6 +380,12 @@ def default_registry() -> SkillRegistry:
     # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is not in agent/editing.py's
     # OPERATIONS / EDIT_ORDER; it is the analysis kind `crop_rectangle` (ADR-060), whose stable rectangle becomes a
     # CONFIRM decision proposing video_crop (agent/crop.py).
+    # slide changes of a talk recording (ADR-091, replacing ADR-057's phase-2 declaration of the same name): slide-sync-skill's measured slide timeline
+    # and, with the speaker's deck, the page on screen in each slide; a measurement (analysis kind slide_timeline) that needs the package and its
+    # engine readiness (`slide-sync:DETECT`, from its doctor). Never a slide's meaning; nothing is decided from it here.
+    r.register(SkillSpec("slide_sync", "1.0", "Slide changes of a talk recording (picture cuts held a minimum time) and, with the deck, the page on screen in each slide; measurement only",
+                         {"asset": "video", "deck": "pdf|pptx|key|odp"}, {"observation": "slide_timeline", "events": "SLIDE"}, ["slide-sync", "slide-sync:DETECT"], "LOW", True, "AUTO",
+                         ["slide-sync/detect"]))
     # ---- blur faces (ADR-090): detection-skill's face boxes linked into redact rectangles (analysis kind face_tracks, a measurement that
     # needs the package and its own FACES readiness `detection:FACES` from its doctor: opencv, the YuNet file and ffmpeg-skill frames), then
     # an approved video.redact_faces executed by ffmpeg-skill: each segment cut out frame-accurately, its rectangles redacted, every piece

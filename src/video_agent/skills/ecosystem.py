@@ -94,7 +94,8 @@ _COMPONENTS: Tuple[Component, ...] = (
               note="face tracks to blur as the analysis kind face_tracks (ADR-090); faces also need the YuNet model file face_detection_yunet_2026may.onnx "
                    "in DETECTION_MODELS_DIR (`detection doctor` prints where to get it; the Skill never downloads)"),
     Component("slide-sync", "slide-sync-skill", "recognize", "pip", "active", plugin=True, owns=("スライド取込", "スライド切替検出"),
-              package_install=_clone_pip("slide-sync-skill", "pdf")),
+              package_install=_clone_pip("slide-sync-skill", "pdf"),
+              note="slide timeline (and the deck page on screen) as the analysis kind slide_timeline (ADR-091); a pptx / key / odp deck also needs LibreOffice"),
     Component("artifacts", "artifacts-skill", "verify", "pip", "active", plugin=True, owns=("生成文書の検証",), package_install=_clone_pip("artifacts-skill", "all")),
     Component("publish", "publish-skill", "delivery", "pip", "scaffold", owns=("配信先アップロード", "アップロード制限"),
               package_install=_clone_pip("publish-skill"),

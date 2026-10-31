@@ -3437,3 +3437,74 @@ class PublishRealTests(unittest.TestCase):
         self.assertEqual((dry["metadata"]["title"], dry["metadata"]["tags"]), ("Integration test", ["a", "-b"]), "a value starting with '-' stays a value")
         self.assertRegex(dry["confirm_token"], r"^confirm-[0-9a-f]{16}$")
         self.assertNotEqual(ad.dry_run(self.final, "youtube", dict(meta, title="Other"))["confirm_token"], dry["confirm_token"], "the token binds the metadata")
+
+
+def _slide_png(path: str, n: int) -> str:
+    """A 1280x720 slide with its own big shapes (slide n of a deck), written by Pillow."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (1280, 720), (245, 245, 240))
+    d = ImageDraw.Draw(img)
+    for k in range(n + 2):
+        x = 80 + (k * 230 + n * 97) % 1000
+        y = 90 + (k * 170 + n * 61) % 450
+        d.rectangle([x, y, x + 140 + 30 * n, y + 90 + 20 * k], fill=((60 * n) % 255, (90 * k) % 255, (40 * (n + k)) % 255))
+    d.ellipse([900 - 60 * n, 500 - 40 * n, 1100 - 60 * n, 660 - 40 * n], fill=(20, 20 + 70 * n, 160))
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+    return path
+
+
+class SlideSyncRealTests(unittest.TestCase):
+    """ADR-091 on the real slide-sync-skill (main, contract 0.1.0) and the real ffmpeg-skill: the live contract equals the pin, its doctor reports the
+    engine ready, and a recording of three slides (4 s / 5 s / 4 s) is measured as three slides; with the deck (the same three slides as a PDF, in another
+    order) each slide is matched to its page. Runs whenever a slide-sync-skill checkout is installed (the CI integration job installs it with `[pdf]`)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.slide_sync import locate_slide_sync
+        cls.ss = locate_slide_sync()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_ss_"))
+
+    def setUp(self):
+        if not self.ss:
+            self.skipTest("needs a slide-sync-skill checkout (VIDEO_AGENT_SLIDE_SYNC_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_and_doctor(self):
+        from video_agent.tools.slide_sync import SlideSyncAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        ad = SlideSyncAdapter(self.ss, workspace=ws, ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.drift(), [], "the installed slide-sync-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(ad.operation_status(doc)["DETECT"], "supported", doc.get("problems"))
+
+    def test_slides_measured_and_matched_to_the_deck(self):
+        src = Path(self.tmp) / "src"
+        pngs = [_slide_png(str(src / f"s{n}.png"), n) for n in (1, 2, 3)]
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-t", "4", "-i", pngs[0], "-loop", "1", "-t", "5", "-i", pngs[1], "-loop", "1", "-t", "4", "-i", pngs[2],
+                        "-f", "lavfi", "-i", "sine=f=330:r=48000:d=13", "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0,fps=30,format=yuv420p[v]", "-map", "[v]", "-map", "3:a",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-t", "13", video], check=True)
+        from PIL import Image
+        deck = str(Path(self.tmp) / "decks" / "deck.pdf")
+        Path(deck).parent.mkdir(parents=True, exist_ok=True)
+        imgs = [Image.open(p).convert("RGB") for p in (pngs[2], pngs[0], pngs[1])]   # the deck's order differs from the talk's: page 1 = slide 3
+        imgs[0].save(deck, save_all=True, append_images=imgs[1:], resolution=96)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"slides.detect": True})
+        [obs] = [o for o in ir.doc["analysis"]["observations"] if o["kind"] == "slide_timeline"]
+        self.assertEqual(obs["data"]["slide_count"], 3, obs["data"]["slides"])
+        self.assertEqual([round(c) for c in obs["data"]["changes"]], [4, 9])
+        self.assertEqual(len([e for e in ir.doc["timeline"]["events"] if e["type"] == "SLIDE"]), 3)
+        try:
+            import pypdfium2  # noqa: F401
+        except ImportError:
+            self.skipTest("needs pypdfium2 (slide-sync-skill[pdf]) for the deck")
+        ir = svc.plan([video], "generic", user_requirements={"slides.detect": True, "slides.deck": deck})
+        self.assertFalse([d for d in ir.doc["decisions"] if d["subject"] == "slides.detect" and d["type"] == "BLOCK"], [d["reason"] for d in ir.doc["decisions"] if d["type"] == "BLOCK"])
+        [obs] = [o for o in ir.doc["analysis"]["observations"] if o["kind"] == "slide_timeline"]
+        self.assertEqual(obs["data"]["deck"]["page_count"], 3)
+        self.assertEqual([s["page"] for s in obs["data"]["match"]["segments"]], [2, 3, 1], obs["data"]["match"])
+        self.assertEqual(svc.validate(ir).errors, [])

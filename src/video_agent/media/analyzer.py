@@ -158,7 +158,7 @@ class MediaAnalyzer(Analyzer):
                         continue
                     kp = dict(CROP_TOOL_ARGS)   # the agent's fixed sampling: the observation's parameters and part of its cache key
                     args = {"input": asset.path, **kp}
-                elif kind == "face_tracks":
+                elif kind in ("face_tracks", "slide_timeline"):
                     if not asset.technical.get("video"):
                         rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no video stream"})
                         continue
@@ -298,6 +298,11 @@ class MediaAnalyzer(Analyzer):
             row["cache"] = (r.data or {}).get("cache")
             row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
             row["engine"] = (r.data or {}).get("engine")
+        elif kind == "slide_timeline" and isinstance(r.data, dict) and isinstance(r.data.get("timeline"), dict):
+            o = self._lift_slides(r.data, asset, req, source, key, tool, kparams)
+            if os.path.normcase(os.path.realpath(str(((r.data.get("timeline") or {}).get("source") or {}).get("path") or ""))) != os.path.normcase(os.path.realpath(asset.path)):
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": "the slide timeline names another video than this asset"}})
+                return None, row
         elif kind == "face_tracks" and isinstance(r.data, dict) and isinstance(r.data.get("tracks"), dict):
             o = self._lift_face_tracks(r.data, asset, req, source, key, tool, kparams)
             if asset.hash and o.fingerprint != asset.hash:   # the boxes are about this file's bytes (detection-skill's source.fingerprint)
@@ -359,6 +364,28 @@ class MediaAnalyzer(Analyzer):
                            analyzer=f"{tr.get('engine')}@{tr.get('engine_version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
                            skill_version=str(sk.get("version") or prov.get("skill_version") or ""), tool=tool, external_id=str(tr.get("id") or ""),
                            fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp, parameters=params, cache=dict(data.get("cache") or {}))
+
+    @staticmethod
+    def _lift_slides(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """Lift slide-sync-skill's slide timeline (slide-sync/timeline@1, ADR-091) and, with a deck, its page match (slide-sync/match@1) into an
+        Observation of kind `slide_timeline`: the slides and change times as measured, the detector's parameters, each slide's page / confidence /
+        margin / view / reason (null page = not matched), the deck's summary, and the files the agent wrote. No path of the user's files."""
+        tl = dict(data["timeline"])
+        det = tl.get("detector") or {}
+        sk = data.get("skill") or {}
+        m = data.get("match") if isinstance(data.get("match"), dict) else None
+        body: Dict[str, Any] = {"slides": tl.get("slides") or [], "changes": tl.get("changes") or [], "slide_count": tl.get("slide_count"),
+                                "duration": (tl.get("source") or {}).get("duration"), "detector": {k: det.get(k) for k in ("engine", "engine_version", "method", "threshold", "min_dwell")},
+                                "timeline_file": data.get("timeline_file"), "warnings": list(data.get("warnings") or [])}
+        if m is not None:
+            body["match"] = {"segments": [{k: s.get(k) for k in ("index", "start", "end", "page", "confidence", "margin", "view", "reason", "mixed")} for s in m.get("segments") or []],
+                             "segment_count": m.get("segment_count"), "matched_count": m.get("matched_count"), "pages_shown": m.get("pages_shown") or [],
+                             "pages_not_shown": m.get("pages_not_shown") or [], "matcher": {k: (m.get("matcher") or {}).get(k) for k in ("method", "min_score", "min_margin", "samples")}}
+            body["deck"] = dict(data.get("deck") or {})
+            body["match_file"] = data.get("match_file")
+        return Observation(kind="slide_timeline", asset_id=asset.id, source=source, data=body, observed_at=now_iso(), analysis_id=req.analysis_id,
+                           analyzer=f"slide-sync@{sk.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0], skill_version=str(sk.get("version") or ""),
+                           tool=tool, fingerprint=asset.hash or "", parameters={k: v for k, v in dict(kparams).items() if k != "deck"} | ({"deck": os.path.basename(str(kparams["deck"]))} if kparams.get("deck") else {}))
 
     @staticmethod
     def _lift_face_tracks(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:

@@ -95,12 +95,12 @@ _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
     # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload;
     # voice_enhancement (voice-enhance) left it the same way (ADR-073): the implemented skills voice_isolate / voice_dereverb / voice_bleed_reduce
+    # slide_sync (slide-sync) too (ADR-091): the implemented measurement slide_timeline (tests/test_slides.py)
     # speaker_diarization (diarization) too (ADR-086): the implemented measurement speaker_turns (tests/test_diarization.py)
     # dubbing: DUB is the implemented skill speech_dub (ADR-085); the job stays for narration / audio description, now with an install line
     "dubbing": ("dubbing", "dubbing-skill", f"git clone {_GH}dubbing-skill && pip install -e 'dubbing-skill'"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
-    "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
     # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
@@ -207,8 +207,20 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_visual_detection(self):
         self.assert_handoff("visual_detection")
 
-    def test_slide_sync(self):
-        self.assert_handoff("slide_sync")
+    def test_slide_sync_moved_to_the_slide_sync_adapter(self):
+        """ADR-091: `job.slide_sync` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a plan
+        asking for it without slide-sync-skill still hands the step over naming slide-sync-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.slide_sync": True})
+        self.assertIn("slides.detect=true", str(cm.exception))
+        self.assertEqual(svc.registry.get("slide_sync").phase, 1)
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"slides.detect": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "slide_sync"]
+        self.assertEqual((h["step"], h["provided_by"], h["repositories"]), ("step_job_slide_sync", ["slide-sync"], ["slide-sync-skill"]))
+        self.assertIn(f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'", h["install"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_platform_publish_moved_to_the_publish_adapter(self):
         """ADR-087: `job.platform_publish` is no longer a handoff switch; it is refused with how publishing is asked for, and a plan asking to
