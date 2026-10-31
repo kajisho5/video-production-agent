@@ -596,6 +596,17 @@ def cmd_deliver(args, svc: Service) -> int:
     return 0
 
 
+def cmd_publish(args, svc: Service) -> int:
+    """ADR-084: the one upload of a delivered artifact with the dry run's confirmation token -- for a human to type (not an MCP tool)."""
+    try:
+        res = svc.publish(args.artifact_id, args.confirm, who=args.by)
+    except Exception as e:  # noqa: BLE001 — every refusal is reported, nothing was uploaded
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    _print(res, True)
+    return 0 if res.get("uploaded") else 4
+
+
 def cmd_archive(args, svc: Service) -> int:
     if args.artifact_id:
         try:
@@ -929,6 +940,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("artifact_id"); p.set_defaults(fn=cmd_artifact)
     p = sub.add_parser("deliver", help="promote a QA-passed artifact of an approved plan to DELIVERED (recorded; no upload)")
     p.add_argument("artifact_id"); p.add_argument("--by"); p.add_argument("--reason"); p.add_argument("--channel", default="local"); p.set_defaults(fn=cmd_deliver)
+    p = sub.add_parser("publish", help="upload a delivered, QC-passed artifact to the platform its approved plan names, with the dry run's --confirm token (once; never retried)")
+    p.add_argument("artifact_id"); p.add_argument("--confirm", required=True, help="the confirm_token render printed for this artifact"); p.add_argument("--by"); p.set_defaults(fn=cmd_publish)
     p = sub.add_parser("archive", help="archive an artifact, or list a project's archive index")
     p.add_argument("project", nargs="?"); p.add_argument("--artifact", dest="artifact_id"); p.add_argument("--by"); p.add_argument("--reason"); p.set_defaults(fn=cmd_archive)
     return ap
