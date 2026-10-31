@@ -4136,7 +4136,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         from video_agent.tools.video_editing import PACKAGE, ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
         self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.4.0", "video-editing", "video-editing/contract@1"))
-        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "freeze", "overlay", "resize", "reverse", "rotate", "speed", "trim")])
+        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "freeze", "image_insert", "overlay", "resize", "reverse", "rotate", "speed", "trim")])
         self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.4.0 contract")
         # ADR-062: ROTATE / FREEZE / REVERSE are lowered now: nothing the contract declares is contract-only; a type a later contract adds
         # without a lowering here would be listed here and never executable (supports() is False)
@@ -4377,7 +4377,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         svc2.registry.get("silence_cleanup").tools = ["video-editing/cut"]
         self.assertEqual(svc2.tools_for().get("silence_cleanup"), "video-editing/cut")
         pk = next(p for p in svc2.packages() if p["skill_id"] == "video-editing")
-        # ADR-062: ROTATE (0.3.0) and FREEZE / REVERSE (0.4.0, video-editing-skill #20) are lowered now, so every tool the contract
+        # ADR-062: ROTATE (0.3.0) and FREEZE / REVERSE (0.4.0, video-editing-skill #20) are lowered now, and IMAGE_INSERT (ADR-070), so every tool the contract
         # declares is usable (a type a later contract adds without a lowering here stays out: adapter.supports())
         self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.4.0")
         self.assertEqual(sorted(pk["usable_tools"]), sorted(ad.tools))

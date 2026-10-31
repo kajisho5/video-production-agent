@@ -568,6 +568,10 @@ def run_case(case: dict) -> dict:
             img = Path(tmp) / ("outside" if vo["image"] == "outside" else "src") / "logo.png"
             img.parent.mkdir(parents=True, exist_ok=True); img.write_bytes(b"\x89PNG fake")
             reqs["edit.overlay"] = str(img) if vo["image"] != "traversal" else str(img.parent / ".." / "src" / "logo.png")
+        if vo.get("still"):   # ADR-070: edit.image_insert's still -- a PNG, or a video renamed .png (refused at planning: not an image asset)
+            still = src.parent / "card.png"
+            still.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32 if vo["still"] == "png" else b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
+            reqs["edit.image_insert"] = str(still)
         skill = VideoEditingSkill([sys.executable, str(ROOT / "tests" / "fake_video_editing.py")], None, {})
         ad = VideoEditingAdapter(skill, workspace=tmp, allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
         caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if vo.get("no_capability") else ["video-editing", "encoder:aac"])

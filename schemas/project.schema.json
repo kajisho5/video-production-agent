@@ -1229,7 +1229,8 @@
       "video.resize",
       "video.fit",
       "video.fill",
-      "video.overlay"
+      "video.overlay",
+      "video.image_insert"
      ]
     },
     "asset": {
@@ -1269,6 +1270,11 @@
     },
     "image": {
      "type": "string"
+    },
+    "duration": {
+     "type": "number",
+     "minimum": 0.01,
+     "maximum": 600
     },
     "temporal_scope": {
      "type": "object",

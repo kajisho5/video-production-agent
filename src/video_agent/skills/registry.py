@@ -292,6 +292,11 @@ def default_registry() -> SkillRegistry:
     # ADR-062: video-editing-skill ROTATE (0.3.0): a clockwise turn (90 / 180 / 270) and / or a mirror
     r.register(SkillSpec("video_rotate", "1.0", "Rotate clockwise by 90 / 180 / 270 degrees and / or mirror (no scaling, no crop)", {"asset": "video", "degrees": "int", "flip": "h|v"},
                          {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "LOW", True, "CONFIRM", ["video-editing/rotate"]))
+    # ADR-070: video-editing-skill IMAGE_INSERT (0.4.0, #21): a still (title card, end slate) → a silent clip at the picture's frame / rate;
+    # the plan joins it before / after the finished picture with a video_concat step (video-editing/concat) on the same subject
+    r.register(SkillSpec("video_image_insert", "1.0", "Turn a PNG / JPEG still into a silent clip of a set duration, joined before / after the picture",
+                         {"asset": "video", "image": "png|jpg", "duration": "float"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True,
+                         "CONFIRM", ["video-editing/image_insert"]))
     # audio production operations only audio-production-skill provides (ADR-030): the audio path of an asset (explicit `audio.production`);
     # each skill needs the Skill's own per-operation capability (from its doctor) besides the package capability
     for name, typ, desc, inputs, risk in (

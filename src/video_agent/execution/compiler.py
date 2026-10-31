@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
-trim → concat → edits → colour → graphics → captions (sidecar, burn-in or soft track) → loudness → export → check → timeline → thumbnail → QC gate.
+trim → concat → edits → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
 Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, TOOL as AUDIO_TOOL
-from ..agent.editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL, delivery_subjects
+from ..agent.editing import IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL, delivery_subjects
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
@@ -85,6 +85,23 @@ def lower_video_edit(tool: str, op: Dict[str, Any], current: str, out_id: str, e
         args[k] = v
     args["output"] = out_id
     return args
+
+
+def lower_image_insert(tool: str, join_tool: str, op: Dict[str, Any], image_id: str, still_id: str, current: str, out_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """ADR-070: IR `video.image_insert` → (video-editing/image_insert args, video-editing/concat args). The still becomes a clip at the
+    operation's duration / width / height / fps (the contract's IMAGE_INSERT names); the join takes the clip and the picture in the
+    decided order at the same frame and rate, so the picture is not rescaled. Nothing else is copied."""
+    spec = OPERATIONS[IMAGE_INSERT_OP]
+    if tool != spec["tool"]:
+        raise CompileError(f"{IMAGE_INSERT_OP} cannot be executed by {tool}; the only tool of this operation is {spec['tool']}")
+    if join_tool != OPERATIONS["video.concat"]["tool"]:
+        raise CompileError(f"the join of a {IMAGE_INSERT_OP} cannot be executed by {join_tool}; it is {OPERATIONS['video.concat']['tool']}")
+    if op.get("position") not in ("before", "after"):
+        raise CompileError(f"{IMAGE_INSERT_OP}: position {op.get('position')!r} is not before / after")
+    frame = {k: op[k] for k in ("width", "height", "fps") if op.get(k) is not None}
+    still = {"input": image_id, "duration": float(op["duration"]), **frame, "output": still_id}
+    join = {"inputs": [still_id, current] if op["position"] == "before" else [current, still_id], **frame, "output": out_id}
+    return still, join
 
 
 def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -293,6 +310,26 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 inputs.append(img_id)
             args = lower_video_edit(tool, op, st["current"], out_id, refs)
             add(tool, args, inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            st["current"] = out_id
+
+    def inserts(subject: str) -> None:
+        """ADR-070: a still joined to the finished picture (after the finishing, before loudness): image_insert, then concat."""
+        st = state[subject]
+        for op in d["video"]["operations"]:
+            if op["asset"] != subject or op["type"] != IMAGE_INSERT_OP:
+                continue
+            st["gen"] += 1
+            still_id, out_id, img_id = f"{subject}_still", f"{subject}_image_insert", f"{subject}_image_insert_image"
+            paths[img_id] = op["image"]
+            keys[img_id] = ""
+            paths[still_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_still" / f"{st['stem']}_still.mp4")
+            st["gen"] += 1
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_image_insert" / f"{st['stem']}_image_insert.mp4")
+            tool, join_tool = tool_for(IMAGE_INSERT_SKILL, subject), tool_for(IMAGE_JOIN_SKILL, subject)
+            still, join = lower_image_insert(tool, join_tool, op, img_id, still_id, st["current"], out_id)
+            ids = list(op.get("decision_ids") or [])
+            add(tool, still, [img_id], [still_id], ids, st["fp"], skill=IMAGE_INSERT_SKILL)
+            add(join_tool, join, list(join["inputs"]), [out_id], ids, st["fp"], skill=IMAGE_JOIN_SKILL)
             st["current"] = out_id
 
     def loudness(subject: str) -> None:
@@ -534,6 +571,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         elif concat is None and switch is None and grid is None:
             edits(asset_id)
             finishing(asset_id)
+            inserts(asset_id)
             loudness(asset_id)
             delivery(asset_id)
             timeline(asset_id)
@@ -585,6 +623,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             state[subject]["current"] = mux["output"]
         edits(subject)
         finishing(subject)
+        inserts(subject)
         loudness(subject)
         delivery(subject)
         timeline(subject)
@@ -602,6 +641,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         add(tool, args, inputs, [subject], list(switch.get("decision_ids") or []), fp, skill="camera_switch")
         edits(subject)
         finishing(subject)
+        inserts(subject)
         loudness(subject)
         delivery(subject)
         thumbnail(subject)
@@ -618,6 +658,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         add(tool, args, inputs, [subject], list(grid.get("decision_ids") or []), fp, skill="video_grid")
         edits(subject)
         finishing(subject)
+        inserts(subject)
         loudness(subject)
         delivery(subject)
         thumbnail(subject)

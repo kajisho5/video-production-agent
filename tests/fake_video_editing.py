@@ -138,6 +138,7 @@ def main() -> int:
     except ValueError as e:
         return err("INVALID_REQUEST", str(e), {"reason": "forbidden_key"})
     sources = {}
+    kinds = {}
     for s in proj.get("sources") or []:
         raw = s.get("path", "")
         if any(p == ".." for p in raw.replace("\\", "/").split("/")):
@@ -152,7 +153,10 @@ def main() -> int:
         ext = os.path.splitext(resolved)[1].lower()
         if s.get("kind", "video") == "video" and ext not in CONTRACT["formats"]["video_inputs"]:
             return err("UNSUPPORTED_FORMAT", f"extension {ext} is not supported")
+        if s.get("kind") == "image" and ext not in CONTRACT["formats"]["image_inputs"]:
+            return err("UNSUPPORTED_FORMAT", f"image extension {ext} is not supported")
         sources[s["id"]] = resolved
+        kinds[s["id"]] = s.get("kind", "video")
     ops = proj.get("operations") or []
     if len(ops) != 1:
         return err("INVALID_REQUEST", "the fake handles one operation")
@@ -177,6 +181,11 @@ def main() -> int:
     for ref in inputs:
         if ref not in sources:
             return err("DEPENDENCY_ERROR", f"unknown input {ref!r}", {"reason": "unknown_reference"})
+        want = "image" if op["type"] == "IMAGE_INSERT" else "video"   # the real Skill's slot kinds (ADR-015): IMAGE_INSERT's input is an image source
+        if kinds.get(ref) != want:
+            return err("DEPENDENCY_ERROR", f"input {ref!r} must be a {want} source", {"reason": "kind_mismatch"})
+    if op["type"] == "IMAGE_INSERT" and not (isinstance(params.get("duration"), (int, float)) and 0.01 <= params["duration"] <= 600):
+        return err("INVALID_TIME_RANGE", "duration: must be between 0.01 and 600 seconds")
     outs = proj.get("outputs") or []
     if len(outs) != 1 or outs[0].get("operation") != op.get("id"):
         return err("DEPENDENCY_ERROR", "outputs must reference the operation")
@@ -235,6 +244,8 @@ def main() -> int:
     elif op["type"] == "CONCAT":
         tr = float((params.get("transition") or {}).get("duration") or 0.0)
         dur = round(sum(in_dur(i) for i in inputs) - tr * (len(inputs) - 1), 3)
+    elif op["type"] == "IMAGE_INSERT":
+        dur = round(float(params["duration"]), 3)
     elif op["type"] == "SPEED":
         f = params["factor"]
         f = (float(f.split("/")[0]) / float(f.split("/")[1])) if isinstance(f, str) else float(f)

@@ -135,13 +135,13 @@ class ColorParameterTests(unittest.TestCase):
 
 
 class LoweringTests(unittest.TestCase):
-    """video-editing lowering of the contract's ROTATE / FREEZE / REVERSE (and the compiler's TRIM lowering)."""
+    """video-editing lowering of the contract's ROTATE / FREEZE / REVERSE / IMAGE_INSERT (and the compiler's TRIM lowering)."""
 
     def test_every_declared_type_is_lowered(self):
         lw = Lowering(editing_contract())
         self.assertEqual(lw.contract_only(), [])
-        self.assertTrue({"ROTATE", "FREEZE", "REVERSE"} <= set(lw.supported_types()))
-        for t in ("ROTATE", "FREEZE", "REVERSE"):   # the agent-side keys stay inside what the contract declares
+        self.assertTrue({"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"} <= set(lw.supported_types()))
+        for t in ("ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"):   # the agent-side keys stay inside what the contract declares
             self.assertTrue(set(ARGS[t]) - {"input", "output"} <= set(editing_contract()["operations"][t]["parameters"]), t)
 
     def test_params_and_refusals(self):
@@ -163,6 +163,28 @@ class LoweringTests(unittest.TestCase):
         from video_agent.tools.base import ToolError
         with self.assertRaises(ToolError):
             lw.build_request("video-editing/rotate", {"input": "a", "output": "b", "degrees": 90, "filter": "transpose=1"}, {"a": __file__, "b": str(Path(tmp) / "b.mp4")})
+
+    def test_image_insert_params_and_request(self):
+        """ADR-070: IMAGE_INSERT's input is an image source (kind image); duration / width / height / fps by the contract's names."""
+        self.assertEqual(params_for("IMAGE_INSERT", {"duration": 3, "width": 1280, "height": 720, "fps": 25}), {"duration": 3.0, "width": 1280, "height": 720, "fps": 25.0})
+        self.assertEqual(params_for("IMAGE_INSERT", {"duration": 1.5, "fps": "30000/1001"}), {"duration": 1.5, "fps": "30000/1001"})
+        from video_agent.tools.base import ToolError
+        for args in ({}, {"duration": 0}, {"duration": 601}, {"duration": 2, "width": 641}, {"duration": 2, "height": "720"}, {"duration": 2, "fps": "fast"}):
+            with self.assertRaises(ToolError, msg=str(args)):
+                params_for("IMAGE_INSERT", args)
+        tmp = tempfile.mkdtemp()
+        img = Path(tmp) / "card.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        lw = Lowering(editing_contract(), workspace=tmp)
+        req, out, ins = lw.build_request("video-editing/image_insert", {"input": "c", "output": "o", "duration": 2.0, "width": 640, "height": 360, "fps": 30},
+                                         {"c": str(img), "o": str(Path(tmp) / "o" / "still.mp4")})
+        op = req["project"]["operations"][0]
+        self.assertEqual((op["type"], op["input"], op["params"]), ("IMAGE_INSERT", "s0", {"duration": 2.0, "width": 640, "height": 360, "fps": 30.0}))
+        self.assertEqual(req["project"]["sources"], [{"id": "s0", "path": str(img.resolve()), "kind": "image"}])
+        with self.assertRaises(ToolError) as cm:   # a video in the image slot is refused before the Skill
+            lw.build_request("video-editing/image_insert", {"input": "v", "output": "o", "duration": 2.0}, {"v": __file__, "o": str(Path(tmp) / "o" / "still.mp4")})
+        self.assertIn("must be an image", str(cm.exception))
+        with self.assertRaises(ToolError):
+            lw.build_request("video-editing/image_insert", {"input": "c", "output": "o", "duration": 2.0, "filter": "loop=1"}, {"c": str(img), "o": str(Path(tmp) / "o.mp4")})
 
     def test_trim_lowering(self):
         op = {"type": "video.trim", "asset": "a", "keep": [[2.0, 10.5]], "accurate": True}
@@ -295,6 +317,165 @@ class TrimRotateTests(unittest.TestCase):
         self.assertTrue(any("degrees" in e for e in svc.validate(ir).errors))
         del rot["degrees"]
         self.assertTrue(any("needs degrees and / or flip" in e for e in svc.validate(ir).errors))
+
+
+def png(tmp, name="card.png", sub="stills"):
+    p = Path(tmp) / sub / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    return str(p)
+
+
+class ImageInsertTests(unittest.TestCase):
+    """ADR-070: edit.image_insert (+ .duration / .position) → decision video.image_insert → IR video.image_insert → plan steps
+    video_image_insert + video_concat → video-editing/image_insert + video-editing/concat, on the fake video-editing-skill."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.a = fake_media(self.tmp, "a.mp4")
+        self.b = fake_media(self.tmp, "b.mp4")
+        self.card = png(self.tmp)
+        os.environ.pop("FAKE_VE_MODE", None)
+
+    _svc = TrimRotateTests._svc
+    _render = TrimRotateTests._render
+
+    def test_requirement_vocabulary_and_refusals(self):
+        def parse(**kv):
+            return {k: v["params"] for k, v in parse_edit_requirements(reqs(kv)).items()}
+        self.assertEqual(parse(**{"edit.image_insert": self.card, "edit.image_insert.duration": 3}),
+                         {"video.image_insert": {"image": os.path.abspath(self.card), "duration": 3.0, "position": "before"}})
+        self.assertEqual(parse(**{"edit.image_insert": self.card, "edit.image_insert.duration": "1.5", "edit.image_insert.position": "after"})["video.image_insert"]["position"], "after")
+        jpg = Path(self.tmp) / "stills" / "slate.jpg"; jpg.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+        self.assertEqual(parse(**{"edit.image_insert": str(jpg), "edit.image_insert.duration": 2})["video.image_insert"]["image"], str(jpg))
+        renamed = Path(self.tmp) / "stills" / "clip.png"; renamed.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16)   # a video renamed .png
+        for bad, msg in (({"edit.image_insert": self.a, "edit.image_insert.duration": 2}, "must be an image asset"),
+                         ({"edit.image_insert": str(renamed), "edit.image_insert.duration": 2}, "is not a PNG image"),
+                         ({"edit.image_insert": str(Path(self.tmp) / "none.png"), "edit.image_insert.duration": 2}, "not found"),
+                         ({"edit.image_insert": "../x.png", "edit.image_insert.duration": 2}, "traversal"),
+                         ({"edit.image_insert": self.card}, "needs edit.image_insert.duration"),
+                         ({"edit.image_insert": self.card, "edit.image_insert.duration": 0}, "within"),
+                         ({"edit.image_insert": self.card, "edit.image_insert.duration": 601}, "within"),
+                         ({"edit.image_insert": self.card, "edit.image_insert.duration": 2, "edit.image_insert.position": "middle"}, "before or after"),
+                         ({"edit.image_insert.duration": 2}, "ambiguous")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse(**bad)
+            self.assertIn(msg, str(cm.exception), str(bad))
+            with self.assertRaises(ValueError, msg=str(bad)):
+                _check_requirement_keys(bad)
+        # set keys, but not brief keys: the value is a file path only the user names (like edit.overlay)
+        self.assertNotIn("edit.image_insert", BRIEF_REQUIREMENT_KEYS)
+        self.assertIn("edit.image_insert.duration", BRIEF_REQUIREMENT_KEYS)
+
+    def test_before_decision_plan_ir_request_and_qa(self):
+        svc = self._svc()
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.image_insert": self.card, "edit.image_insert.duration": 2.5, "edit.resize": 640})
+        d = ir.doc
+        aid = list(d["assets"])[0]
+        self.assertEqual((d["plan"]["status"], svc.validate(ir).errors), ("APPROVED", []))
+        dec = next(x for x in d["decisions"] if x["subject"] == "video.image_insert")
+        self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["basis"]["approval"]["key"]), ("TRANSFORM", "AUTO", "USER", "video.image_insert.approval"))
+        self.assertEqual(dec["params"], {"asset_id": aid, "image": os.path.abspath(self.card), "duration": 2.5, "position": "before", "width": 640, "height": 360, "fps": 30.0},
+                         "the still takes the picture's own frame after the resize, and the probe's rate")
+        op = next(o for o in d["video"]["operations"] if o["type"] == "video.image_insert")
+        self.assertEqual(op, {"type": "video.image_insert", "asset": aid, "input": f"{aid}_resize", "output": f"{aid}_image_insert", "image": os.path.abspath(self.card),
+                              "inputs": [f"{aid}_still", f"{aid}_resize"], "duration": 2.5, "position": "before", "width": 640, "height": 360, "fps": 30.0,
+                              "temporal_scope": {"start": 0.0, "end": round(op["temporal_scope"]["end"], 3)}, "decision_ids": [dec["id"]]})
+        ist = next(s for s in d["plan"]["steps"] if s["id"] == f"step_image_insert_{aid}")
+        jst = next(s for s in d["plan"]["steps"] if s["id"] == f"step_image_join_{aid}")
+        self.assertEqual((ist["skill"], ist["tool"], ist["outputs"]), ("video_image_insert", "video-editing/image_insert", [f"{aid}_still"]))
+        self.assertEqual((jst["skill"], jst["tool"], jst["inputs"], jst["outputs"]), ("video_concat", "video-editing/concat", [f"{aid}_still", f"{aid}_resize"], [f"{aid}_image_insert"]))
+        out = self._render(svc, ir, "insert")
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        self.assertEqual([r["tool"] for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")],
+                         ["video-editing/resize", "video-editing/image_insert", "video-editing/concat"])
+        prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        still = next(e for e in prov["operations"] if e["tool"] == "video-editing/image_insert")
+        join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
+        self.assertEqual({k: still["args"][k] for k in ("duration", "width", "height", "fps")}, {"duration": 2.5, "width": 640, "height": 360, "fps": 30.0})
+        self.assertEqual((still["skill"], still["decision"]), ("video_image_insert", [dec["id"]]))
+        self.assertEqual(join["args"]["inputs"], [still["args"]["output"], f"{aid}_resize"], "the still first")
+        self.assertEqual({k: join["args"][k] for k in ("width", "height", "fps")}, {"width": 640, "height": 360, "fps": 30.0})
+        dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual(dur["status"], "PASS", dur)
+
+    def test_after_on_the_programme_with_a_sidecar(self):
+        svc = self._svc()
+        ir = svc.plan([self.a, self.b], "generic", user_requirements={"edit.concat": True, "edit.image_insert": self.card, "edit.image_insert.duration": 4,
+                                                                      "edit.image_insert.position": "after"})
+        d = ir.doc
+        self.assertEqual((d["plan"]["status"], svc.validate(ir).errors), ("APPROVED", []))
+        op = next(o for o in d["video"]["operations"] if o["type"] == "video.image_insert")
+        concat = next(o for o in d["video"]["operations"] if o["type"] == "video.concat")
+        self.assertEqual((op["asset"], op["inputs"]), ("programme", ["programme", "programme_still"]), "the still after the joined programme")
+        self.assertAlmostEqual(op["temporal_scope"]["end"], concat["timeline_duration"] + 4, places=3)
+        from video_agent.agent.editing import delivery_subjects
+        self.assertAlmostEqual(delivery_subjects(d)[0]["duration"], concat["timeline_duration"] + 4, places=3)
+
+    def test_blocks(self):
+        svc = self._svc()
+        base = {"edit.image_insert": self.card, "edit.image_insert.duration": 2}
+        # an editor timeline names the still among what its cut list does not carry (ADR-052), like every other transform
+        ir = svc.plan([self.a], "generic", user_requirements=dict(base, **{"delivery.timeline": "otio"}))
+        tl = next(x for x in ir.doc["decisions"] if x["subject"] == "timeline.export")
+        self.assertIn("video.image_insert", tl["params"]["not_exported"]); self.assertEqual(ir.doc["plan"]["status"], "APPROVED")
+        # a QC reference master would no longer line up with the deliverable
+        ref = Path(self.tmp) / "src" / "master.mp4"; ref.write_bytes(b"\x00" * 64)
+        ir = svc.plan([self.a], "generic", user_requirements=dict(base, **{"qc": True, "qc.reference_video": str(ref), "qc.reference_metrics": "ssim"}))
+        blk = [x for x in ir.doc["decisions"] if x["subject"] == "video.image_insert" and x["approval"] == "BLOCK"]
+        self.assertEqual(len(blk), 1); self.assertIn("reference master", blk[0]["reason"]); self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        self.assertFalse(any(s["skill"] == "video_image_insert" for s in ir.doc["plan"]["steps"]))
+        # the audio production path delivers no picture
+        ir = svc.plan([self.a], "generic", user_requirements=dict(base, **{"audio.production": True, "audio.gain": 3}))
+        self.assertTrue(any(x["subject"] == "video.image_insert" and x["approval"] == "BLOCK" and "audio production" in x["reason"] for x in ir.doc["decisions"]))
+        # without video-editing nothing joins the still by another engine
+        svc2 = self._svc(caps=FakeCaps(extra=["encoder:aac"]))
+        ir = svc2.plan([self.a], "generic", user_requirements=base)
+        self.assertIn("capability.video_image_insert", {x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"})
+
+    def test_subtitles_with_a_still(self):
+        """A sidecar keeps its times only with the still after the picture (a burn-in keeps its sidecar too); a soft track never survives the join;
+        the burnt-in picture is joined finished."""
+        clear_modes()
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        svc = pipeline_service(tmp)
+        media = pipeline_media(tmp, "talk.mp4", segments=[[4.0, 8.0, "hello there"], [9.0, 12.0, "and goodbye"]])
+        card = png(str(Path(media).parent.parent), sub=Path(media).parent.name)   # next to the media: the harness's adapters take its folder as the input root
+        base = {"subtitle": True, "edit.image_insert": card, "edit.image_insert.duration": 2}
+
+        def plan(extra):
+            ir = svc.plan([media], "generic", user_requirements=dict(base, **extra), kinds=["transcript"], params={"language": "ja"})
+            return ir, [x for x in ir.doc["decisions"] if x["subject"] == "video.image_insert" and x["approval"] == "BLOCK"]
+        ir, blk = plan({})
+        self.assertEqual(len(blk), 1); self.assertIn("early", blk[0]["reason"])
+        ir, blk = plan({"subtitle.mode": "mux", "edit.image_insert.position": "after"})
+        self.assertEqual(len(blk), 1); self.assertIn("soft subtitle track", blk[0]["reason"])
+        r = plan_and_render(svc, [media], dict(base, **{"subtitle.burn_in": True, "edit.image_insert.position": "after", "edit.resize": 640, "qc": True, **NORMALIZE}), profile="generic", kinds=["transcript"], name="burn")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        order = [s["skill"] for s in d["plan"]["steps"]]
+        self.assertLess(order.index("subtitle_burn_in"), order.index("video_image_insert"), "the still is joined to the burnt-in picture")
+        self.assertLess(order.index("video_concat"), order.index("loudness_normalization"))
+        self.assertEqual(r["out"]["execution"]["status"], "COMPLETED", r["out"]["execution"])
+        qa_dur = next(i for i in r["out"]["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual(qa_dur["status"], "PASS", qa_dur)
+        clear_modes()
+
+    def test_frame_and_validator(self):
+        from video_agent.agent.image_insert import still_frame
+        self.assertEqual(still_frame({"video": {"width": 1280, "height": 720, "fps": 29.97003}}, [{"type": "video.rotate", "asset": "a", "degrees": 90}], "a"), ((720, 1280, 29.97), ""))
+        self.assertEqual(still_frame({"video": {"width": 1280, "height": 720, "fps": 25}}, [{"type": "video.fit", "asset": "a", "aspect": "1:1", "fps": 30}], "a")[0], (1280, 1280, 30))
+        self.assertIsNone(still_frame({"video": {"width": 1281, "height": 720, "fps": 25}}, [], "a")[0])
+        self.assertIsNone(still_frame({"video": {"width": 1280, "height": 720}}, [], "a")[0])
+        self.assertIsNone(still_frame({"video": {}}, [], "a")[0])
+        svc = self._svc()
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.image_insert": self.card, "edit.image_insert.duration": 2})
+        op = next(o for o in ir.doc["video"]["operations"] if o["type"] == "video.image_insert")
+        for k, v, frag in (("width", 641, "width"), ("duration", 0, "duration"), ("position", "middle", "position"), ("image", "/x/clip.mp4", "PNG / JPEG"),
+                           ("inputs", [op["input"], f"{op['asset']}_still"], "order of position")):
+            bad = json.loads(json.dumps(op)); bad[k] = v
+            ir.doc["video"]["operations"] = [o if o["type"] != "video.image_insert" else bad for o in ir.doc["video"]["operations"]]
+            self.assertTrue(any(frag in e for e in svc.validate(ir).errors), (k, svc.validate(ir).errors))
 
 
 AP_CAPS = PipelineCaps(extra=AUDIO_PRODUCTION_CAPS + [f"audio-production:{t}" for t in ("MIX", "NOISE_REDUCTION", "DYNAMICS", "NORMALIZE", "GAIN", "MONO")])

@@ -2082,6 +2082,45 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
         self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.0" for e in rows.values()))
 
+    def test_image_insert_before_the_picture_end_to_end(self):
+        """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
+        the resize → video-editing/concat of the still clip and the picture, on the real Skill and ffmpeg-skill: ffprobe on the still (640x360,
+        2 s, no audio) and on the joined programme (640x360, trimmed length + 2 s, audio kept), QA's duration from the IR, provenance."""
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        ws = str(Path(self.tmp) / "image_insert")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.trim": "2-10", "edit.resize": 640, "edit.image_insert": self.png, "edit.image_insert.duration": 2})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        op = next(o for o in d["video"]["operations"] if o["type"] == "video.image_insert")
+        self.assertEqual((op["width"], op["height"], op["position"], op["duration"]), (640, 360, "before", 2.0))
+        self.assertAlmostEqual(float(op["fps"]), 30.0, places=2)
+        p = str(Path(self.tmp) / "image_insert.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [r for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")]
+        self.assertEqual([r["tool"] for r in res], ["video-editing/trim", "video-editing/resize", "video-editing/image_insert", "video-editing/concat"])
+        self.assertTrue(all(r["ok"] for r in res), res)
+        dur_t, _, _ = self._probe(res[0]["output"])
+        dur_i, size_i, audio_i = self._probe(res[2]["output"])
+        self.assertEqual(size_i, (640, 360), "the still takes the picture's frame (scaled to cover, centre-cropped)"); self.assertFalse(audio_i)
+        self.assertAlmostEqual(dur_i, 2.0, delta=0.1)
+        self.assertEqual(res[2]["data"]["operation"]["type"], "IMAGE_INSERT")
+        dur_j, size_j, audio_j = self._probe(res[3]["output"])
+        self.assertEqual(size_j, (640, 360), "the join does not rescale the picture"); self.assertTrue(audio_j, "the picture's audio is kept (silence under the still)")
+        self.assertAlmostEqual(dur_j, dur_t + 2.0, delta=0.2)
+        qa_dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual(qa_dur["status"], "PASS", qa_dur)
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        still = next(e for e in prov["operations"] if e["tool"] == "video-editing/image_insert")
+        join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
+        self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
+        self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.0")
+
+
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class AudioProductionRealTests(unittest.TestCase):
     """ADR-030 on the real audio-production-skill (main, 0.1.0) and ffmpeg-skill 0.9.x: contract / doctor / drift against the pinned
