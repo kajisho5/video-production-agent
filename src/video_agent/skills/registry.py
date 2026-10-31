@@ -220,7 +220,8 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
 # `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-086:
-# `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns).
+# `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns). ADR-087:
+# `platform_publish` (publish) left it the same way: the implemented `publish_upload` below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
     _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
@@ -231,8 +232,6 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
          {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
     _job("slide_sync", "Import a slide deck, detect slide changes in the recording and match each segment to its slide",
          {"asset": "video", "deck": "pdf|pptx|key"}, {"observation": "slide_segments"}, "slide-sync", "match", "LOW", approval="AUTO"),
-    _job("platform_publish", "Upload a QC-passed deliverable with its metadata to a delivery platform",
-         {"artifact": "delivery", "platform": "str"}, {"receipt": "upload"}, "publish", "upload", "HIGH"),
     # ADR-077: imagemagick-skill's package id is its own `skill.id` (imagemagick-skill), the prefix of its provides[].tool_id; the overlay
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
@@ -448,6 +447,12 @@ def default_registry() -> SkillRegistry:
                          "programme's own sound (ducked), picture stream-copied; a reference voice only with its owner's consent record; EXPERIMENTAL",
                          {"asset": "video", "cues": "srt|vtt|json", "lang": "bcp47"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "dubbing", "dubbing:DUB"], "HIGH", False, "CONFIRM",
                          ["dubbing/dub"]))
+    # ADR-087 (publish-skill's roadmap step 6, agent side; replacing ADR-057's phase-2 `platform_publish`): a QC-passed deliverable uploaded with its
+    # metadata to a platform publish-skill implements. Never a pipeline operation: render runs its offline plan and dry run; the upload is
+    # `video-agent publish <artifact> --confirm <token>` by a human. CONFIRM always (outward-facing, cannot be undone).
+    r.register(SkillSpec("publish_upload", "1.0", "Upload a QC-passed, delivered deliverable with its metadata to a delivery platform (publish-skill): offline plan and dry run "
+                         "at render, the upload only with the dry run's confirmation token typed by a human; EXPERIMENTAL",
+                         {"artifact": "delivery", "platform": "str"}, {"receipt": "upload"}, ["publish"], "HIGH", False, "CONFIRM", ["publish/upload"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)

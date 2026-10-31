@@ -65,7 +65,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    # dubbing-skill DUB (ADR-085): the subject, the user's files (translated / source cues, reference voice + its consent record) and the typed options
                    "speech_dub": ("asset", "lang", "cues", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "duck", "voice_gain", "max_overrun"),
                    # handed-off jobs with a pinned Skill contract (ADR-080): the job.<skill>.<name> parameters, named for the handoff (never run here)
-                   "render_3d": ("model", "preset", "transparent"), "html_scene_render": ("scene", "codec")}
+                   "render_3d": ("model", "preset", "transparent"), "html_scene_render": ("scene", "codec"),
+                   # publish-skill (ADR-087): the subject, its delivery target, the platform and the metadata the user approved
+                   "publish_upload": ("asset", "target", "platform", "title", "description", "tags", "privacy", "thumbnail", "captions")}
 
 
 @dataclass
