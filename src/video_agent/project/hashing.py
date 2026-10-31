@@ -12,7 +12,7 @@ from ..models import stable_hash
 PLAN_SECTIONS = ("assets", "video", "audio", "captions", "graphics", "color", "delivery", "qa")   # the finishing sections (ADR-031) and the QC gate (qa.qc) change what is executed
 
 
-# ADR-082: the `speech` section (dubbing) is hashed only when a plan has it, so every plan without one keeps the hash it always had
+# ADR-085: the `speech` section (dubbing) is hashed only when a plan has it, so every plan without one keeps the hash it always had
 OPTIONAL_PLAN_SECTIONS = ("speech",)
 
 

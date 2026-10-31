@@ -3171,7 +3171,7 @@ class ImagePrepareRealTests(unittest.TestCase):
 
 
 class DubbingRealTests(unittest.TestCase):
-    """ADR-082 on the real dubbing-skill (main; no release tag) and the real ffmpeg-skill, without any TTS engine (none is installed in CI): the live
+    """ADR-085 on the real dubbing-skill (main; no release tag) and the real ffmpeg-skill, without any TTS engine (none is installed in CI): the live
     contract equals the pin, its doctor's verdict on DUB carries the Skill's own code and install line, a plan asking for a dub BLOCKs with that
     code (nothing downloaded, nothing run), and the argv the adapter builds -- every option `--flag=value`, the programme and the user's cues after
     `--`, the translation note, a reference voice with its consent record -- is accepted by the real CLI, which answers ENGINE_UNAVAILABLE."""

@@ -64,7 +64,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     captions_ops: List[Dict[str, Any]] = []
     graphics_ops: List[Dict[str, Any]] = []
     color_ops: List[Dict[str, Any]] = []
-    speech_ops: List[Dict[str, Any]] = []   # ADR-082: the `speech` section (dubbing-skill DUB), written only when planned
+    speech_ops: List[Dict[str, Any]] = []   # ADR-085: the `speech` section (dubbing-skill DUB), written only when planned
     qc_plan: Dict[str, Any] = {"enabled": False, "decision_ids": [], "subjects": {}, "sidecars": {}}
     delivery: List[Dict[str, Any]] = []
     timelines: List[Dict[str, Any]] = []
@@ -345,7 +345,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             summary.append(d.decision)
 
     def dub_steps(subject: str) -> None:
-        """ADR-082: the `speech.dub` decision of a subject → one step (dubbing-skill DUB) and one IR `speech` operation on the subject's picture after
+        """ADR-085: the `speech.dub` decision of a subject → one step (dubbing-skill DUB) and one IR `speech` operation on the subject's picture after
         its edits and before the finishing: the programme with its dialogue replaced (video stream-copied), on the same timeline."""
         nonlocal order
         for d in decided(subject, DUB_OP):

@@ -1,4 +1,4 @@
-"""Fake dubbing-skill process for the ADR-082 tests: speaks the slice of the real `dubbing` CLI the agent uses -- `contract --json` (the pinned
+"""Fake dubbing-skill process for the ADR-085 tests: speaks the slice of the real `dubbing` CLI the agent uses -- `contract --json` (the pinned
 src/video_agent/tools/dubbing/contract_0.1.0.json), `doctor --json --offline --ffmpeg-skill=DIR` (dubbing/doctor@1 with engines and
 operations.<op>.ready) and `dub` with `--flag=value` options and the programme + cues after `--`, in the result shape of dubbing-skill main
 (dubbing/dub@1: output, fit, mix, clips, kept_original, obligations, provenance with the output sha256 and the consent summary; its error document).

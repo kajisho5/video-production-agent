@@ -298,7 +298,7 @@ class CapabilityResolver:
         self._finishing_skill(caps, "voice-enhance", locate_voice_enhance(env=self.env),
                               lambda sk: VoiceEnhanceAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None), "VIDEO_AGENT_VOICE_ENHANCE_DIR", "voice-enhance-skill",
                               "voice-enhance", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
-        # dubbing-skill (ADR-082): the same rule -- contract against the pinned one (fatal subset: the consent gate included), its own doctor ok /
+        # dubbing-skill (ADR-085): the same rule -- contract against the pinned one (fatal subset: the consent gate included), its own doctor ok /
         # degraded (an engine not installed is degraded). DUB gets `dubbing:DUB` from the doctor's `operations.dub.ready`, with the Skill's own code,
         # the default engine, its alternatives and every DUB engine's status / install line (a plan naming another engine is judged on that one).
         self._finishing_skill(caps, "dubbing", locate_dubbing(env=self.env),

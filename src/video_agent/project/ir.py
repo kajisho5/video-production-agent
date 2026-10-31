@@ -84,7 +84,7 @@ class ProjectIR:
         return out
 
     def speech_operations(self) -> List[Dict[str, Any]]:
-        """The IR operations of the `speech` section (ADR-082: dubbing-skill DUB); the section exists only when one is planned."""
+        """The IR operations of the `speech` section (ADR-085: dubbing-skill DUB); the section exists only when one is planned."""
         return list((self.doc.get("speech") or {}).get("operations") or [])
 
     def needs_reapproval(self) -> bool:

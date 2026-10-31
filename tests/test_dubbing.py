@@ -1,4 +1,4 @@
-"""ADR-082 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): dubbing-skill's DUB as an opt-in,
+"""ADR-085 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): dubbing-skill's DUB as an opt-in,
 always-CONFIRM step on the programme's picture after its edits. The agent supplies the user's translated cues, never translates, passes a
 reference voice only with the consent record the user named (never writing one), never retries CONSENT_REQUIRED, and carries
 obligations.credit into the ProductionReceipt. Against a fake `dubbing` process (tests/fake_dubbing.py) that speaks dubbing-skill main's

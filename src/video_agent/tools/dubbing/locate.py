@@ -1,5 +1,5 @@
 """Locate an installed dubbing-skill (kajisho5/dubbing-skill): a checkout (<dir>/src/dubbing_skill, run as `python -m dubbing_skill.cli`
-with PYTHONPATH=<dir>/src, without the current directory on sys.path) or the console script `dubbing`. The agent never imports it (ADR-082)."""
+with PYTHONPATH=<dir>/src, without the current directory on sys.path) or the console script `dubbing`. The agent never imports it (ADR-085)."""
 from __future__ import annotations
 
 from typing import Dict, Optional

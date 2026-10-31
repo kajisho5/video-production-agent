@@ -451,7 +451,7 @@ def speech_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def check_speech_operations(d: Dict[str, Any]) -> List[str]:
-    """ADR-082: the `speech` section (dubbing-skill DUB). One dub per video subject, on its picture after the edits (input: the subject itself or
+    """ADR-085: the `speech` section (dubbing-skill DUB). One dub per video subject, on its picture after the edits (input: the subject itself or
     the output of one of its video operations), output `<subject>_dub`; the user's files without traversal, of their kind, inside the allowed
     input roots; a reference voice only with its consent record; engine / on_unfit / numbers inside the pinned dubbing contract; never on the
     audio production path (no picture there)."""
@@ -937,7 +937,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_video_operations(d)
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
-    rep.errors += check_speech_operations(d)   # ADR-082
+    rep.errors += check_speech_operations(d)   # ADR-085
     rep.errors += check_timeline_exports(d)
     rep.errors += check_take_assembly(d)
     rep.errors += check_plan_dependencies(d)
@@ -1015,7 +1015,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
-    for op in speech_operations(d):   # ADR-082
+    for op in speech_operations(d):   # ADR-085
         if (DUB_SKILL, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for t in d["delivery"]["targets"]:
@@ -1142,7 +1142,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
         if speech_operations(d):
-            needed.add("dubbing")   # ADR-082: dubbing exists only in dubbing-skill
+            needed.add("dubbing")   # ADR-085: dubbing exists only in dubbing-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

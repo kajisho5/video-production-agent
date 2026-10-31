@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
-trim → concat → edits → dub (ADR-082) → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
+trim → concat → edits → dub (ADR-085) → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
 Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
@@ -61,7 +61,7 @@ class CompileError(ValueError):
 
 
 def lower_dub(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
-    """ADR-082: IR `speech.dub` → dubbing/dub's typed arguments: the picture by artifact id, the output id, and the allowlisted parameters copied
+    """ADR-085: IR `speech.dub` → dubbing/dub's typed arguments: the picture by artifact id, the output id, and the allowlisted parameters copied
     by name (the user's files as the paths they named; the adapter checks them inside the allowed roots). Nothing else is copied."""
     if tool != TOOL_DUB:
         raise CompileError(f"{DUB_OP} cannot be executed by {tool}; the only tool of this operation is {TOOL_DUB}")
@@ -373,7 +373,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             st["current"] = out_id
 
     def dubs(subject: str) -> None:
-        """ADR-082: the subject's picture after its edits, its dialogue replaced by dubbing-skill (before colour / graphics / subtitles / a still)."""
+        """ADR-085: the subject's picture after its edits, its dialogue replaced by dubbing-skill (before colour / graphics / subtitles / a still)."""
         st = state[subject]
         for op in (d.get("speech") or {}).get("operations") or []:
             if op["asset"] != subject or op["type"] != DUB_OP:

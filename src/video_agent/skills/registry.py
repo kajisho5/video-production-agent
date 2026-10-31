@@ -221,7 +221,7 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
 # `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
-    # ADR-082: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
+    # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
     _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
          {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "narrate", "HIGH", deterministic=False),
     _job("sound_design", "Generate a music bed (BGM) or sound effects",
@@ -436,7 +436,7 @@ def default_registry() -> SkillRegistry:
          {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
-    # ADR-082 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): the programme's dialogue replaced by the
+    # ADR-085 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): the programme's dialogue replaced by the
     # user's translated cues, spoken by a local engine over the programme's own sound. Needs ffmpeg-skill (the Skill's media engine), the package and its
     # own readiness of DUB (`dubbing:DUB`, from its doctor: the engine installed). CONFIRM always: EXPERIMENTAL, and a synthetic voice replaces someone's words.
     r.register(SkillSpec("speech_dub", "1.0", "Dub the programme's dialogue: the user's translated cues spoken by a local TTS engine, fitted to each source segment, over the "

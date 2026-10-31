@@ -45,7 +45,7 @@ def plan_diff(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
     ot = {t["id"]: t for t in old["delivery"]["targets"]}
     nt = {t["id"]: t for t in new["delivery"]["targets"]}
     fin = {}
-    for sec in ("captions", "graphics", "color", "speech"):   # finishing sections (ADR-031) and dubbing (ADR-082): the same key as the video / audio operations
+    for sec in ("captions", "graphics", "color", "speech"):   # finishing sections (ADR-031) and dubbing (ADR-085): the same key as the video / audio operations
         o_ = {_okey(o): o for o in (old.get(sec) or {}).get("operations") or []}
         n_ = {_okey(o): o for o in (new.get(sec) or {}).get("operations") or []}
         fin[sec] = _diff_map(o_, n_, _op_view)

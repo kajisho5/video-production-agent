@@ -439,7 +439,7 @@
   "speech": {
    "type": "object",
    "additionalProperties": false,
-   "description": "ADR-082: dubbing-skill DUB on the subject's picture after its edits; present only when planned",
+   "description": "ADR-085: dubbing-skill DUB on the subject's picture after its edits; present only when planned",
    "properties": {
     "operations": {
      "type": "array",

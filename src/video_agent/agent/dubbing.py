@@ -1,4 +1,4 @@
-"""Dubbing the programme's dialogue (ADR-082; dubbing-skill roadmap step 9, agent side): dubbing-skill's DUB, called as its ADR-012 hands it over.
+"""Dubbing the programme's dialogue (ADR-085; dubbing-skill roadmap step 9, agent side): dubbing-skill's DUB, called as its ADR-012 hands it over.
 
     Requirement (`--set dub.cues=<translated cues> dub.lang=<L>`, explicit only) → Decision `speech.dub` (always CONFIRM: EXPERIMENTAL, a
     synthetic voice replaces a person's words) → step `speech_dub` → IR audio operation `speech.dub` → compiler → dubbing-skill `dub`

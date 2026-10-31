@@ -1,4 +1,4 @@
-"""DubbingAdapter: the agent's boundary to dubbing-skill's DUB (ADR-082; dubbing-skill roadmap step 9, agent side, as its ADR-012 hands it over).
+"""DubbingAdapter: the agent's boundary to dubbing-skill's DUB (ADR-085; dubbing-skill roadmap step 9, agent side, as its ADR-012 hands it over).
 
     video-production-agent ─(typed Operation)─→ DubbingAdapter ─(argv list, never a shell)─→
         `dubbing dub --json --offline --overwrite --ffmpeg-skill=<dir> --output=<out.mp4> --lang=L [--k=v ...] -- <programme> <translated cues>`
