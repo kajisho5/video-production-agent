@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "0.4.7",
+      "version": "0.4.8",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -172,7 +172,7 @@
   "dependencies": [
     {
       "skill_id": "ffmpeg-skill",
-      "version_range": ">=1.0 <2.0",
+      "version_range": ">=1.0 <3.0",
       "range_of": "contract_version",
       "required": true,
       "tools": [
