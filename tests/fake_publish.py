@@ -1,4 +1,4 @@
-"""Fake publish-skill process for the ADR-084 tests: speaks the slice of the real `publish` CLI the agent uses -- `contract --json` (the pinned
+"""Fake publish-skill process for the ADR-087 tests: speaks the slice of the real `publish` CLI the agent uses -- `contract --json` (the pinned
 src/video_agent/tools/publish/contract_0.1.0.json), `doctor --json --offline` (publish/doctor@1 with checks.platforms) and `plan` / `upload` with
 `--flag=value` options and the deliverable after `--`, in the result shapes of publish-skill main (publish/plan@1; the dry run with its
 confirm_token = the real formula over platform, sha256, size and the canonical metadata; the upload result; its error document). Nothing touches

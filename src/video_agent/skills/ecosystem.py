@@ -92,7 +92,7 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("publish", "publish-skill", "delivery", "pip", "scaffold", owns=("配信先アップロード", "アップロード制限"),
               package_install=_clone_pip("publish-skill"),
               note="ecosystem.json still says scaffold, but plan / upload ship (README, 0.1.0 unreleased, EXPERIMENTAL) with the uploaders its contract names; "
-                   "`[keychain]` adds the OS keychain for credentials; the agent plans the upload and a human confirms it (ADR-084)"),
+                   "`[keychain]` adds the OS keychain for credentials; the agent plans the upload and a human confirms it (ADR-087)"),
     Component("bdmvkit", "bdmvkit", "delivery", "pip", "active", optional=True, owns=("Blu-ray作成",), package_install="pip install bdmvkit"),
     Component("vtskit", "vtskit", "delivery", "pip", "active", optional=True, owns=("DVD-Video作成",), package_install="pip install vtskit"),
     Component("udfkit", "udfkit", "delivery", "pip", "active", optional=True, owns=("ディスクイメージ(UDF)",), package_install="pip install udfkit"),

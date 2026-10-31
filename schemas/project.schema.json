@@ -549,7 +549,7 @@
      }
     },
     "publish": {
-     "description": "ADR-084: the approved upload of one deliverable (publish-skill); render makes its offline plan and dry run, `video-agent publish` the upload",
+     "description": "ADR-087: the approved upload of one deliverable (publish-skill); render makes its offline plan and dry run, `video-agent publish` the upload",
      "type": "object",
      "additionalProperties": false,
      "required": [

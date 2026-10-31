@@ -219,7 +219,7 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
 # (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
-# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-084:
+# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-087:
 # `platform_publish` (publish) left it the same way: the implemented `publish_upload` below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
@@ -434,7 +434,7 @@ def default_registry() -> SkillRegistry:
          {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
-    # ADR-084 (publish-skill's roadmap step 6, agent side; replacing ADR-057's phase-2 `platform_publish`): a QC-passed deliverable uploaded with its
+    # ADR-087 (publish-skill's roadmap step 6, agent side; replacing ADR-057's phase-2 `platform_publish`): a QC-passed deliverable uploaded with its
     # metadata to a platform publish-skill implements. Never a pipeline operation: render runs its offline plan and dry run; the upload is
     # `video-agent publish <artifact> --confirm <token>` by a human. CONFIRM always (outward-facing, cannot be undone).
     r.register(SkillSpec("publish_upload", "1.0", "Upload a QC-passed, delivered deliverable with its metadata to a delivery platform (publish-skill): offline plan and dry run "

@@ -304,10 +304,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 qc_plan.setdefault("packages", {})[subject] = {"targets": sorted({t for t, _a, _s in gated}), "captions": sc_id, "thumbnail": th_id}
             summary.append(d.decision)
 
-    publish_rec: Dict[str, Any] = {}   # ADR-084: delivery.publish, written only when planned
+    publish_rec: Dict[str, Any] = {}   # ADR-087: delivery.publish, written only when planned
 
     def publish_steps(subject: str) -> None:
-        """ADR-084: the `publish.upload` decision of a subject → one step after every QC step of the subject (the upload comes after QC). No IR
+        """ADR-087: the `publish.upload` decision of a subject → one step after every QC step of the subject (the upload comes after QC). No IR
         operation: the compiler never runs it; render makes the Skill's offline plan and dry run, `video-agent publish` the upload."""
         nonlocal order
         for d in [x for x in decisions if x.subject == PUBLISH_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:

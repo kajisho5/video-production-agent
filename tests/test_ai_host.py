@@ -100,7 +100,7 @@ ECOSYSTEM_JOBS = {
     "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
-    # platform_publish (publish) left this table with its adapter (ADR-084): the implemented skill publish_upload
+    # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
     "render_3d": ("blender", "blender-skill", "npx blender-skill"),
@@ -196,7 +196,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assert_handoff("slide_sync")
 
     def test_platform_publish_moved_to_the_publish_adapter(self):
-        """ADR-084: `job.platform_publish` is no longer a handoff switch; it is refused with how publishing is asked for, and a plan asking to
+        """ADR-087: `job.platform_publish` is no longer a handoff switch; it is refused with how publishing is asked for, and a plan asking to
         publish without publish-skill still hands the step over naming publish-skill and its install command."""
         tmp = tempfile.mkdtemp()
         svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps(extra=["qc"]))

@@ -98,7 +98,7 @@ class Service:
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
-        self.publish_dir = os.environ.get("VIDEO_AGENT_PUBLISH_DIR")   # ADR-084: publish-skill (plan / dry run at render; the upload by `video-agent publish`)
+        self.publish_dir = os.environ.get("VIDEO_AGENT_PUBLISH_DIR")   # ADR-087: publish-skill (plan / dry run at render; the upload by `video-agent publish`)
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
@@ -118,7 +118,7 @@ class Service:
             self.registry.register_package(pkg)
         self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
-        self.registry.register_package(PUBLISH_PACKAGE)   # publish-skill (ADR-084): same rule
+        self.registry.register_package(PUBLISH_PACKAGE)   # publish-skill (ADR-087): same rule
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
@@ -160,7 +160,7 @@ class Service:
             (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
             # ADR-073: always told which ffmpeg-skill to use (never its own current-directory search); paths checked per call like the other Skills
             (locate_voice_enhance(self.voice_enhance_dir), lambda sk: VoiceEnhanceAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
-            # ADR-084: reads only registered deliverables / thumbnails / sidecars in the workspace; its run() refuses every pipeline operation
+            # ADR-087: reads only registered deliverables / thumbnails / sidecars in the workspace; its run() refuses every pipeline operation
             (locate_publish(self.publish_dir), lambda sk: PublishAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
             (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
@@ -685,7 +685,7 @@ class Service:
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         if plan.get("timelines"):   # ADR-052: written only when planned, so an unchanged request keeps its plan hash
             d["delivery"]["timelines"] = plan["timelines"]
-        if plan.get("publish"):   # ADR-084: the approved upload's platform / target / metadata; written only when planned
+        if plan.get("publish"):   # ADR-087: the approved upload's platform / target / metadata; written only when planned
             d["delivery"]["publish"] = plan["publish"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
         if (plan.get("qc") or {}).get("enabled"):
@@ -963,7 +963,7 @@ class Service:
                 return out
             job.artifacts = [a.to_dict() for a in artifacts]
             out["artifacts"] = job.artifacts
-            if (ir.doc.get("delivery") or {}).get("publish"):   # ADR-084: the offline plan + dry run of the approved upload; nothing is uploaded here
+            if (ir.doc.get("delivery") or {}).get("publish"):   # ADR-087: the offline plan + dry run of the approved upload; nothing is uploaded here
                 out["publish"] = self._publish_prepare(ir, adapter, job, job.artifacts)
             job.transition("COMPLETED" if qa.status != "FAIL" else "REVIEW", f"qa {qa.status}")
             if qa.status == "FAIL":
@@ -1005,7 +1005,7 @@ class Service:
         out["report"] = str(job.dir / "report.md")
         return out
 
-    # ---- publishing (ADR-084): render prepares, a human confirms
+    # ---- publishing (ADR-087): render prepares, a human confirms
     def _publish_prepare(self, ir: ProjectIR, adapter: Any, job: Job, artifacts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """The approved `delivery.publish` of this plan, after QA / QC: the deliverable's artifact (it must have passed: stage candidate or
         approved), publish-skill's offline `plan` (PASS / WARN only) and the dry run of `upload` (its confirm_token for exactly these bytes,
@@ -1054,7 +1054,7 @@ class Service:
                     next=f"video-agent deliver {art['id']}, then (a human, once) video-agent publish {art['id']} --confirm {dry['confirm_token']}")
 
     def publish(self, art_id: str, confirm: str, who: Optional[str] = None) -> Dict[str, Any]:
-        """ADR-084: the one upload of a delivered artifact, with the dry run's token a human typed. Refused unless the artifact is DELIVERED
+        """ADR-087: the one upload of a delivered artifact, with the dry run's token a human typed. Refused unless the artifact is DELIVERED
         (stage final), its bytes are the ones the dry run hashed, its plan's publish decision is still APPROVED, and the token is the one render
         recorded; sent once and never retried by the agent (a new attempt only after a failure that published nothing, and only by a human
         running this again). The result is recorded in <job>/publish.json."""
@@ -1495,7 +1495,7 @@ class Service:
                             "no level generates a command: tools are named by the registry, arguments by the compiler, commands by the Skills"}
 
 
-# ADR-084: publish-skill codes after which nothing was published (refused before the network, or the platform's quota / daily limit): a human may run
+# ADR-087: publish-skill codes after which nothing was published (refused before the network, or the platform's quota / daily limit): a human may run
 # `video-agent publish` again. Any other failure (interrupted, rejected, partial, an unreadable result, a timeout) may have published: never again.
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
@@ -1606,7 +1606,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
-    check_publish_keys(user_requirements)   # ADR-084: publish.* keys known, an implemented platform, the fields / privacy it takes
+    check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
@@ -1666,7 +1666,7 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
         for a in out["artifacts"]:
             lines.append(f"- {a['type']} {a['path']} (stage {a['stage']}, qa {a['qa_status']}, sha256 {a['hash'][:12]}…)")
     pub = out.get("publish")
-    if pub:   # ADR-084: what render prepared; nothing was uploaded
+    if pub:   # ADR-087: what render prepared; nothing was uploaded
         lines += ["", f"## Publish to {pub.get('platform')} — {pub.get('status')}", f"- {pub.get('reason') or ''}"]
         if pub.get("status") == "AWAITING_CONFIRMATION":
             lines += [f"- deliverable {pub.get('artifact_id')} (sha256 {str(pub.get('sha256') or '')[:12]}…), metadata {json.dumps(pub.get('metadata'), ensure_ascii=False)}",

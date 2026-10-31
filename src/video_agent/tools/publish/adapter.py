@@ -1,4 +1,4 @@
-"""PublishAdapter: the agent's boundary to publish-skill (ADR-084; publish-skill roadmap step 6, agent side: SkillSpec publish_upload).
+"""PublishAdapter: the agent's boundary to publish-skill (ADR-087; publish-skill roadmap step 6, agent side: SkillSpec publish_upload).
 
     video-production-agent ─(a QC-passed, delivered artifact + the plan's approved metadata)─→ PublishAdapter ─(argv list, never a shell)─→
         `publish plan --json --platform=P --ffmpeg-skill=<dir> [--title=… --description=… --tag=… --privacy=… --thumbnail=… --caption=… --caption-language=…] -- <file>`
@@ -6,7 +6,7 @@
         `publish upload --json --platform=P [metadata] --confirm=<token> -- <file>`    (the upload: only with the token a human typed)
 
 Protocol (publish-skill's own contract, `publish contract --json`, pinned from main in contract_0.1.0.json -- the repository has no release
-tag, so the pin follows main as dubbing-skill's does, ADR-082):
+tag, so the pin follows main as dubbing-skill's does, ADR-085):
     platforms  → `platforms.registered.<id>` (implemented, metadata_fields) and `tools[publish/upload].uploaders.<id>`: only a platform whose
                  uploader exists on the pinned main is offered; a platform added later is refused until the pin is renewed
     limits     → `upload_limits.platforms.<id>["privacy.values"]` (the privacy each platform takes; X: public only)

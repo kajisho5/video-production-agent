@@ -62,7 +62,7 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots"),
                    # voice-enhance-skill (ADR-073): the subject (the programme for bleed reduction, with its tracks) and the typed engine parameters
                    "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),
-                   # publish-skill (ADR-084): the subject, its delivery target, the platform and the metadata the user approved
+                   # publish-skill (ADR-087): the subject, its delivery target, the platform and the metadata the user approved
                    "publish_upload": ("asset", "target", "platform", "title", "description", "tags", "privacy", "thumbnail", "captions")}
 
 
