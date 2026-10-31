@@ -3274,7 +3274,10 @@ class FaceRedactionRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="broll keeps the source's length")
         mid = (regions[0]["start"] + regions[-1]["end"]) / 2
         a, b = _gray_frame(src, mid, 1280, 720), _gray_frame(art["path"], mid, 1280, 720)
-        self.assertGreater(_mean_abs_diff(a, b, 1280, rect), 6.0, "the face rectangle is blurred while the face is on screen")
-        self.assertLess(_mean_abs_diff(a, b, 1280, rect, outside=True), 2.0, "nothing outside the rectangle changes")
+        inside, outside = _mean_abs_diff(a, b, 1280, rect), _mean_abs_diff(a, b, 1280, rect, outside=True)
+        # outside the rectangle only the lossy re-encodes differ (cut --accurate, redact, broll: up to three generations, measured 0.1 locally and 2.8 on the CI runner);
+        # inside, the blur moves the face's pixels by far more (measured above 50)
+        self.assertLess(outside, 4.0, "nothing outside the rectangle changes beyond re-encoding")
+        self.assertGreater(inside, max(6.0, 3 * outside), f"the face rectangle is blurred while the face is on screen (inside {inside:.2f}, outside {outside:.2f})")
         for t in (0.5, 7.0):   # before and after the face's span: the picture is the source's (re-encoded only)
-            self.assertLess(_mean_abs_diff(_gray_frame(src, t, 1280, 720), _gray_frame(art["path"], t, 1280, 720), 1280), 2.0, t)
+            self.assertLess(_mean_abs_diff(_gray_frame(src, t, 1280, 720), _gray_frame(art["path"], t, 1280, 720), 1280), 4.0, t)
