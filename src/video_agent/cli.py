@@ -194,6 +194,12 @@ def _print_handoff(handoff: List[Dict[str, Any]]) -> None:
         print(f"  {h['step']}  {h['skill']}: {h['job']} -- {h['reason']}; provided by {', '.join(h['repositories'])}")
         for c in h["install"]:
             print(f"      install: {c}")
+        k = h.get("contract")   # ADR-080: the pinned Skill's tool, its arguments and what it still needs
+        if k:
+            print(f"      tool: {k['tool']} ({k['package']} {k['version']}, {k['lifecycle']}) args {json.dumps(k['args'], ensure_ascii=False)}")
+            for miss in k["missing"]:
+                print(f"      missing: {miss}")
+            print(f"      next: {k['next']}")
 
 
 def cmd_plan_offload(args, svc: Service) -> int:

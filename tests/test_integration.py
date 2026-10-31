@@ -3283,3 +3283,117 @@ class FaceRedactionRealTests(unittest.TestCase):
         self.assertLess(outside, 2.0, f"nothing outside the rectangle changes (frame {mid}: inside {inside:.2f}, outside {outside:.2f}; {tags})")
         for n in (15, 210):   # before and after the face's span: the picture is the source's (re-encoded only)
             self.assertLess(_mean_abs_diff(_luma_frame(src, n, 1280, 720), _luma_frame(art["path"], n, 1280, 720), 1280), 2.0, f"frame {n} ({tags})")
+
+
+class DubbingRealTests(unittest.TestCase):
+    """ADR-085 on the real dubbing-skill (main; no release tag) and the real ffmpeg-skill, without any TTS engine (none is installed in CI): the live
+    contract equals the pin, its doctor's verdict on DUB carries the Skill's own code and install line, a plan asking for a dub BLOCKs with that
+    code (nothing downloaded, nothing run), and the argv the adapter builds -- every option `--flag=value`, the programme and the user's cues after
+    `--`, the translation note, a reference voice with its consent record -- is accepted by the real CLI, which answers ENGINE_UNAVAILABLE."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.dubbing import locate_dubbing
+        cls.dub = locate_dubbing()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dub_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.prog = str(src / "prog.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=4", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.prog], check=True)
+        cls.cues = str(src / "en.srt")
+        Path(cls.cues).write_text("1\n00:00:01,000 --> 00:00:02,500\nHello there\n", encoding="utf-8")
+        cls.ref, cls.consent = str(src / "voice.wav"), str(src / "consent.json")
+        Path(cls.ref).write_bytes(b"RIFF not a real clip")
+        Path(cls.consent).write_text(json.dumps({"schema": "dubbing/consent@1"}), encoding="utf-8")
+
+    def setUp(self):
+        if not self.dub or not locate_ffmpeg_skill():
+            self.skipTest("needs a dubbing-skill checkout (VIDEO_AGENT_DUBBING_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_live_contract_doctor_plan_and_argv_on_the_real_skill(self):
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.models import Operation
+        from video_agent.tools.dubbing import DubbingAdapter, breaking_drift, drift, pinned_contract
+        ff = str(locate_ffmpeg_skill().root)
+        ad = DubbingAdapter(self.dub, workspace=str(Path(self.tmp) / "ws"), allowed_inputs=[str(Path(self.tmp) / "src")], ffmpeg_skill_dir=ff)
+        self.assertEqual(ad.version, pinned_contract()["version"])
+        self.assertEqual(breaking_drift(ad.contract), [], "dubbing-skill main changed what the adapter relies on: re-verify the adapter")
+        self.assertEqual(drift(ad.contract), [], "dubbing-skill main drifted from the pin (no release tag: the pin follows main): re-pin")
+        doc = ad.doctor()
+        self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
+        ev = ad.operation_evidence(doc)["DUB"]
+        caps = CapabilityResolver(ff).resolve()
+        self.assertEqual(caps["dubbing"].status, "AVAILABLE", caps["dubbing"].detail)
+        if not ev["ready"]:   # CI: no engine
+            self.assertEqual((ev["code"], caps["dubbing:DUB"].status), ("ENGINE_UNAVAILABLE", "MISSING"))
+            self.assertTrue(ev["install"])
+            svc = Service(workspace=str(Path(self.tmp) / "ws_plan"))
+            ir = svc.plan([self.prog], "youtube", user_requirements={"dub.cues": self.cues, "dub.lang": "en"})
+            b = next(x for x in ir.doc["decisions"] if x["subject"] == "speech.dub")
+            self.assertEqual((b["type"], b["params"]["code"]), ("BLOCK", "ENGINE_UNAVAILABLE"))
+            self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+            out = str(Path(self.tmp) / "ws" / "jobs" / "j" / "dub.mp4")
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            for extra in ({}, {"reference": self.ref, "consent": self.consent, "engine": "chatterbox", "duck": 10, "on_unfit": "keep"}):
+                op = Operation(tool="dubbing/dub", args={"input": "a", "output": "o", "cues": self.cues, "lang": "en", **extra}, inputs=["a"], outputs=["o"])
+                r = ad.run(op, {"a": self.prog, "o": out})
+                err = r.data["error"]
+                self.assertEqual((err["code"], err["recovery_class"], err["retryable"]), ("ENGINE_UNAVAILABLE", "TOOL_MISSING", False), err)
+                self.assertFalse(os.path.exists(out))
+class DiarizationRealTests(unittest.TestCase):
+    """ADR-086 on the real diarization-skill (main, contract 0.1.0): the live contract equals the pin, and without pyannote.audio / the gated
+    pipeline (the CI integration job installs neither: the weights need a Hugging Face account) its doctor marks DIARIZE not ready with the
+    Skill's own code, the adapter's diarize returns that code verbatim (exit 3, nothing guessed), and a plan asking for speaker turns hands the
+    measurement off naming diarization-skill. Runs whenever a diarization-skill checkout is installed (VIDEO_AGENT_DIARIZATION_DIR)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.diarization import locate_diarization
+        cls.dia = locate_diarization()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dia_"))
+
+    def setUp(self):
+        if not self.dia:
+            self.skipTest("needs a diarization-skill checkout (VIDEO_AGENT_DIARIZATION_DIR)")
+        if not shutil.which("ffmpeg"):
+            self.skipTest("needs ffmpeg")
+
+    def _wav(self) -> str:
+        p = str(Path(self.tmp) / "src" / "talk.wav")
+        if not os.path.exists(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=16000", "-t", "16", p], check=True)
+        return p
+
+    def test_live_contract_doctor_and_diarize_code(self):
+        from video_agent.tools.diarization import DiarizationAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        ad = DiarizationAdapter(self.dia, workspace=ws, allowed_inputs=[str(Path(self._wav()).parent)])
+        self.assertEqual(ad.drift(), [], "the installed diarization-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        status = ad.operation_status(doc)
+        self.assertEqual(status["ASSIGN"], "supported")
+        if status["DIARIZE"] == "supported":
+            self.skipTest("this machine has pyannote.audio and the pipeline: the not-ready path is not what it can show")
+        self.assertEqual(doc["status"], "degraded")
+        ev = ad.operation_evidence(doc)["DIARIZE"]
+        self.assertIn(ev["code"], ("ENGINE_UNAVAILABLE", "PIPELINE_NOT_FOUND"))
+        self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
+        r = ad.measure("diarization/diarize", ad.measurement_args("diarization/diarize", "speaker_turns", self._wav(), "talk", {"num_speakers": 2}, "an", "use"))
+        self.assertFalse(r.ok)
+        self.assertIn(r.data["error"]["code"], ("ENGINE_UNAVAILABLE", "PIPELINE_NOT_FOUND"))
+        self.assertEqual((r.exit_code, r.data["error"]["recovery_class"]), (3, "TOOL_MISSING"))
+
+    def test_plan_hands_the_measurement_off_when_diarize_is_not_ready(self):
+        if not locate_ffmpeg_skill():
+            self.skipTest("needs ffmpeg-skill")
+        svc = Service(workspace=str(Path(self.tmp) / "ws_plan"))
+        if svc.caps.resolve().get("diarization:DIARIZE") and svc.caps.resolve()["diarization:DIARIZE"].status == "AVAILABLE":
+            self.skipTest("DIARIZE is ready on this machine")
+        ir = svc.plan([self._wav()], "generic", user_requirements={"speakers.diarize": True})
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        self.assertFalse([o for o in ir.doc["analysis"]["observations"] if o["kind"] == "speaker_turns"])
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
+        self.assertEqual(h["repositories"], ["diarization-skill"])
+        self.assertIn("diarization:DIARIZE", h["reason"])

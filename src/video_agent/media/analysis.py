@@ -55,6 +55,9 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # faces to blur (ADR-090): detection-skill's face boxes on frames sampled every `every` seconds, linked over time into redact rectangles
     # (`detection tracks`, `window`); a measurement only: whether to blur is a CONFIRM decision (agent/faces.py), never this kind's
     "face_tracks": {"skill": "face_detection", "needs_audio": False, "params": ("every", "min_score", "window")},
+    # who spoke when (ADR-086): diarization-skill's anonymous exclusive speaker turns (SPEAKER_nn), a measurement only; the counts are the
+    # Skill's own optional hints (speakers.num_speakers / .min_speakers / .max_speakers), the stream its --audio-stream
+    "speaker_turns": {"skill": "speaker_diarization", "needs_audio": True, "params": ("num_speakers", "min_speakers", "max_speakers", "audio_stream")},
 }
 # what the agent asks cropdetect.py for (ADR-060): 10 s of footage over 5 windows spread across the file, the rectangle to the nearest
 # even pixel (`--round 2`; cropdetect's default 16 cuts up to 14 px into the picture). Recorded as the observation's parameters

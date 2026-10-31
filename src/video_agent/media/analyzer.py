@@ -302,6 +302,10 @@ class MediaAnalyzer(Analyzer):
             o = self._lift_face_tracks(r.data, asset, req, source, key, tool, kparams)
             if asset.hash and o.fingerprint != asset.hash:   # the boxes are about this file's bytes (detection-skill's source.fingerprint)
                 row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"face tracks fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+        elif kind == "speaker_turns" and isinstance(r.data, dict) and isinstance(r.data.get("turns"), dict):
+            o = self._lift_turns(r.data, asset, req, source, key, tool, kparams)
+            if asset.hash and o.fingerprint != asset.hash:   # the turns are about this file's bytes (diarization-skill's source.fingerprint)
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"speaker turns fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
                 return None, row
             row["engine"] = (r.data or {}).get("engine")
         elif isinstance(ext_obs, dict) and isinstance(ext_obs.get("analysis"), dict):
@@ -373,6 +377,20 @@ class MediaAnalyzer(Analyzer):
                            analysis_id=req.analysis_id, analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
                            skill_version=str(sk.get("version") or tr.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
                            parameters={**dict(kparams), "model": eng.get("model"), "model_sha256": eng.get("model_sha256")})
+
+    @staticmethod
+    def _lift_turns(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """Lift diarization-skill's speaker turns (diarization-skill/turns@1, ADR-086) into an Observation of kind `speaker_turns`: the document
+        is the fact (anonymous exclusive turns, overlap regions, engine / model / revision / licence / attribution), stored as the Skill wrote
+        it, plus the turns file the agent wrote into its workspace. OBSERVED: an estimate by a measurement tool, never an inference or a name."""
+        doc = dict(data["turns"])
+        eng = doc.get("engine") or {}
+        sk = data.get("skill") or {}
+        fp = str((doc.get("source") or {}).get("fingerprint") or "")
+        return Observation(kind="speaker_turns", asset_id=asset.id, source=source, data={**doc, "turns_file": data.get("turns_file")}, observed_at=str(doc.get("created_at") or now_iso()),
+                           analysis_id=req.analysis_id, analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
+                           skill_version=str(sk.get("version") or doc.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                           parameters={**dict(kparams), "model": eng.get("model"), "revision": eng.get("revision"), "engine_version": eng.get("version")})
 
     @staticmethod
     def _shape(kind: str, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:

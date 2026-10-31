@@ -64,7 +64,11 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    # ADR-090: blur faces -- how many segments are cut, how many rectangles redacted (with redact.py's mode / strength), how many pieces put back
                    "face_redact_segment": ("asset", "segments"), "face_redact_blur": ("asset", "rects", "mode", "blur_strength", "block_size"),
                    "face_redact_composite": ("asset", "inserts"),
-                   "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db")}
+                   "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),
+                   # dubbing-skill DUB (ADR-085): the subject, the user's files (translated / source cues, reference voice + its consent record) and the typed options
+                   "speech_dub": ("asset", "lang", "cues", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "duck", "voice_gain", "max_overrun"),
+                   # handed-off jobs with a pinned Skill contract (ADR-080): the job.<skill>.<name> parameters, named for the handoff (never run here)
+                   "render_3d": ("model", "preset", "transparent"), "html_scene_render": ("scene", "codec")}
 
 
 @dataclass
