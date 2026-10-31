@@ -1950,7 +1950,7 @@ class VideoEditingRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.0"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.1"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
         # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
@@ -2047,7 +2047,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
         self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.0")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.1")
         self.assertEqual(len(prov["skill_observations"]), len(rows))
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
@@ -2102,7 +2102,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
-        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.0" for e in rows.values()))
+        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.1" for e in rows.values()))
 
     def test_image_insert_before_the_picture_end_to_end(self):
         """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
@@ -2140,7 +2140,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
         self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
         self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
-        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.0")
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.1")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
@@ -2625,7 +2625,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
 
     def test_every_motion_graphics_element(self):
-        """ADR-064: all twelve element types of the real motion-graphics-skill 0.2.x in one render, each with parameters beyond its text
+        """ADR-064: every element type of the real motion-graphics-skill 0.2.x (thirteen since 0.2.7's shape, ADR-078) in one render, each with parameters beyond its text
         (a chroma-keyed picture-in-picture clip, a registry font, a meme's two lines, a countdown's start number): the Skill renders every
         element and reports the parameters it used; the picture keeps its size and duration."""
         self._need("motion-graphics")
@@ -2638,7 +2638,8 @@ class IntegratedPipelineRealTests(unittest.TestCase):
                 "motion.image": self.png, "motion.image.opacity": 0.8, "motion.video": self.b, "motion.video.scale_width": 320, "motion.video.chromakey": "00FF00",
                 "motion.bug": "@studio", "motion.chapter": "Part 2", "motion.chapter.start": 6, "motion.progress": True, "motion.countdown": True,
                 "motion.countdown.count_from": 3, "motion.countdown.start": 2, "motion.countdown.end": 5, "motion.sticker": "NEW", "motion.hook": "Wait for it",
-                "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green"}
+                "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green",
+                "motion.shape": True, "motion.shape.width": 400, "motion.shape.height": 80, "motion.shape.color": "navy", "motion.shape.opacity": 0.6}   # ADR-078: 0.2.7's shape
         ir, p = self._plan(svc, [self.a], reqs, profile="generic", name="mg12")
         op = ir.doc["graphics"]["operations"][0]
         self.assertEqual(sorted(e["type"] for e in op["elements"]), sorted(ELEMENT_TYPES))

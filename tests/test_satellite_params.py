@@ -278,8 +278,8 @@ class LoweringTests(unittest.TestCase):
     def test_every_declared_type_is_lowered(self):
         lw = Lowering(editing_contract())
         self.assertEqual(lw.contract_only(), [])
-        self.assertTrue({"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"} <= set(lw.supported_types()))
-        for t in ("ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"):   # the agent-side keys stay inside what the contract declares
+        self.assertTrue({"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"} <= set(lw.supported_types()))
+        for t in ("ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"):   # the agent-side keys stay inside what the contract declares
             self.assertTrue(set(ARGS[t]) - {"input", "output"} <= set(editing_contract()["operations"][t]["parameters"]), t)
 
     def test_params_and_refusals(self):
@@ -287,8 +287,10 @@ class LoweringTests(unittest.TestCase):
         self.assertEqual(params_for("ROTATE", {"flip": "v"}), {"flip": "v"})
         self.assertEqual(params_for("FREEZE", {"hold": 1.5, "at": 2}), {"hold": 1.5, "at": 2.0})
         self.assertEqual(params_for("REVERSE", {}), {})
+        self.assertEqual(params_for("CROP", {"x": 0, "y": 140, "width": 1920, "height": 800}), {"x": 0, "y": 140, "width": 1920, "height": 800})   # ADR-078
         from video_agent.tools.base import ToolError
-        for t, args in (("ROTATE", {}), ("ROTATE", {"degrees": 45}), ("ROTATE", {"degrees": "90"}), ("ROTATE", {"flip": "x"}), ("FREEZE", {}), ("FREEZE", {"hold": -1})):
+        for t, args in (("ROTATE", {}), ("ROTATE", {"degrees": 45}), ("ROTATE", {"degrees": "90"}), ("ROTATE", {"flip": "x"}), ("FREEZE", {}), ("FREEZE", {"hold": -1}),
+                        ("CROP", {"x": 0, "y": 0, "width": 1920}), ("CROP", {"x": -2, "y": 0, "width": 64, "height": 64}), ("CROP", {"x": 0, "y": 0, "width": 63, "height": 64})):
             with self.assertRaises(ToolError, msg=f"{t} {args}"):
                 params_for(t, args)
 
@@ -1183,7 +1185,8 @@ NEW_ELEMENTS = {"motion.bug": "@studio", "motion.bug.position": "top-left", "mot
                 "motion.countdown": True, "motion.countdown.count_from": 3, "motion.countdown.primary_color": "FFFFFF", "motion.countdown.start": 1, "motion.countdown.end": 4,
                 "motion.sticker": "NEW", "motion.sticker.position": "bottom-left", "motion.sticker.primary_color": "FFD200",
                 "motion.hook": "Wait for it", "motion.hook.text_color": "FFFFFF", "motion.hook.primary_color": "000000",
-                "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green"}
+                "motion.meme": True, "motion.meme.top": "when the build", "motion.meme.bottom": "is green",
+                "motion.shape": True, "motion.shape.width": 400, "motion.shape.height": 80, "motion.shape.color": "navy", "motion.shape.opacity": 0.6}   # ADR-078
 
 
 VOICE_CAPS = PipelineCaps(extra=AUDIO_PRODUCTION_CAPS + [f"audio-production:{t}" for t in ("VOICE_CLEANUP", "NOISE_REDUCTION", "NORMALIZE", "GAIN")])
@@ -1294,7 +1297,7 @@ class MotionGraphicsElementTests(unittest.TestCase):
         c = motion_contract()
         self.assertEqual(sorted(ELEMENT_TYPES), sorted(e["type"] for e in c["element_types"]))
         self.assertEqual(sorted(ELEMENT_TYPES), sorted(c["tools"][0]["element_types"]))
-        self.assertEqual(len(ELEMENT_TYPES), 12)
+        self.assertEqual(len(ELEMENT_TYPES), 13)   # ADR-078: shape (motion-graphics-skill 0.2.7)
         for e in c["element_types"]:
             base, main = MOTION_BASE[e["type"]]
             for name in e["parameters"]:
@@ -1304,7 +1307,8 @@ class MotionGraphicsElementTests(unittest.TestCase):
         self.assertEqual([MOTION_BASE[t][0] for t in ("title", "lower_third", "text_overlay", "image_overlay")], ["motion.title", "motion.lower_third", "motion.text", "motion.image"],
                          "the ADR-031 keys keep their names")
         got = parse_motion_requirements(reqs(NEW_ELEMENTS))
-        self.assertEqual(sorted(got), ["bug", "chapter", "countdown", "hook", "meme", "progress", "sticker"])
+        self.assertEqual(sorted(got), ["bug", "chapter", "countdown", "hook", "meme", "progress", "shape", "sticker"])
+        self.assertEqual(got["shape"]["params"], {"width": 400, "height": 80, "color": "navy", "opacity": 0.6})
         self.assertEqual(got["bug"]["params"], {"title": "@studio", "position": "top-left", "text_color": "FFCC00"})
         self.assertEqual(got["countdown"]["params"], {"count_from": 3, "primary_color": "FFFFFF"}); self.assertEqual((got["countdown"]["start"], got["countdown"]["end"]), (1.0, 4.0))
         self.assertEqual(got["meme"]["params"], {"top": "when the build", "bottom": "is green"}); self.assertEqual(got["progress"]["params"], {"primary_color": "E53935"})
@@ -1319,7 +1323,9 @@ class MotionGraphicsElementTests(unittest.TestCase):
 
     def test_refusals(self):
         png, clip = self._files()
-        for bad, msg in (({"motion.countdown": True, "motion.countdown.count_from": 61}, "within"), ({"motion.countdown": True, "motion.countdown.count_from": 2.5}, "integer"),
+        for bad, msg in (({"motion.shape": True, "motion.shape.width": 100, "motion.shape.color": "red"}, "motion.shape.height"),   # ADR-078: required by the contract
+                         ({"motion.shape": True, "motion.shape.width": 101, "motion.shape.height": 10, "motion.shape.color": "red"}, "multiple"),
+                         ({"motion.countdown": True, "motion.countdown.count_from": 61}, "within"), ({"motion.countdown": True, "motion.countdown.count_from": 2.5}, "integer"),
                          ({"motion.bug": "x", "motion.bug.position": "center"}, "one of"), ({"motion.sticker": "x" * 201}, "at most 200"),
                          ({"motion.hook": "x", "motion.hook.text_color": "white@0.5"}, "takes no @alpha"), ({"motion.chapter": "x", "motion.chapter.primary_color": "FFCC00@0.5"}, "takes no @alpha"),
                          ({"motion.hook": "x", "motion.hook.primary_color": "notacolour"}, "not a colour name"), ({"motion.text": "x", "motion.text.box_color": "random@0.5"}, "not a colour name"),
@@ -1350,7 +1356,7 @@ class MotionGraphicsElementTests(unittest.TestCase):
         opaque = sorted((t, k) for t, e in MOTION_ELEMENT_SPECS.items() for k, ps in e["parameters"].items() if ps["type"] == "color" and ps.get("alpha") is False)
         self.assertEqual(opaque, sorted([("title", "text_color"), ("title", "primary_color"), ("lower_third", "text_color"), ("lower_third", "primary_color"),
                                          ("bug", "text_color"), ("chapter", "primary_color"), ("progress", "primary_color"), ("countdown", "primary_color"),
-                                         ("sticker", "primary_color"), ("hook", "text_color"), ("hook", "primary_color")]), "meme has no colour parameter")
+                                         ("sticker", "primary_color"), ("hook", "text_color"), ("hook", "primary_color"), ("shape", "color")]), "meme has no colour parameter")   # shape: 0.2.7 (ADR-078), not wired
         got = parse_motion_requirements(reqs({"motion.hook": "x", "motion.hook.text_color": "white", "motion.hook.primary_color": "Navy",
                                               "motion.chapter": "x", "motion.chapter.primary_color": "FFCC00", "motion.title": "t", "motion.title.primary_color": "teal",
                                               "motion.text": "x", "motion.text.font_color": "Yellow@0.8", "motion.text.box_color": "000000@0.5"}))
@@ -1414,7 +1420,7 @@ class MotionGraphicsElementTests(unittest.TestCase):
         self.assertEqual((op["image"], op["video"]), (png, clip))
         self.assertIn(str(Path(clip).parent), d["execution"]["allowed_inputs"])
         step = next(s_ for s_ in d["plan"]["steps"] if s_["skill"] == "motion_graphics")
-        self.assertEqual(len(step["params"]["elements"]), 12); self.assertEqual(sorted(step["decision_ids"]), sorted(x["id"] for x in decs.values()))
+        self.assertEqual(len(step["params"]["elements"]), 13); self.assertEqual(sorted(step["decision_ids"]), sorted(x["id"] for x in decs.values()))
         out = r["out"]
         self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
         prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
@@ -1423,6 +1429,7 @@ class MotionGraphicsElementTests(unittest.TestCase):
         self.assertEqual(sent["video_overlay"]["parameters"]["video"], "talk_graphics_video".replace("talk", list(d["assets"])[0]))
         self.assertEqual(sent["meme"]["parameters"], {"top": "when the build", "bottom": "is green"})
         self.assertEqual(sent["countdown"]["parameters"], {"count_from": 3, "primary_color": "FFFFFF"})
+        self.assertEqual(sent["shape"]["parameters"], {"width": 400, "height": 80, "color": "navy", "opacity": 0.6})
         self.assertEqual(sent["text_overlay"]["animation"], {"kind": "fade", "parameters": {"duration": 0.5}})
         res = next(x for x in out["execution"]["results"] if x["tool"] == "motion-graphics/run")
         recs = {o["type"]: o for o in res["data"]["operations"]}

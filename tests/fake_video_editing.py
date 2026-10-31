@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.4.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.4.1.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_VE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_VE_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -72,8 +72,8 @@ def main() -> int:
             sys.stderr.write("boom\n")
             return 1
         if MODE == "contract_drift":   # a compatible newer contract: one more operation / tool (the adapter must notice, never silently keep 0.1.0 expectations)
-            c["operations"]["CROP"] = {"capability": "video.crop", "tool": "ffmpeg-skill/crop", "arity": "one", "parameters": {}}
-            c["tools"].append(dict(c["tools"][0], tool_id="video-editing/crop", operation_type="CROP", capability="video.crop", result_keys=list(CONTRACT["tools"][0]["result_keys"])))
+            c["operations"]["BLUR"] = {"capability": "video.blur", "tool": "ffmpeg-skill/blur", "arity": "one", "parameters": {}}   # CROP is real since 0.4.1 (ADR-078)
+            c["tools"].append(dict(c["tools"][0], tool_id="video-editing/blur", operation_type="BLUR", capability="video.blur", result_keys=list(CONTRACT["tools"][0]["result_keys"])))
         emit(c)
         return 0
     if cmd == "doctor":
