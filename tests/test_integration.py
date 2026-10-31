@@ -3181,12 +3181,14 @@ class ImagePrepareRealTests(unittest.TestCase):
         self.assertGreater(dur, 1.0)
 
 
-def _gray_frame(path: str, t: float, w: int, h: int) -> bytes:
-    """One frame of `path` at `t` as 8-bit grey (w*h bytes), read by ffmpeg (the test's own measurement, not the agent's)."""
-    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-                         check=True, capture_output=True).stdout
-    assert len(out) == w * h, (len(out), w, h)
-    return out
+def _luma_frame(path: str, n: int, w: int, h: int) -> bytes:
+    """Frame number `n` (decode order from the first frame, so a shifted start or an edit list cannot pick another frame) of a yuv420p file as its
+    Y plane, read as stored: `-pix_fmt yuv420p` is the file's own format, so no colour-matrix / range conversion happens in the measurement
+    (an untagged source and a bt709-tagged output would otherwise be converted differently to grey by the decoder's scaler)."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=eq(n\\,{int(n)})", "-frames:v", "1", "-pix_fmt", "yuv420p",
+                          "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert len(out) == w * h * 3 // 2, (len(out), w, h)
+    return out[:w * h]
 
 
 def _mean_abs_diff(a: bytes, b: bytes, w: int, rect=None, outside: bool = False) -> float:
@@ -3272,12 +3274,12 @@ class FaceRedactionRealTests(unittest.TestCase):
         art = next(a for a in out["artifacts"] if a["type"] in ("MASTER", "DELIVERY"))
         probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], check=True, capture_output=True).stdout)
         self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="broll keeps the source's length")
-        mid = (regions[0]["start"] + regions[-1]["end"]) / 2
-        a, b = _gray_frame(src, mid, 1280, 720), _gray_frame(art["path"], mid, 1280, 720)
+        mid = int(round((regions[0]["start"] + regions[-1]["end"]) / 2 * 30))   # the same frame number in both files (30 fps, as made above)
+        a, b = _luma_frame(src, mid, 1280, 720), _luma_frame(art["path"], mid, 1280, 720)
         inside, outside = _mean_abs_diff(a, b, 1280, rect), _mean_abs_diff(a, b, 1280, rect, outside=True)
-        # outside the rectangle only the lossy re-encodes differ (cut --accurate, redact, broll: up to three generations, measured 0.1 locally and 2.8 on the CI runner);
-        # inside, the blur moves the face's pixels by far more (measured above 50)
-        self.assertLess(outside, 4.0, "nothing outside the rectangle changes beyond re-encoding")
-        self.assertGreater(inside, max(6.0, 3 * outside), f"the face rectangle is blurred while the face is on screen (inside {inside:.2f}, outside {outside:.2f})")
-        for t in (0.5, 7.0):   # before and after the face's span: the picture is the source's (re-encoded only)
-            self.assertLess(_mean_abs_diff(_gray_frame(src, t, 1280, 720), _gray_frame(art["path"], t, 1280, 720), 1280), 4.0, t)
+        tags = {f: subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range,color_space,start_time", "-of", "csv=p=0", f],
+                                  capture_output=True, text=True).stdout.strip() for f in (src, art["path"])}
+        self.assertGreater(inside, 6.0, f"the face rectangle is blurred while the face is on screen (frame {mid})")
+        self.assertLess(outside, 2.0, f"nothing outside the rectangle changes (frame {mid}: inside {inside:.2f}, outside {outside:.2f}; {tags})")
+        for n in (15, 210):   # before and after the face's span: the picture is the source's (re-encoded only)
+            self.assertLess(_mean_abs_diff(_luma_frame(src, n, 1280, 720), _luma_frame(art["path"], n, 1280, 720), 1280), 2.0, f"frame {n} ({tags})")
