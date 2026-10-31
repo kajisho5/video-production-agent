@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from video_agent.models import Operation  # noqa: E402
 from video_agent.tools.base import ToolError  # noqa: E402
+from video_agent.tools.discovery import MODULE_BOOTSTRAP  # noqa: E402
 from video_agent.tools.ffmpeg_skill.adapter import PathPolicy  # noqa: E402
 from video_agent.tools.motion_graphics import (ENV_DIR, PACKAGE, SKILL_ID, TOOL_ID, ContractError, MotionGraphicsAdapter, check_contract,  # noqa: E402
                                                contract_drift, lift_observation, locate_motion_graphics, pinned_contract)
@@ -148,7 +149,7 @@ class ContractTests(Base):
         Path(root, "src", "motion_graphics", "cli.py").write_text("", encoding="utf-8")
         s = locate_motion_graphics(env={ENV_DIR: root, "PATH": ""})
         self.assertIsNotNone(s)
-        self.assertEqual(s.command[1:], ["-m", "motion_graphics.cli"])
+        self.assertEqual(s.command[1:], ["-c", MODULE_BOOTSTRAP, "motion_graphics.cli"])   # python -m without the current directory on sys.path (ADR-074)
         self.assertEqual(s.env["PYTHONPATH"], os.path.join(root, "src"))
 
 

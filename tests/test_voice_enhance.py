@@ -20,6 +20,7 @@ from video_agent.agent.voice import APPROVAL_KEYS, OPERATIONS, VOICE_ORDER, chec
 from video_agent.capabilities.resolver import Capability, CapabilityResolver  # noqa: E402
 from video_agent.execution.compiler import CompileError, lower_voice_op  # noqa: E402
 from video_agent.execution.executor import Executor  # noqa: E402
+from video_agent.tools.discovery import MODULE_BOOTSTRAP  # noqa: E402
 from video_agent.models import Operation, Requirement, ToolResult  # noqa: E402
 from video_agent.project.validator import check_audio_operations  # noqa: E402
 from video_agent.service import BRIEF_REQUIREMENT_KEYS, _check_requirement_keys  # noqa: E402
@@ -148,7 +149,7 @@ class ContractTests(_Base):
     def test_locate_checkout_and_env(self):
         root = fake_voice_enhance.checkout(Path(self.tmp) / "voice-enhance-skill")
         sk = locate_voice_enhance(env={"VIDEO_AGENT_VOICE_ENHANCE_DIR": root, "PATH": ""})
-        self.assertEqual(sk.command[1:], ["-m", "voice_enhance_skill.cli"])
+        self.assertEqual(sk.command[1:], ["-c", MODULE_BOOTSTRAP, "voice_enhance_skill.cli"])   # python -m without the current directory on sys.path (ADR-074)
         self.assertEqual(sk.env, {"PYTHONPATH": str(Path(root) / "src")})
         self.assertIsNone(locate_voice_enhance(env={"VIDEO_AGENT_VOICE_ENHANCE_DIR": str(Path(self.tmp) / "nothing"), "PATH": ""}), "the env var is authoritative")
 

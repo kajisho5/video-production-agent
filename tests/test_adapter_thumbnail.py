@@ -150,7 +150,8 @@ class ContractTests(FakeBase):
         os.makedirs(os.path.join(root, "src", "thumbnail_skill"))
         Path(root, "src", "thumbnail_skill", "cli.py").write_text("", encoding="utf-8")
         s = locate_thumbnail(env={"VIDEO_AGENT_THUMBNAIL_DIR": root, "PATH": self.tmp})
-        self.assertEqual(s.command, [sys.executable, "-m", "thumbnail_skill.cli"])
+        from video_agent.tools.discovery import MODULE_BOOTSTRAP
+        self.assertEqual(s.command, [sys.executable, "-c", MODULE_BOOTSTRAP, "thumbnail_skill.cli"])   # python -m without the current directory on sys.path (ADR-074)
         self.assertEqual(s.env, {"PYTHONPATH": os.path.join(root, "src")})
 
     def test_doctor(self):
@@ -446,7 +447,8 @@ class RealSkillTests(unittest.TestCase):
         os.makedirs(cls.ws)
         root = Path(os.environ["VIDEO_AGENT_THUMBNAIL_DIR"]).resolve()
         py = os.environ.get("VIDEO_AGENT_THUMBNAIL_PYTHON") or sys.executable
-        skill = CliSkill("thumbnail", [py, "-m", "thumbnail_skill.cli"], root, {"PYTHONPATH": str(root / "src")})
+        from video_agent.tools.discovery import python_module_command
+        skill = CliSkill("thumbnail", python_module_command("thumbnail_skill.cli", python=py), root, {"PYTHONPATH": str(root / "src")})   # as locate_cli_skill runs it (ADR-074)
         try:
             cls.adapter = ThumbnailAdapter(skill, workspace=cls.ws, ffmpeg_skill_dir=os.environ.get("VIDEO_AGENT_FFMPEG_SKILL_DIR"))
         except ContractError as e:

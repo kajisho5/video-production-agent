@@ -1,16 +1,15 @@
 """Locate an installed transcription-skill (kajisho5/transcription-skill). Two shapes are accepted: a source checkout
-(<dir>/src/transcription_skill/cli.py, run as `python -m transcription_skill.cli` with PYTHONPATH=<dir>/src) or the
+(<dir>/src/transcription_skill/cli.py, run as `python -m transcription_skill.cli` (without the current directory on sys.path, ADR-074) with PYTHONPATH=<dir>/src) or the
 installed console script `transcription` on PATH. The agent never imports the package and never runs an ASR engine."""
 from __future__ import annotations
 
 import os
 import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..discovery import default_skill_dirs
+from ..discovery import default_skill_dirs, python_module_command
 
 ENV_DIR = "VIDEO_AGENT_TRANSCRIPTION_DIR"
 
@@ -28,7 +27,7 @@ class TranscriptionSkill:
 def _from_checkout(root: Path) -> Optional[TranscriptionSkill]:
     cli = root / "src" / "transcription_skill" / "cli.py"
     if cli.is_file():
-        return TranscriptionSkill([sys.executable, "-m", "transcription_skill.cli"], root, {"PYTHONPATH": str(root / "src")})
+        return TranscriptionSkill(python_module_command("transcription_skill.cli"), root, {"PYTHONPATH": str(root / "src")})
     return None
 
 

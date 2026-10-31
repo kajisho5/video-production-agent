@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from video_agent.models import Operation  # noqa: E402
 from video_agent.tools.base import ToolError  # noqa: E402
+from video_agent.tools.discovery import MODULE_BOOTSTRAP  # noqa: E402
 from video_agent.tools.ffmpeg_skill.adapter import PathPolicy  # noqa: E402
 from video_agent.tools.skill_process import CliSkill  # noqa: E402
 from video_agent.tools.subtitle import (ENV_DIR, PACKAGE, SKILL_ID, TOOL_GENERATE, TOOL_RENDER, ContractError, SubtitleAdapter, check_contract, contract_drift,  # noqa: E402
@@ -184,7 +185,7 @@ class ContractTests(Base):
         (root / "src" / "subtitle_skill").mkdir(parents=True)
         (root / "src" / "subtitle_skill" / "__init__.py").write_text("")
         s = locate_subtitle(env={ENV_DIR: str(root), "PATH": self.tmp})
-        self.assertEqual(s.command[1:], ["-m", "subtitle_skill"])
+        self.assertEqual(s.command[1:], ["-c", MODULE_BOOTSTRAP, "subtitle_skill"])   # python -m without the current directory on sys.path (ADR-074)
         self.assertEqual(s.env, {"PYTHONPATH": str(root / "src")})
 
     def test_measure_refused(self):

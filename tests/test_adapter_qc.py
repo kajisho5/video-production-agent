@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
 from video_agent.models import Operation  # noqa: E402
 from video_agent.tools.base import ToolError  # noqa: E402
+from video_agent.tools.discovery import MODULE_BOOTSTRAP  # noqa: E402
 from video_agent.tools.ffmpeg_skill.adapter import PathPolicy  # noqa: E402
 from video_agent.tools.qc import (ENV_DIR, PACKAGE, TOOL_CHECK, TOOL_INSPECT, ContractError, QcAdapter, check_contract, contract_drift, lift_report,  # noqa: E402
                                   locate_qc, pinned_contract)
@@ -400,7 +401,7 @@ class QcAdapterTests(unittest.TestCase):
             self.assertIsNone(locate_qc(env={"PATH": self.tmp}))
         fake_root = Path(self.tmp) / "qc-skill" / "src" / "qc_skill"; fake_root.mkdir(parents=True); (fake_root / "cli.py").write_text("", encoding="utf-8")
         sk = locate_qc(env={ENV_DIR: str(Path(self.tmp) / "qc-skill"), "PATH": self.tmp})
-        self.assertIsNotNone(sk); self.assertEqual(sk.command[1:], ["-m", "qc_skill.cli"]); self.assertEqual(sk.env, {"PYTHONPATH": str(Path(self.tmp) / "qc-skill" / "src")})
+        self.assertIsNotNone(sk); self.assertEqual(sk.command[1:], ["-c", MODULE_BOOTSTRAP, "qc_skill.cli"]); self.assertEqual(sk.env, {"PYTHONPATH": str(Path(self.tmp) / "qc-skill" / "src")})
 
 
 @unittest.skipUnless(os.environ.get(ENV_DIR), f"set {ENV_DIR} to run against the real qc-skill")
