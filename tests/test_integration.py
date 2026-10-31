@@ -3168,3 +3168,43 @@ class ImagePrepareRealTests(unittest.TestCase):
         dur = float(json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", res["video-editing/overlay"]["output"]],
                                               capture_output=True, text=True, check=True).stdout)["format"]["duration"])
         self.assertGreater(dur, 1.0)
+
+
+class PublishRealTests(unittest.TestCase):
+    """ADR-083 on the real publish-skill (main; no release tag) and the real ffmpeg-skill, offline: the live contract against the pin, the
+    offline plan and the dry run of a real deliverable through the adapter's argv (every option `--flag=value`, the file after `--`): a
+    confirm_token bound to the file's sha256, nothing uploaded, no network. No credentials are present and no upload is attempted."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.publish import locate_publish
+        cls.pub = locate_publish()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_pub_"))
+        (Path(cls.tmp) / "ws").mkdir()
+        cls.final = str(Path(cls.tmp) / "ws" / "final.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=3", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=3", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.final], check=True)
+
+    def setUp(self):
+        if not self.pub or not locate_ffmpeg_skill():
+            self.skipTest("needs a publish-skill checkout (VIDEO_AGENT_PUBLISH_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_live_contract_plan_and_dry_run_on_the_real_skill(self):
+        from video_agent.tools.publish import PublishAdapter, breaking_drift, drift, platforms
+        from video_agent.tools.skill_process import sha256_file
+        ad = PublishAdapter(self.pub, workspace=str(Path(self.tmp) / "ws"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(breaking_drift(ad.contract), [], "publish-skill main changed what the adapter relies on: re-verify the adapter")
+        self.assertTrue(set(platforms()) <= set(ad.platforms), "every pinned platform is still implemented on main")
+        if drift(ad.contract):   # a platform or limit added on main (another uploader landing): reported, the pin is renewed separately
+            print("publish-skill drift (non-fatal):", drift(ad.contract)[:3])
+        meta = {"title": "Integration test", "description": "line one\nline two", "tags": ["a", "-b"], "privacy": "private"}
+        plan = ad.plan(self.final, "youtube", meta)
+        self.assertIsNone(plan.get("error"), plan.get("error"))
+        self.assertIn(plan["verdict"], ("PASS", "WARN", "INCOMPLETE"), plan)
+        dry = ad.dry_run(self.final, "youtube", meta)
+        self.assertIsNone(dry.get("error"), dry.get("error"))
+        self.assertEqual((dry["dry_run"], dry["uploaded"], dry["network_used"]), (True, False, False))
+        self.assertEqual(dry["input"]["sha256"], sha256_file(self.final))
+        self.assertEqual((dry["metadata"]["title"], dry["metadata"]["tags"]), ("Integration test", ["a", "-b"]), "a value starting with '-' stays a value")
+        self.assertRegex(dry["confirm_token"], r"^confirm-[0-9a-f]{16}$")
+        self.assertNotEqual(ad.dry_run(self.final, "youtube", dict(meta, title="Other"))["confirm_token"], dry["confirm_token"], "the token binds the metadata")

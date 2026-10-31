@@ -18,6 +18,8 @@ from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
+from ..agent.publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
+from ..tools.publish.adapter import LANG_RE as PUBLISH_LANG_RE, platforms as publish_platforms
 from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -444,6 +446,44 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def check_publish(d: Dict[str, Any]) -> List[str]:
+    """ADR-083: `delivery.publish`. A planned deliverable of a delivery target of this plan, after the QC gate of its subject; a platform the
+    pinned publish-skill contract implements with an uploader; only the metadata fields that platform takes, its privacy values; an attached
+    thumbnail / sidecar that this plan produces for the subject (captions with a BCP-47 language)."""
+    pub = (d.get("delivery") or {}).get("publish")
+    if not pub:
+        return []
+    errs: List[str] = []
+    if pub.get("type") != PUBLISH_SUBJECT:
+        errs.append(f"delivery.publish type {pub.get('type')!r} is not {PUBLISH_SUBJECT}")
+    subj, target = pub.get("asset"), pub.get("target")
+    plats = publish_platforms()
+    plat = plats.get(str(pub.get("platform")))
+    if plat is None:
+        return errs + [f"delivery.publish platform {pub.get('platform')!r} has no uploader in the pinned publish-skill contract ({', '.join(sorted(plats))})"]
+    if target not in {t.get("id") for t in d["delivery"].get("targets") or []}:
+        errs.append(f"delivery.publish target {target!r} is not a delivery target of this plan")
+    if pub.get("artifact") != f"{subj}_delivery_{target}":
+        errs.append(f"delivery.publish must name the deliverable {subj}_delivery_{target}")
+    fields = set(plat["metadata_fields"])
+    for k in ("title", "description", "tags", "thumbnail", "captions"):
+        if pub.get(k) not in (None, False, "", []) and k not in fields:
+            errs.append(f"delivery.publish: {pub['platform']} does not take {k}")
+    if pub.get("privacy") not in (plat["privacy"] or ["private", "unlisted", "public"]):
+        errs.append(f"delivery.publish privacy {pub.get('privacy')!r} is not one {pub['platform']} takes ({', '.join(plat['privacy'])})")
+    qc = (d.get("qa") or {}).get("qc") or {}
+    if not qc.get("enabled") or target not in ((qc.get("subjects") or {}).get(subj) or {}).get("targets", []):
+        errs.append(f"delivery.publish of {subj}/{target} needs the QC gate on that deliverable (publishing comes after QC)")
+    outputs = {(o.get("role"), (o.get("expected") or {}).get("source")) for o in d["plan"].get("outputs") or []}
+    if pub.get("thumbnail") and ("THUMBNAIL", subj) not in outputs:
+        errs.append(f"delivery.publish attaches a thumbnail, and the plan makes none for {subj}")
+    if pub.get("captions") and (("CAPTIONS", subj) not in outputs or not PUBLISH_LANG_RE.match(str(pub.get("caption_language") or ""))):
+        errs.append(f"delivery.publish attaches captions: the plan must make a sidecar for {subj} with a BCP-47 caption_language")
+    if not pub.get("decision_ids"):
+        errs.append("delivery.publish cites no decision")
+    return errs
+
+
 def finishing_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for sec in ("color", "graphics", "captions") for op in (d.get(sec) or {}).get("operations") or []]
 
@@ -857,6 +897,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
+    xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-083: a rejected publish decision is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
@@ -867,6 +908,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_finishing_operations(d)
     rep.errors += check_timeline_exports(d)
     rep.errors += check_take_assembly(d)
+    rep.errors += check_publish(d)   # ADR-083
     rep.errors += check_plan_dependencies(d)
     for op in timelines:
         for did in op.get("decision_ids") or []:
@@ -942,6 +984,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    if d["delivery"].get("publish") and (PUBLISH_SKILL, d["delivery"]["publish"].get("asset")) not in step_keys:   # ADR-083
+        rep.errors.append(f"delivery.publish of {d['delivery']['publish'].get('asset')} has no plan step")
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
             rep.errors.append(f"delivery target {t['id']} has no export step")
@@ -1065,6 +1109,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("imagemagick-skill")   # ADR-077: the overlay image's preparation exists only in imagemagick-skill
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
+        if d["delivery"].get("publish"):
+            needed.add("publish")   # ADR-083: uploading exists only in publish-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

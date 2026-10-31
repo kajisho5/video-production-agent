@@ -27,6 +27,7 @@ from ..tools.subtitle import SubtitleAdapter, locate_subtitle
 from ..tools.thumbnail import ThumbnailAdapter, locate_thumbnail
 from ..tools.ingest import IngestAdapter, locate_ingest
 from ..tools.voice_enhance import VoiceEnhanceAdapter, locate_voice_enhance
+from ..tools.publish import PublishAdapter, locate_publish
 from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
@@ -297,6 +298,12 @@ class CapabilityResolver:
         self._finishing_skill(caps, "voice-enhance", locate_voice_enhance(env=self.env),
                               lambda sk: VoiceEnhanceAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None), "VIDEO_AGENT_VOICE_ENHANCE_DIR", "voice-enhance-skill",
                               "voice-enhance", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # publish-skill (ADR-083): the same rule -- contract against the pinned one (fatal subset: the confirmation gate included), its own doctor
+        # ok / degraded (no ffmpeg-skill for plan, no keychain: degraded). Each implemented platform gets `publish:<PLATFORM>` with the fields it
+        # takes and whether its credentials are present (reported only: they are the user's, checked by the Skill at upload time).
+        self._finishing_skill(caps, "publish", locate_publish(env=self.env), lambda sk: PublishAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_PUBLISH_DIR", "publish-skill", "publish", per_item=lambda ad, doc: (ad.platform_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.platform_evidence(doc))
         # imagemagick-skill (ADR-077): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (sips covers
         # resize / pad but not strip). Each tool gets `imagemagick-skill:<TYPE>` from the doctor's `tools.<name>.usable`, with the backend.
         self._finishing_skill(caps, "imagemagick-skill", locate_imagemagick(env=self.env), lambda sk: ImageMagickAdapter(sk), "VIDEO_AGENT_IMAGEMAGICK_DIR", "imagemagick-skill",

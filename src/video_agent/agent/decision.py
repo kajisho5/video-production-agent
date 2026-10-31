@@ -31,6 +31,7 @@ from .brief import decide_brief
 from .handoffs import decide_jobs
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
+from .publish import decide_publish
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -659,6 +660,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision="deliver the processed file without re-encoding to a platform preset",
                        reason="profile target has no preset (generic: keep source format)", confidence=1.0, evidence=[targets.id], risk="LOW", approval="AUTO", provenance=targets.provenance, params=dict(t),
                        requirements=[targets], serves_intent=_serves(intent, f"delivery.{t['id']}"))
+    # ---- publishing (ADR-083): after the QC gate and the delivery targets it names; always CONFIRM, the upload itself a human's separate command
+    decide_publish(eng, m, decs, subjects, target_list, approval_for, probe_ids_of, cap_block)
     # ---- AI recommendations (provenance AI_GENERATED): proposals only. A recommendation that a measured decision already
     # covers becomes extra evidence on that decision (its confidence / risk / approval are untouched). Anything else is a
     # review item: approval from policy (default CONFIRM), risk from the skill registry, never executable by itself.

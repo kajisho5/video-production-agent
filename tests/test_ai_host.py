@@ -100,7 +100,7 @@ ECOSYSTEM_JOBS = {
     "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
-    "platform_publish": ("publish", "publish-skill", f"none yet: publish-skill is a scaffold repository with no released package ({_GH}publish-skill)"),
+    # platform_publish (publish) left this table with its adapter (ADR-083): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
     "render_3d": ("blender", "blender-skill", "npx blender-skill"),
@@ -195,8 +195,20 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_slide_sync(self):
         self.assert_handoff("slide_sync")
 
-    def test_platform_publish(self):
-        self.assert_handoff("platform_publish")
+    def test_platform_publish_moved_to_the_publish_adapter(self):
+        """ADR-083: `job.platform_publish` is no longer a handoff switch; it is refused with how publishing is asked for, and a plan asking to
+        publish without publish-skill still hands the step over naming publish-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps(extra=["qc"]))
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.platform_publish": True})
+        self.assertIn("publish.platform=<id>", str(cm.exception))
+        self.assertNotIn("platform_publish", svc.registry.names())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"qc": True, "publish.platform": "youtube", "publish.title": "Talk"})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "publish_upload"]
+        self.assertEqual((h["provided_by"], h["repositories"]), (["publish"], ["publish-skill"]))
+        self.assertIn(f"git clone {_GH}publish-skill && pip install -e 'publish-skill'", h["install"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_still_image_edit(self):
         self.assert_handoff("still_image_edit")
