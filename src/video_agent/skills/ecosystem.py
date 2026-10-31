@@ -107,6 +107,9 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("vtskit", "vtskit", "delivery", "pip", "active", optional=True, owns=("DVD-Video作成",), package_install="pip install vtskit"),
     Component("udfkit", "udfkit", "delivery", "pip", "active", optional=True, owns=("ディスクイメージ(UDF)",), package_install="pip install udfkit"),
     Component("dvdcc", "dvdcc", "delivery", "pip", "active", optional=True, owns=("DVD字幕(CEA-608)",), package_install="pip install dvdcc"),
+    # ADR-094: the disc authoring app over the four kits (vendored); not on PyPI (its SKILL.md: pip install from the repository)
+    Component("oncemore", "oncemore", "delivery", "pip", "active", optional=True, owns=("ディスク作成アプリ(Mac)",),
+              package_install="pip install git+https://github.com/kajisho5/oncemore", note="MCP: claude mcp add --scope user oncemore -- oncemore mcp"),
     # ADR-077: the agent's package id is imagemagick-skill (the Skill's own skill.id and tool-id prefix; ecosystem.json's id is `imagemagick`)
     Component("imagemagick-skill", "imagemagick-skill", "utility", "checkout", "active", plugin=True, owns=("静止画編集",), package_install="npx imagemagick-skill",
               note="the agent prepares edit.overlay images with its resize / pad / strip (ADR-077); `npx imagemagick-skill` copies the checkout to "

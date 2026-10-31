@@ -248,6 +248,10 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
          {"asset": "video"}, {"artifact": "VIDEO_TS"}, "vtskit", "author", "MEDIUM"),
     _job("disc_image", "Write a UDF disc image (.iso) of an authored DVD-Video or Blu-ray folder",
          {"disc": "VIDEO_TS|BDMV"}, {"artifact": "iso"}, "udfkit", "image", "LOW"),
+    # ADR-094: the disc authoring app (oncemore roadmap step 3). Handoff only: oncemore's own project (titles, menus, chapters) and its build /
+    # iso / burn are the user's to run with oncemore; nothing here executes it (no adapter, no execution path)
+    _job("disc_author", "Author a DVD-Video or Blu-ray disc with menus, chapters and subtitles from finished videos, as a disc folder or .iso (oncemore, Mac app over a CLI and MCP server)",
+         {"assets": "video[]"}, {"artifact": "VIDEO_TS|BDMV|iso"}, "oncemore", "build", "MEDIUM"),
     _job("dvd_line21_captions", "Insert line-21 closed captions (CEA-608) into DVD MPEG-2 video without re-encoding",
          {"video": "m2v", "captions": "scc|srt"}, {"artifact": "m2v"}, "dvdcc", "caption", "MEDIUM"),
 )
