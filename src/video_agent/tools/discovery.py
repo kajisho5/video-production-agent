@@ -7,10 +7,16 @@ from its own source checkout (`<root>/src/video_agent` with a `pyproject.toml` o
 `<root>/../<name>` -- the ecosystem's development layout and the CI integration job, wherever the command is started.
 
 A Skill child process gets the agent's environment minus the AI provider credentials the agent itself reads
-(`ANTHROPIC_*`, `OPENAI_*`): no Skill calls a model on the agent's behalf, so none needs them."""
+(`ANTHROPIC_*`, `OPENAI_*`): no Skill calls a model on the agent's behalf, so none needs them.
+
+A Skill checkout is run as a module without the current directory on its import path (ADR-074): `python -m` puts the
+current directory first on `sys.path`, so a `json.py`, `numpy/` or `<package>/` in the folder the agent was started in
+would be imported by the Skill instead of the real one. `python_module_command` keeps `PYTHONPATH` (the checkout's
+`src`) and the child's working directory (relative paths resolve as before), and drops only that entry."""
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
 
@@ -51,3 +57,18 @@ def child_env(extra: Optional[Mapping[str, str]] = None, base: Optional[Mapping[
     env = {k: v for k, v in (os.environ if base is None else base).items() if not is_secret_env(k)}
     env.update(extra or {})
     return env
+
+
+# What `python -m <module>` does, minus the current directory on sys.path. `-c` inserts '' (the current directory) at
+# sys.path[0] the way `-m` inserts its absolute path; it is removed before anything else is imported (`sys` is built in,
+# `runpy` and what it imports are looked up only afterwards). `runpy._run_module_as_main` is the function the interpreter
+# itself calls for `-m` (sys.argv[0] becomes the module's file, `__main__` is the real main module), so the Skill sees the
+# same argv and module state as before. `-P` / PYTHONSAFEPATH would do the same but only on Python 3.11+, and `-I` / `-E`
+# would also drop PYTHONPATH, which is how a checkout is found.
+MODULE_BOOTSTRAP = "import sys; sys.path[:] = [p for p in sys.path if p]; import runpy; runpy._run_module_as_main(sys.argv.pop(1))"
+
+
+def python_module_command(module: str, python: Optional[str] = None) -> List[str]:
+    """The argv prefix that runs a Skill checkout's `module` (with PYTHONPATH=<checkout>/src in the child's environment)
+    as `python -m` would, except that the current directory is never on its import path (ADR-074)."""
+    return [python or sys.executable, "-c", MODULE_BOOTSTRAP, module]

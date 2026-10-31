@@ -6569,6 +6569,161 @@ class CwdIndependentDiscoveryTests(unittest.TestCase):
         self.assertEqual(json.loads(out), [], "a Skill child process sees no provider credential")
 
 
+class CwdIndependentSkillImportTests(unittest.TestCase):
+    """ADR-074: a Skill checkout's child process never imports a module from the directory the agent was started in.
+    `python -m <pkg>.cli` (the old argv prefix) puts the current directory first on sys.path, so a `json.py`, a `<pkg>/` or a
+    `runpy.py` planted there would run inside the Skill. Every launcher of a checkout -- `skill_process.locate_cli_skill`
+    (+ `invoke`) and the four adapters with their own locate / `_invoke` -- now runs `discovery.python_module_command`.
+    Relative paths still resolve against the unchanged working directory, and ADR-069's argv / environment rules hold."""
+
+    PROBE = (
+        "import sys\n"
+        "import json\n"
+        "import os\n"
+        "import {pkg}\n"
+        "here = os.path.normcase(os.getcwd())\n"
+        "print(repr({{'json_planted': bool(getattr(json, 'PLANTED', False)), 'pkg': getattr({pkg}, 'ORIGIN', None), 'name': __name__,\n"
+        "             'argv': sys.argv[1:], 'argv0': os.path.basename(sys.argv[0]), 'cwd': os.getcwd(),\n"
+        "             'rel_is_file': os.path.isfile(sys.argv[-1]) if len(sys.argv) > 1 else False,\n"
+        "             'cwd_on_path': any(p == '' or os.path.normcase(os.path.abspath(p)) == here for p in sys.path),\n"
+        "             'secret': os.environ.get('ANTHROPIC_API_KEY')}}))\n"
+    )
+    PLANTED = "import sys\nsys.stdout.write(repr({'pkg': 'planted-entry'}) + '\\n')\n"
+
+    def setUp(self):
+        import shutil
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.untrusted = self.tmp / "untrusted"   # the folder the agent is started in (an unpacked project, a media card)
+        self.untrusted.mkdir()
+        (self.untrusted / "json.py").write_text("PLANTED = True\n", encoding="utf-8")
+        (self.untrusted / "runpy.py").write_text(self.PLANTED + "def _run_module_as_main(*a, **k):\n    pass\ndef run_module(*a, **k):\n    pass\n", encoding="utf-8")
+        (self.untrusted / "rel.txt").write_text("relative input\n", encoding="utf-8")
+        self._old_cwd = os.getcwd()
+        os.chdir(self.untrusted)
+        self.addCleanup(os.chdir, self._old_cwd)
+        old = os.environ.get("ANTHROPIC_API_KEY")
+        os.environ["ANTHROPIC_API_KEY"] = "sk-must-not-leak"
+        self.addCleanup(lambda: os.environ.pop("ANTHROPIC_API_KEY", None) if old is None else os.environ.__setitem__("ANTHROPIC_API_KEY", old))
+
+    def checkout(self, name: str, pkg: str) -> Path:
+        """A Skill checkout <tmp>/<name>/src/<pkg> whose cli.py (and __main__.py) reports what it imported, and a planted
+        `<pkg>/` of the same name in the current directory that would answer instead."""
+        root = self.tmp / name
+        for base, origin in ((root / "src" / pkg, "checkout"), (self.untrusted / pkg, "planted")):
+            base.mkdir(parents=True, exist_ok=True)
+            (base / "__init__.py").write_text(f"ORIGIN = {origin!r}\n", encoding="utf-8")
+            body = self.PROBE.format(pkg=pkg) if origin == "checkout" else self.PLANTED
+            (base / "cli.py").write_text(body, encoding="utf-8")
+            (base / "__main__.py").write_text(body, encoding="utf-8")
+        return root
+
+    def report(self, code: int, out: str, err: str) -> dict:
+        import ast
+        self.assertEqual(code, 0, err)
+        return ast.literal_eval(out.strip().splitlines()[-1])
+
+    def assertClean(self, rep: dict, argv: list) -> None:
+        self.assertFalse(rep["json_planted"], "the stdlib json, not ./json.py")
+        self.assertEqual(rep["pkg"], "checkout", "the Skill package from PYTHONPATH=<checkout>/src, not ./<pkg>/")
+        self.assertEqual(rep["name"], "__main__")
+        self.assertEqual(rep["argv"], argv, "argv reaches the Skill unchanged (--flag=value, positionals after --)")
+        self.assertIn(rep["argv0"], ("cli.py", "__main__.py"), "sys.argv[0] is the module's file, as with -m")
+        self.assertFalse(rep["cwd_on_path"], "the current directory is not on the child's sys.path")
+        self.assertTrue(os.path.samefile(rep["cwd"], self.untrusted), "the working directory is unchanged")
+        self.assertTrue(rep["rel_is_file"], "a relative path still resolves against it")
+        self.assertIsNone(rep["secret"], "ADR-069: no provider credential")
+
+    def test_planted_modules_are_imported_by_plain_dash_m(self):
+        """The control: the planting is effective -- the old `python -m` prefix runs the planted code."""
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        root = self.checkout("probe-skill", "probe_skill")
+        old = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = str(root / "src")
+        try:
+            code, out, err = run_process_group([sys.executable, "-m", "probe_skill.cli", "--", "rel.txt"], timeout=60)
+        finally:
+            os.environ.pop("PYTHONPATH") if old is None else os.environ.__setitem__("PYTHONPATH", old)
+        self.assertEqual(self.report(code, out, err), {"pkg": "planted-entry"})
+
+    def test_bootstrap_shape(self):
+        from video_agent.tools.discovery import MODULE_BOOTSTRAP, python_module_command
+        self.assertEqual(python_module_command("x_skill.cli"), [sys.executable, "-c", MODULE_BOOTSTRAP, "x_skill.cli"])
+        self.assertEqual(python_module_command("x_skill.cli", python="py"), ["py", "-c", MODULE_BOOTSTRAP, "x_skill.cli"])
+        self.assertNotIn("-I", python_module_command("m"), "-I would drop PYTHONPATH, which is how the checkout is found")
+        self.assertLess(MODULE_BOOTSTRAP.index("sys.path[:]"), MODULE_BOOTSTRAP.index("import runpy"), "'' leaves sys.path before runpy is looked up")
+
+    def test_locate_cli_skill_and_invoke(self):
+        """subtitle / thumbnail / color-grading / motion-graphics / qc / ingest / voice-enhance: `locate_cli_skill` + `invoke`,
+        for a `<pkg>.cli` module and for a package run through its `__main__` (subtitle-skill's shape)."""
+        from video_agent.tools.discovery import python_module_command
+        from video_agent.tools.skill_process import invoke, locate_cli_skill
+        root = self.checkout("probe-skill", "probe_skill")
+        argv = ["run", "--level=-3", "--", "rel.txt"]
+        for module in ("probe_skill.cli", "probe_skill"):
+            sk = locate_cli_skill("probe", module, "probe_skill", "probe", "VIDEO_AGENT_PROBE_DIR", explicit=str(root), env={"PATH": ""})
+            self.assertEqual((sk.command, sk.env), (python_module_command(module), {"PYTHONPATH": str(root / "src")}))
+            self.assertClean(self.report(*invoke(sk, argv, timeout=60)), argv)
+
+    def test_every_skill_locator_is_cwd_independent(self):
+        """The real locate functions of every CLI Skill, each run from the untrusted directory with a planted `<pkg>/`."""
+        from video_agent.tools.discovery import python_module_command
+        from video_agent.tools.skill_process import invoke
+        from video_agent.tools.color_grading.locate import locate_color_grading
+        from video_agent.tools.ingest.locate import locate_ingest as locate_ingest_cli
+        from video_agent.tools.motion_graphics.locate import locate_motion_graphics
+        from video_agent.tools.qc.locate import locate_qc
+        from video_agent.tools.subtitle.locate import locate_subtitle
+        from video_agent.tools.thumbnail.locate import locate_thumbnail
+        from video_agent.tools.voice_enhance.locate import locate_voice_enhance
+        argv = ["--json", "--", "rel.txt"]
+        for locate, name, pkg, module in ((locate_subtitle, "subtitle-skill", "subtitle_skill", "subtitle_skill"), (locate_thumbnail, "thumbnail-skill", "thumbnail_skill", "thumbnail_skill.cli"),
+                                          (locate_color_grading, "color-grading-skill", "color_grading", "color_grading.cli"), (locate_motion_graphics, "motion-graphics-skill", "motion_graphics", "motion_graphics.cli"),
+                                          (locate_qc, "qc-skill", "qc_skill", "qc_skill.cli"), (locate_ingest_cli, "ingest-skill", "ingest_skill", "ingest_skill.cli"),
+                                          (locate_voice_enhance, "voice-enhance-skill", "voice_enhance_skill", "voice_enhance_skill.cli")):
+            root = self.checkout(name, pkg)
+            sk = locate(str(root), env={"PATH": ""})
+            self.assertEqual(sk.command, python_module_command(module), name)
+            self.assertClean(self.report(*invoke(sk, argv, timeout=60)), argv)
+
+    def test_adapters_with_their_own_locate_and_invoke(self):
+        """media-analysis / transcription / video-editing / audio-production: their own locate and the adapter's `_invoke`
+        (each adds PYTHONPATH itself and calls run_process_group)."""
+        from video_agent.tools.audio_production.adapter import AudioProductionAdapter
+        from video_agent.tools.audio_production.locate import locate_audio_production
+        from video_agent.tools.discovery import python_module_command
+        from video_agent.tools.media_analysis.adapter import MediaAnalysisAdapter
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        from video_agent.tools.transcription.adapter import TranscriptionAdapter
+        from video_agent.tools.transcription.locate import locate_transcription
+        from video_agent.tools.video_editing.adapter import VideoEditingAdapter
+        from video_agent.tools.video_editing.locate import locate_video_editing
+        argv = ["--op=TRIM", "--", "rel.txt"]
+        for locate, adapter_cls, name, pkg in ((locate_media_analysis, MediaAnalysisAdapter, "media-analysis-skill", "media_analysis"),
+                                               (locate_transcription, TranscriptionAdapter, "transcription-skill", "transcription_skill"),
+                                               (locate_video_editing, VideoEditingAdapter, "video-editing-skill", "video_editing_skill"),
+                                               (locate_audio_production, AudioProductionAdapter, "audio-production-skill", "audio_production")):
+            root = self.checkout(name, pkg)
+            sk = locate(str(root), env={"PATH": ""})
+            self.assertEqual((sk.command, sk.env), (python_module_command(pkg + ".cli"), {"PYTHONPATH": str(root / "src")}), name)
+            adapter = adapter_cls.__new__(adapter_cls)   # only the process boundary: no contract is read
+            adapter.skill, adapter.calls, adapter.default_timeout = sk, 0, 60
+            self.assertClean(self.report(*adapter._invoke(list(argv))), argv)
+
+    def test_ffmpeg_skill_scripts_never_had_the_current_directory(self):
+        """ffmpeg-skill is run as `python <checkout>/scripts/<tool>.py`: sys.path[0] is the script's own directory, so the
+        planted modules are not reachable that way either (no change needed; this keeps it so)."""
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        scripts = self.tmp / "ffmpeg-skill" / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "probe.py").write_text(self.PROBE.format(pkg="os").replace("getattr(os, 'ORIGIN', None)", "'checkout'"), encoding="utf-8")
+        argv = ["--input=rel.txt", "--json", "rel.txt"]
+        rep = self.report(*run_process_group([sys.executable, str(scripts / "probe.py")] + argv, timeout=60))
+        self.assertEqual(rep["argv0"], "probe.py")
+        rep["argv0"] = "cli.py"
+        self.assertClean(rep, argv)
+
+
 class UnrecognizedFinishingKeyTests(unittest.TestCase):
     """ADR-042: a key that matches one of edit./audio./subtitle/thumbnail/color./motion./qc but is not one its parser
     actually reads used to be silently ignored -- no decision, no error, the feature just never happened. `_check_edit_
@@ -6676,7 +6831,8 @@ class UrlIngestTests(unittest.TestCase):
     def test_locate_ingest_checkout_and_console_script(self):
         root = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
         sk = locate_ingest(env={INGEST_ENV_DIR: root, "PATH": ""})
-        self.assertEqual((sk.command[1:], sk.env), (["-m", "ingest_skill.cli"], {"PYTHONPATH": str(Path(root) / "src")}))
+        from video_agent.tools.discovery import python_module_command
+        self.assertEqual((sk.command, sk.env), (python_module_command("ingest_skill.cli"), {"PYTHONPATH": str(Path(root) / "src")}))   # ADR-074
         bin_dir = Path(self.tmp) / "bin"
         fake_ingest.install(bin_dir)
         from unittest import mock
