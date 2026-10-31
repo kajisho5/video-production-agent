@@ -2713,7 +2713,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         from video_agent.tools.media_analysis import PACKAGE, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.6", "media-analysis/contract@1"))
+        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.7", "media-analysis/contract@1"))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual(set(pkg.tool_ids()), set(ad.contract["kind_to_tool"].values()), "every kind maps to a declared tool (timing serves two kinds)")
@@ -2724,7 +2724,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertTrue(ad.supports("media-analysis/silence") and not ad.supports("media-analysis/cut") and not ad.supports("ffmpeg-skill/probe"))
         self.assertEqual(pinned_contract()["skill_id"], "media-analysis")
         # capability names of the contract are CapabilityResolver names
-        self.assertTrue(set(ad.contract["capability_names"]) <= {"ffmpeg", "ffprobe", "filter:ebur128", "filter:scdet", "filter:silencedetect"})
+        self.assertTrue(set(ad.contract["capability_names"]) <= {"ffmpeg", "ffprobe", "filter:astats", "filter:ebur128", "filter:scdet", "filter:silencedetect"})   # filter:astats: 0.1.7 noise_floor
 
     def test_contract_incompatibility_is_refused(self):
         from video_agent.tools.media_analysis import ContractError, MediaAnalysisAdapter, check_contract, pinned_contract
@@ -2766,7 +2766,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         ad = self._adapter()
         r = ad.measure("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "kind": "silence"})
         self.assertTrue(r.ok and r.exit_code == 0)
-        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.6")
+        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.7")
         self.assertEqual(r.data["cache"]["status"], "miss")
         self.assertEqual(r.commands, ["ffprobe: metadata"], "the Skill reports what it ran; the agent never built it")
         # through the analyzer: lifted Observation keeps the external identity and provenance; agent cache is not used
@@ -2779,10 +2779,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["duration", "loudness", "media_probe", "scene_detection", "silence"])
         sil = obs["silence"]
-        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.6", "media-analysis/silence", "media-analysis/silence@0.1.6"))
+        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.7", "media-analysis/silence", "media-analysis/silence@0.1.7"))
         self.assertTrue(sil.external_id.startswith("obs_") and sil.external_id != sil.id)
         self.assertEqual(sil.fingerprint, "f" * 64)
-        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.6")
+        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.7")
         self.assertEqual(sil.cache["status"], "miss")
         self.assertEqual(sil.data["segments"][0]["type"], "leading", "facts as measured; no interpretation added")
         rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
@@ -2842,7 +2842,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(tools["scene_analysis"], "media-analysis/scenes")
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["implemented"] and rows["media-analysis"]["available"])
-        self.assertEqual(rows["media-analysis"]["version"], "0.1.6")
+        self.assertEqual(rows["media-analysis"]["version"], "0.1.7")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
         # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
@@ -2856,7 +2856,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"])
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=["duration"])
         d = next(o for o in an.observations if o.kind == "duration")
-        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.6"))
+        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.7"))
         self.assertNotEqual(svc.registry.tool("media-analysis/timing").version, "", "tool version recorded separately from the skill version")
 
     # boundaries: no import, no engine invocation, no event → command; observation ≠ inference
@@ -2930,7 +2930,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.7.9", "transcription-skill"))
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.8.0", "transcription-skill"))
         self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
@@ -3006,7 +3006,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
         t = obs["transcript"]
-        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.7.9", "transcription/transcribe", "transcription/transcribe@0.7.9"))
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.8.0", "transcription/transcribe", "transcription/transcribe@0.8.0"))
         self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
         self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
         self.assertEqual(t.fingerprint, res.assets[0].hash)
@@ -3099,10 +3099,10 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription.adapter import check_transcript
         ok = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1"}).data
         asset = Asset(path=self.src, hash="0" * 64)
-        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.7.9", "k", "transcription/transcribe")
+        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.8.0", "k", "transcription/transcribe")
         self.assertNotEqual(o.fingerprint, asset.hash)
         tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
-        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.7.9", ad.engines, ad.contract["schemas"])))
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.8.0", ad.engines, ad.contract["schemas"])))
 
     # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
     def test_cached_only_policy(self):
@@ -3157,7 +3157,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
-        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.7.9", ["speech_transcription"]))
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.8.0", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
         self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
@@ -3170,7 +3170,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         root = self._checkout()
         cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
         self.assertEqual(cap.status, "AVAILABLE", cap.detail)
-        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.7.9", "faster_whisper", "local", True))
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.8.0", "faster_whisper", "local", True))
         self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
         self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
         os.environ["FAKE_TS_MODE"] = "model_unavailable"
@@ -4135,8 +4135,8 @@ class VideoEditingAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.video_editing import PACKAGE, ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.4.0", "video-editing", "video-editing/contract@1"))
-        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "cut", "fill", "fit", "freeze", "image_insert", "overlay", "resize", "reverse", "rotate", "speed", "trim")])
+        self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.4.1", "video-editing", "video-editing/contract@1"))
+        self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "crop", "cut", "fill", "fit", "freeze", "image_insert", "overlay", "resize", "reverse", "rotate", "speed", "trim")])
         self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.4.0 contract")
         # ADR-062: ROTATE / FREEZE / REVERSE are lowered now: nothing the contract declares is contract-only; a type a later contract adds
         # without a lowering here would be listed here and never executable (supports() is False)
@@ -4147,7 +4147,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual(Lowering(grown).contract_only(), ["MIRROR"])
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
-        self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.4.0", "kajisho5/video-editing-skill"))
+        self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.4.1", "kajisho5/video-editing-skill"))
         cut = pkg.tool("video-editing/cut")
         self.assertEqual((cut.produces_output, cut.deterministic, cut.kind, cut.inputs, cut.result_keys), (True, True, "transform", ["input", "output"], ["operation_id", "output", "probe", "commands", "provenance"]))
         self.assertEqual(cut.required_capabilities, ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "video-editing"])
@@ -4163,7 +4163,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         os.environ["FAKE_VE_MODE"] = "contract_drift"
         ad2 = self._adapter()   # compatible but drifted: usable only if the agent re-verifies; the drift is reported, never hidden
         drift = ad2.drift()
-        self.assertTrue(any("video-editing/crop: installed but not pinned" in d for d in drift) and any(d.startswith("operations:") for d in drift), drift)
+        self.assertTrue(any("video-editing/blur: installed but not pinned" in d for d in drift) and any(d.startswith("operations:") for d in drift), drift)
         self.assertEqual(ad2.breaking_drift(), [], "a brand-new tool/operation is additive capability, not a breaking change (ADR-045)")
         # the pinned contract cannot be edited into something the checks would not notice
         bad = json.loads(json.dumps(pinned_contract()))
@@ -4171,7 +4171,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertTrue(any("produces_output" in e for e in check_contract(bad)))
         bad = json.loads(json.dumps(pinned_contract())); bad["errors"]["codes"].append("SOMETHING")
         self.assertTrue(any("errors.codes" in e for e in check_contract(bad)))
-        bad = json.loads(json.dumps(pinned_contract())); bad["tools"][1]["operation_type"] = "CROP"
+        bad = json.loads(json.dumps(pinned_contract())); bad["tools"][1]["operation_type"] = "BLUR"
         self.assertTrue(any("not a declared operation" in e for e in check_contract(bad)))
         self.assertEqual(contract_drift(pinned_contract(), pinned_contract()), [])
 
@@ -4204,7 +4204,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         same = lambda a, b: os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))  # noqa: E731  (Windows: the adapter reports the resolved path, tempfile may give an 8.3 short name)
         self.assertEqual((r.exit_code, r.tool, r.dry_run), (0, "video-editing/cut", False)); self.assertTrue(same(r.output, out), (r.output, out))
         self.assertTrue(os.path.isfile(out))
-        self.assertEqual(r.data["skill"], {"id": "video-editing", "version": "0.4.0"})
+        self.assertEqual(r.data["skill"], {"id": "video-editing", "version": "0.4.1"})
         self.assertEqual(r.data["status"], "completed")
         art = r.data["artifact"]
         self.assertTrue(same(art["path"], out)); self.assertEqual((art["size"], art["reused"]), (os.path.getsize(out), False))
@@ -4214,7 +4214,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual((obs["kind"], obs["provenance"]), ("media.probe", "OBSERVED")); self.assertTrue(obs["source"].startswith("ffmpeg-skill/probe@"))
         self.assertEqual(r.data["timeline"]["tracks"][0]["kind"], "video")
         rec = r.data["operation"]
-        self.assertEqual((rec["type"], rec["status"], rec["skill"], rec["skill_version"], rec["tool"]), ("CUT", "completed", "video-editing", "0.4.0", "ffmpeg-skill/cut"))
+        self.assertEqual((rec["type"], rec["status"], rec["skill"], rec["skill_version"], rec["tool"]), ("CUT", "completed", "video-editing", "0.4.1", "ffmpeg-skill/cut"))
         self.assertEqual(rec["output"]["sha256"], art["sha256"]); self.assertEqual(rec["inputs"][0]["kind"], "source")
         self.assertEqual(r.commands, rec and r.data["commands"]); self.assertTrue(r.commands and "provenance only" in r.commands[0])
         # the process boundary: one `run` call, argv as a list with the canonical shape, request JSON on stdin (not argv), workspace = the op dir
@@ -4241,8 +4241,8 @@ class VideoEditingAdapterTests(unittest.TestCase):
     def test_unsupported_operation(self):
         ad = self._adapter()
         paths, out = self._paths()
-        self.assertFalse(ad.supports("video-editing/crop")); self.assertFalse(ad.supports("ffmpeg-skill/cut"))
-        r = ad.run(Operation(tool="video-editing/crop", args={"input": "a", "output": "a_trim"}, inputs=["a"], outputs=["a_trim"]), paths)
+        self.assertFalse(ad.supports("video-editing/blur")); self.assertFalse(ad.supports("ffmpeg-skill/cut"))   # video-editing/crop is declared since 0.4.1 (ADR-078)
+        r = ad.run(Operation(tool="video-editing/blur", args={"input": "a", "output": "a_trim"}, inputs=["a"], outputs=["a_trim"]), paths)
         self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST"); self.assertIn("unsupported tool", r.data["error"]["message"])
         r = ad.run(self._op(zoom=2), paths)
         self.assertFalse(r.ok); self.assertIn("does not take argument", r.data["error"]["message"])
@@ -4379,7 +4379,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         pk = next(p for p in svc2.packages() if p["skill_id"] == "video-editing")
         # ADR-062: ROTATE (0.3.0) and FREEZE / REVERSE (0.4.0, video-editing-skill #20) are lowered now, and IMAGE_INSERT (ADR-070), so every tool the contract
         # declares is usable (a type a later contract adds without a lowering here stays out: adapter.supports())
-        self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.4.0")
+        self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.4.1")
         self.assertEqual(sorted(pk["usable_tools"]), sorted(ad.tools))
         # a tool-level capability the resolver knows and reports missing blocks the tool; names it does not resolve are the Skill's doctor's business
         svc3 = make_service(self.tmp, caps=FakeCaps(missing=["encoder:libx264"], extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
@@ -4440,7 +4440,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertTrue(any(o.tool == "ffmpeg-skill/loudness" for o in fake.calls), "the rest of the chain is unchanged")
         prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.0"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.1"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(trim["skill_result"]["observation"]["provenance"], "OBSERVED")
         self.assertTrue(trim["result"]["commands"] and "provenance only" in trim["result"]["commands"][0])
@@ -4767,7 +4767,7 @@ class VideoEditingOperationsTests(unittest.TestCase):
         rows = [e for e in prov["operations"] if e["tool"].startswith("video-editing/")]
         self.assertEqual([e["skill"] for e in rows], ["video_concat", "video_speed", "video_resize", "video_fit", "video_overlay"])
         for e in rows:
-            self.assertTrue(e["decision"]); self.assertEqual(e["skill_package"], "video-editing"); self.assertEqual(e["tool_version"], "0.4.0")
+            self.assertTrue(e["decision"]); self.assertEqual(e["skill_package"], "video-editing"); self.assertEqual(e["tool_version"], "0.4.1")
             self.assertTrue(e["skill_result"]["artifact"]["sha256"]); self.assertTrue(e["input"] and e["output"])
             self.assertEqual(e["skill_result"]["observation"]["provenance"], "OBSERVED")
         self.assertEqual(len(rows[0]["input"]), 2); self.assertEqual(rows[4]["input"][1], os.path.abspath(self.png))

@@ -35,6 +35,9 @@ ARGS: Dict[str, Tuple[str, ...]] = {
     # ADR-070: video-editing-skill 0.4.0 (#21) IMAGE_INSERT: a still image (the `input`, an image source) → a silent clip of `duration`
     # seconds at width x height / fps (the contract's own parameter names); the only type whose input is an image, never a video
     "IMAGE_INSERT": ("input", "output", "duration", "width", "height", "fps"),
+    # ADR-078: video-editing-skill 0.4.1 CROP (one pixel rectangle, the contract's own parameter names). Lowered so the adapter can run
+    # every declared type; the planner's `video_crop` step keeps calling ffmpeg-skill crop.py (ADR-060) until a requirement moves it
+    "CROP": ("input", "output", "x", "y", "width", "height"),
 }
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")   # the contract's formats.image_inputs (an IMAGE_INSERT input outside them is refused here)
 STILL_DURATION = (0.01, 600.0)                # the contract's IMAGE_INSERT.duration ("time 0.01..600 s")
@@ -212,6 +215,14 @@ def params_for(t: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 p[k] = n
         if args.get("fps") is not None:
             p["fps"] = _num(args["fps"], "fps") if isinstance(args["fps"], (int, float)) else _str(args["fps"], "fps", r"^[0-9]{1,6}/[0-9]{1,6}$")
+    elif t == "CROP":   # ADR-078
+        for k in ("x", "y", "width", "height"):
+            if args.get(k) is None:
+                raise ToolError(f"video-editing: CROP needs {k}")
+            n = _int(args[k], k)
+            if n < 0 or (k in ("width", "height") and (n < 2 or n % 2)):
+                raise ToolError(f"video-editing: CROP {k} must be " + ("an even integer >= 2" if k in ("width", "height") else "an integer >= 0"))
+            p[k] = n
     else:
         raise ToolError(f"video-editing: no lowering for operation type {t}")
     return p

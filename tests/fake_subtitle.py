@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "subtitle" / "contract_0.2.3.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "subtitle" / "contract_0.4.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_SUBTITLE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_SUBTITLE_CALLS")
 NON_RETRYABLE = set(CONTRACT["errors"]["non_retryable"])

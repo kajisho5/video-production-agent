@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.7.9",
+ "version": "0.8.0",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -21,7 +21,8 @@
   "engine_registry",
   "input_path_policy",
   "output_path_policy",
-  "custom_vocabulary"
+  "custom_vocabulary",
+  "speaker_merge"
  ],
  "engine_contract": {
   "schema": "transcription-skill/engine-spec/0.1",
@@ -92,6 +93,23 @@
    "supported_models": [],
    "default_model": "reazonspeech-v2",
    "models": []
+  },
+  {
+   "id": "whisperx",
+   "version": null,
+   "execution_mode": "local",
+   "description": "whisperX: Whisper (faster-whisper) batched over voice-activity regions, with wav2vec2 forced alignment for word timestamps. Optional engine: Python 3.10+, English and Japanese; no diarization.",
+   "available": false,
+   "unavailable_reason": "pinned snapshot: availability comes from the installed Skill's contract / doctor",
+   "requires_network": false,
+   "deterministic": false,
+   "capabilities": [
+    "local_execution"
+   ],
+   "supported_languages": [],
+   "supported_models": [],
+   "default_model": "large-v3",
+   "models": []
   }
  ],
  "tools": [
@@ -119,7 +137,8 @@
     "allowed_input_roots": "list[dir] | null",
     "dry_run": "bool",
     "vad_filter": "bool",
-    "vocabulary": "{written form: list[reading]} | null"
+    "vocabulary": "{written form: list[reading]} | null",
+    "speaker_turns": "diarization-skill/turns@1 document | path | null (merged after recognition, never cached)"
    },
    "output": {
     "transcript": "Transcript",
@@ -162,6 +181,22 @@
    "side_effects": [
     "writes output file"
    ]
+  },
+  {
+   "name": "transcription/speakers",
+   "description": "Fill segments[].speaker_id (and words[].speaker_id) of a Transcript from diarization-skill speaker turns (diarization-skill/turns@1), with diarization-skill's own ASSIGN rule. No diarization here.",
+   "input": {
+    "transcript": "Transcript | path",
+    "turns": "diarization-skill/turns@1 document | path",
+    "allow_source_mismatch": "bool",
+    "replace": "bool"
+   },
+   "output": {
+    "transcript": "Transcript (speaker_id filled, speaker_assignment recorded)",
+    "warnings": "list[str]"
+   },
+   "deterministic": true,
+   "side_effects": []
   },
   {
    "name": "transcription/check",

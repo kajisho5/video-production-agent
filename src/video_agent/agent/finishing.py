@@ -16,7 +16,7 @@ Everything here is vocabulary and arithmetic, no execution:
 - **Motion graphics** (`motion.*`): one element per type, every element type the pinned motion-graphics contract offers (ADR-064):
   `motion.title`, `motion.lower_third` (the name), `motion.text`, `motion.image` (a PNG / JPEG path), `motion.video` (a clip, picture
   in picture / chroma key), `motion.bug`, `motion.chapter`, `motion.sticker`, `motion.hook` (their text), and the switches
-  `motion.progress`, `motion.countdown`, `motion.meme` (+ `.top` / `.bottom`). Every other contract parameter is
+  `motion.progress`, `motion.countdown`, `motion.meme` (+ `.top` / `.bottom`), `motion.shape` (+ `.width` / `.height` / `.color`, ADR-078). Every other contract parameter is
   `motion.<element>.<parameter>` with the contract's range (e.g. `motion.text.font_size`, `motion.video.chromakey`), plus `.start`,
   `.end` and, for text / image overlays, `.fade`. Start / end default from policy settings recorded on the decision
   (`motion.<type>.start`, `motion.<type>.duration`) and are clipped to the subject's timeline; an explicit placement is checked
@@ -93,7 +93,7 @@ GRAPHICS_SKILL = "motion_graphics"
 # ADR-064: the vocabulary is read from the pinned motion-graphics contract (the data file the adapter pins, read as data so the agent
 # layer never imports a tool package): every element type it offers, each with every parameter it declares, by the contract's names
 # and ranges. A re-pin that adds an element or a parameter changes this vocabulary with it (tests/test_satellite_params.py says so).
-MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.6.json"
+MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.7.json"
 _MOTION_CONTRACT: Dict[str, Any] = json.loads(MOTION_CONTRACT_PATH.read_text(encoding="utf-8"))
 MOTION_ELEMENT_SPECS: Dict[str, Dict[str, Any]] = {str(e["type"]): e for e in _MOTION_CONTRACT["element_types"]}
 # element type → (its `--set` key, the contract parameter that key's value sets; None = the key is a plain switch: the element has no
@@ -102,7 +102,9 @@ MOTION_BASE: Dict[str, Tuple[str, Optional[str]]] = {
     "title": ("motion.title", "title"), "lower_third": ("motion.lower_third", "name"), "text_overlay": ("motion.text", "text"),
     "image_overlay": ("motion.image", "image_path"), "video_overlay": ("motion.video", "video_path"), "bug": ("motion.bug", "title"),
     "chapter": ("motion.chapter", "title"), "progress": ("motion.progress", None), "countdown": ("motion.countdown", None),
-    "sticker": ("motion.sticker", "text"), "hook": ("motion.hook", "title"), "meme": ("motion.meme", None)}
+    "sticker": ("motion.sticker", "text"), "hook": ("motion.hook", "title"), "meme": ("motion.meme", None),
+    # ADR-078: motion-graphics-skill 0.2.7 (its ADR-22) implements shape, a solid rectangle; a switch whose width / height / color are required
+    "shape": ("motion.shape", None)}
 ELEMENT_TYPES = tuple(MOTION_BASE)
 # path parameters travel in the IR under a short name (the adapter turns the artifact id back into the contract's path parameter)
 MOTION_PATH_PARAMS = {"image_path": "image", "video_path": "video"}
@@ -249,6 +251,9 @@ def _motion_param(v: Any, key: str, name: str, spec: Dict[str, Any]) -> Any:
     if t == "integer":
         if float(x) != int(x):
             raise EditRequirementError(f"{key} must be an integer from {spec.get('min')} to {spec.get('max')}, got {v!r}")
+        step = spec.get("multiple_of")
+        if isinstance(step, int) and step > 1 and int(x) % step:   # ADR-078: shape's width / height are even
+            raise EditRequirementError(f"{key} must be a multiple of {step} (the contract's multiple_of), got {v!r}")
         return int(x)
     return float(x)
 
@@ -281,6 +286,9 @@ def parse_motion_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, 
             if key not in vals:
                 continue
             p[MOTION_PATH_PARAMS.get(name, name)] = _motion_param(vals[key], key, name, pspec)
+        missing = [f"{base}.{n}" for n, ps in spec["parameters"].items() if ps.get("required") and n != main_param and MOTION_PATH_PARAMS.get(n, n) not in p]
+        if missing:   # ADR-078: a parameter the contract requires (shape's width / height / color) is asked for, never defaulted here
+            raise EditRequirementError(f"{base} needs " + " / ".join(missing) + " (required by the contract)")
         for group in (c.get("at_least_one_of") for c in spec.get("constraints") or [] if c.get("at_least_one_of")):
             if not any(n in p for n in group):
                 raise EditRequirementError(f"{base} needs at least one of " + " / ".join(f"{base}.{n}" for n in group) + " (the contract's constraint)")
@@ -307,6 +315,8 @@ def element_label(typ: str, params: Dict[str, Any]) -> str:
         return "'" + " / ".join(str(params[k]) for k in ("top", "bottom") if params.get(k)) + "'"
     if typ == "countdown":
         return f"from {params.get('count_from', MOTION_ELEMENT_SPECS[typ]['parameters']['count_from'].get('default'))}"
+    if typ == "shape":
+        return f"{params.get('width')}x{params.get('height')} {params.get('color')}"
     return "bar"
 
 
@@ -333,6 +343,8 @@ def placement_problems(typ: str, params: Dict[str, Any], size: Optional[Tuple[in
         out.append(f"scale_width {params['scale_width']} is wider than the {w}x{h} picture")
     if params.get("font_size") is not None and int(params["font_size"]) >= h:
         out.append(f"font_size {params['font_size']} is taller than the {w}x{h} picture")
+    if typ == "shape" and params.get("width") is not None and params.get("height") is not None and (int(params["width"]) > w or int(params["height"]) > h):
+        out.append(f"shape {params['width']}x{params['height']} is larger than the {w}x{h} picture")   # ADR-078
     return out
 
 

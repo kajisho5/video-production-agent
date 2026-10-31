@@ -402,7 +402,7 @@ def default_registry() -> SkillRegistry:
         ("color_retag", "RETAG", "Re-tag the colour metadata (bt709 / bt2020-pq / bt2020-hlg / bt601)", {"asset": "video", "target": "str"}, "LOW"),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading", f"color-grading:{typ}"], risk, True, "CONFIRM", ["color-grading/run"]))
-    r.register(SkillSpec("motion_graphics", "1.0", "Render the motion-graphics elements (titles, lower thirds, text / image / video overlays, bugs, chapters, progress, countdowns, stickers, hooks, memes) onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
+    r.register(SkillSpec("motion_graphics", "1.0", "Render the motion-graphics elements (titles, lower thirds, text / image / video overlays, bugs, chapters, progress, countdowns, stickers, hooks, memes, shapes) onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "motion-graphics"], "MEDIUM", True, "CONFIRM", ["motion-graphics/run"]))
     # ADR-066 (roadmap step 9, replacing ADR-057's phase-2 `media_ingest`): a card folder copied by ingest-skill to the destinations the user
     # named, each copy read back; CONFIRM always (it writes the user's drives), never AUTO. The inventory of the copy becomes the new assets.

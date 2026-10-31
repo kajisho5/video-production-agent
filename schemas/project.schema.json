@@ -2241,7 +2241,8 @@
          "countdown",
          "sticker",
          "hook",
-         "meme"
+         "meme",
+         "shape"
         ]
        },
        "start": {
@@ -2362,6 +2363,22 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 60
+         },
+         "width": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 7680,
+          "multipleOf": 2
+         },
+         "height": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 7680,
+          "multipleOf": 2
+         },
+         "color": {
+          "type": "string",
+          "maxLength": 32
          }
         }
        },

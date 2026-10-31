@@ -71,7 +71,7 @@ DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_ele
               "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors",
               "colors")   # ADR-067: 0.2.4's colour-name table, which the agent's planning reads from the pin
 DRIFT_ELEMENT_KEYS = ("type", "tool", "animation", "parameters", "required_capabilities", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.6.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.7.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

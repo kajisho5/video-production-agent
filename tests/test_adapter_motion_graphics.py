@@ -87,12 +87,12 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.2.6")
+        self.assertEqual(a.version, "0.2.7")
         self.assertEqual(a.tools, {TOOL_ID})
         self.assertTrue(a.supports(TOOL_ID))
         self.assertFalse(a.supports("motion-graphics/other"))
-        self.assertEqual(sorted(a.element_types), ["bug", "chapter", "countdown", "hook", "image_overlay", "lower_third", "meme", "progress", "sticker", "text_overlay", "title", "video_overlay"])
-        self.assertIn("shape", a.unsupported)
+        self.assertEqual(sorted(a.element_types), ["bug", "chapter", "countdown", "hook", "image_overlay", "lower_third", "meme", "progress", "shape", "sticker", "text_overlay", "title", "video_overlay"])   # shape: 0.2.7 (ADR-078)
+        self.assertNotIn("shape", a.unsupported)   # implemented in 0.2.7 (ADR-078)
         self.assertEqual(a.drift(), [])
         self.assertEqual(check_contract(pinned_contract()), [])
         self.assertEqual(contract_drift(pinned_contract()), [])
@@ -101,7 +101,7 @@ class ContractTests(Base):
         self.assertEqual(pkg.tool_ids(), [TOOL_ID])
         self.assertEqual(pkg.repository, "kajisho5/motion-graphics-skill")
         self.assertIn("motion-graphics", pkg.capabilities)
-        self.assertEqual(PACKAGE.version, "0.2.6")
+        self.assertEqual(PACKAGE.version, "0.2.7")
         self.assertEqual(PACKAGE.tool(TOOL_ID).inputs, ["input", "output", "image", "video"])
         self.assertTrue(PACKAGE.tool(TOOL_ID).produces_output)
         self.assertTrue(a.retryable["TOOL_ERROR"]); self.assertTrue(a.retryable["CANCELLED"]); self.assertFalse(a.retryable["INVALID_REQUEST"])
@@ -228,7 +228,10 @@ class RequestTests(Base):
         bad(dict(base, elements=el(start=0, end=1e9)), "0 <= start < end")
         bad(dict(base, elements=el(start=float("nan"), end=1)), "finite number")
         bad(dict(base, elements=el(id="bad id!")), "must match")
+        a.unsupported = ["shape"]   # 0.2.7 implements shape (ADR-078); a type the contract lists as unsupported is still refused by name
         bad(dict(base, elements=el(type="shape")), "declared unsupported")
+        a.unsupported = []
+        bad(dict(base, elements=el(type="blob")), "unknown element type")
         bad(dict(base, elements=el(type="banner")), "unknown element type")
         bad(dict(base, elements=el(extra=1)), "unknown field")
         bad(dict(base, elements=el() + el()), "duplicate element id")
@@ -281,7 +284,7 @@ class SuccessTests(Base):
         self.assertEqual(r.output, self.paths()["out"])
         self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": SKILL_ID, "version": "0.2.6"})
+        self.assertEqual(d["skill"], {"id": SKILL_ID, "version": "0.2.7"})
         self.assertEqual(d["status"], "completed")
         self.assertEqual(d["operation_type"], "GRAPHICS")
         self.assertEqual(d["artifact"]["sha256"], sha256_file(r.output))
@@ -348,7 +351,7 @@ class ErrorTests(Base):
         self.assertIs(e["retryable"], retryable, mode)
         self.assertEqual(e["recovery_class"], rc, mode)
         self.assertEqual(r.data["status"], "failed")
-        self.assertEqual(r.data["skill"]["version"], "0.2.6")
+        self.assertEqual(r.data["skill"]["version"], "0.2.7")
         self.assertEqual(e["exit_code"], r.exit_code)
         if exit_code is not None:
             self.assertEqual(r.exit_code, exit_code, mode)

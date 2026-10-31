@@ -1,5 +1,5 @@
 """The satellites now report their release version (single-sourced from pyproject.toml) instead of a stale
-constant: motion-graphics 0.2.x, transcription 0.7.x, subtitle 0.2.x, qc 0.2.x (qc-skill #22). Their contracts are otherwise the pinned ones, so the
+constant: motion-graphics 0.2.x, transcription 0.7.x, subtitle 0.2.x / 0.3.x, qc 0.2.x (qc-skill #22). Their contracts are otherwise the pinned ones, so the
 version gates accept those ranges and nothing else.
 
     python -m unittest tests/test_version_gates.py
@@ -27,7 +27,7 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        self.assertEqual(mg.pinned_contract()["version"], "0.2.6")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false)
+        self.assertEqual(mg.pinned_contract()["version"], "0.2.7")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false)
         for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9"):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
@@ -35,14 +35,14 @@ class VersionGateTests(unittest.TestCase):
         self.assertTrue(mg.check_contract(with_version(mg.pinned_contract(), "0.3.0")))
 
     def test_transcription_release_versions(self):
-        for v in ("0.2.0", "0.7.3"):
+        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2"):   # 0.8.0 (ADR-078): optional engine whisperx appended, nothing the adapter sends changed
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
-        for v in ("0.3.0", "0.8.0"):
+        for v in ("0.3.0", "0.9.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
         """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
-        self.assertEqual(qc.pinned_contract()["version"], "0.2.4")
+        self.assertEqual(qc.pinned_contract()["version"], "0.2.5")   # ADR-078: qc-skill #25 (per-operation tool_ids)
         for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.9"):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
@@ -52,12 +52,13 @@ class VersionGateTests(unittest.TestCase):
 
     def test_subtitle_release_versions(self):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
-        self.assertEqual(st.pinned_contract()["version"], "0.2.3")   # subtitle-skill #20: provides[] tool ids are subtitle/...
-        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4"):
+        self.assertEqual(st.pinned_contract()["version"], "0.4.0")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines
+        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3"):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)
-        self.assertTrue(st.check_contract(with_version(st.pinned_contract(), "0.3.0")))
+        for v in ("0.5.0", "1.0.0"):
+            self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)
 
 
 if __name__ == "__main__":

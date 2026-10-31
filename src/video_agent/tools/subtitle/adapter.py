@@ -53,7 +53,8 @@ CONTRACT_SKILL_ID = "subtitle-skill"          # the Skill's own id (the agent pa
 TOOL_GENERATE = "subtitle/generate"
 TOOL_RENDER = "subtitle/render"
 CONTRACT_VERSION = "1.0.0"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.0 (subtitle-skill #19): ja/zh/ko locale profiles; the contract is byte-identical to 0.1.x. 0.2.1 (#20): provides[] tool ids are subtitle/...
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.2.0 (subtitle-skill #19): ja/zh/ko locale profiles; the contract is byte-identical to 0.1.x. 0.2.1 (#20): provides[] tool ids are subtitle/...
+# 0.3.0: adds the translate and mux operations (both EXPERIMENTAL); 0.4.0: translate engines opus-mt / ollama. generate / render are unchanged, so the adapter takes 0.3.x / 0.4.x as before (ADR-078)
 ENGINE_ID = "ffmpeg-skill"
 ENGINE_DIR_ENV = "SUBTITLE_SKILL_FFMPEG_SKILL_DIR"   # the only way the Skill learns where ffmpeg-skill is (a location, not a credential)
 OPERATIONS = ("generate", "render")
@@ -70,7 +71,7 @@ MAX_CUE_TEXT = 2000
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _LANG_RE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
 DRIFT_KEYS = ("skill_id", "version", "contract_version", "deterministic", "capabilities", "operations", "out_of_scope", "parameters", "errors")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.3.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

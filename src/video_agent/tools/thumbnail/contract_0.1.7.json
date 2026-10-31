@@ -4,7 +4,7 @@
   "id": "thumbnail-skill",
   "name": "thumbnail-skill",
   "package": "thumbnail-skill",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "contract_version": "1",
   "kind": "execution",
   "role": "thumbnail rendering (deterministic execution); not decision, not selection, not design",
@@ -117,6 +117,44 @@
         "writes the output file",
         "writes a reuse cache entry under the workspace"
       ]
+    },
+    {
+      "tool_id": "thumbnail/generate_background",
+      "role": "execution",
+      "description": "Optional (ADR-12): generate one background image from a caller-written prompt and an explicit seed with a named, locally installed AI provider (FLUX.2 [klein] 4B), as a validated PNG/JPEG with provenance (engine, model, licence). Never decides what to show and never composes: the result is an ordinary image asset for thumbnail/render. Refused (TOOL_ERROR, reason provider_unavailable) when the provider is not configured or cannot run.",
+      "input": {
+        "background": {
+          "provider": "provider id",
+          "prompt": "string",
+          "width": "int",
+          "height": "int",
+          "seed": "int",
+          "steps": "int (optional)",
+          "guidance_scale": "number (optional)"
+        },
+        "output": "OutputSpec",
+        "options": "RenderOptions"
+      },
+      "output": {
+        "output": "path",
+        "format": "png|jpeg",
+        "width": "int",
+        "height": "int",
+        "size": "int",
+        "sha256": "str",
+        "reused": "bool (always false)",
+        "provenance": "object (generated, provider, engine, model, licence, prompt, seed, steps, guidance_scale)"
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": false,
+      "mutates_input": false,
+      "ai": true,
+      "optional": true,
+      "requires": "a configured background provider (see background_providers); never downloads a model, opens no connection",
+      "side_effects": [
+        "writes the output file"
+      ]
     }
   ],
   "provides": [
@@ -129,6 +167,11 @@
       "id": "thumbnail.extract_frame",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "thumbnail/extract_frame"
+    },
+    {
+      "id": "thumbnail.generate_background",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "thumbnail/generate_background"
     }
   ],
   "dependencies": [
@@ -461,6 +504,69 @@
         ]
       }
     }
+  },
+  "background_providers": {
+    "tool": "thumbnail/generate_background",
+    "ai": true,
+    "optional": true,
+    "deterministic": false,
+    "core_tools_use_ai": false,
+    "core_tools": [
+      "thumbnail/validate",
+      "thumbnail/render",
+      "thumbnail/extract_frame"
+    ],
+    "without_a_provider": "render, extract_frame and validate are unchanged; doctor reports the provider not_configured without changing its status; generate_background is refused (TOOL_ERROR, reason provider_unavailable, not retryable)",
+    "configured_but_unavailable": "doctor status degraded (a warning names what is missing); generate_background refused the same way",
+    "network": false,
+    "downloads_models": false,
+    "request_limits": {
+      "prompt_chars": 2000,
+      "width": "256..2048, a multiple of 16",
+      "height": "256..2048, a multiple of 16",
+      "seed": "0..4294967295",
+      "steps": "1..50",
+      "guidance_scale": "0..20"
+    },
+    "providers": {
+      "flux2-klein-4b": {
+        "provider": "flux2-klein-4b",
+        "engine": "FLUX.2 [klein] 4B",
+        "model": "black-forest-labs/FLUX.2-klein-4B",
+        "licence": "Apache-2.0",
+        "licence_url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "model_card": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B",
+        "configure_env": "THUMBNAIL_FLUX2_KLEIN_4B_DIR",
+        "requires": [
+          "torch",
+          "diffusers>=0.37.0 (Flux2KleinPipeline)",
+          "transformers>=4.51.0 (its Qwen3 text encoder)"
+        ],
+        "defaults": {
+          "steps": 4,
+          "guidance_scale": 1.0
+        }
+      }
+    },
+    "provenance": [
+      "generated",
+      "provider",
+      "engine",
+      "engine_version",
+      "model",
+      "licence",
+      "licence_url",
+      "model_card",
+      "prompt",
+      "prompt_sha256",
+      "seed",
+      "steps",
+      "guidance_scale",
+      "width",
+      "height",
+      "output_hash"
+    ],
+    "decision": "docs/decisions.md ADR-12"
   },
   "fonts": {
     "font_ids": [
