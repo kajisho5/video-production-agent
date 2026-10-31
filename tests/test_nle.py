@@ -1,4 +1,4 @@
-"""ADR-086 (nle-bridge-skill roadmap step 7, agent side: the adapter): `delivery.nle=export|conform` hands the project IR the job executes to
+"""ADR-089 (nle-bridge-skill roadmap step 7, agent side: the adapter): `delivery.nle=export|conform` hands the project IR the job executes to
 nle-bridge, which reads the subject's timeline record itself and writes OTIO / FCP7 XML / EDL / SRT (or a conform package). Against a fake
 `nle-bridge` process (tests/fake_nle_bridge.py) that reads the IR the same way; the real Skill is exercised by NleBridgeRealTests."""
 from __future__ import annotations

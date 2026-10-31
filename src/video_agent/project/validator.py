@@ -447,7 +447,7 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
 
 
 def check_nle(d: Dict[str, Any]) -> List[str]:
-    """ADR-086: `delivery.nle`. One hand-off per subject, of a subject whose timeline is planned (nle-bridge reads that record), formats from
+    """ADR-089: `delivery.nle`. One hand-off per subject, of a subject whose timeline is planned (nle-bridge reads that record), formats from
     the pinned nle-bridge contract with at least one timeline format, `zip` only on a conform."""
     errs: List[str] = []
     timelines = {t.get("asset") for t in (d.get("delivery") or {}).get("timelines") or []}
@@ -884,7 +884,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
-    xf_rec += list(d["delivery"].get("nle") or [])   # ADR-086: a rejected hand-off decision is rejected-cited
+    xf_rec += list(d["delivery"].get("nle") or [])   # ADR-089: a rejected hand-off decision is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
@@ -894,7 +894,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
     rep.errors += check_timeline_exports(d)
-    rep.errors += check_nle(d)   # ADR-086
+    rep.errors += check_nle(d)   # ADR-089
     rep.errors += check_take_assembly(d)
     rep.errors += check_plan_dependencies(d)
     for op in timelines:
@@ -985,7 +985,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         want = GENERATE_SKILL if op["type"] == "captions.generate" else MUX_SKILL if op["type"] == "captions.mux" else BURN_SKILL
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
-    for op in d["delivery"].get("nle") or []:   # ADR-086
+    for op in d["delivery"].get("nle") or []:   # ADR-089
         if (NLE_MODES.get(str(op.get("type")).split(".", 1)[-1], ("?",))[0], op.get("asset")) not in step_keys:
             rep.errors.append(f"{op.get('type')} of {op.get('asset')} has no plan step")
     for op in timelines:
@@ -1098,7 +1098,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
         if d["delivery"].get("nle"):
-            needed.add("nle-bridge")   # ADR-086: the NLE interchange exists only in nle-bridge-skill
+            needed.add("nle-bridge")   # ADR-089: the NLE interchange exists only in nle-bridge-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

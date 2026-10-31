@@ -3171,7 +3171,7 @@ class ImagePrepareRealTests(unittest.TestCase):
 
 
 class NleBridgeRealTests(unittest.TestCase):
-    """ADR-086 on the real nle-bridge-skill (main) with the real ffmpeg-skill: the agent hands it the project IR it executes; nle-bridge reads the
+    """ADR-089 on the real nle-bridge-skill (main) with the real ffmpeg-skill: the agent hands it the project IR it executes; nle-bridge reads the
     subject's timeline record itself and writes the conform package (OTIO / FCP7 XML / EDL, relink manifest with the media's sha256, zip)."""
 
     def setUp(self):

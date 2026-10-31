@@ -1,4 +1,4 @@
-"""Handing the cut to an NLE through nle-bridge-skill (ADR-086; nle-bridge-skill roadmap step 7, agent side): the agent's project IR, as it is
+"""Handing the cut to an NLE through nle-bridge-skill (ADR-089; nle-bridge-skill roadmap step 7, agent side): the agent's project IR, as it is
 executed, goes to `nle-bridge export` (OTIO / FCP7 XML for Premiere / CMX 3600 EDL / SRT) or `nle-bridge conform` (those plus a relink manifest
 and a zip). nle-bridge reads the IR's `delivery.timelines[]` record of the subject (ADR-052), so this needs `delivery.timeline` planned.
 

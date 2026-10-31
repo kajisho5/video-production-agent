@@ -242,10 +242,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                             "expected": {"clips": len(clips), "duration": rec["timeline_duration"], "source": subject}})
             summary.append(f"Export the cut of {subject} as an {d.params['format']} timeline ({len(clips)} clip(s), {rec['timeline_duration']:.2f}s)")
 
-    nle_recs: List[Dict[str, Any]] = []   # ADR-086: delivery.nle, written only when planned
+    nle_recs: List[Dict[str, Any]] = []   # ADR-089: delivery.nle, written only when planned
 
     def nle_steps(subject: str, sources: List[str]) -> None:
-        """ADR-086: the `timeline.nle` decision → one step (nle-bridge export / conform) that reads the project IR the job executes; it waits on
+        """ADR-089: the `timeline.nle` decision → one step (nle-bridge export / conform) that reads the project IR the job executes; it waits on
         the subject's timeline step only for order (both read the sources, nothing produced in between)."""
         nonlocal order
         for d in [x for x in decisions if x.subject == NLE_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:

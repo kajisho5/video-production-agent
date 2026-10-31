@@ -1,5 +1,5 @@
 """Locate an installed nle-bridge-skill (kajisho5/nle-bridge-skill): a checkout (<dir>/src/nle_bridge, run as `python -m nle_bridge.cli` with
-PYTHONPATH=<dir>/src, without the current directory on sys.path) or the console script `nle-bridge`. The agent never imports it (ADR-086)."""
+PYTHONPATH=<dir>/src, without the current directory on sys.path) or the console script `nle-bridge`. The agent never imports it (ADR-089)."""
 from __future__ import annotations
 
 from typing import Dict, Optional

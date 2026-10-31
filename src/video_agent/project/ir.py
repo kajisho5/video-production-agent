@@ -69,7 +69,7 @@ class ProjectIR:
         out = []
         for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.doc["delivery"]["targets"] \
                 + list(self.doc["delivery"].get("timelines") or []) + list(self.doc["delivery"].get("nle") or []) \
-                + ([self.doc["audio"]["take_crossfade"]] if self.doc["audio"].get("take_crossfade") else []):   # ADR-086: nle
+                + ([self.doc["audio"]["take_crossfade"]] if self.doc["audio"].get("take_crossfade") else []):   # ADR-089: nle
             if any(x in rej for x in op.get("decision_ids") or []):
                 out.append(op)
         return out

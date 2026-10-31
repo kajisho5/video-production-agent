@@ -59,7 +59,7 @@ class CompileError(ValueError):
     pass
 
 
-PROJECT_IR = "project_ir"   # ADR-086: the artifact id of the project IR snapshot nle-bridge reads (<job>/nle/project.json, written by the service)
+PROJECT_IR = "project_ir"   # ADR-089: the artifact id of the project IR snapshot nle-bridge reads (<job>/nle/project.json, written by the service)
 
 
 def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -503,7 +503,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, lower_timeline_export(tool, op, project_id, out_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=TIMELINE_SKILL)
 
     def nle(subject: str) -> None:
-        """ADR-086: nle-bridge export / conform of the subject from the project IR this job executes (the service writes it as
+        """ADR-089: nle-bridge export / conform of the subject from the project IR this job executes (the service writes it as
         <job>/nle/project.json before running); the files land in one directory under artifacts/, next to the deliverables."""
         st = state[subject]
         for op in (d.get("delivery") or {}).get("nle") or []:

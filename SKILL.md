@@ -37,7 +37,7 @@ Speech enhancement through voice-enhance-skill (ADR-073) is opt-in on the audio 
 
 An overlay image is prepared by imagemagick-skill (ADR-077) only when the user gives its size: `--set edit.overlay=logo.png edit.overlay.prepare.width=320 edit.overlay.prepare.height=180` (both; `edit.overlay.prepare.mode=fit|fill|exact`, default fit), `edit.overlay.prepare.pad=none|<colour>` (+ `.gravity`) to pad a fit to exactly that canvas, `edit.overlay.prepare.strip=true` to remove GPS / EXIF first. Never choose a size or a colour yourself; ask. The user's file is never written; without imagemagick-skill the step is handed off (`npx imagemagick-skill`).
 
-Files for Premiere / Resolve (ADR-086): `--set delivery.timeline=otio delivery.nle=export` (or `conform`; `delivery.nle.formats=otio,fcp7,edl,srt`) hands the executed project IR to nle-bridge-skill; pass on every warning it reports (what a format does not carry).
+Files for Premiere / Resolve (ADR-089): `--set delivery.timeline=otio delivery.nle=export` (or `conform`; `delivery.nle.formats=otio,fcp7,edl,srt`) hands the executed project IR to nle-bridge-skill; pass on every warning it reports (what a format does not carry).
 
 ## Offloading a camera card (ingest-skill)
 

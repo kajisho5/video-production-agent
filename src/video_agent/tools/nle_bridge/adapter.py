@@ -1,4 +1,4 @@
-"""NleBridgeAdapter: the agent's boundary to nle-bridge-skill (ADR-086; nle-bridge-skill roadmap step 7, agent side: the adapter).
+"""NleBridgeAdapter: the agent's boundary to nle-bridge-skill (ADR-089; nle-bridge-skill roadmap step 7, agent side: the adapter).
 
     video-production-agent ─(the project IR it executes, as a file)─→ NleBridgeAdapter ─(argv list, never a shell)─→
         `nle-bridge export  --json --overwrite --output=<dir> --subject=<s> [--formats=otio,fcp7,edl,srt] -- <project.json>`

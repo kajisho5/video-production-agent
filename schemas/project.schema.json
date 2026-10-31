@@ -549,7 +549,7 @@
      }
     },
     "nle": {
-     "description": "ADR-086: the project IR handed to nle-bridge-skill (export / conform) for a subject's timeline",
+     "description": "ADR-089: the project IR handed to nle-bridge-skill (export / conform) for a subject's timeline",
      "type": "array",
      "items": {
       "type": "object",

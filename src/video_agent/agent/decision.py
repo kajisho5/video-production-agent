@@ -633,7 +633,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         decide_image_insert(eng, decs, m, analysis, subjects, edits[IMAGE_INSERT_OP], bool(audio["production"]), approval_for, probe_ids_of, cap_block)
     # ---- timeline export (ADR-052): the cut list of each video subject as an editor timeline
     decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
-    # ---- the timeline handed to an NLE through nle-bridge (ADR-086): it reads the timeline record above, so it comes after it
+    # ---- the timeline handed to an NLE through nle-bridge (ADR-089): it reads the timeline record above, so it comes after it
     decide_nle(eng, m, decs, subjects, approval_for, probe_ids_of, cap_block)
     # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here
     decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)

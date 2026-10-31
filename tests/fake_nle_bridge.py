@@ -1,4 +1,4 @@
-"""Fake nle-bridge-skill process for the ADR-086 tests: `contract --json` (the pinned src/video_agent/tools/nle_bridge/contract_0.1.0.json),
+"""Fake nle-bridge-skill process for the ADR-089 tests: `contract --json` (the pinned src/video_agent/tools/nle_bridge/contract_0.1.0.json),
 `doctor --json` and `export` / `conform` with `--flag=value` options and the project IR after `--`, in the result shapes of nle-bridge-skill main.
 It reads the project IR as the real Skill does (the subject's `delivery.timelines` record, else INVALID_PLAN) and writes one small file per
 format. Controlled via FAKE_NLE_MODE: ok | fail:<CODE> | bad_hash | outside; FAKE_NLE_CALLS: a file each argv is appended to. Test double only."""
