@@ -80,7 +80,10 @@ _COMPONENTS: Tuple[Component, ...] = (
               package_install=_clone_pip("voice-enhance-skill"),
               note="ecosystem.json still says scaffold, but isolate / dereverb / bleed-reduce ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and "
                    "each engine is its own install (deep-filter + the DeepFilterNet3 model, `[wpe]`, `[bleed]`) that `voice-enhance doctor` names (ADR-073)"),
-    Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説")),
+    Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説"),
+              package_install=_clone_pip("dubbing-skill"),
+              note="ecosystem.json still says scaffold, but narrate / dub / describe ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and each "
+                   "engine is its own install (Chatterbox in its own venv, the VOICEVOX / Style-Bert-VITS2 apps, Kokoro) that `dubbing doctor` names; the agent runs DUB (ADR-085)"),
     Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),
               package_install=_clone_pip("diarization-skill", "pyannote")),

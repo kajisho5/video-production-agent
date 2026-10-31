@@ -24,6 +24,7 @@ from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJEC
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
+from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_dub_operation
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -63,6 +64,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     captions_ops: List[Dict[str, Any]] = []
     graphics_ops: List[Dict[str, Any]] = []
     color_ops: List[Dict[str, Any]] = []
+    speech_ops: List[Dict[str, Any]] = []   # ADR-085: the `speech` section (dubbing-skill DUB), written only when planned
     qc_plan: Dict[str, Any] = {"enabled": False, "decision_ids": [], "subjects": {}, "sidecars": {}}
     delivery: List[Dict[str, Any]] = []
     timelines: List[Dict[str, Any]] = []
@@ -341,6 +343,23 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             steps.append(st)
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(d.decision)
+
+    def dub_steps(subject: str) -> None:
+        """ADR-085: the `speech.dub` decision of a subject → one step (dubbing-skill DUB) and one IR `speech` operation on the subject's picture after
+        its edits and before the finishing: the programme with its dialogue replaced (video stream-copied), on the same timeline."""
+        nonlocal order
+        for d in decided(subject, DUB_OP):
+            out_id = f"{subject}_dub"
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            params = {k: d.params[k] for k in DUB_PARAMS if d.params.get(k) is not None}
+            speech_ops.append(ir_dub_operation(subject, params, [d.id], current_of[subject], out_id, scope))
+            order += 1
+            st = ProductionStep(id=f"step_dub_{subject}", order=order, skill=DUB_SKILL, tool=tool_for(DUB_SKILL), inputs=[current_of[subject]],
+                                params={"asset": subject, **params}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [],
+                                evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+            steps.append(st)
+            current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
+            summary.append(d.decision + " -- EXPERIMENTAL, needs confirmation")
 
     def image_insert_steps(subject: str, sources: List[str]) -> None:
         """ADR-070: the still of a `video.image_insert` decision → a silent clip at the picture's own frame / rate (video_image_insert),
@@ -649,6 +668,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
         elif concat_dec is None and switch_dec is None and grid_dec is None:
             edit_steps(asset.id, [asset.id])
+            dub_steps(asset.id)
             finishing_steps(asset.id, [asset.id])
             image_insert_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
@@ -771,6 +791,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         if xf_dec is not None:
             take_crossfade = crossfade_steps(xf_dec, st.id, total)
         edit_steps(PROGRAMME, inputs)
+        dub_steps(PROGRAMME)
         finishing_steps(PROGRAMME, inputs)
         image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
@@ -796,6 +817,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         durations[PROGRAMME] = total
         summary.append(f"Switch {' + '.join(inputs)} into one programme per {params['switch']} ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
+        dub_steps(PROGRAMME)
         finishing_steps(PROGRAMME, inputs)
         image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
@@ -822,6 +844,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         durations[PROGRAMME] = total
         summary.append(f"Composite {' + '.join(inputs)} into a {params['cols']}x{params['rows']} grid programme ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
+        dub_steps(PROGRAMME)
         finishing_steps(PROGRAMME, inputs)
         image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
@@ -851,5 +874,5 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "delivery": delivery,
+    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade}
