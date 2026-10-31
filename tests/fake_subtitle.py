@@ -101,6 +101,7 @@ def ts(seconds: float, sep: str) -> str:
 
 def render_text(cues, fmt: str) -> str:
     cues = sorted(cues, key=lambda c: (c["start"], c["end"], c["id"]))
+    cues = [dict(c, text=f"{c['speaker']}: {c['text']}") if c.get("speaker") else c for c in cues]   # subtitle-skill's formats/srt.py / vtt.py
     if fmt == "srt":
         return "".join(f"{i}\n{ts(c['start'], ',')} --> {ts(c['end'], ',')}\n{c['text']}\n\n" for i, c in enumerate(cues, 1))
     return "WEBVTT\n\n" + "".join(f"{c['id']}\n{ts(c['start'], '.')} --> {ts(c['end'], '.')}\n{c['text']}\n\n" for c in cues)

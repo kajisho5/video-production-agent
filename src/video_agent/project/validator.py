@@ -715,6 +715,12 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             for src in op.get("sources") or []:
                 if not any(o.get("id") == src and o.get("kind") == "transcript" for o in d["analysis"].get("observations") or []):
                     errs.append(f"captions.generate on {subj}: source {src} is not a transcript observation of this project")
+            # ADR-096: a cue names a speaker only as an anonymous id one of its source transcripts got from a recorded speaker merge
+            merged = {s for o in d["analysis"].get("observations") or [] if o.get("id") in (op.get("sources") or []) and o.get("kind") == "transcript"
+                      for s in (((o.get("data") or {}).get("speaker_assignment") or {}).get("speakers") or [])}
+            for c in cues:
+                if c.get("speaker") is not None and c["speaker"] not in merged:
+                    errs.append(f"captions.generate cue {c.get('id')}: speaker {c['speaker']!r} is not an id a source transcript got from a recorded speaker merge")
         elif t in ("captions.burn", "captions.mux"):   # ADR-063: the mux is the same render (mode mux); one of the two per subject
             if seen.get(("burn", subj)):
                 errs.append(f"more than one captions.burn / captions.mux on {subj}")

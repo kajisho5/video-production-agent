@@ -2,7 +2,10 @@
 `run -` with {"tool","params"} on stdin → {"ok","tool","result"} on stdout) with canned data, and misbehaves on request via
 FAKE_TS_MODE = ok | empty | text | two_docs | wrong_schema | wrong_skill | wrong_version | wrong_engine | wrong_asset |
 bad_source | no_transcript | invalid_provenance | speaker_set | timeout_error | hang | crash | nonzero | model_unavailable |
-engine_unavailable | bad_segments. FAKE_TS_CACHE=hit reports a cache hit. Never runs an ASR engine or ffmpeg. Test double only."""
+engine_unavailable | bad_segments | speaker_unknown | speaker_mismatch. FAKE_TS_CACHE=hit reports a cache hit. With `speaker_turns` (a
+diarization-skill/turns@1 document, ADR-096) the segments get speaker_id by the Skill's own ASSIGN rule (longest overlap with the exclusive
+turns; none or a tie: null) and the transcript a `speaker_assignment` record, as transcription-skill 0.8.0 merges after recognition.
+Never runs an ASR engine or ffmpeg. Test double only."""
 from __future__ import annotations
 
 import hashlib
@@ -178,6 +181,35 @@ def main() -> int:
             tr["segments"][0]["speaker_id"] = "spk_1"
         if MODE == "bad_segments":
             tr["segments"][1]["end"] = 3.0
+        turns = p.get("speaker_turns")
+        if turns is not None:
+            if not isinstance(turns, dict) or turns.get("schema") != "diarization-skill/turns@1":
+                return _err("INVALID_INPUT", "speaker turns schema must be diarization-skill/turns@1", {"reason": "TURNS_SCHEMA"})
+            if turns["source"]["fingerprint"] != tr["source"]["fingerprint"]:
+                return _err("INVALID_INPUT", "transcript and speaker turns were made from different files", {"reason": "SOURCE_MISMATCH"})
+            per = {}
+            for seg in tr["segments"]:
+                ov = {}
+                for t in turns["turns"]:
+                    o = min(seg["end"], t["end"]) - max(seg["start"], t["start"])
+                    if o > 0:
+                        ov[t["speaker"]] = ov.get(t["speaker"], 0.0) + o
+                best = sorted(ov.items(), key=lambda kv: -kv[1])
+                seg["speaker_id"] = best[0][0] if best and (len(best) == 1 or best[0][1] > best[1][1] + 1e-9) else None
+                for w in seg.get("words") or []:
+                    w["speaker_id"] = seg["speaker_id"]
+                if seg["speaker_id"]:
+                    per[seg["speaker_id"]] = per.get(seg["speaker_id"], 0) + 1
+            if MODE == "speaker_unknown":
+                tr["segments"][0]["speaker_id"] = "SPEAKER_42"
+            tr["speaker_assignment"] = {"skill": "transcription-skill", "skill_version": CONTRACT["version"], "tool": "transcription/speakers", "created_at": "2026-10-31T00:00:00Z",
+                                        "method": "max_overlap_with_exclusive_turns",
+                                        "rule": "per word (else per segment): speaker with the longest overlap with the exclusive turns; zero overlap or a tie -> null. "
+                                                "Segment with words: speaker with the largest assigned word duration; tie -> null.", "speaker_ids": "anonymous (SPEAKER_nn) from diarization-skill; they name nobody",
+                                        "turns_schema": "diarization-skill/turns@1", "source_fingerprint": turns["source"]["fingerprint"] if MODE != "speaker_mismatch" else "sha256:" + "0" * 64,
+                                        "source_match": MODE != "speaker_mismatch", "speakers": list(turns["speakers"]), "segments_per_speaker": per,
+                                        "counts": {"segments": len(tr["segments"]), "assigned": sum(per.values()), "unassigned": len(tr["segments"]) - sum(per.values())},
+                                        "overlap_available": False, "overlap_segment_ids": []}
         if hit:
             tr["asset_id"] = "asset_first_caller"   # like the real Skill: a cache hit returns the stored document unchanged
         res = {"transcript": tr, "cache_hit": hit, "cache_key": "c" * 64, "warnings": []}

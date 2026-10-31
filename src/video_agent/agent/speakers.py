@@ -11,7 +11,11 @@ Vocabulary and checks only, no execution:
   Skill's check_speaker_counts). `speakers.audio_stream` (0-based) picks another audio track. A refinement without the switch, an
   unknown `speakers.*` key, a switch that is not true / false or a value out of range is refused before analysis.
 - **What it is not**: the ids are anonymous (`SPEAKER_00` = the first voice heard), never a name; nothing here decides an edit.
-  Putting the ids into the transcript / subtitles is a separate, explicit step (roadmap step 8).
+- **Speaker ids end to end** (ADR-096, roadmap step 8): `speakers.assign=true` (only with `speakers.diarize=true`) also measures the
+  transcript and hands each input's measured turns to transcription-skill's transcribe (`speaker_turns`, merged after recognition with
+  diarization-skill's own ASSIGN rule); the transcript's segments then carry the anonymous ids, its `speaker_assignment` records how,
+  and the SpeechEvents, the subtitle cues (`speaker`, written by subtitle-skill as "SPEAKER_00: ...") and the take groups carry them.
+  Without that switch the null-only speaker_id invariants stay: recognition alone never identifies anyone.
 - **Without diarization-skill** (or with DIARIZE not ready: pyannote.audio, torch or the pipeline directory missing, as its doctor
   says) the measurement is not run: the plan records the ask and BLOCKs with a handoff naming diarization-skill and its install
   (agent/handoffs.py `decide_measurement_handoffs`). A measurement that ran and failed blocks with diarization-skill's own code."""
@@ -25,7 +29,8 @@ from .editing import EditRequirementError
 PREFIX = "speakers."
 SWITCH = "speakers.diarize"
 SKILL = "speaker_diarization"
-REQUIREMENT_KEYS = (SWITCH,) + tuple(PREFIX + p for p in PARAMETERS)
+ASSIGN = "speakers.assign"
+REQUIREMENT_KEYS = (SWITCH, ASSIGN) + tuple(PREFIX + p for p in PARAMETERS)
 _ON = (True, "true", "yes", "on", "1")
 _OFF = (False, None, "false", "no", "off", "0", "none")
 
@@ -62,7 +67,21 @@ def parse_speaker_requirements(user_requirements: Dict[str, Any]) -> Tuple[bool,
         raise EditRequirementError("speakers.num_speakers excludes speakers.min_speakers / speakers.max_speakers (diarization-skill's rule)")
     if "min_speakers" in params and "max_speakers" in params and params["min_speakers"] > params["max_speakers"]:
         raise EditRequirementError("speakers.min_speakers must be <= speakers.max_speakers")
+    if ASSIGN in given:
+        a = given[ASSIGN].strip().lower() if isinstance(given[ASSIGN], str) else given[ASSIGN]
+        if a not in _ON + _OFF:
+            raise EditRequirementError(f"{ASSIGN} is a switch (true / false), got {given[ASSIGN]!r}")
+        if a in _ON and not on:
+            raise EditRequirementError(f"{ASSIGN} puts the measured speaker turns into the transcript; it needs {SWITCH}=true")
     return on, params
+
+
+def speaker_assign_requested(user_requirements: Dict[str, Any]) -> bool:
+    """ADR-096: whether the transcript (and from it the SpeechEvents, subtitle cues and take groups) should carry the speaker ids."""
+    parse_speaker_requirements(user_requirements)
+    a = (user_requirements or {}).get(ASSIGN)
+    a = a.strip().lower() if isinstance(a, str) else a
+    return a in _ON
 
 
 def check_speaker_keys(user_requirements: Dict[str, Any]) -> None:
