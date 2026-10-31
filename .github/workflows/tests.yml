@@ -20,8 +20,8 @@ jobs:
       # Phase 3 (ADR-031 / ADR-032): the five finishing-Skill adapters against their fake processes, and the integrated pipeline on the fake engine + fake Skills
       - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
       - run: python -m unittest -v tests/test_pipeline.py
-      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`; ADR-073: voice-enhance through a fake `voice-enhance`
-      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py
+      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`; ADR-073: voice-enhance through a fake `voice-enhance`; ADR-077: overlay image preparation through a fake imagemagick-skill checkout
+      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py tests/test_image_prepare.py
       - run: python evals/run.py
   integration:
     runs-on: ubuntu-latest
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core imagemagick   # imagemagick: ADR-077's ImagePrepareRealTests (imagemagick-skill uses IM6's convert / identify)
       - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
       - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
       - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
@@ -48,6 +48,8 @@ jobs:
       # voice-enhance-skill (ADR-073): main (no release tag); run from the checkout. No engine in CI: the tests stand in a deep-filter that copies its input
       # and a nara_wpe whose wpe_v8 is the identity (as voice-enhance-skill's own tests do); numpy is for those engines' STFT and the real crosstalk engine
       - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill
+      # imagemagick-skill (ADR-077): main (contract 0.8.1, = the v0.8.1 tag but for CI files); its scripts run from the checkout, standard library only
+      - run: git clone --depth 1 https://github.com/kajisho5/imagemagick-skill ../imagemagick-skill
       - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - run: python -m unittest -v tests/test_integration.py
         env:
@@ -63,6 +65,7 @@ jobs:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
           VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
           VIDEO_AGENT_VOICE_ENHANCE_DIR: "${{ github.workspace }}/../voice-enhance-skill"
+          VIDEO_AGENT_IMAGEMAGICK_DIR: "${{ github.workspace }}/../imagemagick-skill"
       # ADR-076: the color-grading adapter against color-grading-skill main (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
       - run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests
         env:

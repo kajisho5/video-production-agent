@@ -1,0 +1,56 @@
+{
+ "name": "im_overlay_prepare_end_to_end",
+ "profile": "generic",
+ "video_editing_ops": {
+  "inputs": 1,
+  "image": "inside",
+  "imagemagick": "installed"
+ },
+ "requirements": {
+  "edit.overlay.position": "top-right",
+  "edit.overlay.prepare.width": 320,
+  "edit.overlay.prepare.height": 180,
+  "edit.overlay.prepare.pad": "none",
+  "edit.overlay.prepare.strip": true
+ },
+ "expect": {
+  "ir_ops": [
+   "video.overlay"
+  ],
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "steps": [
+   [
+    "image_strip",
+    "imagemagick-skill/strip"
+   ],
+   [
+    "image_prepare",
+    "imagemagick-skill/resize"
+   ],
+   [
+    "image_pad",
+    "imagemagick-skill/pad"
+   ],
+   [
+    "video_overlay",
+    "video-editing/overlay"
+   ]
+  ],
+  "handoffs": [],
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "tools": [
+    "video-editing/overlay"
+   ],
+   "image_tools": [
+    "imagemagick-skill/strip",
+    "imagemagick-skill/resize",
+    "imagemagick-skill/pad"
+   ],
+   "overlay_image": "_overlay_pad.png",
+   "qa_status": "PASS"
+  }
+ }
+}

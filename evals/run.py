@@ -613,9 +613,16 @@ def run_case(case: dict) -> dict:
             reqs["edit.image_insert"] = str(still)
         skill = VideoEditingSkill([sys.executable, str(ROOT / "tests" / "fake_video_editing.py")], None, {})
         ad = VideoEditingAdapter(skill, workspace=tmp, allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
-        caps = FakeCaps(case.get("missing_capabilities", ()), extra=[] if vo.get("no_capability") else ["video-editing", "encoder:aac"])
+        caps = FakeCaps(case.get("missing_capabilities", ()), extra=([] if vo.get("no_capability") else ["video-editing", "encoder:aac"])
+                        + (["imagemagick-skill", "imagemagick-skill:RESIZE", "imagemagick-skill:PAD", "imagemagick-skill:STRIP"] if vo.get("imagemagick") == "installed" else []))
         fake_engine = FakeAdapter(**fake)
-        svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine, ad]), caps=caps, provider=provider)
+        adapters = [fake_engine, ad]
+        if vo.get("imagemagick") == "installed":   # ADR-077: a fake imagemagick-skill checkout, launched like the real scripts
+            import fake_imagemagick
+            from video_agent.tools.imagemagick import ImageMagickAdapter, locate_imagemagick
+            adapters.append(ImageMagickAdapter(locate_imagemagick(fake_imagemagick.make_checkout(str(Path(tmp) / "imagemagick-skill"))), workspace=tmp,
+                                               allowed_inputs=[str(src.parent)]))
+        svc = Service(workspace=tmp, adapter=ToolRouter(adapters), caps=caps, provider=provider)
         try:
             ir = svc.plan(inputs, case.get("profile", "generic"), user_requirements=reqs)
         except ValueError as e:
@@ -643,6 +650,14 @@ def run_case(case: dict) -> dict:
         for s_ in d["plan"]["steps"]:
             if s_["skill"].startswith("video_") and s_.get("tool") and not s_["tool"].startswith("video-editing/"):
                 failures.append(f"step {s_['id']} selected a non video-editing tool {s_['tool']}")
+        if exp.get("steps") is not None:   # ADR-077: (skill, tool) of the steps, in plan order, for the skills named
+            got = [[s_["skill"], s_.get("tool")] for s_ in d["plan"]["steps"] if s_["skill"] in {x[0] for x in exp["steps"]}]
+            if got != exp["steps"]:
+                failures.append(f"steps {got} != {exp['steps']}")
+        if exp.get("handoffs") is not None:
+            got = [[h["skill"], h["repositories"], [c for c in h["install"] if "imagemagick" in c]] for h in svc.handoffs(ir)]
+            if got != exp["handoffs"]:
+                failures.append(f"handoffs {got} != {exp['handoffs']}")
         if exp.get("render"):
             if vo.get("run_mode"):
                 os.environ["FAKE_VE_MODE"] = vo["run_mode"]
@@ -658,6 +673,14 @@ def run_case(case: dict) -> dict:
             used = [r["tool"] for r in results if r["tool"].startswith("video-editing/")]
             if want.get("tools") is not None and used != want["tools"]:
                 failures.append(f"video-editing tools {used} != {want['tools']}")
+            prepared = [r["tool"] for r in results if r["tool"].startswith("imagemagick-skill/") and r.get("ok")]
+            if want.get("image_tools") is not None and prepared != want["image_tools"]:
+                failures.append(f"imagemagick-skill tools {prepared} != {want['image_tools']}")
+            if want.get("overlay_image") is not None:   # the artifact id the overlay composited (the last preparation's output)
+                prov_ops = json.loads((Path(tmp) / "jobs" / rr["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))["operations"] if rr.get("job") else []
+                row = next((e for e in prov_ops if e["tool"] == "video-editing/overlay"), None)
+                if not row or not any(str(i).endswith(want["overlay_image"]) for i in row["input"]):
+                    failures.append(f"the overlay did not composite {want['overlay_image']}: {row and row['input']}")
             if want.get("recovery_classes") is not None and [r["class"] for r in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
                 failures.append(f"recovery {[r['class'] for r in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
             if want.get("qa_status") and (rr.get("qa") or {}).get("status") != want["qa_status"]:

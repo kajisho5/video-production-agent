@@ -35,6 +35,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
                    "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
+                   # ADR-077: the overlay image prepared by imagemagick-skill before the overlay (the subject, the user's image, the tool's parameters)
+                   "image_strip": ("asset", "image"), "image_prepare": ("asset", "image", "width", "height", "mode"),
+                   "image_pad": ("asset", "image", "width", "height", "color", "gravity"),
                    # ADR-070: the still → a clip at the picture's frame / rate (its join is a video_concat step on the same subject)
                    "video_image_insert": ("asset", "image", "duration", "position", "width", "height", "fps"),
                    # audio production path (ADR-030): the subject's audio through audio-production-skill

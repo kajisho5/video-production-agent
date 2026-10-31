@@ -1,0 +1,45 @@
+{
+ "name": "im_overlay_prepare_without_skill_hands_off",
+ "profile": "generic",
+ "video_editing_ops": {
+  "inputs": 1,
+  "image": "inside"
+ },
+ "requirements": {
+  "edit.overlay.prepare.width": 320,
+  "edit.overlay.prepare.height": 180
+ },
+ "expect": {
+  "ir_ops": [
+   "video.overlay"
+  ],
+  "blocked": true,
+  "blocked_subjects": [
+   "capability.image_prepare"
+  ],
+  "plan_status": "BLOCKED",
+  "steps": [
+   [
+    "image_prepare",
+    null
+   ],
+   [
+    "video_overlay",
+    "video-editing/overlay"
+   ]
+  ],
+  "handoffs": [
+   [
+    "image_prepare",
+    [
+     "imagemagick-skill"
+    ],
+    [
+     "/plugin install imagemagick-skill@ai-video-production-os",
+     "npx imagemagick-skill"
+    ]
+   ]
+  ],
+  "validate_error": "(image_prepare) has no selected tool"
+ }
+}

@@ -94,7 +94,10 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("vtskit", "vtskit", "delivery", "pip", "active", optional=True, owns=("DVD-Video作成",), package_install="pip install vtskit"),
     Component("udfkit", "udfkit", "delivery", "pip", "active", optional=True, owns=("ディスクイメージ(UDF)",), package_install="pip install udfkit"),
     Component("dvdcc", "dvdcc", "delivery", "pip", "active", optional=True, owns=("DVD字幕(CEA-608)",), package_install="pip install dvdcc"),
-    Component("imagemagick", "imagemagick-skill", "utility", "checkout", "active", plugin=True, owns=("静止画編集",), package_install="npx imagemagick-skill"),
+    # ADR-077: the agent's package id is imagemagick-skill (the Skill's own skill.id and tool-id prefix; ecosystem.json's id is `imagemagick`)
+    Component("imagemagick-skill", "imagemagick-skill", "utility", "checkout", "active", plugin=True, owns=("静止画編集",), package_install="npx imagemagick-skill",
+              note="the agent prepares edit.overlay images with its resize / pad / strip (ADR-077); `npx imagemagick-skill` copies the checkout to "
+                   "~/.claude/skills/imagemagick-skill, where the agent finds it (or VIDEO_AGENT_IMAGEMAGICK_DIR); ImageMagick itself is the user's install"),
     Component("blender", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill"),
     Component("remotion-ffmpeg", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
               package_install="npx remotion-ffmpeg-skill"),

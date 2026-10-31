@@ -1,0 +1,18 @@
+{
+ "name": "im_overlay_pad_after_fill_refused",
+ "profile": "generic",
+ "video_editing_ops": {
+  "inputs": 1,
+  "image": "inside",
+  "imagemagick": "installed"
+ },
+ "requirements": {
+  "edit.overlay.prepare.width": 320,
+  "edit.overlay.prepare.height": 180,
+  "edit.overlay.prepare.mode": "fill",
+  "edit.overlay.prepare.pad": "black"
+ },
+ "expect": {
+  "plan_error": "mode fit"
+ }
+}

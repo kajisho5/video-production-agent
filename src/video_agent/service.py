@@ -57,6 +57,7 @@ from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_r
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
+from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
@@ -94,6 +95,7 @@ class Service:
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
+        self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
                                                video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
@@ -112,6 +114,7 @@ class Service:
             self.registry.register_package(pkg)
         self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
+        self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -152,6 +155,8 @@ class Service:
             (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
             # ADR-073: always told which ffmpeg-skill to use (never its own current-directory search); paths checked per call like the other Skills
             (locate_voice_enhance(self.voice_enhance_dir), lambda sk: VoiceEnhanceAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
+            (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
         ):
             if located:
                 try:
@@ -1014,6 +1019,8 @@ class Service:
                 lifted = [lift_voice_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("thumbnail/"):
                 lifted = [lift_thumbnail_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("imagemagick-skill/"):   # ADR-077: the prepared overlay image (operation, backend, size, sha256)
+                lifted = [lift_image_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("qc/"):
                 qop = ops_by_id.get(r.op_id)
                 lifted = [lift_qc_report(r, (str(qop.args.get("input")) if qop is not None and qop.args.get("input") else None) or r.op_id)]

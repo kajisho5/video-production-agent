@@ -8,6 +8,7 @@ an output whose upstream changed. Operation ids are deterministic (H(tool, args,
 job records can be matched across compiles."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,6 +19,7 @@ from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_r
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
+from ..agent.image_prepare import prepare_chain, prepared_id
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
 from ..tools.voice_enhance.adapter import stem_name as voice_stem_name
 from ..models import Operation, stable_hash
@@ -41,6 +43,15 @@ def source_fingerprint(asset: Dict[str, Any]) -> str:
     if f.get("size") is not None and f.get("mtime") is not None:
         return f"stat:{f['size']}:{f['mtime']}"
     return "unknown:" + asset.get("path", "")
+
+
+def image_fingerprint(path: str) -> str:
+    """ADR-077: an overlay image's identity for the keys of its preparation: the path with its size and mtime (a replaced file changes it)."""
+    try:
+        s = os.stat(path)
+        return f"image:{path}:{s.st_size}:{int(s.st_mtime)}"
+    except OSError:
+        return "image:" + path
 
 
 class CompileError(ValueError):
@@ -87,6 +98,14 @@ def lower_video_edit(tool: str, op: Dict[str, Any], current: str, out_id: str, e
         args[k] = v
     args["output"] = out_id
     return args
+
+
+def lower_image_prepare(tool: str, tool_name: str, params: Dict[str, Any], image_id: str, out_id: str) -> Dict[str, Any]:
+    """ADR-077: one preparation of an overlay image → imagemagick-skill/<tool>'s typed arguments (the IR's values by the contract's names;
+    references are artifact ids). The plan names the tool; the compiler only checks it is the one for this preparation."""
+    if tool.split("/", 1)[-1] != tool_name:
+        raise CompileError(f"the overlay image's {tool_name} cannot be executed by {tool}")
+    return {"input": image_id, **{k: v for k, v in params.items() if v is not None}, "output": out_id}
 
 
 def lower_image_insert(tool: str, join_tool: str, op: Dict[str, Any], image_id: str, still_id: str, current: str, out_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -323,6 +342,14 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 img_id = f"{subject}_{name}_image"
                 paths[img_id] = op["image"]
                 keys[img_id] = ""
+                for sk, tool_name, tparams in prepare_chain(op.get("prepare") or {}):   # ADR-077: strip → resize → pad, each a new PNG in the job
+                    st["gen"] += 1
+                    prep_id = prepared_id(subject, tool_name)
+                    paths[prep_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_overlay_{tool_name}" / f"{st['stem']}_overlay_{tool_name}.png")
+                    ptool = tool_for(sk, subject)
+                    add(ptool, lower_image_prepare(ptool, tool_name, tparams, img_id, prep_id), [img_id], [prep_id], list(op.get("decision_ids") or []),
+                        image_fingerprint(op["image"]), skill=sk)
+                    img_id = prep_id
                 refs["image"] = img_id
                 inputs.append(img_id)
             args = lower_video_edit(tool, op, st["current"], out_id, refs)

@@ -24,6 +24,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Requirement
+from . import image_prepare as _prep
 
 PROGRAMME = "programme"      # logical id of the concat (or switch / grid) output (the multi-source timeline)
 # operation order after the trims: the same for the plan, the IR and the compiler (deterministic, not configurable).
@@ -95,7 +96,9 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     "video.resize": ("edit.resize", "edit.resize.fps"),
     "video.fit": ("edit.fit", "edit.fit.width", "edit.fit.pad_color", "edit.fit.fps"),
     "video.fill": ("edit.fill", "edit.fill.width", "edit.fill.fps"),
-    "video.overlay": ("edit.overlay", "edit.overlay.position", "edit.overlay.margin", "edit.overlay.scale", "edit.overlay.opacity", "edit.overlay.start", "edit.overlay.end", "edit.overlay.fade"),
+    # ADR-077: `edit.overlay.prepare.*` (agent/image_prepare.py, vocabulary from the pinned imagemagick-skill contract) prepares the image first
+    "video.overlay": ("edit.overlay", "edit.overlay.position", "edit.overlay.margin", "edit.overlay.scale", "edit.overlay.opacity", "edit.overlay.start", "edit.overlay.end", "edit.overlay.fade")
+                     + _prep.KEYS,
     # ADR-062: an explicit in / out range ("START-END", seconds or mm:ss). Not an OPERATIONS entry: it narrows the asset's one
     # video.trim (the same IR record the silence decisions produce), executed by video-editing/trim when one range remains
     TRIM_OP: (TRIM_KEY,),
@@ -200,6 +203,39 @@ def parse_trim(v: Any) -> Dict[str, float]:
     if not s_ < e_:
         raise EditRequirementError(f"{TRIM_KEY}: start {s_:g}s must be before end {e_:g}s")
     return {"start": round(s_, 3), "end": round(e_, 3)}
+
+
+def parse_overlay_prepare(vals: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """ADR-077: `edit.overlay.prepare.*` → the overlay image's preparation ({width, height, mode, pad?, gravity?, strip?}), or None when
+    none was asked for. Types, enums and defaults are imagemagick-skill's (agent/image_prepare.py reads them from the pinned contract);
+    the sizes and the colour are only ever the user's."""
+    k = {name: vals[_prep.PREFIX + name] for name in tuple(_prep.KEY_PARAMETERS) + ("strip",) if _prep.PREFIX + name in vals}
+    out: Dict[str, Any] = {}
+    if ("width" in k) != ("height" in k):
+        raise EditRequirementError(f"{_prep.PREFIX}width and {_prep.PREFIX}height go together (the box the image is resized to; nothing is assumed)")
+    for side in ("width", "height"):
+        if side in k:
+            v = _number(k[side], _prep.PREFIX + side, *_prep.SIDE_RANGE)
+            if float(v) != int(v):
+                raise EditRequirementError(f"{_prep.PREFIX}{side} must be an integer (pixels)")
+            out[side] = int(v)
+    if "mode" in k and "width" not in out:
+        raise EditRequirementError(f"{_prep.PREFIX}mode needs {_prep.PREFIX}width and .height")
+    if "width" in out:
+        out["mode"] = _token(k.get("mode", _prep.RESIZE_MODE_DEFAULT), _prep.PREFIX + "mode", re.compile("^(" + "|".join(map(re.escape, _prep.RESIZE_MODES)) + ")$"),
+                             "one of " + ", ".join(_prep.RESIZE_MODES))
+    if "pad" in k:
+        if "width" not in out or out["mode"] != "fit":
+            raise EditRequirementError(f"{_prep.PREFIX}pad pads a fit result to the width x height canvas: it needs .width / .height and mode fit "
+                                       "(fill and exact already have that size)")
+        out["pad"] = _token(k["pad"], _prep.PREFIX + "pad", re.compile(_prep.COLOR_PATTERN), "none, a colour name or #RRGGBB / #RRGGBBAA")
+        out["gravity"] = _token(k.get("gravity", _prep.GRAVITY_DEFAULT), _prep.PREFIX + "gravity", re.compile("^(" + "|".join(map(re.escape, _prep.GRAVITIES)) + ")$"),
+                                "one of " + ", ".join(_prep.GRAVITIES))
+    elif "gravity" in k:
+        raise EditRequirementError(f"{_prep.PREFIX}gravity needs {_prep.PREFIX}pad")
+    if "strip" in k and _bool(k["strip"], _prep.STRIP_KEY):
+        out["strip"] = True
+    return out or None
 
 
 def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, Any]]:
@@ -387,6 +423,9 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
                     p[k] = float(_number(vals[f"edit.overlay.{k}"], f"edit.overlay.{k}", 0.0, 86400.0))
             if "start" in p and "end" in p and not p["start"] < p["end"]:
                 raise EditRequirementError("edit.overlay.start must be before edit.overlay.end")
+            prep = parse_overlay_prepare(vals)
+            if prep:
+                p["prepare"] = prep
         elif op == IMAGE_INSERT_OP:
             p["image"] = image_path(vals["edit.image_insert"], "edit.image_insert")
             if "edit.image_insert.duration" not in vals:

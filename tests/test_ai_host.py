@@ -101,7 +101,8 @@ ECOSYSTEM_JOBS = {
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
     "platform_publish": ("publish", "publish-skill", f"none yet: publish-skill is a scaffold repository with no released package ({_GH}publish-skill)"),
-    "still_image_edit": ("imagemagick", "imagemagick-skill", "npx imagemagick-skill"),
+    # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
+    "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
     "render_3d": ("blender", "blender-skill", "npx blender-skill"),
     "measured_motion_graphics": ("remotion-ffmpeg", "remotion-ffmpeg-skill", "npx remotion-ffmpeg-skill"),
     "html_scene_render": ("hyperframes", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
