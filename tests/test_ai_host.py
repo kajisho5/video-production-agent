@@ -95,7 +95,8 @@ _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
     # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload;
     # voice_enhancement (voice-enhance) left it the same way (ADR-073): the implemented skills voice_isolate / voice_dereverb / voice_bleed_reduce
-    "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
+    # dubbing: DUB is the implemented skill speech_dub (ADR-085); the job stays for narration / audio description, now with an install line
+    "dubbing": ("dubbing", "dubbing-skill", f"git clone {_GH}dubbing-skill && pip install -e 'dubbing-skill'"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
     "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
