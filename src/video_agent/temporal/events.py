@@ -5,7 +5,7 @@ Event ≠ Observation ≠ Inference ≠ Decision. Events exist on the time axis;
 (INFERRED / AI_GENERATED). An AI provider can never produce an OBSERVED event.
 
 Defining an event type here does not mean it is detected: only the codes in IMPLEMENTED_CODES are ever generated, from
-the observation kinds that are implemented (silence, loudness, transcript, speaker_turns since ADR-083). Slide / camera / scene /
+the observation kinds that are implemented (silence, loudness, transcript, speaker_turns since ADR-086). Slide / camera / scene /
 caption types are schema only until an analyzer or skill exists for them. A SpeechEvent says "speech with this transcript exists in this
 interval"; it never says who speaks (speaker_id stays null) and never becomes a command.
 """
@@ -118,7 +118,7 @@ def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
             e.confidence = seg.get("confidence") if isinstance(seg.get("confidence"), (int, float)) else None
             out.append(e)
     elif obs.kind == "speaker_turns":
-        # ADR-083: one SpeakerEvent per exclusive turn of diarization-skill (an anonymous voice id, never a person); overlap regions are
+        # ADR-086: one SpeakerEvent per exclusive turn of diarization-skill (an anonymous voice id, never a person); overlap regions are
         # kept in the observation, not as events (exclusive turns give one speaker at a time, the Skill's own convention)
         doc = obs.data
         for t in doc.get("turns") or []:

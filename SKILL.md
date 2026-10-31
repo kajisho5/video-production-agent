@@ -37,7 +37,7 @@ Speech enhancement through voice-enhance-skill (ADR-073) is opt-in on the audio 
 
 An overlay image is prepared by imagemagick-skill (ADR-077) only when the user gives its size: `--set edit.overlay=logo.png edit.overlay.prepare.width=320 edit.overlay.prepare.height=180` (both; `edit.overlay.prepare.mode=fit|fill|exact`, default fit), `edit.overlay.prepare.pad=none|<colour>` (+ `.gravity`) to pad a fit to exactly that canvas, `edit.overlay.prepare.strip=true` to remove GPS / EXIF first. Never choose a size or a colour yourself; ask. The user's file is never written; without imagemagick-skill the step is handed off (`npx imagemagick-skill`).
 
-Who spoke when comes from diarization-skill (ADR-083) only when asked: `--set speakers.diarize=true` (+ `speakers.num_speakers=N` when the user knows the count, or `speakers.min_speakers` / `speakers.max_speakers`). The result is anonymous turns (`SPEAKER_00`, ...): never write a name for one unless the user told you who it is. Without diarization-skill, or with its engine / gated pipeline not set up, the plan hands the measurement off with diarization-skill's own install steps.
+Who spoke when comes from diarization-skill (ADR-086) only when asked: `--set speakers.diarize=true` (+ `speakers.num_speakers=N` when the user knows the count, or `speakers.min_speakers` / `speakers.max_speakers`). The result is anonymous turns (`SPEAKER_00`, ...): never write a name for one unless the user told you who it is. Without diarization-skill, or with its engine / gated pipeline not set up, the plan hands the measurement off with diarization-skill's own install steps.
 
 ## Offloading a camera card (ingest-skill)
 

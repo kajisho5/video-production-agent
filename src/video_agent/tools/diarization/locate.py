@@ -1,5 +1,5 @@
 """Locate an installed diarization-skill (kajisho5/diarization-skill): a checkout (<dir>/src/diarization_skill, run as
-`python -m diarization_skill.cli` with PYTHONPATH=<dir>/src) or the console script `diarization`. The agent never imports it (ADR-080)."""
+`python -m diarization_skill.cli` with PYTHONPATH=<dir>/src) or the console script `diarization`. The agent never imports it (ADR-086)."""
 from __future__ import annotations
 
 from typing import Dict, Optional

@@ -84,7 +84,7 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),
               package_install=_clone_pip("diarization-skill", "pyannote"),
-              note="speaker turns as the analysis kind speaker_turns (ADR-083); diarize also needs the gated speaker-diarization-community-1 pipeline cloned once "
+              note="speaker turns as the analysis kind speaker_turns (ADR-086); diarize also needs the gated speaker-diarization-community-1 pipeline cloned once "
                    "and DIARIZATION_PIPELINE_DIR set (`diarization doctor` prints the steps; the Skill never downloads)"),
     Component("detection", "detection-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("顔検出", "文字検出(OCR)", "物体検出"),
               package_install=_clone_pip("detection-skill", "all")),

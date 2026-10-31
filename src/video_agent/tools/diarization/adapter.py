@@ -1,4 +1,4 @@
-"""DiarizationAdapter: the agent's boundary to diarization-skill (ADR-083; diarization-skill roadmap step 5, agent side).
+"""DiarizationAdapter: the agent's boundary to diarization-skill (ADR-086; diarization-skill roadmap step 5, agent side).
 
     video-production-agent ─(analysis kind speaker_turns)─→ DiarizationAdapter ─(argv list, never a shell)─→
         `diarization diarize --json --overwrite --output=<workspace>/cache/diarization/<asset>.turns.json [--num-speakers=N |

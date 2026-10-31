@@ -302,7 +302,7 @@ class CapabilityResolver:
         # resize / pad but not strip). Each tool gets `imagemagick-skill:<TYPE>` from the doctor's `tools.<name>.usable`, with the backend.
         self._finishing_skill(caps, "imagemagick-skill", locate_imagemagick(env=self.env), lambda sk: ImageMagickAdapter(sk), "VIDEO_AGENT_IMAGEMAGICK_DIR", "imagemagick-skill",
                               "npx imagemagick-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
-        # diarization-skill (ADR-083): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (ASSIGN / CHECK run,
+        # diarization-skill (ADR-086): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (ASSIGN / CHECK run,
         # DIARIZE not ready: pyannote.audio, torch or the pipeline directory missing). `diarization:DIARIZE` follows the doctor's ready.diarize, with the
         # code its diarize would return (ENGINE_UNAVAILABLE / PIPELINE_NOT_FOUND / FFMPEG_NOT_FOUND) and the doctor's install lines.
         self._finishing_skill(caps, "diarization", locate_diarization(env=self.env), lambda sk: DiarizationAdapter(sk), "VIDEO_AGENT_DIARIZATION_DIR", "diarization-skill",

@@ -634,7 +634,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
     # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here
     decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)
-    # ---- measurements an explicit requirement asks for that cannot run here (ADR-083): recorded and BLOCKED with a handoff, never dropped
+    # ---- measurements an explicit requirement asks for that cannot run here (ADR-086): recorded and BLOCKED with a handoff, never dropped
     decide_measurement_handoffs(eng, m, analysis, probe_ids_of, cap_missing)
     # ---- delivery
     targets = m.get("delivery.targets")

@@ -1,4 +1,4 @@
-"""Who spoke when (ADR-083): the `speakers.*` requirements that ask diarization-skill for anonymous speaker turns.
+"""Who spoke when (ADR-086): the `speakers.*` requirements that ask diarization-skill for anonymous speaker turns.
 
     Requirement (`--set speakers.diarize=true`, explicit only) → analysis kind `speaker_turns` (diarization-skill `diarize`, a measurement)
     → Observation `speaker_turns` (OBSERVED) + SpeakerEvents on the asset's timeline

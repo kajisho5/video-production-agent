@@ -95,7 +95,7 @@ _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
     # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload;
     # voice_enhancement (voice-enhance) left it the same way (ADR-073): the implemented skills voice_isolate / voice_dereverb / voice_bleed_reduce
-    # speaker_diarization (diarization) too (ADR-083): the implemented measurement speaker_turns (tests/test_diarization.py)
+    # speaker_diarization (diarization) too (ADR-086): the implemented measurement speaker_turns (tests/test_diarization.py)
     "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
@@ -187,7 +187,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assert_handoff("sound_design")
 
     def test_speaker_diarization_moved_to_the_diarization_adapter(self):
-        """ADR-083: `job.speaker_diarization` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a
+        """ADR-086: `job.speaker_diarization` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a
         plan asking for it without diarization-skill still hands the step over naming diarization-skill and its install command."""
         tmp = tempfile.mkdtemp()
         svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())

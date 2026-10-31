@@ -353,7 +353,7 @@ class MediaAnalyzer(Analyzer):
 
     @staticmethod
     def _lift_turns(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
-        """Lift diarization-skill's speaker turns (diarization-skill/turns@1, ADR-083) into an Observation of kind `speaker_turns`: the document
+        """Lift diarization-skill's speaker turns (diarization-skill/turns@1, ADR-086) into an Observation of kind `speaker_turns`: the document
         is the fact (anonymous exclusive turns, overlap regions, engine / model / revision / licence / attribution), stored as the Skill wrote
         it, plus the turns file the agent wrote into its workspace. OBSERVED: an estimate by a measurement tool, never an inference or a name."""
         doc = dict(data["turns"])

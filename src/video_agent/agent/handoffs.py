@@ -8,7 +8,7 @@ gets a step for it, BLOCKED with a handoff naming the package and its install co
   subject (no adapter here), so the plan is BLOCKED. The agent never runs, records or verifies the job itself.
 - **Plan**: one step per requested job (`step_job_<skill>`, inputs: the request's assets, tool None) that `Service.handoffs`
   reports with the owning package, repository and install commands.
-- **Measurements an explicit requirement asks for** (ADR-083: `speakers.diarize` → analysis kind `speaker_turns`, diarization-skill)
+- **Measurements an explicit requirement asks for** (ADR-086: `speakers.diarize` → analysis kind `speaker_turns`, diarization-skill)
   take the same route when no tool can run them here: one TRANSFORM (the ask, `handoff: true`) and one BLOCK naming why (the
   registry's reason: the package missing, or its doctor's per-operation verdict with the Skill's own code and install line), and a
   `step_job_<skill>` with no tool for the handoff. A measurement that ran and failed on an input BLOCKs with the Skill's own code."""
@@ -30,8 +30,8 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
              # ADR-073: voice-enhance-skill's adapter (roadmap step 9)
              "voice_enhancement": "voice enhancement is implemented (skills voice_isolate / voice_dereverb / voice_bleed_reduce, ADR-073): with --set audio.production=true, "
                                   "ask for --set voice.isolate=true, voice.dereverb=true and / or voice.bleed_reduce=true (with audio.mix=true); every op needs confirmation (EXPERIMENTAL)",
-             # ADR-083: diarization-skill's adapter (roadmap step 9; diarization-skill roadmap step 5)
-             "speaker_diarization": "speaker diarization is implemented (analysis kind speaker_turns, ADR-083): ask for --set speakers.diarize=true "
+             # ADR-086: diarization-skill's adapter (roadmap step 9; diarization-skill roadmap step 5)
+             "speaker_diarization": "speaker diarization is implemented (analysis kind speaker_turns, ADR-086): ask for --set speakers.diarize=true "
                                     "(+ speakers.num_speakers, or speakers.min_speakers / speakers.max_speakers); without diarization-skill the plan hands it off"}
 _ON = (True, "true", "yes", "on", "1")
 _OFF = (False, None, "false", "no", "off", "0", "none")
@@ -81,7 +81,7 @@ def decide_jobs(eng: Any, m: Dict[str, Requirement], asset_ids: List[str], probe
                    confidence=1.0, evidence=[f"skill:{name}"], risk="HIGH", approval="BLOCK", provenance="SYSTEM", params={"skill": name, "missing": [pkg]})
 
 
-# requirement switch → (registry skill, analysis kind, why the measurement is asked for); ADR-083
+# requirement switch → (registry skill, analysis kind, why the measurement is asked for); ADR-086
 MEASUREMENT_HANDOFFS = {DIARIZE_SWITCH: (DIARIZE_SKILL, "speaker_turns", "anonymous speaker turns (who spoke when) on every input with audio")}
 
 

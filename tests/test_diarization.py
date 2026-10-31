@@ -1,4 +1,4 @@
-"""ADR-083 (roadmap step 9 diarization; diarization-skill's roadmap step 5, agent side): diarization-skill's DIARIZE as the analysis kind
+"""ADR-086 (roadmap step 9 diarization; diarization-skill's roadmap step 5, agent side): diarization-skill's DIARIZE as the analysis kind
 `speaker_turns`, asked for explicitly (`speakers.diarize`), against a fake `diarization` process (tests/fake_diarization.py) that speaks
 diarization-skill main's contract, doctor and turns document, with the fake media engine. No engine, ffmpeg or network."""
 from __future__ import annotations

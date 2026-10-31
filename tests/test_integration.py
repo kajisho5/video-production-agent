@@ -3171,7 +3171,7 @@ class ImagePrepareRealTests(unittest.TestCase):
 
 
 class DiarizationRealTests(unittest.TestCase):
-    """ADR-083 on the real diarization-skill (main, contract 0.1.0): the live contract equals the pin, and without pyannote.audio / the gated
+    """ADR-086 on the real diarization-skill (main, contract 0.1.0): the live contract equals the pin, and without pyannote.audio / the gated
     pipeline (the CI integration job installs neither: the weights need a Hugging Face account) its doctor marks DIARIZE not ready with the
     Skill's own code, the adapter's diarize returns that code verbatim (exit 3, nothing guessed), and a plan asking for speaker turns hands the
     measurement off naming diarization-skill. Runs whenever a diarization-skill checkout is installed (VIDEO_AGENT_DIARIZATION_DIR)."""

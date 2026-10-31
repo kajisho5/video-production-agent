@@ -830,7 +830,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         qc_steps(PROGRAMME, qc_tolerance_lu)
     # ---- ecosystem jobs handed off (ADR-057): one step per requested job, on the request's assets, with no tool (BLOCKED; the
     # plan's handoff names the owning package and its install command). It waits on nothing and produces nothing the agent tracks.
-    # ADR-083: a measurement an explicit requirement asked for that no tool can run here (`handoff: true`) takes the same step
+    # ADR-086: a measurement an explicit requirement asked for that no tool can run here (`handoff: true`) takes the same step
     for d in [x for x in decisions if (x.subject.startswith(JOB_PREFIX) or x.params.get("handoff") is True) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
         skill = d.params["skill"]
         order += 1

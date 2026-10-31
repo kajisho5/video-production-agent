@@ -240,7 +240,7 @@ def _offload_case(case: dict) -> dict:
 
 
 def _speakers_case(case: dict) -> dict:
-    """ADR-083: `speakers.diarize` → diarization-skill's turns as the analysis kind speaker_turns (OBSERVED observation + SpeakerEvents)
+    """ADR-086: `speakers.diarize` → diarization-skill's turns as the analysis kind speaker_turns (OBSERVED observation + SpeakerEvents)
     through the fake `diarization` process; or, when DIARIZE cannot run (not installed / not ready), a BLOCKED plan with a handoff."""
     import os
     from test_diarization import MODES, dia_service
@@ -372,7 +372,7 @@ def run_case(case: dict) -> dict:
             return {"case": case["name"], "ok": not failures, "failures": failures}
     if case.get("offload") is not None:   # ADR-066: a card offload is its own plan (no media file input)
         return _offload_case(case)
-    if case.get("speakers") is not None:   # ADR-083: speaker turns through the fake diarization-skill
+    if case.get("speakers") is not None:   # ADR-086: speaker turns through the fake diarization-skill
         return _speakers_case(case)
     if case.get("brief") is not None:
         return _brief_case(case, provider)

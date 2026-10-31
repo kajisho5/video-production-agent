@@ -1,4 +1,4 @@
-"""Fake diarization-skill process for the ADR-083 tests: speaks the slice of the real `diarization` CLI the agent uses -- `contract --json`
+"""Fake diarization-skill process for the ADR-086 tests: speaks the slice of the real `diarization` CLI the agent uses -- `contract --json`
 (the pinned src/video_agent/tools/diarization/contract_0.1.0.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok)
 and `diarize --json --overwrite --output=F [--num-speakers=N ...] -- <media>` in the result shape of diarization-skill main
 (diarization-skill/turns@1 with the sha256 of the input file, printed with ok / turns_file and written to --output). The media are the
