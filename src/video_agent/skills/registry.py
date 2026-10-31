@@ -435,6 +435,14 @@ def default_registry() -> SkillRegistry:
          {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
+    # ADR-086 (nle-bridge-skill's roadmap step 7, agent side): the project IR the agent executes handed to nle-bridge, which writes the subject's
+    # timeline as OTIO / FCP7 XML / EDL (+ SRT), or a conform package (+ relink manifest, zip). Files only, no media, AUTO by default like timeline_export.
+    r.register(SkillSpec("nle_export", "1.0", "The subject's timeline for Premiere Pro / DaVinci Resolve from the project IR: OTIO, FCP7 XML, CMX 3600 EDL and an SRT "
+                         "sidecar (nle-bridge-skill), every loss a named warning", {"project": "project_ir", "subject": "str"}, {"artifact": "TIMELINE"},
+                         ["nle-bridge"], "LOW", True, "AUTO", ["nle-bridge/export"]))
+    r.register(SkillSpec("nle_conform", "1.0", "A conform package for an NLE from the project IR: the timelines, the plan, a relink manifest (sha256, start timecode, "
+                         "ranges used) and a zip (nle-bridge-skill)", {"project": "project_ir", "subject": "str"}, {"artifact": "TIMELINE"},
+                         ["nle-bridge"], "LOW", True, "AUTO", ["nle-bridge/conform"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)

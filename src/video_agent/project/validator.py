@@ -18,6 +18,8 @@ from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
+from ..agent.nle import MODES as NLE_MODES
+from ..tools.nle_bridge.adapter import formats as nle_formats
 from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -444,6 +446,31 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def check_nle(d: Dict[str, Any]) -> List[str]:
+    """ADR-086: `delivery.nle`. One hand-off per subject, of a subject whose timeline is planned (nle-bridge reads that record), formats from
+    the pinned nle-bridge contract with at least one timeline format, `zip` only on a conform."""
+    errs: List[str] = []
+    timelines = {t.get("asset") for t in (d.get("delivery") or {}).get("timelines") or []}
+    seen: set = set()
+    for op in (d.get("delivery") or {}).get("nle") or []:
+        t, subj = op.get("type"), op.get("asset")
+        mode = str(t or "").split(".", 1)[-1]
+        if mode not in NLE_MODES:
+            errs.append(f"unknown delivery.nle type {t!r}")
+            continue
+        if subj in seen:
+            errs.append(f"{t}: more than one NLE hand-off of {subj}")
+        seen.add(subj)
+        if subj not in timelines:
+            errs.append(f"{t} of {subj}: nle-bridge reads the subject's delivery.timelines record, and none is planned")
+        fmts = list(op.get("formats") or [])
+        if not fmts or any(f not in nle_formats() for f in fmts) or len(set(fmts)) != len(fmts) or fmts == ["srt"]:
+            errs.append(f"{t} of {subj}: formats {fmts!r} must be distinct names from {', '.join(nle_formats())} with a timeline format")
+        if "zip" in op and mode != "conform":
+            errs.append(f"{t} of {subj}: zip is a conform option")
+    return errs
+
+
 def finishing_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for sec in ("color", "graphics", "captions") for op in (d.get(sec) or {}).get("operations") or []]
 
@@ -857,6 +884,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
+    xf_rec += list(d["delivery"].get("nle") or [])   # ADR-086: a rejected hand-off decision is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
@@ -866,6 +894,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
     rep.errors += check_timeline_exports(d)
+    rep.errors += check_nle(d)   # ADR-086
     rep.errors += check_take_assembly(d)
     rep.errors += check_plan_dependencies(d)
     for op in timelines:
@@ -956,6 +985,9 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         want = GENERATE_SKILL if op["type"] == "captions.generate" else MUX_SKILL if op["type"] == "captions.mux" else BURN_SKILL
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    for op in d["delivery"].get("nle") or []:   # ADR-086
+        if (NLE_MODES.get(str(op.get("type")).split(".", 1)[-1], ("?",))[0], op.get("asset")) not in step_keys:
+            rep.errors.append(f"{op.get('type')} of {op.get('asset')} has no plan step")
     for op in timelines:
         if (TIMELINE_SKILL, op.get("asset")) not in step_keys:
             rep.errors.append(f"timeline.export on {op.get('asset')} has no plan step")
@@ -1065,6 +1097,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("imagemagick-skill")   # ADR-077: the overlay image's preparation exists only in imagemagick-skill
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
+        if d["delivery"].get("nle"):
+            needed.add("nle-bridge")   # ADR-086: the NLE interchange exists only in nle-bridge-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):

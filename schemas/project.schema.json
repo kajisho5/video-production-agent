@@ -547,6 +547,53 @@
        }
       }
      }
+    },
+    "nle": {
+     "description": "ADR-086: the project IR handed to nle-bridge-skill (export / conform) for a subject's timeline",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "type",
+       "asset",
+       "formats",
+       "output",
+       "decision_ids"
+      ],
+      "properties": {
+       "type": {
+        "enum": [
+         "nle.export",
+         "nle.conform"
+        ]
+       },
+       "asset": {
+        "type": "string"
+       },
+       "formats": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "string",
+         "pattern": "^[a-z0-9]{1,8}$"
+        }
+       },
+       "zip": {
+        "type": "boolean"
+       },
+       "output": {
+        "type": "string"
+       },
+       "decision_ids": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
     }
    }
   },
