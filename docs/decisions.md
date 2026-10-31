@@ -687,3 +687,8 @@
   - CI: integration を ffmpeg-skill `main`（3.x、contract 2.0）と `v2.24.1`（最後の 2.x、contract 1.0）の matrix にする（どちらも範囲内なので両方確かめる）。Python 3.11 と Ubuntu の FFmpeg（>= 6.1）は両方の要件を満たす。unit job の Python 3.9 の組は ffmpeg-skill を起動しない（fake だけ）ので 3.0 の Python 下限の影響を受けず、そのまま残す。
 - 帰結: ffmpeg-skill 4.0（contract 3.x か版 4）が出たら同じように拒否される（範囲を広げるには integration の実行が要る、という ADR-048 の決まりは変えない）。
 - 検証: `tests/test_unit.py` の版の範囲（2.24.1・3.0.0・3.9.9 を受け入れ、4.0.0 を拒否）、`FfmpegSkillContractCatalogTests`（1.0 / 2.0 / 2.1 は checked で、2.0 でも tool が欠ければその tool が使えない、3.0 は拒否、3.0 の checkout は capability MISSING と選択の理由、satellite の宣言 1.0 / 2.0 は可・3.0 は不可）。CI の integration 2 組（main = v3.0.0 / v2.24.1）。
+
+## ADR-083 subtitle 0.4.1 / thumbnail 0.1.8 に pin を取り直す（版だけの変化。ECOSYSTEM_ROADMAP step 2 の続き、2026-10-31）
+- 事実: subtitle-skill v0.4.1（4a91f76）と thumbnail-skill v0.1.8（b7654ba）は CI だけの変更で出た release。各 main の checkout で `subtitle-skill contract --json`（`python -m subtitle_skill.cli`）・`thumbnail skill --json` を実行した live contract は、ADR-078 の pin（`contract_0.4.0.json` / `contract_0.1.7.json`）と `version` の 1 か所以外 byte 一致。
+- 決定: 2 つの pin を live に取り替え、file 名を版に合わせる（`contract_0.4.1.json` / `contract_0.1.8.json`。書式は従来どおり: subtitle は compact、thumbnail は indent=2。どちらも Skill の出力そのまま）。version gate（subtitle `0.1.`〜`0.4.`、thumbnail `0.1.`）は変えない。adapter が送るものは変わらない。
+- 検証: `tests/test_adapter_subtitle.py` / `tests/test_adapter_thumbnail.py` / `tests/test_version_gates.py` の版を含む期待値、fake の pin 参照（`tests/fake_subtitle.py` / `tests/fake_thumbnail.py`）。integration の live == pin を各 main に対して実行。

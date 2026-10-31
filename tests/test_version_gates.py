@@ -52,7 +52,7 @@ class VersionGateTests(unittest.TestCase):
 
     def test_subtitle_release_versions(self):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
-        self.assertEqual(st.pinned_contract()["version"], "0.4.0")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines
+        self.assertEqual(st.pinned_contract()["version"], "0.4.1")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only
         for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3"):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)

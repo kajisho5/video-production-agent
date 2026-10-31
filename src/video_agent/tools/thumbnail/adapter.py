@@ -59,6 +59,7 @@ REQUEST_SCHEMA = "thumbnail-skill/request@1"
 RESPONSE_SCHEMA = "thumbnail-skill/response@1"
 DOCTOR_SCHEMA = "thumbnail-skill/doctor@1"
 SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 0.1.8 (CI changes only): version-only; the pin is re-taken from main (ADR-083).
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["thumbnail", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
@@ -72,7 +73,7 @@ _RANGE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "execution", "document", "output_formats", "fonts", "rendering", "ffmpeg_skill", "schema_versions", "errors",
               "provenance", "deterministic")
 DRIFT_TOOL_KEYS = ("role", "produces_output", "deterministic", "writes_media", "mutates_input", "input", "output", "delegates_to")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.7.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.8.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
