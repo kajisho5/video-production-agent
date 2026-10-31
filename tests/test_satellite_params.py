@@ -1205,7 +1205,7 @@ class AudioVoiceCleanupTests(unittest.TestCase):
     def test_vocabulary_matches_the_pinned_contract(self):
         from video_agent.agent.audio import AUDIO_ORDER, OPERATIONS, VOICE_CLEANUP_LEVELS
         c = audio_contract()
-        self.assertEqual(c["version"], "0.4.6")
+        self.assertEqual(c["version"], "0.4.7")
         vc = {o["type"]: o for o in c["operations"]}["VOICE_CLEANUP"]
         self.assertEqual(set(vc["parameters"]), {"level", "audio_stream"})
         self.assertEqual((tuple(vc["parameters"]["level"]["enum"]), vc["parameters"]["level"]["required"], "default" in vc["parameters"]["level"]), (VOICE_CLEANUP_LEVELS, True, False))
