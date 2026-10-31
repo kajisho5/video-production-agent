@@ -784,7 +784,8 @@ class MediaAnalysisRealTests(unittest.TestCase):
         self.assertEqual(cap.status, "AVAILABLE", cap.evidence)
         self.assertEqual((cap.evidence["contract"], cap.evidence["execution"]), ("media-analysis/contract@1", "local_subprocess"))
         self.assertTrue(cap.evidence["version"].startswith(SUPPORTED_SKILL_VERSIONS), cap.evidence["version"])   # the installed release, inside the adapter's gate
-        self.assertEqual(len(cap.evidence["tools"]), 9)
+        self.assertEqual(len(cap.evidence["tools"]), 10)   # 0.1.7 (ADR-078): media-analysis/noise (noise_floor) is the tenth
+        self.assertIn("media-analysis/noise", cap.evidence["tools"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["available"] and rows["ffmpeg-skill"]["available"])
         tools = svc.tools_for()
@@ -1972,9 +1973,12 @@ class VideoEditingRealTests(unittest.TestCase):
         loose = VideoEditingAdapter(self.ve, workspace=None, allowed_inputs=[], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))   # no agent roots: the Skill's own policy (roots = --workspace) still refuses
         r = loose.run(op, {"x": outside, "y": target})
         self.assertFalse(r.ok); self.assertEqual(r.data["error"]["code"], "PATH_NOT_ALLOWED"); self.assertFalse(os.path.exists(target))
-        # an unsupported operation (CROP) is the Skill's UNSUPPORTED_OPERATION / not a tool: no engine fallback anywhere
-        self.assertFalse(strict.supports("video-editing/crop"))
-        self.assertTrue(any(u["type"] == "CROP" for u in strict.contract["unsupported"]))
+        # 0.4.1 (ADR-078): CROP is a declared operation and tool now, lowered by the adapter; an operation the contract lists as unsupported
+        # (POSITION) is the Skill's UNSUPPORTED_OPERATION / not a tool: no engine fallback anywhere
+        self.assertTrue(strict.supports("video-editing/crop"))
+        self.assertIn("CROP", strict.contract["operations"]); self.assertFalse(any(u["type"] == "CROP" for u in strict.contract["unsupported"]))
+        self.assertFalse(strict.supports("video-editing/position"))
+        self.assertTrue(any(u["type"] == "POSITION" for u in strict.contract["unsupported"]))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
