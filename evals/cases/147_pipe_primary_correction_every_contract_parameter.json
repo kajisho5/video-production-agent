@@ -1,0 +1,50 @@
+{
+ "name": "pipe_primary_correction_every_contract_parameter",
+ "profile": "youtube",
+ "pipeline": {},
+ "requirements": {
+  "color.exposure": -3.0,
+  "color.contrast": 2.0,
+  "color.saturation": 0.0,
+  "color.temperature": 12000,
+  "color.tint": -1.0,
+  "color.gamma": 10.0,
+  "color.lift": 1.0,
+  "color.gain": -1.0,
+  "color.levels_in_black": 0,
+  "color.levels_in_white": 255,
+  "color.levels_out_black": 1,
+  "color.levels_out_white": 254,
+  "color.curves": "vintage"
+ },
+ "expect": {
+  "blocked": false,
+  "color_ops": [
+   "color.primary_correction"
+  ],
+  "decisions": {
+   "color.primary_correction": {
+    "type": "TRANSFORM",
+    "provenance": "USER",
+    "approval": "AUTO"
+   }
+  },
+  "steps": [
+   "silence_cleanup",
+   "color_primary_correction",
+   "loudness_normalization",
+   "delivery_export",
+   "delivery_check"
+  ],
+  "render": {
+   "execution_status": "COMPLETED",
+   "tools": [
+    "ffmpeg-skill/cut",
+    "color-grading/run",
+    "ffmpeg-skill/loudness",
+    "ffmpeg-skill/export",
+    "ffmpeg-skill/check"
+   ]
+  }
+ }
+}

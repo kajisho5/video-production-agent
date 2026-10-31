@@ -63,6 +63,11 @@ jobs:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
           VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
           VIDEO_AGENT_VOICE_ENHANCE_DIR: "${{ github.workspace }}/../voice-enhance-skill"
+      # ADR-076: the color-grading adapter against color-grading-skill main (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
+      - run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests
+        env:
+          VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
+          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
       # ADR-058: the qc adapter against qc-skill main (contract drift, reference metrics SSIM / PSNR); the fake-based tests of the same file run in the unit job
       - run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
         env:

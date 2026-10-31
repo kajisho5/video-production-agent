@@ -251,6 +251,33 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         self.assertEqual((params["exposure"], params["saturation"]), (0.5, 0.0))
         self.assertIn("input", r.data["operation"]["measurements"]); self.assertIn("output", r.data["operation"]["measurements"])
 
+    def test_real_contract_vocabulary_every_parameter(self):
+        """ADR-076 on the real color-grading-skill: the live contract's PRIMARY_CORRECTION declares exactly the colour parameters the agent's
+        `color.*` keys are read from (names, types, ranges, enums, defaults), and one request planned from every key at once (each value
+        checked against the pinned contract at plan time, then lowered by the compiler) runs; the Skill reports every value back as applied."""
+        if not (self.skill and self.engine and shutil.which("ffmpeg")):
+            self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
+        from video_agent.agent import finishing
+        from video_agent.agent.requirements import requirement_map
+        from video_agent.execution.compiler import lower_color_op
+        from video_agent.models import Requirement
+        ws = str(Path(self.tmp) / "ws3"); os.makedirs(ws, exist_ok=True)
+        ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
+        live = ad.operations["PRIMARY_CORRECTION"]["parameters"]   # the live contract, fetched and checked by the adapter
+        self.assertEqual({n: s for n, s in live.items() if n not in finishing.PRIMARY_CORRECTION_NOT_GRADING}, finishing.COLOR_CORRECTION_PARAMS,
+                         "the live PRIMARY_CORRECTION colour parameters drifted from the pinned contract the agent's keys are read from: re-pin")
+        want = {"exposure": 0.2, "contrast": 1.1, "saturation": 0.9, "temperature": 5600.0, "tint": 0.1, "gamma": 1.2, "lift": 0.05, "gain": -0.05,
+                "levels_in_black": 16, "levels_in_white": 235, "levels_out_black": 4, "levels_out_white": 250, "curves": "vintage"}
+        self.assertEqual(sorted(want), sorted(finishing.COLOR_CORRECTION_PARAMS), "every key of the vocabulary is exercised")
+        planned = finishing.parse_color_requirements(requirement_map([Requirement(key=f"color.{k}", value=v, provenance="USER", source="cli") for k, v in want.items()]))
+        args = lower_color_op("color-grading/run", dict(planned["color.primary_correction"]["params"], type="color.primary_correction"), "a", "a_correct")
+        paths = {"a": self.src, "a_correct": str(Path(ws) / "ops" / "01_correct" / "bars_correct.mp4")}
+        r = ad.run(Operation(tool="color-grading/run", args=args, inputs=["a"], outputs=["a_correct"], id="op_real4"), paths, timeout=120)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual(r.data["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
+        applied = r.data["operation"]["parameters"]
+        self.assertEqual({k: applied[k] for k in want}, want)
+
 
 if __name__ == "__main__":
     unittest.main()
