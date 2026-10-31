@@ -3236,3 +3236,60 @@ class DubbingRealTests(unittest.TestCase):
                 err = r.data["error"]
                 self.assertEqual((err["code"], err["recovery_class"], err["retryable"]), ("ENGINE_UNAVAILABLE", "TOOL_MISSING", False), err)
                 self.assertFalse(os.path.exists(out))
+class DiarizationRealTests(unittest.TestCase):
+    """ADR-086 on the real diarization-skill (main, contract 0.1.0): the live contract equals the pin, and without pyannote.audio / the gated
+    pipeline (the CI integration job installs neither: the weights need a Hugging Face account) its doctor marks DIARIZE not ready with the
+    Skill's own code, the adapter's diarize returns that code verbatim (exit 3, nothing guessed), and a plan asking for speaker turns hands the
+    measurement off naming diarization-skill. Runs whenever a diarization-skill checkout is installed (VIDEO_AGENT_DIARIZATION_DIR)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.diarization import locate_diarization
+        cls.dia = locate_diarization()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dia_"))
+
+    def setUp(self):
+        if not self.dia:
+            self.skipTest("needs a diarization-skill checkout (VIDEO_AGENT_DIARIZATION_DIR)")
+        if not shutil.which("ffmpeg"):
+            self.skipTest("needs ffmpeg")
+
+    def _wav(self) -> str:
+        p = str(Path(self.tmp) / "src" / "talk.wav")
+        if not os.path.exists(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=16000", "-t", "16", p], check=True)
+        return p
+
+    def test_live_contract_doctor_and_diarize_code(self):
+        from video_agent.tools.diarization import DiarizationAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        ad = DiarizationAdapter(self.dia, workspace=ws, allowed_inputs=[str(Path(self._wav()).parent)])
+        self.assertEqual(ad.drift(), [], "the installed diarization-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        status = ad.operation_status(doc)
+        self.assertEqual(status["ASSIGN"], "supported")
+        if status["DIARIZE"] == "supported":
+            self.skipTest("this machine has pyannote.audio and the pipeline: the not-ready path is not what it can show")
+        self.assertEqual(doc["status"], "degraded")
+        ev = ad.operation_evidence(doc)["DIARIZE"]
+        self.assertIn(ev["code"], ("ENGINE_UNAVAILABLE", "PIPELINE_NOT_FOUND"))
+        self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
+        r = ad.measure("diarization/diarize", ad.measurement_args("diarization/diarize", "speaker_turns", self._wav(), "talk", {"num_speakers": 2}, "an", "use"))
+        self.assertFalse(r.ok)
+        self.assertIn(r.data["error"]["code"], ("ENGINE_UNAVAILABLE", "PIPELINE_NOT_FOUND"))
+        self.assertEqual((r.exit_code, r.data["error"]["recovery_class"]), (3, "TOOL_MISSING"))
+
+    def test_plan_hands_the_measurement_off_when_diarize_is_not_ready(self):
+        if not locate_ffmpeg_skill():
+            self.skipTest("needs ffmpeg-skill")
+        svc = Service(workspace=str(Path(self.tmp) / "ws_plan"))
+        if svc.caps.resolve().get("diarization:DIARIZE") and svc.caps.resolve()["diarization:DIARIZE"].status == "AVAILABLE":
+            self.skipTest("DIARIZE is ready on this machine")
+        ir = svc.plan([self._wav()], "generic", user_requirements={"speakers.diarize": True})
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        self.assertFalse([o for o in ir.doc["analysis"]["observations"] if o["kind"] == "speaker_turns"])
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
+        self.assertEqual(h["repositories"], ["diarization-skill"])
+        self.assertIn("diarization:DIARIZE", h["reason"])

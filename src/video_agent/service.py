@@ -17,6 +17,7 @@ from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
+from .agent.speakers import check_speaker_keys, speaker_kind
 from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.dubbing import check_dub_keys, user_files as dub_user_files
@@ -59,6 +60,7 @@ from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_r
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
+from .tools.diarization import PACKAGE as DIARIZATION_PACKAGE, DiarizationAdapter, locate_diarization
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
 from .tools.dubbing import PACKAGE as DUBBING_PACKAGE, DubbingAdapter, lift_observation as lift_dub_observation, locate_dubbing
@@ -100,6 +102,7 @@ class Service:
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
         self.dubbing_dir = os.environ.get("VIDEO_AGENT_DUBBING_DIR")   # ADR-085: dubbing-skill (DUB)
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
+        self.diarization_dir = os.environ.get("VIDEO_AGENT_DIARIZATION_DIR")   # ADR-086: diarization-skill (speaker turns)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
                                                video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
@@ -120,6 +123,7 @@ class Service:
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
         self.registry.register_package(DUBBING_PACKAGE)   # dubbing-skill (ADR-085): same rule
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
+        self.registry.register_package(DIARIZATION_PACKAGE)   # diarization-skill (ADR-086): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -164,6 +168,8 @@ class Service:
             (locate_dubbing(self.dubbing_dir), lambda sk: DubbingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
             (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
+            # ADR-086: a measurement (analysis kind speaker_turns); the turns file lands in <workspace>/cache/diarization, the input inside the analysis roots
+            (locate_diarization(self.diarization_dir), lambda sk: DiarizationAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots)),
         ):
             if located:
                 try:
@@ -322,6 +328,11 @@ class Service:
             # ADR-072: filler words are removed at recognised word timings: a transcript with word timestamps, chosen by the system for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
             params = dict(params or {}, word_timestamps=True)
+        sk = speaker_kind(user_requirements or {})
+        if sk is not None and "speaker_diarization" in self.tools_for(None, user_requirements):
+            # ADR-086: anonymous speaker turns, asked for explicitly (speakers.diarize); without a runnable tool the plan hands the measurement off
+            kinds = list(kinds or []) + ([] if sk[0] in (kinds or []) else [sk[0]])
+            params = dict(params or {}, **sk[1])
         takes = _takes_requested(user_requirements or {})
         if takes is not None:   # ADR-053: takes are grouped by what is said in them; a named music bed's beat grid is measured on that input only
             kinds = list(kinds or []) + [k for k in ("transcript",) + ((BEAT_KIND,) if takes["music"] is not None else ()) if k not in (kinds or [])]
@@ -1403,7 +1414,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1510,6 +1521,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
     check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
+    check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
