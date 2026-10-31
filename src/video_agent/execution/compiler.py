@@ -20,6 +20,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKI
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepared_id
+from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, TOOL_NAMES as BGM_TOOL_NAMES, skill_of as bgm_skill_of
 from ..agent.faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, TOOL_NAMES as FACE_TOOL_NAMES
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
 from ..agent.dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, user_files as dub_user_files
@@ -168,6 +169,19 @@ def lower_redact_faces(tools: Dict[str, str], op: Dict[str, Any], current: str, 
     broll = {"input": current, "insert": last, "at": [f"{float(r['start']):.3f}" for r in op["regions"]], "end": [f"{float(r['end']):.3f}" for r in op["regions"]],
              "audio": "a", "output": out_id}
     return cuts, blurs, broll
+
+
+def lower_bgm(tool: str, op: Dict[str, Any], out_id: str, library_id: Optional[str]) -> Dict[str, Any]:
+    """ADR-092: IR `audio.bgm` → sound-design library-pick / generate-bgm arguments: the decided parameters by the Skill's names, the duration the
+    mix needs, the library as an artifact id (a user folder, like a LUT). The tool is the plan's; each mode has exactly one."""
+    want = BGM_TOOL_NAMES[bgm_skill_of(op)]
+    if tool.split("/", 1)[-1] != want:
+        raise CompileError(f"{BGM_SUBJECT} ({op.get('mode')}) needs a {want} tool, the plan names {tool}")
+    args: Dict[str, Any] = {k: op[k] for k in (("tags", "mood", "file", "crossfade") if op["mode"] == "library" else ("prompt", "tags", "seed")) if op.get(k) is not None}
+    if op["mode"] == "library":
+        args["library"] = library_id
+    args.update(duration=float(op["duration"]), output=out_id)
+    return args
 
 
 def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -735,10 +749,24 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             timeline(asset_id)
             thumbnail(asset_id)
             qc_gate(asset_id)
+    bgm = next((op for op in d["audio"]["operations"] if op["type"] == BGM_SUBJECT), None)
+    if bgm is not None:   # ADR-092: the bed sound-design makes for the mix; the mix takes it as its last input
+        lib_id = None
+        if bgm.get("library"):
+            lib_id = "bgm_library"
+            paths[lib_id] = bgm["library"]
+            keys[lib_id] = ""
+        out_id = bgm["output"]
+        paths[out_id] = str(job / "ops" / "00_bgm" / f"{out_id}.wav")
+        sk = bgm_skill_of(bgm)
+        tool = tool_for(sk, BGM_INPUT)
+        add(tool, lower_bgm(tool, bgm, out_id, lib_id), [lib_id] if lib_id else [], [out_id], list(bgm.get("decision_ids") or []),
+            "bgm:" + stable_hash([bgm.get(k) for k in ("mode", "library", "prompt", "tags", "mood", "file", "crossfade", "seed", "duration")])[:16], skill=sk)
+        state[BGM_INPUT] = {"current": out_id, "gen": 1, "stem": "bgm", "fp": "bgm"}
     if audio_concat is not None:
         subject = audio_concat.get("output") or PROGRAMME_AUDIO
         inputs = [state[a]["current"] for a in audio_concat["inputs"]]
-        fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) for a in audio_concat["inputs"]])[:16]
+        fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) if a in d["assets"] else a for a in audio_concat["inputs"]])[:16]
         state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
         name = audio_concat["type"].split(".", 1)[1]
         paths[subject] = str(job / "ops" / f"{subject}_01_{name}" / f"{subject}.wav")

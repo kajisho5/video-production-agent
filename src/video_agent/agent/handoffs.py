@@ -41,6 +41,10 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
              "platform_publish": "publishing is implemented (skill publish_upload, ADR-087): with the QC gate on (--set qc=true) ask for --set publish.platform=<id> "
                                  "(+ publish.title / publish.description / publish.tags / publish.privacy / publish.thumbnail / publish.captions); the plan asks you to "
                                  "confirm, render makes publish-skill's offline plan and dry run, and the upload is `video-agent publish <artifact> --confirm <token>` after `deliver`",
+             # ADR-092: sound-design-skill's music bed (sound-design-skill roadmap step 5)
+             "sound_design": "a music bed under the mix is implemented (skills bgm_library / bgm_generate, ADR-092): with --set audio.production=true audio.mix=true, "
+                             "ask for --set bgm.library=<a sound-design library folder> (your licensed files) or bgm.prompt=<what the music is> (generated); "
+                             "sound effects are not wired",
              # ADR-091: slide-sync-skill's adapter (slide-sync-skill roadmap step 6)
              "slide_sync": "the slide timeline is implemented (analysis kind slide_timeline, ADR-091): ask for --set slides.detect=true (+ slides.deck=<pdf|pptx|key|odp> "
                            "for the page on screen in each slide); without slide-sync-skill the plan hands it off"}

@@ -14,6 +14,7 @@ from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO
 from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
                       kept_duration)
 from .image_insert import still_frame
+from .bgm import BGM_INPUT, BGM_OUTPUT, SUBJECT as BGM_SUBJECT, ir_bgm, skill_of as bgm_skill_of
 from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
@@ -793,7 +794,25 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         # ---- audio programme: the cut audio of every input, in the decided order (concat), or every input summed from 0 s (mix, ADR-063);
         # later audio operations apply to it
         inputs = list(audio_concat_dec.params["inputs"])
-        lengths = {a: (scope_of.get(a) or {}).get("end") or durations.get(a, 0.0) for a in inputs}
+        lengths = {a: (scope_of.get(a) or {}).get("end") or durations.get(a, 0.0) for a in inputs if a != BGM_INPUT}
+        bgm_dec = next((d for d in decisions if d.subject == BGM_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"), None)
+        if BGM_INPUT in inputs:   # ADR-092: sound-design-skill's bed, made at the mix's length (its first input's) before the mix places it
+            length = round(float(lengths.get(inputs[0]) or 0.0), 3)
+            lengths[BGM_INPUT] = length
+            if bgm_dec is not None:
+                op = ir_bgm(bgm_dec, length)
+                audio_ops.append(op)
+                sk = bgm_skill_of(bgm_dec.params)
+                order += 1
+                bst = ProductionStep(id=f"step_bgm_{BGM_INPUT}", order=order, skill=sk, tool=tool_for(sk), inputs=[],
+                                     params={"asset": BGM_INPUT, **{k: op[k] for k in ("library", "prompt", "tags", "mood", "file", "crossfade", "seed", "duration") if k in op}},
+                                     outputs=[BGM_OUTPUT], depends_on=[], evidence=evidence_of([bgm_dec.id]), decision_ids=[bgm_dec.id], decision_id=bgm_dec.id,
+                                     temporal_scope={"start": 0.0, "end": length})
+                steps.append(bst)
+                current_of[BGM_INPUT], last_of[BGM_INPUT] = BGM_OUTPUT, bst.id
+                summary.append(bgm_dec.decision + f" ({length:.2f}s)")
+            else:
+                current_of[BGM_INPUT] = BGM_OUTPUT
         op_type = audio_concat_dec.subject
         name = op_type.split(".", 1)[1]
         if op_type == "audio.mix":
@@ -804,7 +823,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             segments, total = audio_concat_segments(inputs, lengths, cf)
             p_ = {"crossfade": cf}
         scope = {"start": 0.0, "end": total}
-        cat_ids = [audio_concat_dec.id] + extract_ids(PROGRAMME_AUDIO)
+        cat_ids = [audio_concat_dec.id] + extract_ids(PROGRAMME_AUDIO) + ([bgm_dec.id] if BGM_INPUT in inputs and bgm_dec is not None else [])
         audio_ops.append(ir_audio_operation(op_type, PROGRAMME_AUDIO, p_, cat_ids, scope=scope, inputs=inputs, output=PROGRAMME_AUDIO, segments=segments, timeline_duration=total))
         order += 1
         skill = AUDIO_OPERATIONS[op_type]["skill"]

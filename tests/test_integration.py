@@ -3508,3 +3508,64 @@ class SlideSyncRealTests(unittest.TestCase):
         self.assertEqual(obs["data"]["deck"]["page_count"], 3)
         self.assertEqual([s["page"] for s in obs["data"]["match"]["segments"]], [2, 3, 1], obs["data"]["match"])
         self.assertEqual(svc.validate(ir).errors, [])
+
+
+class SoundDesignBgmRealTests(unittest.TestCase):
+    """ADR-092 on the real sound-design-skill (main, contract 0.1.0), the real audio-production-skill and the real ffmpeg-skill: the live contract equals
+    the pin, its doctor reports library mode ready, and a voice recording mixed with a bed picked from a library of the user's own licensed file (looped
+    to the voice's length by library-pick) is rendered after approval, as long as the voice. Runs whenever sound-design-skill and audio-production-skill
+    checkouts are installed (the CI integration job clones both; library mode needs no engine)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.sound_design import locate_sound_design
+        from video_agent.tools.audio_production import locate_audio_production
+        cls.sd = locate_sound_design()
+        cls.ap = locate_audio_production()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_sd_"))
+
+    def setUp(self):
+        if not self.sd:
+            self.skipTest("needs a sound-design-skill checkout (VIDEO_AGENT_SOUND_DESIGN_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_and_doctor(self):
+        from video_agent.tools.sound_design import SoundDesignAdapter
+        ad = SoundDesignAdapter(self.sd, workspace=str(Path(self.tmp) / "ws_adapter"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.drift(), [], "the installed sound-design-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(ad.operation_status(doc)["LIBRARY"], "supported", doc.get("problems"))
+
+    def test_library_bed_mixed_under_the_voice_end_to_end(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout (VIDEO_AGENT_AUDIO_PRODUCTION_DIR)")
+        src = Path(self.tmp) / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        voice = str(src / "voice.wav")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=440:r=48000:d=8", "-ac", "2", voice], check=True)
+        bed = str(Path(self.tmp) / "incoming" / "bed.wav")
+        Path(bed).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=220:r=48000:d=3", "-ac", "2", bed], check=True)
+        lib = str(Path(self.tmp) / "lib")
+        os.makedirs(lib, exist_ok=True)
+        from video_agent.tools.skill_process import invoke
+        code, out, err = invoke(self.sd, ["library-import", bed, "--library", lib, "--licence", "CC0-1.0", "--kind", "bgm", "--tags", "drone", "--loopable",
+                                          "--ffmpeg-skill", str(locate_ffmpeg_skill().root), "--json"], timeout=300)
+        self.assertEqual(code, 0, out + err)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([voice], "generic", user_requirements={"audio.production": True, "audio.mix": True, "audio.mix.levels": "0,-12", "bgm.library": lib, "bgm.tags": "drone"})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        bgm = next(op for op in d["audio"]["operations"] if op["type"] == "audio.bgm")
+        self.assertAlmostEqual(bgm["duration"], 8.0, delta=0.05)
+        p = str(Path(self.tmp) / "ws" / "bgm.project.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        pick = next(r for r in out["execution"]["results"] if r["tool"] == "sound-design/library-pick")
+        self.assertEqual((pick["data"]["licence"]["licence"], pick["data"]["fit"]["mode"]), ("CC0-1.0", "loop"))
+        art = next(a for a in out["artifacts"] if a["type"] in ("MASTER", "DELIVERY"))
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], check=True, capture_output=True).stdout)
+        self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="the mix lasts as long as the voice (its first input)")

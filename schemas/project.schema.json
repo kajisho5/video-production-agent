@@ -1777,7 +1777,8 @@
       "audio.filler_remove",
       "voice.bleed_reduce",
       "voice.dereverb",
-      "voice.isolate"
+      "voice.isolate",
+      "audio.bgm"
      ]
     },
     "asset": {
@@ -1875,7 +1876,9 @@
     },
     "mode": {
      "enum": [
-      "fft"
+      "fft",
+      "library",
+      "generate"
      ]
     },
     "level": {
@@ -2193,6 +2196,38 @@
      "type": "number",
      "minimum": 0,
      "maximum": 30
+    },
+    "library": {
+     "type": "string"
+    },
+    "prompt": {
+     "type": "string",
+     "maxLength": 511
+    },
+    "tags": {
+     "type": "array",
+     "maxItems": 16,
+     "items": {
+      "type": "string",
+      "maxLength": 64
+     }
+    },
+    "mood": {
+     "type": "array",
+     "maxItems": 16,
+     "items": {
+      "type": "string",
+      "maxLength": 64
+     }
+    },
+    "file": {
+     "type": "string",
+     "maxLength": 255
+    },
+    "seed": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 4294967295
     }
    }
   },
