@@ -80,10 +80,15 @@ _COMPONENTS: Tuple[Component, ...] = (
               package_install=_clone_pip("voice-enhance-skill"),
               note="ecosystem.json still says scaffold, but isolate / dereverb / bleed-reduce ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and "
                    "each engine is its own install (deep-filter + the DeepFilterNet3 model, `[wpe]`, `[bleed]`) that `voice-enhance doctor` names (ADR-073)"),
-    Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説")),
+    Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説"),
+              package_install=_clone_pip("dubbing-skill"),
+              note="ecosystem.json still says scaffold, but narrate / dub / describe ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and each "
+                   "engine is its own install (Chatterbox in its own venv, the VOICEVOX / Style-Bert-VITS2 apps, Kokoro) that `dubbing doctor` names; the agent runs DUB (ADR-085)"),
     Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),
-              package_install=_clone_pip("diarization-skill", "pyannote")),
+              package_install=_clone_pip("diarization-skill", "pyannote"),
+              note="speaker turns as the analysis kind speaker_turns (ADR-086); diarize also needs the gated speaker-diarization-community-1 pipeline cloned once "
+                   "and DIARIZATION_PIPELINE_DIR set (`diarization doctor` prints the steps; the Skill never downloads)"),
     Component("detection", "detection-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("顔検出", "文字検出(OCR)", "物体検出"),
               package_install=_clone_pip("detection-skill", "all")),
     Component("slide-sync", "slide-sync-skill", "recognize", "pip", "active", plugin=True, owns=("スライド取込", "スライド切替検出"),
@@ -101,11 +106,14 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("imagemagick-skill", "imagemagick-skill", "utility", "checkout", "active", plugin=True, owns=("静止画編集",), package_install="npx imagemagick-skill",
               note="the agent prepares edit.overlay images with its resize / pad / strip (ADR-077); `npx imagemagick-skill` copies the checkout to "
                    "~/.claude/skills/imagemagick-skill, where the agent finds it (or VIDEO_AGENT_IMAGEMAGICK_DIR); ImageMagick itself is the user's install"),
-    Component("blender", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill"),
+    # ADR-080: package ids are the Skills' own skill_id (the prefix of their provides[].tool_id), as for imagemagick-skill (ADR-077)
+    Component("blender-skill", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill",
+              note="render_3d is handed off with blender-skill/render named from its pinned contract (ADR-080); Blender 4.2+ itself is the user's install"),
     Component("remotion-ffmpeg", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
               package_install="npx remotion-ffmpeg-skill"),
-    Component("hyperframes", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
-              package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci"),
+    Component("hyperframes-skill", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
+              package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci",
+              note="html_scene_render is handed off with hyperframes-skill/render named from its pinned contract (ADR-080); needs Node.js 22+ and a headless Chromium"),
 )
 
 COMPONENTS: Dict[str, Component] = {c.package: c for c in _COMPONENTS}

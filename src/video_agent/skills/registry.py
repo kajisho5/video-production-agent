@@ -219,15 +219,15 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
 # (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
-# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-087:
+# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-086:
+# `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns). ADR-087:
 # `platform_publish` (publish) left it the same way: the implemented `publish_upload` below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
-    _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
-         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "dub", "HIGH", deterministic=False),
+    # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
+    _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
+         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "narrate", "HIGH", deterministic=False),
     _job("sound_design", "Generate a music bed (BGM) or sound effects",
          {"brief": "text"}, {"artifact": "audio"}, "sound-design", "generate", "MEDIUM", deterministic=False),
-    _job("speaker_diarization", "Speaker diarization: who spoke when, filling the Transcript speaker_id that transcription leaves null",
-         {"asset": "media", "transcript": "observation"}, {"observation": "diarization"}, "diarization", "diarize", "LOW", approval="AUTO", deterministic=False),
     _job("visual_detection", "Face, text (OCR) and object detection on the picture",
          {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
     _job("slide_sync", "Import a slide deck, detect slide changes in the recording and match each segment to its slide",
@@ -236,12 +236,13 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
          {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, "imagemagick-skill", "edit", "LOW"),
-    _job("render_3d", "3D assets with headless Blender: inspect, convert, optimise and render",
-         {"model": "gltf|glb|fbx|obj|usd|blend"}, {"artifact": "image|video|model"}, "blender", "render", "MEDIUM"),
+    # ADR-080: the Skill's own skill_id and provides[].tool_id from a pinned contract (skills/handoff_contracts.py); still a handoff, CONFIRM
+    _job("render_3d", "Render a 3D model with headless Blender (still, turntable or 4-view sheet; with alpha for compositing) as a B-roll asset for ffmpeg-skill/overlay",
+         {"model": "glb|gltf|fbx|obj|stl|usd|usdz|ply|abc|blend"}, {"artifact": "image|video"}, "blender-skill", "render", "MEDIUM"),
     _job("measured_motion_graphics", "Remotion motion graphics on the footage, timed from ffmpeg-skill measurements (captions, jump cuts, beat-synced motion)",
          {"asset": "video"}, {"artifact": "video"}, "remotion-ffmpeg", "pipeline", "MEDIUM"),
-    _job("html_scene_render", "Render HTML scenes to verified video with HyperFrames",
-         {"scene": "html"}, {"artifact": "video"}, "hyperframes", "render", "MEDIUM"),
+    _job("html_scene_render", "Render an HTML scene folder to verified video with HyperFrames (h264 / vp9, or ProRes 4444 with alpha), to join with "
+         "video-editing/concat or composite with ffmpeg-skill/overlay", {"scene": "dir with index.html"}, {"artifact": "video"}, "hyperframes-skill", "render", "MEDIUM"),
     _job("document_verification", "Verify an AI-generated document (script, captions, report) and issue an evidence-backed receipt",
          {"document": "file"}, {"receipt": "verification"}, "artifacts", "verify", "LOW", approval="AUTO"),
     _job("bluray_authoring", "Author a Blu-ray (BDMV): titles, chapters, menus, subtitles",
@@ -341,6 +342,11 @@ def default_registry() -> SkillRegistry:
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
     r.register(SkillSpec("speech_transcription", "1.0", "Speech → timestamped Transcript (segments, language, optional word timestamps); recognition only",
                          {"asset": "media"}, {"observation": "transcript", "events": "SPEECH"}, ["ffmpeg", "ffprobe", "transcription"], "LOW", True, "AUTO", ["transcription/transcribe"]))
+    # who spoke when (ADR-086, replacing ADR-057's phase-2 declaration of the same name): diarization-skill's anonymous exclusive speaker turns,
+    # a measurement (analysis kind speaker_turns) that needs the package and its own DIARIZE readiness (`diarization:DIARIZE`, from its
+    # doctor: pyannote.audio, torch and the local pipeline directory). Never a name; nothing is decided from it here.
+    r.register(SkillSpec("speaker_diarization", "1.0", "Who spoke when: anonymous exclusive speaker turns (SPEAKER_nn) of a recording, overlapping speech kept apart; measurement only",
+                         {"asset": "media"}, {"observation": "speaker_turns", "events": "SPEAKER"}, ["diarization", "diarization:DIARIZE"], "LOW", False, "AUTO", ["diarization/diarize"]))
     # multi-source sync measurement (ADR-035): the offset / drift of a recording relative to the reference, by ffmpeg-skill/sync (audio
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
@@ -434,6 +440,13 @@ def default_registry() -> SkillRegistry:
          {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
+    # ADR-085 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): the programme's dialogue replaced by the
+    # user's translated cues, spoken by a local engine over the programme's own sound. Needs ffmpeg-skill (the Skill's media engine), the package and its
+    # own readiness of DUB (`dubbing:DUB`, from its doctor: the engine installed). CONFIRM always: EXPERIMENTAL, and a synthetic voice replaces someone's words.
+    r.register(SkillSpec("speech_dub", "1.0", "Dub the programme's dialogue: the user's translated cues spoken by a local TTS engine, fitted to each source segment, over the "
+                         "programme's own sound (ducked), picture stream-copied; a reference voice only with its owner's consent record; EXPERIMENTAL",
+                         {"asset": "video", "cues": "srt|vtt|json", "lang": "bcp47"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "dubbing", "dubbing:DUB"], "HIGH", False, "CONFIRM",
+                         ["dubbing/dub"]))
     # ADR-087 (publish-skill's roadmap step 6, agent side; replacing ADR-057's phase-2 `platform_publish`): a QC-passed deliverable uploaded with its
     # metadata to a platform publish-skill implements. Never a pipeline operation: render runs its offline plan and dry run; the upload is
     # `video-agent publish <artifact> --confirm <token>` by a human. CONFIRM always (outward-facing, cannot be undone).

@@ -20,17 +20,26 @@ jobs:
       # Phase 3 (ADR-031 / ADR-032): the five finishing-Skill adapters against their fake processes, and the integrated pipeline on the fake engine + fake Skills
       - run: python -m unittest -v tests/test_adapter_subtitle.py tests/test_adapter_thumbnail.py tests/test_adapter_color_grading.py tests/test_adapter_motion_graphics.py tests/test_adapter_qc.py
       - run: python -m unittest -v tests/test_pipeline.py
-      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`; ADR-073: voice-enhance through a fake `voice-enhance`; ADR-077: overlay image preparation through a fake imagemagick-skill checkout; ADR-087: publishing through a fake `publish`
-      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py tests/test_image_prepare.py tests/test_publish.py
+      # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`; ADR-073: voice-enhance through a fake `voice-enhance`; ADR-077: overlay image preparation through a fake imagemagick-skill checkout; ADR-085: dubbing through a fake `dubbing`; ADR-086: speaker turns through a fake `diarization`; ADR-087: publishing through a fake `publish`
+      - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py tests/test_image_prepare.py tests/test_handoff_contracts.py tests/test_dubbing.py tests/test_diarization.py tests/test_publish.py
       - run: python evals/run.py
   integration:
+    # ADR-082: the real-Skill suite against ffmpeg-skill main (3.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0) and against
+    # v2.24.1 (the last 2.x, contract_version 1.0), both inside SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg
+    # (>= 6.1) satisfy both. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg_skill: ["main", "v2.24.1"]
+    name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core imagemagick   # imagemagick: ADR-077's ImagePrepareRealTests (imagemagick-skill uses IM6's convert / identify)
-      - run: git clone --depth 1 https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: git clone --depth 1 --branch "${{ matrix.ffmpeg_skill }}" https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: python3 ../ffmpeg-skill/scripts/_contract.py --json --static | python3 -c "import json,sys; d=json.load(sys.stdin); print('ffmpeg-skill', d['skill']['version'], 'contract', d['contract_version'])"
       - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
       - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
       # video-editing-skill (ADR-028): main (PR #1 merged); no install needed, the checkout is run as `python -m video_editing_skill.cli`
@@ -50,6 +59,12 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill
       # imagemagick-skill (ADR-077): main (contract 0.8.1, = the v0.8.1 tag but for CI files); its scripts run from the checkout, standard library only
       - run: git clone --depth 1 https://github.com/kajisho5/imagemagick-skill ../imagemagick-skill
+      # dubbing-skill (ADR-085): main (no release tag); run from the checkout, standard library only. No TTS engine in CI: DubbingRealTests checks the
+      # live contract against the pin, the doctor's ENGINE_UNAVAILABLE, the blocked plan and that the real CLI accepts the adapter's argv
+      - run: git clone --depth 1 https://github.com/kajisho5/dubbing-skill ../dubbing-skill
+      # diarization-skill (ADR-086): main (no release tag); run from the checkout. No pyannote.audio and no gated pipeline in CI: the tests check the
+      # live contract, the doctor's not-ready verdict and the handoff
+      - run: git clone --depth 1 https://github.com/kajisho5/diarization-skill ../diarization-skill
       # publish-skill (ADR-087): main (no release tag); run from the checkout, standard library only. PublishRealTests is offline: the live contract,
       # publish plan and the dry run of a real file (no credentials, no upload, no network)
       - run: git clone --depth 1 https://github.com/kajisho5/publish-skill ../publish-skill
@@ -69,6 +84,8 @@ jobs:
           VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
           VIDEO_AGENT_VOICE_ENHANCE_DIR: "${{ github.workspace }}/../voice-enhance-skill"
           VIDEO_AGENT_IMAGEMAGICK_DIR: "${{ github.workspace }}/../imagemagick-skill"
+          VIDEO_AGENT_DUBBING_DIR: "${{ github.workspace }}/../dubbing-skill"
+          VIDEO_AGENT_DIARIZATION_DIR: "${{ github.workspace }}/../diarization-skill"
           VIDEO_AGENT_PUBLISH_DIR: "${{ github.workspace }}/../publish-skill"
       # ADR-076: the color-grading adapter against color-grading-skill main (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
       - run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests
@@ -79,3 +96,13 @@ jobs:
       - run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
         env:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
+      # ADR-080: the pinned blender-skill / hyperframes-skill contracts of the render_3d / html_scene_render handoffs against each main
+      # (contract only: no Blender, no Chromium; hyperframes' contract needs its npm dependencies, installed without their install scripts)
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - run: git clone --depth 1 https://github.com/kajisho5/blender-skill ../blender-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/hyperframes-skill ../hyperframes-skill && cd ../hyperframes-skill && npm ci --ignore-scripts
+      - run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests
+        env:
+          VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
+          VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"

@@ -12,8 +12,12 @@ from ..models import stable_hash
 PLAN_SECTIONS = ("assets", "video", "audio", "captions", "graphics", "color", "delivery", "qa")   # the finishing sections (ADR-031) and the QC gate (qa.qc) change what is executed
 
 
+# ADR-085: the `speech` section (dubbing) is hashed only when a plan has it, so every plan without one keeps the hash it always had
+OPTIONAL_PLAN_SECTIONS = ("speech",)
+
+
 def plan_hash(doc: Dict[str, Any]) -> str:
-    return stable_hash({k: doc.get(k) for k in PLAN_SECTIONS})
+    return stable_hash({k: doc.get(k) for k in PLAN_SECTIONS + tuple(k for k in OPTIONAL_PLAN_SECTIONS if doc.get(k))})
 
 
 def ir_hash(doc: Dict[str, Any]) -> str:

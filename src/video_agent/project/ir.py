@@ -67,7 +67,7 @@ class ProjectIR:
         """Operations / delivery targets that still cite a REJECTED decision (must be revised away before rendering)."""
         rej = {d["id"] for d in self.rejected()}
         out = []
-        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.doc["delivery"]["targets"] \
+        for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.speech_operations() + self.doc["delivery"]["targets"] \
                 + list(self.doc["delivery"].get("timelines") or []) + ([self.doc["audio"]["take_crossfade"]] if self.doc["audio"].get("take_crossfade") else []) \
                 + ([self.doc["delivery"]["publish"]] if self.doc["delivery"].get("publish") else []):   # ADR-087
             if any(x in rej for x in op.get("decision_ids") or []):
@@ -83,6 +83,10 @@ class ProjectIR:
         if qc.get("enabled"):
             out.append({"type": "qa.qc", "decision_ids": list(qc.get("decision_ids") or [])})
         return out
+
+    def speech_operations(self) -> List[Dict[str, Any]]:
+        """The IR operations of the `speech` section (ADR-085: dubbing-skill DUB); the section exists only when one is planned."""
+        return list((self.doc.get("speech") or {}).get("operations") or [])
 
     def needs_reapproval(self) -> bool:
         """A revised plan (version > 1) is renderable only after an explicit approval of that version."""
