@@ -239,6 +239,52 @@ def _offload_case(case: dict) -> dict:
     return {"case": case["name"], "ok": not failures, "failures": failures}
 
 
+def _speakers_case(case: dict) -> dict:
+    """ADR-083: `speakers.diarize` → diarization-skill's turns as the analysis kind speaker_turns (OBSERVED observation + SpeakerEvents)
+    through the fake `diarization` process; or, when DIARIZE cannot run (not installed / not ready), a BLOCKED plan with a handoff."""
+    import os
+    from test_diarization import MODES, dia_service
+    from pipeline_harness import clear_modes, fake_media
+    sp = case["speakers"]
+    clear_modes()
+    for k in MODES:
+        os.environ.pop(k, None)
+    for k, v in (sp.get("modes") or {}).items():
+        os.environ[k] = v
+    tmp = os.path.realpath(tempfile.mkdtemp())
+    exp, failures = case["expect"], []
+    try:
+        svc = dia_service(tmp, installed=sp.get("installed", True))
+        media = fake_media(tmp, duration=16.0, **({"turns": sp["turns"]} if sp.get("turns") else {}))
+        try:
+            ir = svc.plan([media], case.get("profile", "youtube"), user_requirements=case.get("requirements") or {})
+        except ValueError as e:
+            if exp.get("refused") and exp["refused"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"refused: {e}"]}
+        if exp.get("refused"):
+            failures.append("not refused")
+        d = ir.doc
+        obs = [o for o in d["analysis"]["observations"] if o["kind"] == "speaker_turns"]
+        events = [e for e in d["timeline"]["events"] if e["type"] == "SPEAKER"]
+        got = {"observations": len(obs), "speakers": obs[0]["data"]["speakers"] if obs else None, "events": [[e["range"]["start"], e["metadata"]["speaker_id"]] for e in events],
+               "plan_status": d["plan"]["status"], "handoffs": [[h["skill"], h["repositories"]] for h in svc.handoffs(ir)],
+               "blocked_codes": sorted({x["params"].get("code") for x in d["decisions"] if x["subject"] == "speakers.diarize" and x["type"] == "BLOCK" and x["params"].get("code")}),
+               "provenance": sorted({o["provenance"] for o in obs} | {e["provenance"] for e in events})}
+        for k, v in exp.items():
+            if k != "refused" and got.get(k) != v:
+                failures.append(f"{k} {got.get(k)!r} != {v!r}")
+        errs = svc.validate(ir).errors
+        if d["plan"]["status"] != "BLOCKED" and errs:
+            failures.append(f"IR invalid: {errs}")
+        if got["handoffs"] and not any("has no selected tool" in e for e in errs):   # a handoff step is what the validator refuses to run
+            failures.append(f"handoff step not reported by the validator: {errs}")
+    finally:
+        for k in MODES:
+            os.environ.pop(k, None)
+    return {"case": case["name"], "ok": not failures, "failures": failures}
+
+
 def run_case(case: dict) -> dict:
     tmp = tempfile.mkdtemp()
     fake = case.get("fake", {})
@@ -326,6 +372,8 @@ def run_case(case: dict) -> dict:
             return {"case": case["name"], "ok": not failures, "failures": failures}
     if case.get("offload") is not None:   # ADR-066: a card offload is its own plan (no media file input)
         return _offload_case(case)
+    if case.get("speakers") is not None:   # ADR-083: speaker turns through the fake diarization-skill
+        return _speakers_case(case)
     if case.get("brief") is not None:
         return _brief_case(case, provider)
     pipe = case.get("pipeline")

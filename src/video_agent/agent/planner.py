@@ -830,12 +830,13 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         qc_steps(PROGRAMME, qc_tolerance_lu)
     # ---- ecosystem jobs handed off (ADR-057): one step per requested job, on the request's assets, with no tool (BLOCKED; the
     # plan's handoff names the owning package and its install command). It waits on nothing and produces nothing the agent tracks.
-    for d in [x for x in decisions if x.subject.startswith(JOB_PREFIX) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
+    # ADR-083: a measurement an explicit requirement asked for that no tool can run here (`handoff: true`) takes the same step
+    for d in [x for x in decisions if (x.subject.startswith(JOB_PREFIX) or x.params.get("handoff") is True) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
         skill = d.params["skill"]
         order += 1
         steps.append(ProductionStep(id=f"step_job_{skill}", order=order, skill=skill, tool=tool_for(skill), inputs=[a.id for a in analysis.assets],
                                     params={}, outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
-        summary.append(f"Hand off {skill} ({d.subject}): no adapter here; see the plan's handoff")
+        summary.append(f"Hand off {skill} ({d.subject}): " + ("not runnable here" if d.params.get("handoff") else "no adapter here") + "; see the plan's handoff")
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:

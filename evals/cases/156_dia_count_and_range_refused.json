@@ -1,0 +1,7 @@
+{
+ "name": "dia_count_and_range_refused",
+ "profile": "youtube",
+ "speakers": {},
+ "requirements": {"speakers.diarize": true, "speakers.num_speakers": 2, "speakers.min_speakers": 1},
+ "expect": {"refused": "excludes"}
+}
