@@ -343,6 +343,7 @@
   OS 側の経路判断（入っている OS スキル → 他のスキル・標準ツール → モデル自身）は AI-video-production-OS ADR-013 に従う。
 - 検証: `tests/test_ai_host.py::HandoffTests`。全工程に tool があれば handoff は空になる。tool の無い工程は、理由（欠けた capability）・提供パッケージ（ffmpeg-skill / video-editing）・インストール方法付きで報告される。
 - 対象外: handoff した工程の結果を IR に取り込むこと（外部で作った成果物は、今は入力として plan し直す）。
+- 改訂（2026-10-31、Velisa #132 と同時）: Claude Code の plugin marketplace が `ai-video-production-os` から `velisa` に改名された（メタプラグインも `video-production-os` → `velisa`。Velisa ADR-015 / `docs/RENAMING.md`）。handoff の `install` は `/plugin install <repo>@velisa` を出す（`skills/ecosystem.py` の `MARKETPLACE`）。旧名の marketplace は消えるので、旧名のコマンドは使えない。Velisa #132 のマージ直後にマージする（先にマージすると、まだ存在しない `velisa` marketplace を名指しする）。本文と ADR-057 / ADR-077 の `@ai-video-production-os` は当時の記録として残す。
 
 ## ADR-052 IR の cut list を編集タイムライン（OTIO / FCPXML / EDL）として書き出す。ffmpeg-skill `render.py --export-timeline` を使い、ADR-002 を改訂する（2026-10-30）
 - 事実: ffmpeg-skill の `render.py PROJECT.json --export-timeline FILE` は、project の clips を編集ソフトのタイムライン（拡張子で .otio / .fcpxml / .edl）として書き、render はしない（2.21.0 の `--help` と実際の `--json` で確認。`--json` は `output`・`timeline`（format / rate / duration / frames / clips / transition / not_exported …）・`verification` を返し、`commands` は空）。agent の catalog に `render` は無く、ADR-002 で project.json を使わないと決めていたため、NLE との受け渡しが無かった。実測で分かった落とし穴が2つある。(1) project に `transition` が無いと render.py は全カットに既定 0.5 秒の dissolve を入れる（2 clip・2.5 秒 + 4 秒が 6.04 秒になった。`"transition": {"type": "none"}` で 6.52 秒）。(2) 既存の出力は `--overwrite` が無いと拒否される。

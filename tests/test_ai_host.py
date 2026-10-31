@@ -84,8 +84,8 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual((h["step"], h["skill"]), (step["id"], "silence_cleanup"))
         self.assertIn("ffmpeg", h["reason"])
         self.assertIn("video-editing", h["provided_by"])
-        self.assertIn("/plugin install video-editing-skill@ai-video-production-os", h["install"])
-        self.assertIn("/plugin install ffmpeg-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install video-editing-skill@velisa", h["install"])
+        self.assertIn("/plugin install ffmpeg-skill@velisa", h["install"])
 
 
 
@@ -139,7 +139,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertIn("declared for phase 2 and not implemented", h["reason"])
         self.assertEqual((h["provided_by"], h["repositories"]), ([package], [repo]))
         self.assertIn(command, h["install"])
-        self.assertEqual(f"/plugin install {repo}@ai-video-production-os" in h["install"], repo in PLUGINS)
+        self.assertEqual(f"/plugin install {repo}@velisa" in h["install"], repo in PLUGINS)
         if not command.startswith("none yet"):
             self.assertIn("or ./install.sh" + (" --with-optional" if repo in OPTIONAL else "") + " from AI-video-production-OS (packages and CLIs)", h["install"])
         else:
@@ -162,7 +162,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         [h] = svc.handoffs(ir)
         self.assertEqual((h["skill"], h["provided_by"], h["repositories"]), ("media_offload", ["ingest"], ["ingest-skill"]))
         self.assertIn(f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill[fetch]'", h["install"])
-        self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install ingest-skill@velisa", h["install"])
         self.assertEqual(list(dest.iterdir()), [], "nothing copied")
 
     def test_voice_enhancement_moved_to_the_voice_enhance_adapter(self):
@@ -178,7 +178,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         [h] = [h for h in svc.handoffs(ir) if h["skill"] == "voice_dereverb"]
         self.assertEqual((h["provided_by"], h["repositories"]), (["voice-enhance"], ["voice-enhance-skill"]))
         self.assertIn(f"git clone {_GH}voice-enhance-skill && pip install -e 'voice-enhance-skill'", h["install"])
-        self.assertNotIn("/plugin install voice-enhance-skill@ai-video-production-os", h["install"], "not a marketplace plugin (ecosystem.json)")
+        self.assertNotIn("/plugin install voice-enhance-skill@velisa", h["install"], "not a marketplace plugin (ecosystem.json)")
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_dubbing(self):
