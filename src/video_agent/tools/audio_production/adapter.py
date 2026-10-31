@@ -46,7 +46,7 @@ CONTRACT_SCHEMA = "audio-production/contract@1"
 REQUEST_SCHEMA = "audio-production/request@1"
 RESPONSE_SCHEMA = "audio-production/response@1"
 DOCTOR_SCHEMA = "audio-production/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.4: version-only (workflow hardening; contract pinned again, ADR-069). 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.5: NOISE_REDUCTION strength_db min 10 -> 20 (what afftdn accepts; audio ADR-17, pinned again in ADR-069). 0.4.4: version-only. 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
                                                # version window, ADR-048); operations/request/response unchanged.
                                                # 0.3.0 (audio-production-skill #8): audio_stream added to
                                                # GAIN/FADE_IN/FADE_OUT/MONO/STEREO/DOWNMIX/NOISE_REDUCTION/DYNAMICS.
@@ -175,7 +175,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic audio production (typed operation graph, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.4.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.5.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

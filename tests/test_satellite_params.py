@@ -323,8 +323,8 @@ class AudioMixNoiseDynamicsTests(unittest.TestCase):
         nr = ops["NOISE_REDUCTION"]["parameters"]
         self.assertEqual(tuple(nr["mode"]["enum"]), NOISE_REDUCTION_MODES)
         self.assertEqual((nr["strength_db"]["min"], nr["strength_db"]["max"]), NOISE_REDUCTION_CONTRACT_STRENGTH)
-        # the one deliberate narrowing: 10..19.99 is in the contract but its denoiser refuses it (measured, tests/test_integration.py)
-        self.assertEqual(NOISE_REDUCTION_STRENGTH, (20.0, NOISE_REDUCTION_CONTRACT_STRENGTH[1]))
+        # 0.4.5 raised the contract's min to 20 (what its denoiser accepts), so the planning range and the contract agree
+        self.assertEqual(NOISE_REDUCTION_STRENGTH, NOISE_REDUCTION_CONTRACT_STRENGTH)
         self.assertTrue(nr["mode"]["required"] and nr["strength_db"]["required"])
         dyn = ops["DYNAMICS"]["parameters"]
         for st, fields in DYNAMICS_STAGES.items():
@@ -355,7 +355,7 @@ class AudioMixNoiseDynamicsTests(unittest.TestCase):
                          (dict(base, **{"audio.mix": True, "audio.mix.levels": list(range(9))}), "1..8"),
                          (dict(base, **{"audio.noise_reduction.mode": "fft"}), "strength_db"),
                          (dict(base, **{"audio.noise_reduction.strength_db": 5}), "within"),
-                         (dict(base, **{"audio.noise_reduction.strength_db": 12}), "within"),   # in the contract, refused by its denoiser
+                         (dict(base, **{"audio.noise_reduction.strength_db": 12}), "within"),   # below the contract's 20 (and what its denoiser accepts)
                          (dict(base, **{"audio.noise_reduction.strength_db": 20, "audio.noise_reduction.mode": "rnn"}), "fft"),
                          (dict(base, **{"audio.dynamics.compressor.ratio": 50}), "within"),
                          (dict(base, **{"audio.dynamics.limiter.ceiling_db": 3}), "within"),
@@ -583,7 +583,7 @@ class AudioVoiceCleanupTests(unittest.TestCase):
     def test_vocabulary_matches_the_pinned_contract(self):
         from video_agent.agent.audio import AUDIO_ORDER, OPERATIONS, VOICE_CLEANUP_LEVELS
         c = audio_contract()
-        self.assertEqual(c["version"], "0.4.4")
+        self.assertEqual(c["version"], "0.4.5")
         vc = {o["type"]: o for o in c["operations"]}["VOICE_CLEANUP"]
         self.assertEqual(set(vc["parameters"]), {"level", "audio_stream"})
         self.assertEqual((tuple(vc["parameters"]["level"]["enum"]), vc["parameters"]["level"]["required"], "default" in vc["parameters"]["level"]), (VOICE_CLEANUP_LEVELS, True, False))

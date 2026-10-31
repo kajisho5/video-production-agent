@@ -939,8 +939,11 @@ class TranscriptionRealTests(unittest.TestCase):
         self.assertLessEqual({"transcription/check", "transcription/export", "transcription/segments", "transcription/transcribe"}, set(ad.tools))   # 0.7 added transcription/batch
         self.assertTrue(ad.supports("transcription/transcribe") and not ad.supports("transcription/export"))
         eng = {e["id"]: e for e in ad.engine_status()}
-        self.assertEqual((eng["faster_whisper"]["execution_mode"], eng["faster_whisper"]["requires_network"]), ("local", False), "the only implemented engine is local")
-        self.assertEqual(list(eng), ["faster_whisper"], "no cloud engine, no whisper.cpp: the contract lists implemented engines only")
+        self.assertEqual({k: (e["execution_mode"], e["requires_network"]) for k, e in eng.items()}, {k: ("local", False) for k in eng}, "every implemented engine is local")
+        # no cloud engine, no whisper.cpp: the contract lists implemented engines only -- the same ones as the pin (0.7.7 added the optional local haas_ja)
+        from video_agent.tools.transcription import pinned_contract
+        self.assertEqual(list(eng), [e["id"] for e in pinned_contract()["engines"]])
+        self.assertEqual(list(eng)[0], "faster_whisper")
         self.assertIsInstance(self.doctor.get("checks"), list)
         rows = {c["check"]: c["status"] for c in self.doctor["checks"]}
         self.assertEqual(rows["skill"], "AVAILABLE")
