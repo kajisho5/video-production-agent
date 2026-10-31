@@ -18,6 +18,8 @@ from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_r
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
+from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
+from ..tools.voice_enhance.adapter import stem_name as voice_stem_name
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
 
@@ -135,6 +137,20 @@ def lower_audio_op(tool: str, op: Dict[str, Any], current: Any, out_id: str) -> 
         if op.get(k) is not None:
             args[k] = op[k]
     args["output"] = out_id
+    return args
+
+
+def lower_voice_op(tool: str, op: Dict[str, Any], current: Any, out_id: Any) -> Dict[str, Any]:
+    """IR voice operation (ADR-073: voice.isolate / voice.dereverb on one input, voice.bleed_reduce on every mixed input at once) → the
+    voice-enhance tool's typed arguments: references plus the allowlisted parameters copied by name. The tool is the plan's; each
+    operation has exactly one."""
+    spec = VOICE_OPERATIONS[op["type"]]
+    if tool != spec["tool"]:
+        raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {spec['tool']}")
+    args: Dict[str, Any] = {"inputs": list(current), "outputs": list(out_id)} if op["type"] == "voice.bleed_reduce" else {"input": current, "output": out_id}
+    for k in spec["params"]:
+        if op.get(k) is not None:
+            args[k] = op[k]
     return args
 
 
@@ -536,6 +552,19 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 args = {"input": st["current"], "preset": "copy", "output": art_id}
                 add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
 
+    bleed = next((op for op in d["audio"]["operations"] if op["type"] == "voice.bleed_reduce"), None)
+    if bleed is not None:
+        # ADR-073: one voice-enhance call for every mixed input as recorded (a mixed input carries no cut); each cleaned track is written as
+        # <input name>_a0.wav into one directory of the job, which is where the Skill puts it
+        ins, outs = list(bleed["inputs"]), list(bleed["outputs"])
+        out_dir = job / "ops" / "00_bleed_reduce"
+        for a, o in zip(ins, outs):
+            paths[a] = d["assets"][a]["path"]
+            keys.setdefault(a, "")
+            paths[o] = str(out_dir / voice_stem_name(d["assets"][a]["path"]))
+        tool = tool_for(VOICE_OPERATIONS["voice.bleed_reduce"]["skill"], PROGRAMME_AUDIO)
+        add(tool, lower_voice_op(tool, bleed, ins, outs), ins, outs, list(bleed.get("decision_ids") or []),
+            "bleed:" + stable_hash([source_fingerprint(d["assets"][a]) for a in ins])[:16], skill=VOICE_OPERATIONS["voice.bleed_reduce"]["skill"])
     for idx, (asset_id, asset) in enumerate(d["assets"].items(), start=1):
         paths[asset_id] = asset["path"]
         keys[asset_id] = ""
@@ -569,6 +598,19 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_filler_remove" / f"{stem}_filler_remove.wav")
             tool = tool_for("audio_filler_remove", asset_id)
             add(tool, lower_audio_op(tool, filler, st["current"], out_id), [st["current"]], [out_id], list(filler.get("decision_ids") or []), fp, skill="audio_filler_remove")
+            st["current"] = out_id
+        if bleed is not None and asset_id in bleed["inputs"]:
+            st["current"] = bleed["outputs"][bleed["inputs"].index(asset_id)]
+        for vt in VOICE_PER_INPUT:   # ADR-073: dereverberation, then isolation, after the cut / filler removal (float / 48 kHz mono WAV)
+            vop = next((op for op in d["audio"]["operations"] if op["type"] == vt and op["asset"] == asset_id), None)
+            if vop is None:
+                continue
+            name, skill = vt.split(".", 1)[1], VOICE_OPERATIONS[vt]["skill"]
+            st["gen"] += 1
+            out_id = f"{asset_id}_{name}"
+            paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_{name}" / f"{stem}_{name}.wav")
+            tool = tool_for(skill, asset_id)
+            add(tool, lower_voice_op(tool, vop, st["current"], out_id), [st["current"]], [out_id], list(vop.get("decision_ids") or []), fp, skill=skill)
             st["current"] = out_id
         on_audio = cut is not None or filler is not None or any(op["asset"] == asset_id and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]) \
             or asset_id in (audio_concat.get("inputs") or [] if audio_concat else [])

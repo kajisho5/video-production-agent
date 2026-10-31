@@ -1,0 +1,39 @@
+{
+ "name": "ve_isolate_not_48khz_blocks",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 1,
+    "duration": 16.0,
+    "sample_rate": 44100
+   }
+  ],
+  "voice_enhance": {}
+ },
+ "requirements": {
+  "audio.production": true,
+  "voice.isolate": true
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "voice.isolate"
+  ],
+  "plan_status": "BLOCKED",
+  "note": "DeepFilterNet3 works at 48 kHz; without ffmpeg-skill audio --sample-rate voice-enhance refuses with FFMPEG_SKILL_UNAVAILABLE, so the plan blocks first (never a private resample)"
+ }
+}

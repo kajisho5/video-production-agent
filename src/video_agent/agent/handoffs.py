@@ -21,7 +21,10 @@ JOB_PREFIX = "job."
 JOB_SKILLS = {s.name: s for s in ECOSYSTEM_JOB_SKILLS}
 # jobs whose adapter has landed (roadmap step 9): asked for the way the implemented skill takes them, never as a handoff switch
 MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offload, ADR-066): give the card folder as the input and name the destinations "
-                              "with --set ingest.dest=<dir> (once per drive); the plan asks you to confirm before anything is copied"}
+                              "with --set ingest.dest=<dir> (once per drive); the plan asks you to confirm before anything is copied",
+             # ADR-073: voice-enhance-skill's adapter (roadmap step 9)
+             "voice_enhancement": "voice enhancement is implemented (skills voice_isolate / voice_dereverb / voice_bleed_reduce, ADR-073): with --set audio.production=true, "
+                                  "ask for --set voice.isolate=true, voice.dereverb=true and / or voice.bleed_reduce=true (with audio.mix=true); every op needs confirmation (EXPERIMENTAL)"}
 _ON = (True, "true", "yes", "on", "1")
 _OFF = (False, None, "false", "no", "off", "0", "none")
 

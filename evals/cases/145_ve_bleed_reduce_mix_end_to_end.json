@@ -1,0 +1,63 @@
+{
+ "name": "ve_bleed_reduce_mix_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 1,
+    "duration": 16.0
+   },
+   {
+    "channels": 1,
+    "duration": 16.0
+   }
+  ],
+  "voice_enhance": {}
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.mix": true,
+  "voice.bleed_reduce": true,
+  "voice.bleed_reduce.dominance_db": 6
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "REVIEW",
+  "ir_ops": [
+   "voice.bleed_reduce",
+   "audio.mix"
+  ],
+  "steps": [
+   "voice_bleed_reduce",
+   "audio_mix"
+  ],
+  "render": {
+   "pending": [
+    "voice.bleed_reduce"
+   ],
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "MIX"
+   ],
+   "voice_operations": [
+    "bleed_reduce"
+   ],
+   "qa_status": "PASS"
+  },
+  "note": "one bleed-reduce call for every mixed microphone, as recorded (a mixed input is never cut), before the mix; the explicit audio.mix waives its CONFIRM, the EXPERIMENTAL bleed reduction never does"
+ }
+}

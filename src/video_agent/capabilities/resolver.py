@@ -26,6 +26,7 @@ from ..tools.qc import QcAdapter, locate_qc
 from ..tools.subtitle import SubtitleAdapter, locate_subtitle
 from ..tools.thumbnail import ThumbnailAdapter, locate_thumbnail
 from ..tools.ingest import IngestAdapter, locate_ingest
+from ..tools.voice_enhance import VoiceEnhanceAdapter, locate_voice_enhance
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -289,6 +290,12 @@ class CapabilityResolver:
         # ingest-skill's card offload (ADR-066): the same rule -- contract checked against the pinned one (fatal subset only), its own doctor
         # ok / degraded (xxhash, ffprobe or yt-dlp missing is degraded, not missing: sha256 offloads need none of them)
         self._finishing_skill(caps, "ingest", locate_ingest(env=self.env), lambda sk: IngestAdapter(sk), "VIDEO_AGENT_INGEST_DIR", "ingest-skill", "ingest", per_item=None)
+        # voice-enhance-skill (ADR-073): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (an engine not
+        # installed is degraded: the Skill works, that operation does not). Each operation gets `voice-enhance:<TYPE>` from the doctor's
+        # `operations.<op>.ready`, with the Skill's own code (ENGINE_UNAVAILABLE / MODEL_NOT_FOUND) and install line when it is not ready.
+        self._finishing_skill(caps, "voice-enhance", locate_voice_enhance(env=self.env),
+                              lambda sk: VoiceEnhanceAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None), "VIDEO_AGENT_VOICE_ENHANCE_DIR", "voice-enhance-skill",
+                              "voice-enhance", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:
@@ -315,7 +322,8 @@ class CapabilityResolver:
         self._cache = caps
         return caps
 
-    def _finishing_skill(self, caps: Dict[str, Capability], cap: str, located: Any, make: Any, env_var: str, repo_name: str, console: str, per_item: Any) -> None:
+    def _finishing_skill(self, caps: Dict[str, Capability], cap: str, located: Any, make: Any, env_var: str, repo_name: str, console: str, per_item: Any,
+                         item_evidence: Any = None) -> None:
         """One Phase 3 package → its capability (+ per-operation / per-element capabilities `<cap>:<TYPE>` when the doctor reports them)."""
         if not located:
             caps[cap] = Capability(cap, "MISSING", f"set {env_var} to a {repo_name} checkout or install `{console}`")
@@ -346,8 +354,11 @@ class CapabilityResolver:
                     else:
                         status = "UNKNOWN"
                     per[typ] = status
-                    caps[f"{cap}:{typ}"] = Capability(f"{cap}:{typ}", status, f"doctor {st}" + ("" if st != "unknown" else f"; resolver checked {need}"),
-                                                      {"doctor": st, "required_capabilities": list((specs.get(typ) or {}).get("required_capabilities") or []), "tool": (specs.get(typ) or {}).get("tool")})
+                    extra = (item_evidence(ad, doc) or {}).get(typ) or {} if item_evidence is not None else {}   # ADR-073: the Skill's own reason / code / install line
+                    caps[f"{cap}:{typ}"] = Capability(f"{cap}:{typ}", status, f"doctor {st}" + ("" if st != "unknown" else f"; resolver checked {need}")
+                                                      + (f"; {extra['code']}: {extra.get('detail') or ''}" if extra.get("code") else ""),
+                                                      {"doctor": st, "required_capabilities": list((specs.get(typ) or {}).get("required_capabilities") or []), "tool": (specs.get(typ) or {}).get("tool"),
+                                                       **extra})
                 evidence["operations"] = per
             caps[cap] = Capability(cap, "AVAILABLE" if ok else "MISSING", detail, evidence)
         except Exception as e:  # noqa: BLE001 — an incompatible or broken installation is reported, never used

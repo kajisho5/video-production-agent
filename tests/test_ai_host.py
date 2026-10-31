@@ -92,8 +92,8 @@ class HandoffTests(unittest.TestCase):
 # AI-video-production-OS ecosystem.json and each repository's README, independently of skills/ecosystem.py.
 _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
-    # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload
-    "voice_enhancement": ("voice-enhance", "voice-enhance-skill", f"none yet: voice-enhance-skill is a scaffold repository with no released package ({_GH}voice-enhance-skill)"),
+    # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload;
+    # voice_enhancement (voice-enhance) left it the same way (ADR-073): the implemented skills voice_isolate / voice_dereverb / voice_bleed_reduce
     "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
     "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
     "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
@@ -162,8 +162,21 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"])
         self.assertEqual(list(dest.iterdir()), [], "nothing copied")
 
-    def test_voice_enhancement(self):
-        self.assert_handoff("voice_enhancement")
+    def test_voice_enhancement_moved_to_the_voice_enhance_adapter(self):
+        """ADR-073: `job.voice_enhancement` is no longer a handoff switch; it is refused with how the implemented ops are asked for, and a plan
+        asking for one without voice-enhance-skill still hands the step over naming voice-enhance-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps(extra=["audio-production", "audio-production:CUT"]))
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.voice_enhancement": True})
+        self.assertIn("voice.isolate=true", str(cm.exception))
+        self.assertNotIn("voice_enhancement", svc.registry.names())
+        ir = svc.plan([fake_media(tmp)], "generic", user_requirements={"audio.production": True, "voice.dereverb": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "voice_dereverb"]
+        self.assertEqual((h["provided_by"], h["repositories"]), (["voice-enhance"], ["voice-enhance-skill"]))
+        self.assertIn(f"git clone {_GH}voice-enhance-skill && pip install -e 'voice-enhance-skill'", h["install"])
+        self.assertNotIn("/plugin install voice-enhance-skill@ai-video-production-os", h["install"], "not a marketplace plugin (ecosystem.json)")
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_dubbing(self):
         self.assert_handoff("dubbing")

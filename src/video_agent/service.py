@@ -17,6 +17,7 @@ from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
+from .agent.voice import check_voice_keys
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -56,6 +57,7 @@ from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_r
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
+from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
@@ -91,6 +93,7 @@ class Service:
         self.motion_graphics_dir = motion_graphics_dir or os.environ.get("VIDEO_AGENT_MOTION_GRAPHICS_DIR")
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
+        self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
                                                video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
@@ -108,6 +111,7 @@ class Service:
         for pkg in (SUBTITLE_PACKAGE, THUMBNAIL_PACKAGE, COLOR_GRADING_PACKAGE, MOTION_GRAPHICS_PACKAGE, QC_PACKAGE):   # Phase 3 finishing Skills (ADR-031 / ADR-032): same rule
             self.registry.register_package(pkg)
         self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
+        self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -146,6 +150,8 @@ class Service:
             (locate_motion_graphics(self.motion_graphics_dir), lambda sk: MotionGraphicsAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             (locate_qc(self.qc_dir), lambda sk: QcAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
             (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
+            # ADR-073: always told which ffmpeg-skill to use (never its own current-directory search); paths checked per call like the other Skills
+            (locate_voice_enhance(self.voice_enhance_dir), lambda sk: VoiceEnhanceAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
         ):
             if located:
                 try:
@@ -1004,6 +1010,8 @@ class Service:
                 lifted = [lift_graphics_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("subtitle/"):
                 lifted = [lift_subtitle_result(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("voice-enhance/"):   # ADR-073: engine attribution / licences, parameters, warnings, stem facts
+                lifted = [lift_voice_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("thumbnail/"):
                 lifted = [lift_thumbnail_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("qc/"):
@@ -1369,7 +1377,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1474,6 +1482,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_qc_reference(rm)   # ADR-058: the master file exists, metrics are named, thresholds in range, the qc gate is on
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
+    check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 

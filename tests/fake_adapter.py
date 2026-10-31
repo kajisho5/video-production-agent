@@ -12,11 +12,12 @@ from video_agent.tools.base import ToolAdapter
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 
 
-def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False, video: bool = True, channels: int = 2, subtitle_streams: int = 0) -> Dict[str, Any]:
+def probe_doc(path: str, duration: float = 16.0, audio: bool = True, vfr: bool = False, hdr: bool = False, video: bool = True, channels: int = 2, subtitle_streams: int = 0,
+              sample_rate: int = 48000) -> Dict[str, Any]:
     return {"file": path, "format": "mov,mp4,m4a,3gp,3g2,mj2", "duration": duration, "size_bytes": 1000, "bitrate": 500, "subtitle_streams": subtitle_streams,
             "video": {"codec": "h264", "width": 1280, "height": 720, "fps": 30.0, "pix_fmt": "yuv420p", "hdr": hdr, "hdr_format": "HLG" if hdr else None, "rotation": 0, "variable_frame_rate_suspected": vfr,
                       "color_primaries": "bt709", "color_transfer": "bt709", "bit_depth": 8} if video else None,
-            "audio": {"codec": "aac", "channels": channels, "sample_rate": 48000} if audio else None}
+            "audio": {"codec": "aac", "channels": channels, "sample_rate": sample_rate} if audio else None}
 
 
 def _read_fake(path: str) -> Optional[Dict[str, Any]]:
@@ -85,7 +86,8 @@ class FakeAdapter(ToolAdapter):
             dur = meta["duration"] if meta else self.duration
             # a self-describing fake file may declare itself audio-only ("video": false) and its channel count (audio-only fixtures, audio-production outputs)
             return ToolResult(op.id, op.tool, True, 0, None, probe_doc(op.args["inputs"][0], dur, self.audio, self.vfr, self.hdr, video=bool((meta or {}).get("video", True)),
-                                                                        channels=int((meta or {}).get("channels", 2)), subtitle_streams=int((meta or {}).get("subtitle_streams", 0))),
+                                                                        channels=int((meta or {}).get("channels", 2)), subtitle_streams=int((meta or {}).get("subtitle_streams", 0)),
+                                                                        sample_rate=int((meta or {}).get("sample_rate", 48000))),   # ADR-073: a fixture may declare its rate
                               [], "", 0.1, attempt, dry_run)
         if script == "silence":
             silences = in_meta.get("silences", self.silences) if in_meta else self.silences   # a self-describing fake file may carry its own silences (ADR-053 takes)

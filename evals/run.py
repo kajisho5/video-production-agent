@@ -456,7 +456,7 @@ def run_case(case: dict) -> dict:
         for n, spec in enumerate(ap.get("inputs") or [{"channels": 2}]):
             f = src.parent / (f"in{n}." + ("mp4" if spec.get("video") else "wav"))
             f.write_bytes(json.dumps({"fake": True, "duration": spec.get("duration", 16.0), "lufs": -11.0, "video": bool(spec.get("video", False)), "channels": spec.get("channels", 2),
-                                      **{k: spec[k] for k in ("segments", "words") if k in spec}}, ensure_ascii=False).encode("utf-8"))   # ADR-072: what the fake recogniser hears
+                                      **{k: spec[k] for k in ("segments", "words", "sample_rate") if k in spec}}, ensure_ascii=False).encode("utf-8"))   # ADR-072: what the fake recogniser hears; ADR-073: the rate
             inputs.append(str(f))
         if ap.get("contract_mode"):
             os.environ["FAKE_AP_MODE"] = ap["contract_mode"]
@@ -479,6 +479,29 @@ def run_case(case: dict) -> dict:
             adapters.append(TranscriptionAdapter(TranscriptionSkill([sys.executable, str(ROOT / "tests" / "fake_transcription.py")], None, {}), workspace=str(Path(tmp) / "cache" / "transcription")))
             extra = extra + ["transcription"]
         caps = FakeCaps(case.get("missing_capabilities", ()), extra=extra)
+        ve = ap.get("voice_enhance")
+        for k in ("FAKE_VOICE_ENGINES", "FAKE_VOICE_RESAMPLE", "FAKE_VOICE_MODE"):
+            os.environ.pop(k, None)
+        if ve is not None:
+            # ADR-073: the fake voice-enhance process, with the capabilities the resolver derives from its doctor (the Skill's own codes on a missing engine)
+            from test_voice_enhance import voice_capabilities
+            from video_agent.tools.skill_process import CliSkill
+            from video_agent.tools.voice_enhance import VoiceEnhanceAdapter
+            if ve.get("engines"):
+                os.environ["FAKE_VOICE_ENGINES"] = ve["engines"]
+            if ve.get("resample"):
+                os.environ["FAKE_VOICE_RESAMPLE"] = "1"
+
+            def _voice():
+                return VoiceEnhanceAdapter(CliSkill("voice-enhance", [sys.executable, str(ROOT / "tests" / "fake_voice_enhance.py")], None, {}), workspace=tmp,
+                                           allowed_inputs=[str(src.parent)], ffmpeg_skill_dir=tmp)
+            adapters.append(_voice())
+            voice_caps, fake_caps = voice_capabilities(_voice), caps
+
+            class _VoiceCaps:
+                def resolve(self, refresh=False):
+                    c = dict(fake_caps.resolve()); c.update(voice_caps); return c
+            caps = _VoiceCaps()
         if ap.get("unknown_capability"):
             base_caps = caps.resolve()
             class _Caps:
@@ -523,6 +546,10 @@ def run_case(case: dict) -> dict:
             if ap.get("run_mode"):
                 os.environ["FAKE_AP_MODE"] = ap["run_mode"]
             ir_path = str(Path(tmp) / "ap.json"); save_ir(ir, ir_path)
+            if exp["render"].get("pending") is not None:   # ADR-073: the CONFIRM decisions waiting before any approval
+                pend = sorted({x["subject"] for x in ir.pending_confirmations()})
+                if pend != sorted(exp["render"]["pending"]):
+                    failures.append(f"pending confirmations {pend} != {sorted(exp['render']['pending'])}")
             rr = svc.render(load_ir(ir_path), ir_path, approve=["all"])
             os.environ.pop("FAKE_AP_MODE", None)
             want = exp["render"]
@@ -536,6 +563,10 @@ def run_case(case: dict) -> dict:
                 failures.append(f"audio-production operations {used} != {want['operations']}")
             if want.get("recovery_classes") is not None and [r["class"] for r in (rr.get("execution") or {}).get("recovery") or []] != want["recovery_classes"]:
                 failures.append(f"recovery {[r['class'] for r in (rr.get('execution') or {}).get('recovery') or []]} != {want['recovery_classes']}")
+            if want.get("voice_operations") is not None:   # ADR-073: what voice-enhance ran, in order
+                ran = [(r.get("data") or {}).get("op") for r in results if str(r["tool"]).startswith("voice-enhance/") and r.get("ok")]
+                if ran != want["voice_operations"]:
+                    failures.append(f"voice-enhance operations {ran} != {want['voice_operations']}")
             if want.get("qa_status") and (rr.get("qa") or {}).get("status") != want["qa_status"]:
                 failures.append(f"qa {(rr.get('qa') or {}).get('status')} != {want['qa_status']}")
             if want.get("duration") is not None:
@@ -555,6 +586,8 @@ def run_case(case: dict) -> dict:
                             failures.append(f"provenance of {e['skill']} lacks the decision / the Skill's artifact hash")
                 if want.get("skill_observations") is not None and [o["kind"] for o in prov.get("skill_observations") or []] != want["skill_observations"]:
                     failures.append(f"skill observations {[o['kind'] for o in prov.get('skill_observations') or []]}")
+        for k in ("FAKE_VOICE_ENGINES", "FAKE_VOICE_RESAMPLE", "FAKE_VOICE_MODE"):
+            os.environ.pop(k, None)
         return {"case": case["name"], "ok": not failures, "failures": failures}
     vo = case.get("video_editing_ops")
     if vo:

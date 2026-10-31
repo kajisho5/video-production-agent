@@ -67,7 +67,9 @@ class Executor:
                 res.status, res.failed_op = "BLOCKED", op.id
                 res.recovery.append({"op": op.id, "class": "TOOL_MISSING", "action": "BLOCK", "reason": f"adapter does not support {op.tool}", "at": now_iso()})
                 return res
-            rec = self.completed.get(op.idempotency_key) if (op.idempotency_key and not dry_run) else None
+            # a record names one output file; an operation with several (ADR-073: voice-enhance bleed-reduce, one track per input) is re-run, not half-reused
+            reusable = bool(op.idempotency_key) and not dry_run and len(op.outputs) == 1
+            rec = self.completed.get(op.idempotency_key) if reusable else None
             if rec is not None and record_matches(rec):
                 res.skipped.append(op.id)
                 res.reused[op.id] = rec["output"]
@@ -93,7 +95,7 @@ class Executor:
                     r = ToolResult(op_id=op.id, tool=op.tool, ok=False, exit_code=-1, output=None, data={}, commands=[], stderr_tail=str(exc), seconds=0.0, attempt=attempt, dry_run=dry_run)
                 res.results.append(r)
                 if r.ok:
-                    if not dry_run and op.idempotency_key and r.output and os.path.exists(r.output):
+                    if reusable and r.output and os.path.exists(r.output):
                         self.completed[op.idempotency_key] = output_record(r.output)
                     break
                 plan = next_attempt(r, attempt, self.max_attempts, timeout)
