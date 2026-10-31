@@ -4,7 +4,7 @@
   "id": "thumbnail-skill",
   "name": "thumbnail-skill",
   "package": "thumbnail-skill",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "kind": "execution",
   "role": "thumbnail rendering (deterministic execution); not decision, not selection, not design",
   "description": "Renders a typed ThumbnailDocument (canvas + still-image/video-frame assets + positioned image/text elements) into a validated PNG/JPEG with provenance. Never decides what a thumbnail should show: no best-frame search, no face detection, no OCR, no automatic layout or title generation, no click-through prediction, no A/B or publish decisions. Not an AI agent.",

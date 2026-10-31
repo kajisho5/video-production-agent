@@ -70,7 +70,7 @@ MAX_CUE_TEXT = 2000
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _LANG_RE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
 DRIFT_KEYS = ("skill_id", "version", "contract_version", "deterministic", "capabilities", "operations", "out_of_scope", "parameters", "errors")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.2.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
