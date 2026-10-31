@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from ...models import Operation, ToolResult
 from ..base import ToolAdapter, ToolError
+from ..discovery import child_env
 from .catalog import CATALOG, FLAG_ALIASES, QUALITY_FLAG
 from .package import package
 from ...skills.contract import SkillPackage
@@ -222,7 +223,7 @@ def run_process_group(cmd: List[str], timeout: Optional[float], stdin: Optional[
     """Run cmd in its own process group so a timeout or an interrupt kills the script AND the ffmpeg it spawned.
     `stdin` (a JSON document for stdin-driven Skills) is written once and closed. Returns (exit_code, stdout, stderr);
     exit 124 means timeout, 130 means interrupted."""
-    env = dict(os.environ, **CHILD_ENV)
+    env = child_env(CHILD_ENV)   # never the AI provider credentials (ADR-069)
     kw: Dict[str, Any] = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": env}
     if stdin is not None:
         kw["stdin"] = subprocess.PIPE

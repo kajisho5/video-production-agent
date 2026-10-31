@@ -40,7 +40,7 @@ AI（Claude）: `pip install -e '.[ai]'` の上で `VIDEO_AGENT_AI_PROVIDER=anth
   "env": {"VIDEO_AGENT_FFMPEG_SKILL_DIR": "/abs/path/to/ffmpeg-skill"}}}}
 ```
 
-  tools: `doctor` `skills` `plan`（既定で ai_brief 付き）`revise`（`ai_recommendations` を直接渡す）`validate` `explain` `diff` `approve` `reject` `render` `check` `artifacts`。各 tool は `video-agent --json <command>` を子プロセスで実行するだけ。承認は `approve` を別に呼ぶ必要があり、`render` に一括承認は無い。
+  tools: `doctor` `skills` `plan`（既定で ai_brief 付き）`revise`（`ai_recommendations` を直接渡す）`validate` `explain` `diff` `approve` `reject` `render` `check` `artifacts`。各 tool は `video-agent --json <command>` を子プロセスで実行するだけ。引数の値は option として読まれない（option は `--flag=value`、入力・project・出力・依頼文は `--` の後ろ。ADR-069）。AI と host brief に渡す計測結果の path は basename だけ。承認は `approve` を別に呼ぶ必要があり、`render` に一括承認は無い。
 - スマホ / Web の Claude アプリ: ローカルの MCP server（stdio）は動かせない。動画ファイルと ffmpeg があるマシンで Claude Code か Claude Desktop を使う。
 
 ## セットアップ
@@ -57,6 +57,8 @@ export VIDEO_AGENT_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill
 export VIDEO_AGENT_WORKSPACE=./video-agent-work   # 省略可
 video-agent doctor
 ```
+
+Skill の探し方（ADR-069）: 各 Skill は ①`--*-dir` などの明示 ②`VIDEO_AGENT_*_DIR` 環境変数 ③`~/.claude/skills/<name>` ④この agent 自身の source checkout（`src/video_agent` の上に `pyproject.toml` か `.git` がある時だけ）の隣の `<name>` ⑤（CLI 型の Skill は）PATH 上のコマンド、の順で探す。①②が与えられていてそこに無ければ MISSING で、推測には進まない。**カレントディレクトリは見ない**: 以前の `./vendor/<name>` と `../<name>`（作業ディレクトリ基準）は廃止した。展開した素材フォルダなど信頼できない場所で `video-agent doctor` を始めても、そこに置かれたコードは実行されない。上の `git clone ... ../<name>` は agent の checkout の隣なので、どのディレクトリから起動しても見つかる。wheel で入れた agent は ④ が無いので、環境変数か `~/.claude/skills` で指す。Skill の子プロセスには AI provider の資格情報（`ANTHROPIC_*` / `OPENAI_*`）を渡さない。
 
 ## 使い方
 

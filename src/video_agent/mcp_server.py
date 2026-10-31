@@ -95,7 +95,7 @@ TOOLS: List[Dict[str, Any]] = [
 def _sets(values: Optional[Dict[str, Any]]) -> List[str]:
     out: List[str] = []
     for k, v in (values or {}).items():
-        out += ["--set", f"{k}={json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}"]
+        out.append(f"--set={k}={json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}")
     return out
 
 
@@ -105,11 +105,16 @@ def _brief_file(a: Dict[str, Any], tmpdir: str) -> List[str]:
     path = os.path.join(tmpdir, "brief_requirements.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(a["brief_requirements"], f, ensure_ascii=False)
-    return ["--brief-requirements", path]
+    return [f"--brief-requirements={path}"]
 
 
 def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
-    """CLI arguments for a tool call (after the global options). Raises ValueError on a missing argument."""
+    """CLI arguments for a tool call (after the global options). Raises ValueError on a missing argument.
+
+    Every value a client sends is data, never a CLI option (ADR-069): options are spelled `--flag=value`, so a value
+    beginning with '-' is that option's value, and the positionals (inputs / project / output / text) come last, after a
+    `--` separator, so an input such as `--output=/elsewhere.json` is a file name the CLI then fails to find instead of an
+    option that redirects where the Project IR is written."""
     def need(key: str) -> str:
         v = a.get(key)
         if v in (None, "", []):
@@ -117,7 +122,10 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         return str(v)
 
     def opt(flag: str, key: str) -> List[str]:
-        return [flag, str(a[key])] if a.get(key) not in (None, "") else []
+        return [f"{flag}={a[key]}"] if a.get(key) not in (None, "") else []
+
+    def cmd(sub: str, options: List[str], positionals: List[str]) -> List[str]:
+        return [sub, *options, "--", *positionals]
 
     if name in ("doctor", "skills"):
         return [name]
@@ -127,41 +135,40 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
             inputs = [inputs]
         if not inputs:
             raise ValueError("plan: 'inputs' is required")
-        argv = ["plan", *map(str, inputs), *opt("--profile", "profile"), *opt("--request", "request"), *opt("--name", "name"),
-                *opt("--language", "language"), *_sets(a.get("set"))]
-        for k in a.get("kinds") or []:
-            argv += ["--kind", str(k)]
+        options = [*opt("--profile", "profile"), *opt("--request", "request"), *opt("--name", "name"), *opt("--language", "language"), *_sets(a.get("set"))]
+        options += [f"--kind={k}" for k in a.get("kinds") or []]
         if a.get("ai_brief", True):
-            argv += ["--ai-brief", *opt("--ai-model", "ai_model")]
-        argv += [*opt("--brief", "brief"), *_brief_file(a, tmpdir)]
-        if a.get("brief_requirements") is not None and "--ai-model" not in argv:
-            argv += opt("--ai-model", "ai_model")
-        return argv
+            options += ["--ai-brief", *opt("--ai-model", "ai_model")]
+        options += [*opt("--brief", "brief"), *_brief_file(a, tmpdir)]
+        if a.get("brief_requirements") is not None and not any(o.startswith("--ai-model=") for o in options):
+            options += opt("--ai-model", "ai_model")
+        return cmd("plan", options, [str(i) for i in inputs])
     if name == "brief":
-        argv = ["brief", need("text"), *_sets(a.get("set")), *_brief_file(a, tmpdir)]
-        return argv + (opt("--ai-model", "ai_model") if a.get("brief_requirements") is not None else ["--ai-brief"])
+        options = [*_sets(a.get("set")), *_brief_file(a, tmpdir)]
+        options += opt("--ai-model", "ai_model") if a.get("brief_requirements") is not None else ["--ai-brief"]
+        return cmd("brief", options, [need("text")])
     if name == "revise":
-        argv = ["revise", need("project"), *opt("--feedback", "feedback"), *opt("--by", "by"), *_sets(a.get("set"))]
+        options = [*opt("--feedback", "feedback"), *opt("--by", "by"), *_sets(a.get("set"))]
         if a.get("ai_recommendations") is not None:
             path = os.path.join(tmpdir, "ai_recommendations.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(a["ai_recommendations"], f, ensure_ascii=False)
-            argv += ["--ai-recommendations", path, *opt("--ai-model", "ai_model")]
-        return argv
+            options += [f"--ai-recommendations={path}", *opt("--ai-model", "ai_model")]
+        return cmd("revise", options, [need("project")])
     if name in ("validate", "diff"):
-        return [name, need("project")]
+        return cmd(name, [], [need("project")])
     if name == "explain":
-        return ["explain", need("project"), *opt("--decision", "decision"), *(["--pipeline"] if a.get("pipeline") else [])]
+        return cmd("explain", [*opt("--decision", "decision"), *(["--pipeline"] if a.get("pipeline") else [])], [need("project")])
     if name == "approve":
-        return ["approve", need("project"), "--decision", need("decision"), *opt("--reason", "reason"), *opt("--by", "by")]
+        return cmd("approve", [f"--decision={need('decision')}", *opt("--reason", "reason"), *opt("--by", "by")], [need("project")])
     if name == "reject":
-        return ["reject", need("project"), "--decision", need("decision"), "--reason", need("reason"), *opt("--by", "by")]
+        return cmd("reject", [f"--decision={need('decision')}", f"--reason={need('reason')}", *opt("--by", "by")], [need("project")])
     if name == "render":
-        return ["render", need("project"), *(["--dry-run"] if a.get("dry_run") else []), *opt("--resume", "resume")]
+        return cmd("render", [*(["--dry-run"] if a.get("dry_run") else []), *opt("--resume", "resume")], [need("project")])
     if name == "check":
-        return ["check", need("output"), *opt("--platform", "platform"), *(["--qc"] if a.get("qc") else [])]
+        return cmd("check", [*opt("--platform", "platform"), *(["--qc"] if a.get("qc") else [])], [need("output")])
     if name == "artifacts":
-        return ["artifacts", *([str(a["project"])] if a.get("project") else [])]
+        return cmd("artifacts", [], [str(a["project"])] if a.get("project") else [])
     raise KeyError(name)
 
 

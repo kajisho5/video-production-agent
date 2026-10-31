@@ -154,6 +154,24 @@ class AnthropicProviderTests(unittest.TestCase):
         self.assertEqual(calls[0]["provider"], "anthropic")
         self.assertNotIn("sk-", json.dumps(ir.doc))
 
+    def test_payload_carries_no_absolute_paths(self):
+        """ADR-069: observation data under path-like keys (media_probe `file`, `*_path`, `*_dir`) reaches the provider as a basename only."""
+        from video_agent.media.analysis import scrub_for_ai
+        tmp = tempfile.mkdtemp()
+        src = fake_media(tmp)
+        client = FakeClient(cite_first_observation("silence_cleanup"))
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps(), provider=AnthropicProvider(client=client, env={}))
+        svc.plan([src], "youtube")
+        payload = client.calls[0]["messages"][0]["content"]
+        body = json.loads(payload)
+        self.assertNotIn(tmp, payload)
+        self.assertNotIn(str(Path(tmp).resolve()), payload)
+        probes = [o["data"] for o in body["inputs"]["observations"] if o["kind"] == "media_probe"]
+        self.assertTrue(probes and probes[0].get("file") == "talk.mp4", probes)
+        self.assertEqual(scrub_for_ai({"path": "/m/a.mov", "output_path": "C:\\x\\b.mp4", "cache_dir": "/c/d/", "sources": {"files": ["/a/1.wav"], "card_dir": ["/v/A", "/v/B"]},
+                                       "duration": 3.0, "note": "ffmpeg -i x y"}),
+                         {"path": "a.mov", "output_path": "b.mp4", "cache_dir": "d", "sources": {"files": ["1.wav"], "card_dir": ["A", "B"]}, "duration": 3.0, "note": "[removed]"})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

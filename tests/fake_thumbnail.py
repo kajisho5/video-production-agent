@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "thumbnail" / "contract_0.1.4.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "thumbnail" / "contract_0.1.5.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_THUMBNAIL_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_THUMBNAIL_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]

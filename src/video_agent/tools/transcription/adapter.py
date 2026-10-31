@@ -140,7 +140,7 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.7.4.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.7.7.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

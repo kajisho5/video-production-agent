@@ -323,7 +323,7 @@ Phase 1 の Skill: `media_probe`, `silence_cleanup`（leading/trailing の技術
 | `filter:subtitles/ass/zscale/tonemap/loudnorm/scdet` | `ffmpeg -filters`（libass → `subtitles`/`ass`、zimg → `zscale`） |
 | `gpu` | nvenc/videotoolbox/vaapi エンコーダの有無から DEGRADED/AVAILABLE を推定（UNKNOWN も許容） |
 | `font:cjk-ja` | `fc-list :lang=ja` が使えれば AVAILABLE、`fc-list` 自体が無ければ UNKNOWN |
-| `ffmpeg-skill` | 設定パス（`VIDEO_AGENT_FFMPEG_SKILL_DIR` / `~/.claude/skills/ffmpeg-skill` / 同梱 vendored）で `scripts/probe.py` と `package.json` を確認、version を記録 |
+| `ffmpeg-skill` | 設定パス（`VIDEO_AGENT_FFMPEG_SKILL_DIR` / `~/.claude/skills/ffmpeg-skill` / agent の source checkout の隣。カレントディレクトリの `vendor/` は見ない: ADR-069）で `scripts/probe.py` と `package.json` を確認、version を記録 |
 | `asr:whisper` | `whisper-cli` / `faster_whisper` import / `whisper` の有無 |
 | `ai:<provider>` | API キー環境変数の有無（値は記録しない） |
 

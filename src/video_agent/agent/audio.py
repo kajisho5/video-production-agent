@@ -24,7 +24,7 @@ Vocabulary and arithmetic only, no execution:
 - **Mix / noise reduction / dynamics** (ADR-063, keys named after the pinned contract's parameters, ranges from it):
   `audio.mix` (bool: every audio input, in input order, summed into one programme; the first input sets its length) +
   `audio.mix.levels` (per input: a gain in dB, `mute` or {gain_db, mute}, aligned with the inputs), NOISE_REDUCTION's
-  `audio.noise_reduction.strength_db` (required by the contract; 20..60: the contract's 10..60 minus what its denoiser refuses) + `audio.noise_reduction.mode` (fft), and DYNAMICS'
+  `audio.noise_reduction.strength_db` (required by the contract; 20..60, the contract's range since audio-production 0.4.5) + `audio.noise_reduction.mode` (fft), and DYNAMICS'
   three stages `audio.dynamics.<gate|compressor|limiter>` (true: the stage with the Skill's own defaults) + `.<field>` (each stage
   field of the contract, e.g. `audio.dynamics.compressor.ratio`). The mix keeps every input on its own timeline from 0 s, so
   no silence is cut from a mixed input. Ducking: the pinned MIX has none (no sidechain parameter), so none is planned.
@@ -78,10 +78,9 @@ CHANNEL_SKILLS = ("audio_mono", "audio_stereo", "audio_downmix")
 MAX_MIX_INPUTS = 8                                   # contract max_mix_inputs / MIX.inputs.max
 MIX_GAIN_RANGE = (-60.0, 60.0)                       # MIX.levels[].gain_db
 NOISE_REDUCTION_MODES = ("fft",)                     # NOISE_REDUCTION.mode (enum; only afftdn is implemented)
-NOISE_REDUCTION_CONTRACT_STRENGTH = (10.0, 60.0)     # NOISE_REDUCTION.strength_db as the contract declares it (required, no default)
-# ...and what actually runs: the Skill hands it to ffmpeg-skill audio.py --denoise-strength, which becomes the FFT denoiser's noise floor
-# `nf=-<strength>`, and that option only takes -80..-20, so 10..19.99 fails at execution (TOOL_ERROR, measured on the real Skills in
-# tests/test_integration.py). The agent refuses those at planning time instead of planning a step that cannot run (ADR-063).
+NOISE_REDUCTION_CONTRACT_STRENGTH = (20.0, 60.0)     # NOISE_REDUCTION.strength_db as the contract declares it (required, no default)
+# 0.4.5 (audio ADR-17) raised the contract's min from 10 to 20: the FFT denoiser's noise floor `nf=-<strength>` only takes -80..-20,
+# which the agent already enforced at planning time (ADR-063); the contract and what runs now agree.
 NOISE_REDUCTION_STRENGTH = (20.0, 60.0)
 DYNAMICS_STAGES: Dict[str, Dict[str, Tuple[float, float]]] = {   # DYNAMICS.<stage>.properties: field -> (min, max); fixed order gate → compressor → limiter
     "gate": {"threshold_db": (-60.0, 0.0), "ratio": (1.0, 9000.0), "attack_ms": (0.01, 9000.0), "release_ms": (0.01, 9000.0), "range_db": (-90.0, 0.0), "knee_db": (1.0, 8.0)},

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -76,13 +77,13 @@ class QcAdapterTests(unittest.TestCase):
     # ---- contract
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.2.3"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "0.2.4"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
         self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery", "delivery_package"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 14)
         self.assertEqual(sorted(ad.rules), ["audio", "delivery", "delivery_package", "delivery_package_artifact", "delivery_package_cross_artifact", "delivery_package_dependency",
                                             "delivery_package_duration_consistency", "subtitle", "text_region", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video"]); self.assertTrue(ad.owns_cache)
         self.assertIn("qc/check", ad.describe()["tools"]); self.assertEqual(ad.describe()["drift"], [])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "0.2.3", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "0.2.4", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
         self.assertEqual(pk.validate(), []); self.assertTrue(all(not t.produces_output and t.kind == "measure" for t in pk.tools)); self.assertIn("verdict", pk.tools[0].result_keys)
         self.assertEqual(PACKAGE.tool_ids(), [TOOL_CHECK, TOOL_INSPECT]); self.assertIn("never a production decision", PACKAGE.role)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
@@ -118,7 +119,7 @@ class QcAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertIsNone(r.output); self.assertEqual(r.commands, []); self.assertEqual(r.tool, TOOL_CHECK)
         d = r.data
-        self.assertEqual(d["skill"], {"id": "qc", "version": "0.2.3"}); self.assertEqual((d["status"], d["operation_type"], d["kind"], d["verdict"]), ("completed", "check", "video", "PASS"))
+        self.assertEqual(d["skill"], {"id": "qc", "version": "0.2.4"}); self.assertEqual((d["status"], d["operation_type"], d["kind"], d["verdict"]), ("completed", "check", "video", "PASS"))
         self.assertTrue(d["report_id"].startswith("qcreport_")); self.assertTrue(d["admitted"]); self.assertEqual(d["fingerprint"], sha(self.src))
         self.assertEqual(sorted(d), sorted(["skill", "status", "operation_type", "kind", "verdict", "report_id", "checks", "findings", "measurements", "fingerprint", "companions", "provenance", "cache", "reused", "admitted", "commands", "warnings"]))
         self.assertTrue(d["checks"] and all(set(c) == {"check_id", "category", "status", "finding_codes", "measurement_ids"} for c in d["checks"]))
@@ -136,8 +137,8 @@ class QcAdapterTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.ws, ".qc-cache")), "the Skill's cache lives under the workspace")
         # lifting: the admitted report becomes an agent Observation (provenance only)
         obs = lift_report(r, "clip")
-        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.tool, obs.fingerprint, obs.asset_id), ("qc.report", "OBSERVED", "qc", "0.2.3", TOOL_CHECK, sha(self.src), "clip"))
-        self.assertEqual(obs.source, "qc/check@0.2.3"); self.assertEqual(obs.data["verdict"], "PASS"); self.assertEqual(obs.external_id, d["report_id"]); self.assertEqual(obs.parameters["kind"], "video")
+        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.tool, obs.fingerprint, obs.asset_id), ("qc.report", "OBSERVED", "qc", "0.2.4", TOOL_CHECK, sha(self.src), "clip"))
+        self.assertEqual(obs.source, "qc/check@0.2.4"); self.assertEqual(obs.data["verdict"], "PASS"); self.assertEqual(obs.external_id, d["report_id"]); self.assertEqual(obs.parameters["kind"], "video")
         # a FAIL or WARN verdict is a successful measurement (the gate decides, never the adapter)
         for mode, verdict, code in (("verdict_fail", "FAIL", "VIDEO_STREAM_MISSING"), ("verdict_warn", "WARN", "AUDIO_LEADING_SILENCE_EXCEEDED")):
             os.environ["FAKE_QC_MODE"] = mode
@@ -152,7 +153,7 @@ class QcAdapterTests(unittest.TestCase):
         ri = ad.run(self._op(TOOL_INSPECT, kind="audio", rules=None), paths)
         self.assertTrue(ri.ok, ri.data.get("error")); self.assertEqual((ri.data["operation_type"], ri.data["checks"], ri.data["verdict"]), ("inspect", [], "PASS"))
         self.assertTrue(all(m["id"].split(".")[0] in ("audio", "container") for m in ri.data["measurements"]), "kind audio measures audio only")
-        self.assertEqual(lift_report(ri).source, "qc/inspect@0.2.3")
+        self.assertEqual(lift_report(ri).source, "qc/inspect@0.2.4")
         # companions: subtitle kind with reference_video, delivery kind with a subtitle; their fingerprints are recomputed and reported
         rs = ad.run(self._op(input="sub", kind="subtitle", reference_video="clip", rules={"subtitle": {"max_line_length": 42, "min_coverage_ratio": 0.5}}), paths)
         self.assertTrue(rs.ok, rs.data.get("error")); self.assertEqual(rs.data["companions"], {"subtitle": None, "reference_video": sha(self.src)}); self.assertEqual(rs.data["fingerprint"], sha(self.srt))
@@ -306,7 +307,7 @@ class QcAdapterTests(unittest.TestCase):
         """The pin is qc-skill main after #23 (released 0.2.3): the reference-metric checks, rules, measurements, optional filters and the
         widened reference_video input are part of it, so a live 0.2.3 contract shows no drift."""
         c = pinned_contract()
-        self.assertEqual(c["version"], "0.2.3")
+        self.assertEqual(c["version"], "0.2.4")
         for cid in ("video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"):
             self.assertIn(cid, c["checks"])
         self.assertEqual({k: c["rules"]["video"][k]["type"] for k in ("reference_metrics", "min_vmaf", "min_ssim", "min_psnr_db")},
@@ -395,7 +396,8 @@ class QcAdapterTests(unittest.TestCase):
         self.assertEqual((doc["status"], doc["exit_code"]), ("fail", 1)); self.assertEqual(QcAdapter.capability_status(doc)["ffprobe"], "MISSING")
         self.assertEqual(QcAdapter.capability_status({}), {})
         # locate: the env var points at a checkout, otherwise nothing is guessed
-        self.assertIsNone(locate_qc(env={"PATH": self.tmp}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_qc(env={"PATH": self.tmp}))
         fake_root = Path(self.tmp) / "qc-skill" / "src" / "qc_skill"; fake_root.mkdir(parents=True); (fake_root / "cli.py").write_text("", encoding="utf-8")
         sk = locate_qc(env={ENV_DIR: str(Path(self.tmp) / "qc-skill"), "PATH": self.tmp})
         self.assertIsNotNone(sk); self.assertEqual(sk.command[1:], ["-m", "qc_skill.cli"]); self.assertEqual(sk.env, {"PYTHONPATH": str(Path(self.tmp) / "qc-skill" / "src")})

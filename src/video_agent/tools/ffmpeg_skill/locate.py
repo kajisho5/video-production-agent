@@ -1,5 +1,6 @@
 """Find an ffmpeg-skill checkout/installation. Search order: explicit dir, VIDEO_AGENT_FFMPEG_SKILL_DIR,
-~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill."""
+~/.claude/skills/ffmpeg-skill, the sibling of this source checkout
+(never the current directory: ADR-069)."""
 from __future__ import annotations
 
 import json
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from ..discovery import child_env, default_skill_dirs
 from .contract_check import CatalogCheck, catalog_check
 
 SUPPORTED_MIN = (0, 8, 4)
@@ -53,7 +55,7 @@ class FfmpegSkill:
         key = (str(self.root), name)
         if key not in _HELP_CACHE:
             try:
-                out = subprocess.run([sys.executable, str(self.script(name)), "--help"], capture_output=True, text=True, timeout=60).stdout
+                out = subprocess.run([sys.executable, str(self.script(name)), "--help"], capture_output=True, text=True, timeout=60, env=child_env()).stdout
             except (OSError, subprocess.SubprocessError):
                 out = ""
             _HELP_CACHE[key] = out
@@ -92,7 +94,7 @@ def locate_ffmpeg_skill(explicit: Optional[str] = None, env: Optional[Dict[str, 
     # An explicit dir or the env var is the caller naming exactly where to look; if that candidate has no
     # checkout there, that is the answer (MISSING), not a cue to go on guessing sibling directories that
     # happen to exist here too -- a bad override must fail loudly, never resolve to some other checkout.
-    cands = authoritative or [Path.home() / ".claude" / "skills" / "ffmpeg-skill", Path.cwd() / "vendor" / "ffmpeg-skill", Path.cwd().parent / "ffmpeg-skill"]
+    cands = authoritative or default_skill_dirs("ffmpeg-skill")
     for c in cands:
         found = _candidate(c)
         if found:

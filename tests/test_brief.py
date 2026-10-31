@@ -243,10 +243,11 @@ class ProviderTests(unittest.TestCase):
     def test_mcp_tools(self):
         self.assertIn("brief", [t["name"] for t in TOOLS])
         tmp = tempfile.mkdtemp()
-        self.assertEqual(tool_argv("brief", {"text": DONE_WHEN}, tmp), ["brief", DONE_WHEN, "--ai-brief"])
+        self.assertEqual(tool_argv("brief", {"text": DONE_WHEN}, tmp), ["brief", "--ai-brief", "--", DONE_WHEN])
         argv = tool_argv("plan", {"inputs": ["a.mp4"], "brief": DONE_WHEN, "brief_requirements": {"requirements": []}, "ai_model": "claude-code"}, tmp)
-        self.assertEqual(argv[argv.index("--brief") + 1], DONE_WHEN)
-        self.assertEqual(json.loads(Path(argv[argv.index("--brief-requirements") + 1]).read_text(encoding="utf-8")), {"requirements": []})
+        self.assertIn("--brief=" + DONE_WHEN, argv)
+        req = next(a.split("=", 1)[1] for a in argv if a.startswith("--brief-requirements="))
+        self.assertEqual(json.loads(Path(req).read_text(encoding="utf-8")), {"requirements": []})
 
     def test_ai_request_shape(self):
         r = brief_task.build_request("x" * 5000, ["edit.fit"], {"subtitle": True})

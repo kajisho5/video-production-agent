@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..discovery import child_env
 from .catalog import CATALOG, FLAG_ALIASES, QUALITY_FLAG
 
 SKILL_ID = "ffmpeg-skill"
@@ -155,7 +156,7 @@ def _apply_doctor(chk: CatalogCheck, doctor: Dict[str, Any], scripts: Optional[L
 
 def _run_json(cmd: List[str], timeout: float) -> Tuple[Optional[Any], str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace", env=child_env())
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"{type(e).__name__}: {e}"
     try:

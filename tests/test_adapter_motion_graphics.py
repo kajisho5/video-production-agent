@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -85,7 +86,7 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.2.4")
+        self.assertEqual(a.version, "0.2.5")
         self.assertEqual(a.tools, {TOOL_ID})
         self.assertTrue(a.supports(TOOL_ID))
         self.assertFalse(a.supports("motion-graphics/other"))
@@ -99,7 +100,7 @@ class ContractTests(Base):
         self.assertEqual(pkg.tool_ids(), [TOOL_ID])
         self.assertEqual(pkg.repository, "kajisho5/motion-graphics-skill")
         self.assertIn("motion-graphics", pkg.capabilities)
-        self.assertEqual(PACKAGE.version, "0.2.4")
+        self.assertEqual(PACKAGE.version, "0.2.5")
         self.assertEqual(PACKAGE.tool(TOOL_ID).inputs, ["input", "output", "image", "video"])
         self.assertTrue(PACKAGE.tool(TOOL_ID).produces_output)
         self.assertTrue(a.retryable["TOOL_ERROR"]); self.assertTrue(a.retryable["CANCELLED"]); self.assertFalse(a.retryable["INVALID_REQUEST"])
@@ -140,7 +141,8 @@ class ContractTests(Base):
         self.assertEqual(MotionGraphicsAdapter.element_status(a.doctor())["image_overlay"], "unavailable")
 
     def test_locate_env(self):
-        self.assertIsNone(locate_motion_graphics(env={"PATH": ""}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_motion_graphics(env={"PATH": ""}))
         root = os.path.join(self.tmp, "motion-graphics-skill")
         os.makedirs(os.path.join(root, "src", "motion_graphics"))
         Path(root, "src", "motion_graphics", "cli.py").write_text("", encoding="utf-8")
@@ -278,7 +280,7 @@ class SuccessTests(Base):
         self.assertEqual(r.output, self.paths()["out"])
         self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": SKILL_ID, "version": "0.2.4"})
+        self.assertEqual(d["skill"], {"id": SKILL_ID, "version": "0.2.5"})
         self.assertEqual(d["status"], "completed")
         self.assertEqual(d["operation_type"], "GRAPHICS")
         self.assertEqual(d["artifact"]["sha256"], sha256_file(r.output))
@@ -345,7 +347,7 @@ class ErrorTests(Base):
         self.assertIs(e["retryable"], retryable, mode)
         self.assertEqual(e["recovery_class"], rc, mode)
         self.assertEqual(r.data["status"], "failed")
-        self.assertEqual(r.data["skill"]["version"], "0.2.4")
+        self.assertEqual(r.data["skill"]["version"], "0.2.5")
         self.assertEqual(e["exit_code"], r.exit_code)
         if exit_code is not None:
             self.assertEqual(r.exit_code, exit_code, mode)

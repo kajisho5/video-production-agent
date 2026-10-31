@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -72,7 +73,7 @@ class FakeBase(unittest.TestCase):
 class ContractTests(FakeBase):
     def test_discovery(self):
         a = self.adapter
-        self.assertEqual(a.version, "0.1.4")
+        self.assertEqual(a.version, "0.1.5")
         self.assertEqual(a.tools, {TOOL_RENDER, TOOL_EXTRACT_FRAME})
         self.assertEqual(a.drift(), [])
         self.assertEqual(a.font_ids, ["cjk", "mono", "sans", "sans-bold", "serif"])
@@ -98,7 +99,7 @@ class ContractTests(FakeBase):
         self.assertTrue(t.produces_output)
         self.assertEqual(t.inputs, ["input", "output"])
         self.assertEqual(t.required_capabilities, ["thumbnail", "ffmpeg", "ffprobe", "ffmpeg-skill"])
-        self.assertEqual(PACKAGE.version, "0.1.4")
+        self.assertEqual(PACKAGE.version, "0.1.5")
         self.assertEqual(package_from_contract(pinned_contract()).tool_ids(), PACKAGE.tool_ids())
         self.assertEqual(PREFIX, "thumbnail/")
 
@@ -143,7 +144,8 @@ class ContractTests(FakeBase):
         self.assertTrue(any("thumbnail/render.produces_output" in d for d in rep))
 
     def test_locate(self):
-        self.assertIsNone(locate_thumbnail(env={"PATH": self.tmp}))
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):   # ADR-069: no guessed checkout
+            self.assertIsNone(locate_thumbnail(env={"PATH": self.tmp}))
         root = os.path.join(self.tmp, "thumbnail-skill")
         os.makedirs(os.path.join(root, "src", "thumbnail_skill"))
         Path(root, "src", "thumbnail_skill", "cli.py").write_text("", encoding="utf-8")
@@ -284,7 +286,7 @@ class SuccessTests(FakeBase):
         self.assertEqual(r.output, self.paths("frame.jpg")["out"])
         self.assertTrue(Path(r.output).read_bytes().startswith(b"\xff\xd8\xff"))
         d = r.data
-        self.assertEqual(d["skill"], {"id": "thumbnail", "version": "0.1.4"})
+        self.assertEqual(d["skill"], {"id": "thumbnail", "version": "0.1.5"})
         self.assertEqual((d["status"], d["operation_type"]), ("completed", "extract_frame"))
         art = d["artifact"]
         self.assertEqual(art["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
@@ -299,7 +301,7 @@ class SuccessTests(FakeBase):
         self.assertEqual(r.commands, [])
         self.assertEqual(d["warnings"], [])
         obs = lift_observation(r, "thumb-asset")
-        self.assertEqual((obs.kind, obs.asset_id, obs.source, obs.provenance, obs.skill, obs.tool), ("image.probe", "thumb-asset", "thumbnail-skill/extract_frame@0.1.4", "OBSERVED", "thumbnail", TOOL_EXTRACT_FRAME))
+        self.assertEqual((obs.kind, obs.asset_id, obs.source, obs.provenance, obs.skill, obs.tool), ("image.probe", "thumb-asset", "thumbnail-skill/extract_frame@0.1.5", "OBSERVED", "thumbnail", TOOL_EXTRACT_FRAME))
         self.assertEqual(obs.data, {"width": 1280, "height": 720, "format": "jpeg", "size": art["size"], "sha256": art["sha256"]})
         self.assertEqual(obs.fingerprint, art["sha256"])
         argv = self.logged()[-1]["argv"]
@@ -318,7 +320,7 @@ class SuccessTests(FakeBase):
         self.assertEqual(d["provenance"]["fonts"][0]["font_id"], "sans-bold")
         self.assertEqual(d["source"]["sha256"], hashlib.sha256(Path(self.video).read_bytes()).hexdigest())
         self.assertEqual(d["source"]["timestamp"], 1.0)
-        self.assertEqual(lift_observation(r).source, "thumbnail-skill/render@0.1.4")
+        self.assertEqual(lift_observation(r).source, "thumbnail-skill/render@0.1.5")
         self.assertIsNone(lift_observation(self.adapter.run(self.frame_op(timestamp=99.0), self.paths())))
 
     def test_reused(self):
@@ -372,8 +374,8 @@ class ErrorTests(FakeBase):
         self.check("text", "INVALID_RESULT", False, "SKILL_ERROR", exit_code=1)
         self.check("nonzero_ok", "INVALID_RESULT", False, "SKILL_ERROR", exit_code=3, frag="exit code 3 with an ok response")
         self.check("wrong_schema", "INVALID_RESULT", False, "SKILL_ERROR", frag="response schema")
-        self.check("wrong_skill", "INVALID_RESULT", False, "SKILL_ERROR", frag="is not thumbnail-skill@0.1.4")
-        self.check("wrong_version", "INVALID_RESULT", False, "SKILL_ERROR", frag="is not thumbnail-skill@0.1.4")
+        self.check("wrong_skill", "INVALID_RESULT", False, "SKILL_ERROR", frag="is not thumbnail-skill@0.1.5")
+        self.check("wrong_version", "INVALID_RESULT", False, "SKILL_ERROR", frag="is not thumbnail-skill@0.1.5")
         self.check("no_provenance", "INVALID_RESULT", False, "SKILL_ERROR", frag="provenance incomplete")
         self.check("outer_not_ok", "INVALID_RESULT", False, "SKILL_ERROR", frag="transport envelope ok=False")
         self.check("wrong_tool", "INVALID_RESULT", False, "SKILL_ERROR", frag="tool='thumbnail/validate' is not the dispatched thumbnail/extract_frame")

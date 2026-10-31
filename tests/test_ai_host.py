@@ -249,15 +249,58 @@ class McpServerTests(unittest.TestCase):
     def test_tool_argv(self):
         tmp = tempfile.mkdtemp()
         self.assertEqual(tool_argv("plan", {"inputs": ["a.mp4"], "profile": "youtube", "request": "詰めて", "set": {"audio.loudness.target_lufs": -16}}, tmp),
-                         ["plan", "a.mp4", "--profile", "youtube", "--request", "詰めて", "--set", "audio.loudness.target_lufs=-16", "--ai-brief"])
+                         ["plan", "--profile=youtube", "--request=詰めて", "--set=audio.loudness.target_lufs=-16", "--ai-brief", "--", "a.mp4"])
         self.assertNotIn("--ai-brief", tool_argv("plan", {"inputs": "a.mp4", "ai_brief": False}, tmp))
         argv = tool_argv("revise", {"project": "p.json", "ai_recommendations": {"recommendations": []}, "ai_model": "claude-desktop"}, tmp)
-        f = argv[argv.index("--ai-recommendations") + 1]
+        f = next(a[len("--ai-recommendations="):] for a in argv if a.startswith("--ai-recommendations="))
         self.assertEqual(json.loads(Path(f).read_text(encoding="utf-8")), {"recommendations": []})
-        self.assertEqual(tool_argv("render", {"project": "p.json", "dry_run": True}, tmp), ["render", "p.json", "--dry-run"])
+        self.assertEqual(tool_argv("render", {"project": "p.json", "dry_run": True}, tmp), ["render", "--dry-run", "--", "p.json"])
         with self.assertRaises(ValueError):
             tool_argv("approve", {"project": "p.json"}, tmp)
         self.assertNotIn("approve", json.dumps(TOOLS[[t["name"] for t in TOOLS].index("render")]["inputSchema"]), "render cannot approve inline")
+
+    def test_values_are_never_options(self):
+        """ADR-069: a value that looks like an option (`--output=...`) stays data: positionals follow `--`, options are `--flag=value`."""
+        tmp = tempfile.mkdtemp()
+        evil = "--output=" + str(Path(tmp) / "elsewhere.json")
+        argv = tool_argv("plan", {"inputs": ["a.mp4", evil, "-o"], "profile": "--no-hash", "set": {"-k": "--v"}, "kinds": ["--allow-source-dir"]}, tmp)
+        sep = argv.index("--")
+        self.assertEqual(argv[sep + 1:], ["a.mp4", evil, "-o"])
+        self.assertTrue(all(a.startswith("--") and "=" in a for a in argv[1:sep] if a != "--ai-brief"), argv)
+        from video_agent.cli import build_parser
+        ns = build_parser().parse_args(["--json", *argv])
+        self.assertEqual(ns.inputs, ["a.mp4", evil, "-o"])
+        self.assertEqual((ns.profile, ns.set, ns.no_hash, getattr(ns, "output", None)), ("--no-hash", ["-k=--v"], False, None))
+        for name, args, key in (("brief", {"text": "--set=x=1"}, "text"), ("render", {"project": "--dry-run"}, "project"),
+                                ("check", {"output": "--qc"}, "output"), ("approve", {"project": "--by=x", "decision": "--reason=r"}, "project"),
+                                ("artifacts", {"project": "--job=j"}, "project")):
+            ns = build_parser().parse_args(["--json", *tool_argv(name, args, tmp)])
+            self.assertEqual(getattr(ns, key), args[key], name)
+        self.assertFalse(getattr(ns, "job", None))
+
+    def test_injected_option_does_not_write_outside(self):
+        """ADR-069: through the server, an `inputs` element `--output=<path>` reaches the CLI as an input file name, never as the
+        write target. The command the server launches is captured and parsed by the real CLI parser (independent of whether
+        ffmpeg is installed), then the call is made for real and nothing is written outside."""
+        from unittest import mock
+        from video_agent.cli import build_parser
+        tmp = tempfile.mkdtemp()
+        target = Path(tmp) / "outside" / "planted.project.json"
+        target.parent.mkdir()
+        args = {"inputs": [fake_media(tmp), f"--output={target}", "--allow-source-dir", "--no-hash"], "ai_brief": False}
+        server = Server(workspace=str(Path(tmp) / "ws"))
+        with mock.patch("video_agent.mcp_server.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "")) as run:
+            server.call_tool("plan", args)
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[1:3], ["-m", "video_agent.cli"])
+        ns = build_parser().parse_args(cmd[3:])
+        self.assertEqual(ns.inputs, args["inputs"], "every element is an input, including the option-looking ones")
+        self.assertIsNone(getattr(ns, "output", None))
+        self.assertFalse(ns.no_hash)
+        self.assertFalse(getattr(ns, "allow_source_dir", None))
+        res = server.call_tool("plan", args)
+        self.assertTrue(res["isError"])
+        self.assertFalse(target.exists())
 
     def test_every_listed_tool_maps_to_a_command(self):
         tmp = tempfile.mkdtemp()

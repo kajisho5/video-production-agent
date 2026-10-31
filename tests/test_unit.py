@@ -2713,7 +2713,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         from video_agent.tools.media_analysis import PACKAGE, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.5", "media-analysis/contract@1"))
+        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.6", "media-analysis/contract@1"))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual(set(pkg.tool_ids()), set(ad.contract["kind_to_tool"].values()), "every kind maps to a declared tool (timing serves two kinds)")
@@ -2766,7 +2766,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         ad = self._adapter()
         r = ad.measure("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "kind": "silence"})
         self.assertTrue(r.ok and r.exit_code == 0)
-        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.5")
+        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.6")
         self.assertEqual(r.data["cache"]["status"], "miss")
         self.assertEqual(r.commands, ["ffprobe: metadata"], "the Skill reports what it ran; the agent never built it")
         # through the analyzer: lifted Observation keeps the external identity and provenance; agent cache is not used
@@ -2779,10 +2779,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["duration", "loudness", "media_probe", "scene_detection", "silence"])
         sil = obs["silence"]
-        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.5", "media-analysis/silence", "media-analysis/silence@0.1.5"))
+        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.6", "media-analysis/silence", "media-analysis/silence@0.1.6"))
         self.assertTrue(sil.external_id.startswith("obs_") and sil.external_id != sil.id)
         self.assertEqual(sil.fingerprint, "f" * 64)
-        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.5")
+        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.6")
         self.assertEqual(sil.cache["status"], "miss")
         self.assertEqual(sil.data["segments"][0]["type"], "leading", "facts as measured; no interpretation added")
         rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
@@ -2842,7 +2842,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(tools["scene_analysis"], "media-analysis/scenes")
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["implemented"] and rows["media-analysis"]["available"])
-        self.assertEqual(rows["media-analysis"]["version"], "0.1.5")
+        self.assertEqual(rows["media-analysis"]["version"], "0.1.6")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
         # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
@@ -2856,7 +2856,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"])
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=["duration"])
         d = next(o for o in an.observations if o.kind == "duration")
-        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.5"))
+        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.6"))
         self.assertNotEqual(svc.registry.tool("media-analysis/timing").version, "", "tool version recorded separately from the skill version")
 
     # boundaries: no import, no engine invocation, no event → command; observation ≠ inference
@@ -2930,7 +2930,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.7.4", "transcription-skill"))
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.7.7", "transcription-skill"))
         self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
@@ -3006,7 +3006,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
         t = obs["transcript"]
-        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.7.4", "transcription/transcribe", "transcription/transcribe@0.7.4"))
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.7.7", "transcription/transcribe", "transcription/transcribe@0.7.7"))
         self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
         self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
         self.assertEqual(t.fingerprint, res.assets[0].hash)
@@ -3099,10 +3099,10 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription.adapter import check_transcript
         ok = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1"}).data
         asset = Asset(path=self.src, hash="0" * 64)
-        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.7.4", "k", "transcription/transcribe")
+        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.7.7", "k", "transcription/transcribe")
         self.assertNotEqual(o.fingerprint, asset.hash)
         tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
-        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.7.4", ad.engines, ad.contract["schemas"])))
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.7.7", ad.engines, ad.contract["schemas"])))
 
     # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
     def test_cached_only_policy(self):
@@ -3157,7 +3157,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
-        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.7.4", ["speech_transcription"]))
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.7.7", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
         self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
@@ -3170,7 +3170,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         root = self._checkout()
         cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
         self.assertEqual(cap.status, "AVAILABLE", cap.detail)
-        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.7.4", "faster_whisper", "local", True))
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.7.7", "faster_whisper", "local", True))
         self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
         self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
         os.environ["FAKE_TS_MODE"] = "model_unavailable"
@@ -5135,10 +5135,10 @@ class AudioProductionAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.4.3"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "0.4.5"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
         self.assertEqual(len(ad.lowering.supported_types()), 15); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.3", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.5", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
         self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         # incompatible contracts are refused, never patched
@@ -5188,7 +5188,7 @@ class AudioProductionAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertEqual(r.output, paths["a_norm"]); self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.3"}); self.assertEqual(d["operation_type"], "NORMALIZE")
+        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.5"}); self.assertEqual(d["operation_type"], "NORMALIZE")
         self.assertEqual(d["operation"]["type"], "NORMALIZE"); self.assertEqual(d["operation"]["tool"], "ffmpeg-skill/loudness")
         self.assertEqual(d["operation"]["parameters"], {"target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0})
         self.assertEqual(d["artifact"]["sha256"], hashlib_sha(paths["a_norm"])); self.assertEqual(d["artifact"]["format"], "wav"); self.assertFalse(d["artifact"]["reused"])
@@ -5541,7 +5541,7 @@ class AudioProductionPathTests(unittest.TestCase):
         rows = prov["operations"]
         self.assertEqual([r["skill"] for r in rows], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
         for r in rows:
-            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.3"))
+            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.5"))
             self.assertTrue(r["skill_result"]["artifact"]["sha256"]); self.assertEqual(r["skill_result"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["skill_result"]["operation"]["skill"], "audio-production")
         self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 5 + ["loudness"])
         self.assertEqual(prov["skill_observations"][-1]["data"]["target_lufs"], -16.0)
@@ -6371,15 +6371,18 @@ class LocateAuthoritativeOverrideTests(unittest.TestCase):
     checkout -- exactly backwards from what an explicit override is for."""
 
     def setUp(self):
+        # ADR-069: the guessed sibling is the sibling of the agent's own source checkout (never of the current directory);
+        # the checkout is pretended to live in a temporary parent and the home directory is empty, so no real checkout is found
+        from unittest import mock
         self.tmp = tempfile.mkdtemp()
         self.parent = Path(self.tmp)
         self.cwd_dir = self.parent / "video-production-agent"
         self.cwd_dir.mkdir()
-        self._old_cwd = os.getcwd()
-        os.chdir(self.cwd_dir)
-
-    def tearDown(self):
-        os.chdir(self._old_cwd)
+        (self.parent / "home").mkdir()
+        for target, value in (("source_checkout_root", self.cwd_dir), ("_home", self.parent / "home")):
+            patcher = mock.patch(f"video_agent.tools.discovery.{target}", return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _checkout(self, name: str, package_dir: str) -> Path:
         root = self.parent / name
@@ -6435,6 +6438,83 @@ class LocateAuthoritativeOverrideTests(unittest.TestCase):
         from video_agent.tools.media_analysis.locate import locate_media_analysis
         self._checkout("media-analysis-skill", "media_analysis")
         self.assertIsNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": "/nonexistent"}))
+
+
+class CwdIndependentDiscoveryTests(unittest.TestCase):
+    """ADR-069: Skill discovery never depends on the current directory (a folder the agent is merely started in must not
+    supply the code it runs), and a Skill child process never receives the AI provider credentials."""
+
+    def setUp(self):
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp())
+        self.untrusted = self.tmp / "parent" / "untrusted"
+        for name, marker in (("ffmpeg-skill", "scripts/probe.py"), ("media-analysis-skill", "src/media_analysis/cli.py"), ("transcription-skill", "src/transcription_skill/cli.py"),
+                             ("video-editing-skill", "src/video_editing_skill/cli.py"), ("audio-production-skill", "src/audio_production/cli.py"),
+                             ("subtitle-skill", "src/subtitle_skill/cli.py")):
+            for base in (self.untrusted / "vendor", self.tmp / "parent"):   # ./vendor/<name> and ../<name> of the current directory
+                f = base / name / marker
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("raise SystemExit('planted')\n", encoding="utf-8")
+        (self.tmp / "home").mkdir()
+        self._old_cwd = os.getcwd()
+        os.chdir(self.untrusted)
+        self.addCleanup(os.chdir, self._old_cwd)
+        for target, value in (("source_checkout_root", None), ("_home", self.tmp / "home")):
+            patcher = mock.patch(f"video_agent.tools.discovery.{target}", return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_vendor_and_parent_of_cwd_are_never_searched(self):
+        from video_agent.tools.audio_production.locate import locate_audio_production
+        from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
+        from video_agent.tools.media_analysis.locate import locate_media_analysis
+        from video_agent.tools.skill_process import locate_cli_skill
+        from video_agent.tools.transcription.locate import locate_transcription
+        from video_agent.tools.video_editing.locate import locate_video_editing
+        env = {"PATH": ""}
+        for locate in (locate_ffmpeg_skill, locate_media_analysis, locate_transcription, locate_video_editing, locate_audio_production):
+            self.assertIsNone(locate(env=env), locate.__name__)
+        self.assertIsNone(locate_cli_skill("subtitle", "subtitle_skill", "subtitle_skill", "subtitle-skill", "VIDEO_AGENT_SUBTITLE_DIR", env=env, checkout_names=("subtitle-skill",)))
+        # the explicit dir, the env var and ~/.claude/skills/<name> still work
+        self.assertIsNotNone(locate_ffmpeg_skill(str(self.untrusted / "vendor" / "ffmpeg-skill"), env=env))
+        self.assertIsNotNone(locate_media_analysis(env={"PATH": "", "VIDEO_AGENT_MEDIA_ANALYSIS_DIR": str(self.tmp / "parent" / "media-analysis-skill")}))
+        installed = self.tmp / "home" / ".claude" / "skills" / "ffmpeg-skill" / "scripts"
+        installed.mkdir(parents=True)
+        (installed / "probe.py").write_text("", encoding="utf-8")
+        self.assertEqual(locate_ffmpeg_skill(env=env).root, installed.parent.resolve())
+
+    def test_sibling_of_the_source_checkout(self):
+        from unittest import mock
+        from video_agent.tools import discovery
+        repo = Path(__file__).resolve().parents[1]
+        mock.patch.stopall()   # the real answers, not setUp's
+        self.assertEqual(discovery.source_checkout_root(), repo, "the tests import the package from this checkout's src/")
+        self.assertEqual(discovery.default_skill_dirs("qc-skill"), [Path.home() / ".claude" / "skills" / "qc-skill", repo.parent / "qc-skill"])
+        with mock.patch.object(discovery, "source_checkout_root", return_value=self.tmp / "parent" / "video-production-agent"):
+            from video_agent.tools.media_analysis.locate import locate_media_analysis
+            with mock.patch.object(discovery, "_home", return_value=self.tmp / "home"):
+                found = locate_media_analysis(env={"PATH": ""})
+            self.assertEqual(found.root, self.tmp / "parent" / "media-analysis-skill", "the sibling of the agent's own checkout, wherever the command starts")
+
+    def test_child_env_drops_provider_credentials(self):
+        from video_agent.tools.discovery import child_env
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        env = child_env({"PYTHONPATH": "x"}, base={"PATH": "/bin", "ANTHROPIC_API_KEY": "sk-1", "anthropic_auth_token": "t", "ANTHROPIC_PROFILE": "p", "OPENAI_API_KEY": "sk-2", "HOME": "/h"})
+        self.assertEqual(env, {"PATH": "/bin", "HOME": "/h", "PYTHONPATH": "x"})
+        keys = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ[k] = "sk-must-not-leak"
+            code, out, _ = run_process_group([sys.executable, "-c", "import json, os; print(json.dumps(sorted(k for k in os.environ if 'API_KEY' in k or 'AUTH_TOKEN' in k)))"], timeout=60)
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [], "a Skill child process sees no provider credential")
 
 
 class UnrecognizedFinishingKeyTests(unittest.TestCase):
@@ -6547,12 +6627,10 @@ class UrlIngestTests(unittest.TestCase):
         self.assertEqual((sk.command[1:], sk.env), (["-m", "ingest_skill.cli"], {"PYTHONPATH": str(Path(root) / "src")}))
         bin_dir = Path(self.tmp) / "bin"
         fake_ingest.install(bin_dir)
-        cwd = Path(self.tmp) / "nested" / "cwd"; cwd.mkdir(parents=True)
-        here = os.getcwd(); os.chdir(str(cwd))   # no ../ingest-skill sibling checkout to find first
-        try:
+        from unittest import mock
+        # no guessed checkout (~/.claude/skills, the sibling of this source checkout: ADR-069) to find first
+        with mock.patch("video_agent.tools.discovery.source_checkout_root", return_value=None), mock.patch("video_agent.tools.discovery._home", return_value=Path(self.tmp)):
             sk = locate_ingest(env={"PATH": str(bin_dir)})
-        finally:
-            os.chdir(here)
         self.assertEqual(Path(sk.command[0]).stem, "ingest")   # ingest.cmd on Windows
         self.assertIsNone(locate_ingest(env={INGEST_ENV_DIR: str(Path(self.tmp) / "nothing"), "PATH": ""}))
 
