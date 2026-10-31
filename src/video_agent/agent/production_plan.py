@@ -35,6 +35,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
                    "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
+                   # ADR-070: the still → a clip at the picture's frame / rate (its join is a video_concat step on the same subject)
+                   "video_image_insert": ("asset", "image", "duration", "position", "width", "height", "fps"),
                    # audio production path (ADR-030): the subject's audio through audio-production-skill
                    "audio_cut": ("asset", "remove"), "audio_normalize": ("asset", "target_lufs", "true_peak", "tolerance_lu", "sample_rate"), "audio_gain": ("asset", "gain_db"),
                    "audio_mono": ("asset",), "audio_stereo": ("asset",), "audio_downmix": ("asset",), "audio_fade_in": ("asset", "duration"), "audio_fade_out": ("asset", "duration"),
@@ -178,6 +180,11 @@ def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str,
         after = step is None or speed_step is None or int(step.get("order", 0)) >= int(speed_step.get("order", 0))
         if after:
             dur = float(dur) / float(speed["factor"])
+    # ADR-070: from the join of a still on, the subject's timeline is longer by the still
+    for ins in (op for op in ops if op.get("type") == "video.image_insert" and op.get("asset") == subject and op.get("duration")):
+        join = next((s for s in steps if s.get("id") == f"step_image_join_{subject}"), None)
+        if step is None or join is None or int(step.get("order", 0)) >= int(join.get("order", 0)):
+            dur = float(dur) + float(ins["duration"])
     return float(dur)
 
 

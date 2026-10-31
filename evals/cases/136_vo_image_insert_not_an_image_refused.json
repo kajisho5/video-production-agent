@@ -1,0 +1,14 @@
+{
+ "name": "vo_image_insert_not_an_image_refused",
+ "profile": "generic",
+ "video_editing_ops": {
+  "inputs": 1,
+  "still": "renamed_video"
+ },
+ "requirements": {
+  "edit.image_insert.duration": 2
+ },
+ "expect": {
+  "plan_error": "is not a PNG image"
+ }
+}

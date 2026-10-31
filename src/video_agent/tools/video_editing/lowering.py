@@ -32,7 +32,12 @@ ARGS: Dict[str, Tuple[str, ...]] = {
     "ROTATE": ("input", "output", "degrees", "flip"),
     "FREEZE": ("input", "output", "hold", "at"),
     "REVERSE": ("input", "output"),
+    # ADR-070: video-editing-skill 0.4.0 (#21) IMAGE_INSERT: a still image (the `input`, an image source) → a silent clip of `duration`
+    # seconds at width x height / fps (the contract's own parameter names); the only type whose input is an image, never a video
+    "IMAGE_INSERT": ("input", "output", "duration", "width", "height", "fps"),
 }
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")   # the contract's formats.image_inputs (an IMAGE_INSERT input outside them is refused here)
+STILL_DURATION = (0.01, 600.0)                # the contract's IMAGE_INSERT.duration ("time 0.01..600 s")
 ROTATIONS = (90, 180, 270)   # the contract's ROTATE.degrees ("90 | 180 | 270, clockwise")
 FLIPS = ("h", "v")           # the contract's ROTATE.flip ("h | v")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "args", "script", "binary", "executable", "executables", "env", "environment",
@@ -192,6 +197,21 @@ def params_for(t: str, args: Dict[str, Any]) -> Dict[str, Any]:
             p["at"] = _num(args["at"], "at")
     elif t == "REVERSE":
         pass
+    elif t == "IMAGE_INSERT":   # ADR-070
+        if args.get("duration") is None:
+            raise ToolError("video-editing: IMAGE_INSERT needs duration")
+        d = _num(args["duration"], "duration")
+        if not STILL_DURATION[0] <= d <= STILL_DURATION[1]:
+            raise ToolError(f"video-editing: IMAGE_INSERT duration must be within {STILL_DURATION[0]:g}..{STILL_DURATION[1]:g} s")
+        p["duration"] = d
+        for k in ("width", "height"):
+            if args.get(k) is not None:
+                n = _int(args[k], k)
+                if n < 2 or n % 2:
+                    raise ToolError(f"video-editing: IMAGE_INSERT {k} must be an even integer")
+                p[k] = n
+        if args.get("fps") is not None:
+            p["fps"] = _num(args["fps"], "fps") if isinstance(args["fps"], (int, float)) else _str(args["fps"], "fps", r"^[0-9]{1,6}/[0-9]{1,6}$")
     else:
         raise ToolError(f"video-editing: no lowering for operation type {t}")
     return p
@@ -254,6 +274,10 @@ class Lowering:
             ids = [args["input"]]
         in_paths = [str(Path(paths.get(i, i)).resolve()) for i in ids]
         sources = [{"id": f"s{n}", "path": p} for n, p in enumerate(in_paths)]
+        if t == "IMAGE_INSERT":   # ADR-070: the one input is an image source; a video (or anything else) in that slot is refused here, before the Skill
+            if Path(in_paths[0]).suffix.lower() not in IMAGE_EXTENSIONS:
+                raise ToolError(f"video-editing: IMAGE_INSERT input must be an image ({', '.join(IMAGE_EXTENSIONS)}), got {Path(in_paths[0]).name}")
+            sources[0]["kind"] = "image"
         if t == "OVERLAY":
             img = args.get("image")
             if not isinstance(img, str) or not img:

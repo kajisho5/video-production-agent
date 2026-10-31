@@ -22,7 +22,8 @@ from .decision_engine import DecisionEngine, raise_approval, resolve_approval, r
 from .audio import MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
-from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
+from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
+from .image_insert import decide_image_insert
 from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
@@ -68,6 +69,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
                  # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
+                 # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
+                 IMAGE_INSERT_OP: ("video.image_insert.approval", "CONFIRM"),
                  # ADR-052: an editor timeline changes no media (it references the sources and is written next to the deliverables), so AUTO
                  TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO"),
                  # ADR-053: choosing which take of a line is used is editorial (the others are left out), so CONFIRM; the beat snap
@@ -598,6 +601,10 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and (d.subject in OPERATIONS or d.subject == TRIM_OP) and d.params.get("asset_id") == subject for d in decs) \
             or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
+    # ---- a still joined before / after the finished picture (ADR-070): after finishing (whose subtitle decisions it must not contradict) and
+    # before the timeline export, which names it among what a cut list does not carry (like every other TRANSFORM it cannot express)
+    if IMAGE_INSERT_OP in edits:
+        decide_image_insert(eng, decs, m, analysis, subjects, edits[IMAGE_INSERT_OP], bool(audio["production"]), approval_for, probe_ids_of, cap_block)
     # ---- timeline export (ADR-052): the cut list of each video subject as an editor timeline
     decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
     # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here

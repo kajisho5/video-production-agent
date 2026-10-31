@@ -7,7 +7,7 @@ from pathlib import Path
 from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
                            PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
-from ..agent.editing import EDIT_ORDER, OPERATIONS, SKILL_OF, switch_cams
+from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, SKILL_OF, switch_cams
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
                                VIDEO_EXTENSIONS, picture_size, placement_problems)
 from ..agent.production_plan import validate_plan
@@ -288,6 +288,32 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"video.overlay image is outside the allowed input roots: {Path(img).name}")
             if op.get("start") is not None and op.get("end") is not None and not float(op["start"]) < float(op["end"]):
                 errs.append("video.overlay: start must be before end")
+        if t == IMAGE_INSERT_OP:   # ADR-070: an image still, its duration and frame, joined before / after the picture it names as input
+            img = op.get("image")
+            if not isinstance(img, str) or not img:
+                errs.append(f"{t} needs image")
+            else:
+                if any(part == ".." for part in img.replace("\\", "/").split("/")):
+                    errs.append(f"{t} image path contains '..'")
+                if Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    errs.append(f"{t} image must be PNG / JPEG: {Path(img).name}")
+                if allowed_roots and not any(_under(img, r) for r in allowed_roots):
+                    errs.append(f"{t} image is outside the allowed input roots: {Path(img).name}")
+            dur = op.get("duration")
+            if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not IMAGE_INSERT_DURATION[0] <= float(dur) <= IMAGE_INSERT_DURATION[1]:
+                errs.append(f"{t} duration {dur!r} must be within {IMAGE_INSERT_DURATION[0]:g}..{IMAGE_INSERT_DURATION[1]:g} s")
+            if op.get("position") not in IMAGE_INSERT_POSITIONS:
+                errs.append(f"{t} position {op.get('position')!r} must be before or after")
+            for k in ("width", "height"):
+                v = op.get(k)
+                if isinstance(v, bool) or not isinstance(v, int) or v % 2 or v < 16:
+                    errs.append(f"{t} {k} {v!r} must be an even integer ≥ 16 (the picture's own)")
+            if op.get("fps") is None:
+                errs.append(f"{t} needs fps (the picture's own)")
+            ins = op.get("inputs") or []
+            want = op.get("input")
+            if len(ins) != 2 or want not in ins or (op.get("position") in IMAGE_INSERT_POSITIONS and ins.index(want) != (1 if op["position"] == "before" else 0)):
+                errs.append(f"{t} inputs {ins!r} must be the still and its input, in the order of position {op.get('position')!r}")
     subjects_with = {}
     for op in ops:
         subjects_with.setdefault(op.get("asset"), set()).add(op.get("type"))

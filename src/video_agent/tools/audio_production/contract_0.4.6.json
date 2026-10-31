@@ -4,10 +4,10 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
-  "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), fades, EBU R128 loudness normalisation, mix, concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
+  "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
   "repository": "https://github.com/kajisho5/audio-production-skill",
   "not_provided": [
     "AI reasoning",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "0.4.5",
+      "version": "0.4.6",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -42,6 +42,7 @@
         "DYNAMICS",
         "FADE_IN",
         "FADE_OUT",
+        "FILLER_REMOVE",
         "GAIN",
         "MIX",
         "MONO",
@@ -106,6 +107,12 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "FADE_OUT"
+    },
+    {
+      "id": "audio.filler_remove",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "FILLER_REMOVE"
     },
     {
       "id": "audio.gain",
@@ -489,7 +496,7 @@
     },
     {
       "type": "MIX",
-      "description": "Sum 2..8 inputs; output duration follows the first input (ffmpeg-skill amix duration=first)",
+      "description": "Sum 2..8 inputs; output duration follows the first input (ffmpeg-skill amix duration=first); optionally one bed ducked under input 0",
       "inputs": {
         "min": 2,
         "max": 8
@@ -513,6 +520,53 @@
             },
             "additionalProperties": false
           }
+        },
+        "duck": {
+          "type": "object",
+          "required": false,
+          "description": "sidechain ducking (ffmpeg-skill/audio --duck): the input named by duck.input is lowered by amount_db while input 0 is above the threshold; every other input is mixed un-ducked. Input 0 and the ducked input must be unmuted. Needs an ffmpeg-skill whose contract declares --duck (and --duck-threshold / --duck-attack / --duck-release when those are given); otherwise refused with TOOL_ERROR before a tool runs",
+          "properties": {
+            "input": {
+              "type": "integer",
+              "required": true,
+              "min": 1,
+              "max": 7,
+              "description": "index of the input that is ducked (a bed); input 0 is the key it ducks under"
+            },
+            "amount_db": {
+              "type": "number",
+              "required": true,
+              "min": 0.0,
+              "max": 60.0,
+              "description": "how far the bed is lowered while input 0 is above the threshold, dB (ffmpeg-skill --duck-amount)"
+            },
+            "threshold_db": {
+              "type": "number",
+              "required": false,
+              "min": -60.0,
+              "max": 0.0,
+              "description": "input 0 level in dBFS above which the bed ducks (--duck-threshold; omit: ffmpeg-skill's default)"
+            },
+            "attack_ms": {
+              "type": "number",
+              "required": false,
+              "min": 0.01,
+              "max": 2000.0,
+              "description": "ms the bed takes to duck (--duck-attack; omit: ffmpeg-skill's default)"
+            },
+            "release_ms": {
+              "type": "number",
+              "required": false,
+              "min": 0.01,
+              "max": 9000.0,
+              "description": "ms the bed takes to come back (--duck-release; omit: ffmpeg-skill's default)"
+            }
+          },
+          "required_properties": [
+            "input",
+            "amount_db"
+          ],
+          "additionalProperties": false
         }
       },
       "tool": "ffmpeg-skill/audio",
@@ -834,6 +888,128 @@
       "deterministic": "content_equivalent"
     },
     {
+      "type": "FILLER_REMOVE",
+      "description": "Remove filler words at caller-supplied word timings (e.g. a transcript's word timestamps) matched against a caller-chosen lexicon; the remainder is joined in order, sample-accurate. No speech recognition happens here",
+      "inputs": {
+        "min": 1,
+        "max": 1
+      },
+      "parameters": {
+        "words": {
+          "type": "array",
+          "required": false,
+          "description": "word timings on the input's timeline: [{start, end, text, confidence?}] (seconds); exactly one of words / transcript",
+          "max_items": 100000,
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "number",
+                "min": 0
+              },
+              "end": {
+                "type": "number"
+              },
+              "text": {
+                "type": "string",
+                "max_length": 128
+              },
+              "confidence": {
+                "type": "number",
+                "min": 0,
+                "max": 1
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "transcript": {
+          "type": "object",
+          "required": false,
+          "description": "a transcription-skill/transcript/0.1 document; the words of its segments are used. A segment whose words are null (no word timestamps) is refused (INVALID_REQUEST, reason word_timestamps_missing): pass words instead to accept partial coverage",
+          "schema": "transcription-skill/transcript/0.1",
+          "reads": [
+            "schema",
+            "segments[].words[].{start, end, text, confidence}",
+            "id",
+            "asset_id",
+            "language"
+          ]
+        },
+        "lexicon": {
+          "type": "object",
+          "required": true,
+          "description": "which tokens are fillers: {presets?: ['en', 'ja'], words?: [str], keep?: [str]}; presets + words - keep, non-empty. No default: the caller chooses. Matching is exact on normalised text (NFKC, case-folded, punctuation dropped, long-vowel marks unified); a run of up to 3 touching tokens counts as one word",
+          "properties": {
+            "presets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "en",
+                  "ja"
+                ]
+              }
+            },
+            "words": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "max_length": 64
+              },
+              "max_items": 256
+            },
+            "keep": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "max_length": 64
+              },
+              "max_items": 256
+            }
+          },
+          "additionalProperties": false
+        },
+        "pad": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 0.5,
+          "default": 0.0,
+          "description": "seconds added to each side of a removed filler, never into a neighbouring word"
+        },
+        "merge_gap": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 2.0,
+          "default": 0.0,
+          "description": "consecutive fillers with no other word between them and at most this many seconds apart are removed as one range (the gap goes too)"
+        },
+        "declick_ms": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 200.0,
+          "description": "fade in ms on each side of every join (ffmpeg-skill/cut --declick-ms; 0 = butt joins). Omit: ffmpeg-skill's own behaviour. A value above 0 needs an ffmpeg-skill whose contract declares --declick-ms (otherwise TOOL_ERROR before a tool runs)"
+        }
+      },
+      "tool": "ffmpeg-skill/cut",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "encoder:pcm_s16le"
+      ],
+      "keeps_timeline": false,
+      "deterministic": "content_equivalent"
+    },
+    {
       "type": "CONCAT",
       "description": "Concatenate 2..32 inputs in order (ffmpeg concat), optional equal-power crossfade",
       "inputs": {
@@ -890,6 +1066,37 @@
       "deterministic": "content_equivalent"
     }
   ],
+  "filler_lexicons": {
+    "presets": {
+      "ja": [
+        "\u3048\u30fc",
+        "\u3048\u30fc\u3068",
+        "\u3048\u30fc\u3063\u3068",
+        "\u3048\u3063\u3068",
+        "\u3048\u3068",
+        "\u3042\u30fc",
+        "\u3042\u306e\u30fc",
+        "\u305d\u306e\u30fc",
+        "\u3046\u30fc\u3093",
+        "\u3093\u30fc",
+        "\u3048\u3048\u3068"
+      ],
+      "en": [
+        "um",
+        "umm",
+        "uh",
+        "uhh",
+        "uhm",
+        "erm",
+        "er",
+        "hmm",
+        "mm",
+        "ah"
+      ]
+    },
+    "default": "none: FILLER_REMOVE.lexicon is required",
+    "matching": "exact on normalised text (NFKC, case-folded, punctuation and whitespace dropped, long-vowel marks unified); runs of up to 3 tokens at most 0.05s apart count as one word; the longest run wins"
+  },
   "unsupported_operations": [
     {
       "type": "CHANNEL_MAP",
@@ -980,7 +1187,7 @@
     "unit": "seconds (float)",
     "ranges": "half-open [start, end)",
     "mapping": "every artifact carries segments: timeline range <- source_id + source range",
-    "precision": "TRIM / CUT / SILENCE_REMOVE are sample-accurate (ffmpeg-skill/cut --accurate, precision reported per operation); every artifact duration is validated within 0.1s"
+    "precision": "TRIM / CUT / SILENCE_REMOVE / FILLER_REMOVE are sample-accurate (ffmpeg-skill/cut --accurate, precision reported per operation); every artifact duration is validated within 0.1s"
   },
   "loudness": {
     "standard": "EBU R128 / ITU-R BS.1770 via ffmpeg loudnorm (two-pass, linear)",
@@ -1096,7 +1303,15 @@
     },
     "optional_flags_used": {
       "audio": [
-        "overwrite"
+        "overwrite",
+        "duck",
+        "duck_amount",
+        "duck_threshold",
+        "duck_attack",
+        "duck_release"
+      ],
+      "cut": [
+        "declick_ms"
       ],
       "loudness": [
         "measure_only"

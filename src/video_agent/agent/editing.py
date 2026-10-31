@@ -1,5 +1,6 @@
 """Editing operations vocabulary (ADR-029): the video-editing-skill operations the agent can plan — concat, speed, resize,
-fit, fill, overlay, rotate (ADR-062) and an explicit trim (`edit.trim`, ADR-062) — as explicit Requirements → Decisions →
+fit, fill, overlay, rotate (ADR-062), an explicit trim (`edit.trim`, ADR-062) and a still image joined before / after the
+picture (`edit.image_insert`, ADR-070) — as explicit Requirements → Decisions →
 ProductionPlan steps → Project IR operations.
 
 Everything here is vocabulary and arithmetic, no execution:
@@ -34,12 +35,16 @@ PROGRAMME = "programme"      # logical id of the concat (or switch / grid) outpu
 # then the pre-existing speed / resize / fit / fill / overlay chain. video.rotate (ADR-062) runs after crop / redact (their
 # rectangles are in source pixels, before any turn) and before speed / resize / fit / fill / overlay (a width, an aspect and an
 # overlay position are meant on the upright picture).
+# video.image_insert (ADR-070) is last: the still is joined to the finished picture -- after colour, graphics and burnt-in subtitles too,
+# so it is not graded or captioned and every finishing time stays on the picture's own timeline (planner / compiler run it after
+# finishing, before loudness); it is not part of SINGLE_SOURCE_ORDER's chain.
+IMAGE_INSERT_OP = "video.image_insert"
 EDIT_ORDER = ("video.concat", "video.switch", "video.grid", "video.deinterlace", "video.stabilize", "video.crop", "video.redact",
-              "video.rotate", "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay")
+              "video.rotate", "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay", IMAGE_INSERT_OP)
 # the multi-source entry ops (build PROGRAMME from 2+ inputs; mutually exclusive, handled specially by the planner /
 # compiler) vs. the single-source ops that apply to whatever PROGRAMME (or the untouched asset) already is
 MULTI_SOURCE_OPS = ("video.concat", "video.switch", "video.grid")
-SINGLE_SOURCE_ORDER = EDIT_ORDER[len(MULTI_SOURCE_OPS):]
+SINGLE_SOURCE_ORDER = tuple(op for op in EDIT_ORDER[len(MULTI_SOURCE_OPS):] if op != IMAGE_INSERT_OP)
 # op type → production skill / video-editing tool / IR parameter allowlist (the only keys copied into an IR op besides the references)
 OPERATIONS: Dict[str, Dict[str, Any]] = {
     "video.concat":  {"skill": "video_concat",  "tool": "video-editing/concat",  "params": ("transition", "width", "height", "fps", "mode", "pad_color"), "risk": "MEDIUM"},
@@ -63,6 +68,9 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "video.fit":     {"skill": "video_fit",     "tool": "video-editing/fit",     "params": ("aspect", "width", "pad_color", "fps"), "risk": "LOW"},
     "video.fill":    {"skill": "video_fill",    "tool": "video-editing/fill",    "params": ("aspect", "width", "fps"), "risk": "MEDIUM"},
     "video.overlay": {"skill": "video_overlay", "tool": "video-editing/overlay", "params": ("position", "margin", "scale", "opacity", "start", "end", "fade"), "risk": "MEDIUM"},
+    # ADR-070: video-editing-skill IMAGE_INSERT (0.4.0, #21): a still → a silent clip (duration / width / height / fps, the contract's names),
+    # joined by video-editing/concat before or after the picture (`position`). width / height / fps are the picture's own (planner), never asked
+    IMAGE_INSERT_OP: {"skill": "video_image_insert", "tool": "video-editing/image_insert", "params": ("duration", "position", "width", "height", "fps"), "risk": "MEDIUM"},
 }
 SKILL_OF = {k: v["skill"] for k, v in OPERATIONS.items()}
 OP_OF_SKILL = {v["skill"]: k for k, v in OPERATIONS.items()}
@@ -91,7 +99,13 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     # ADR-062: an explicit in / out range ("START-END", seconds or mm:ss). Not an OPERATIONS entry: it narrows the asset's one
     # video.trim (the same IR record the silence decisions produce), executed by video-editing/trim when one range remains
     TRIM_OP: (TRIM_KEY,),
+    # ADR-070: the main key is the still's path (like edit.overlay); duration is required; position before (default) | after
+    IMAGE_INSERT_OP: ("edit.image_insert", "edit.image_insert.duration", "edit.image_insert.position"),
 }
+IMAGE_INSERT_DURATION = (0.01, 600.0)        # video-editing-skill IMAGE_INSERT.duration ("time 0.01..600 s")
+IMAGE_INSERT_POSITIONS = ("before", "after")
+IMAGE_INSERT_SKILL = "video_image_insert"
+IMAGE_JOIN_SKILL = "video_concat"            # the join of the still's clip and the picture is a plain video-editing CONCAT
 ROTATIONS = (90, 180, 270)   # video-editing-skill ROTATE.degrees, clockwise
 FLIPS = ("h", "v")           # ROTATE.flip: mirror horizontally / vertically
 SPEED_RANGE = (0.25, 4.0)
@@ -373,8 +387,40 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
                     p[k] = float(_number(vals[f"edit.overlay.{k}"], f"edit.overlay.{k}", 0.0, 86400.0))
             if "start" in p and "end" in p and not p["start"] < p["end"]:
                 raise EditRequirementError("edit.overlay.start must be before edit.overlay.end")
+        elif op == IMAGE_INSERT_OP:
+            p["image"] = image_path(vals["edit.image_insert"], "edit.image_insert")
+            if "edit.image_insert.duration" not in vals:
+                raise EditRequirementError("edit.image_insert needs edit.image_insert.duration (seconds the still is shown; nothing is assumed)")
+            p["duration"] = float(_number(vals["edit.image_insert.duration"], "edit.image_insert.duration", *IMAGE_INSERT_DURATION))
+            p["position"] = _token(vals.get("edit.image_insert.position", "before"), "edit.image_insert.position",
+                                   re.compile("^(" + "|".join(IMAGE_INSERT_POSITIONS) + ")$"), "before or after")
         out[op] = {"params": p, "requirements": reqs}
     return out
+
+
+_IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", (".png",)), (b"\xff\xd8\xff", (".jpg", ".jpeg")))
+
+
+def image_path(img: Any, key: str) -> str:
+    """ADR-070: the still of an `edit.image_insert` must be an image asset -- an existing PNG / JPEG whose bytes say so (a video, or a
+    video renamed .png, is refused at planning time; video-editing-skill refuses it again as kind_mismatch / image_undecodable)."""
+    if not isinstance(img, str) or not img.strip() or "\n" in img or "\x00" in img:
+        raise EditRequirementError(f"{key} must be the path of a PNG / JPEG image")
+    if any(part == ".." for part in img.replace("\\", "/").split("/")):
+        raise EditRequirementError(f"{key} path contains '..' (traversal)")
+    ext = os.path.splitext(img)[1].lower()
+    if ext not in IMAGE_EXTENSIONS:
+        raise EditRequirementError(f"{key} must be an image asset ({', '.join(IMAGE_EXTENSIONS)}), got {os.path.basename(img)!r}")
+    if not os.path.isfile(img):
+        raise EditRequirementError(f"{key} image not found: {img}")
+    try:
+        with open(img, "rb") as fh:
+            head = fh.read(8)
+    except OSError as e:
+        raise EditRequirementError(f"{key} image is not readable: {e}")
+    if not any(head.startswith(magic) and ext in exts for magic, exts in _IMAGE_MAGIC):
+        raise EditRequirementError(f"{key} is not a {ext[1:].upper()} image (its bytes do not start with the format's signature): {os.path.basename(img)}")
+    return os.path.abspath(img)
 
 
 # ---- IR arithmetic (deterministic, from IR content only)
@@ -407,7 +453,7 @@ def concat_segments(inputs: List[str], video_ops: List[Dict[str, Any]], duration
 def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     """What the plan delivers: the concat programme (one subject made of every input) or each asset. Each row carries the
     subject id (the key of `<subject>_delivery_<target>`), its source asset ids, the expected output duration derived from
-    the IR (trim → concat → speed), the loudness target of its audio.loudness op, and the technical facts of its first source."""
+    the IR (trim → concat → speed → a joined still, ADR-070), the loudness target of its audio.loudness op, and the technical facts of its first source."""
     from .audio import audio_subjects
     assets = doc.get("assets") or {}
     vops = (doc.get("video") or {}).get("operations") or []
@@ -440,6 +486,8 @@ def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         for op in vops:
             if op.get("asset") == row["id"] and op.get("type") == "video.speed" and op.get("factor"):
                 dur = dur / float(op["factor"])
+        # ADR-070: a still joined before / after the finished picture adds its own duration (after the speed change, which it does not take)
+        dur += sum(float(op.get("duration") or 0.0) for op in vops if op.get("asset") == row["id"] and op.get("type") == IMAGE_INSERT_OP)
         row["duration"] = round(dur, 3)
         row["target_lufs"] = next((op.get("target_lufs") for op in aops if op.get("asset") == row["id"] and op.get("type") == "audio.loudness"), None)
         row["edits"] = [op["type"] for op in vops if op.get("asset") == row["id"] and op.get("type") != "video.trim"]

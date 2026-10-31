@@ -1759,23 +1759,45 @@ class SubtitleMuxRealTests(unittest.TestCase):
         return svc
 
     def test_platform_export_drops_subtitle_streams_so_a_preset_blocks(self):
-        """The fact the BLOCK rests on, measured: export.py --preset youtube (and copy) leaves a mov_text track behind."""
+        """The fact the preset BLOCK rests on, measured on the installed ffmpeg-skill. Before 2.22.4, export.py --preset youtube (and copy)
+        leaves a mov_text track behind and a soft track with a preset is BLOCKED (ADR-063). From 2.22.4 (ffmpeg-skill #380) the export keeps
+        it, so the BLOCK is lifted (ADR-071): the plan muxes, renders through the youtube preset and the deliverable carries the track (QA)."""
         svc = self._svc_with_subtitle("ws_exp")
+        from video_agent.capabilities.resolver import export_keeps_subtitles
         from video_agent.tools.ffmpeg_skill.adapter import FfmpegSkillAdapter
         ws = Path(svc.workspace); ws.mkdir(parents=True, exist_ok=True)
         srt = ws / "c.srt"; srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nhello\n", encoding="utf-8")
         muxed = str(ws / "muxed.mp4")
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", self.media, "-i", str(srt), "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text", muxed], check=True)
         self.assertIn("subtitle", [t for t, _ in self._streams(muxed)[0]])
-        ad = FfmpegSkillAdapter(locate_ffmpeg_skill())
+        skill = locate_ffmpeg_skill()
+        keeps = export_keeps_subtitles(svc.caps.resolve())
+        self.assertEqual(keeps, tuple(int(x) for x in skill.version.split(".")[:3]) >= (2, 22, 4), skill.version)
+        ad = FfmpegSkillAdapter(skill)
         from video_agent.models import Operation
         for preset in ("youtube", "copy"):
             out = str(ws / f"exp_{preset}.mp4")
             r = ad.run(Operation(tool="ffmpeg-skill/export", args={"input": "m", "preset": preset, "output": "o"}, inputs=["m"], outputs=["o"], id=f"op_{preset}"), {"m": muxed, "o": out})
             self.assertTrue(r.ok, r.stderr_tail)
-            self.assertNotIn("subtitle", [t for t, _ in self._streams(out)[0]], f"export --preset {preset} now keeps subtitle streams: the ADR-063 BLOCK can be lifted")
+            kinds = [t for t, _ in self._streams(out)[0]]
+            if keeps:
+                self.assertIn("subtitle", kinds, f"ffmpeg-skill {skill.version}: export --preset {preset} should keep the subtitle stream (#380), the ADR-071 lift rests on it")
+            else:
+                self.assertNotIn("subtitle", kinds, f"export --preset {preset} now keeps subtitle streams on {skill.version}: the version gate of ADR-071 is too high")
         ir = svc.plan([self.media], "youtube", user_requirements={"subtitle": True, "subtitle.mode": "mux"}, params={"language": "en", "offline": True})
-        self.assertEqual([x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"], ["subtitle.mux"])
+        blocked = [x["subject"] for x in ir.doc["decisions"] if x["approval"] == "BLOCK"]
+        if not keeps:
+            self.assertEqual(blocked, ["subtitle.mux"])
+            return
+        self.assertEqual(blocked, [], ir.doc["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        p = str(ws / "mux_youtube.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", json.dumps([r for r in out["execution"]["results"] if not r["ok"]])[:1500])
+        track = [i for i in out["qa"]["items"] if i["name"] == "subtitle_track"]
+        self.assertTrue(track and all(i["status"] == "PASS" for i in track), track)
+        exp = next(r for r in out["execution"]["results"] if r["tool"] == "ffmpeg-skill/export")
+        self.assertIn("subtitle", [t for t, _ in self._streams(exp["output"])[0]], "the youtube deliverable carries the soft track")
 
     def test_soft_subtitle_track_reaches_the_deliverable(self):
         svc = self._svc_with_subtitle("ws")
@@ -2081,6 +2103,45 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
         self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.0" for e in rows.values()))
+
+    def test_image_insert_before_the_picture_end_to_end(self):
+        """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
+        the resize → video-editing/concat of the still clip and the picture, on the real Skill and ffmpeg-skill: ffprobe on the still (640x360,
+        2 s, no audio) and on the joined programme (640x360, trimmed length + 2 s, audio kept), QA's duration from the IR, provenance."""
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        ws = str(Path(self.tmp) / "image_insert")
+        svc = Service(workspace=ws)
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.trim": "2-10", "edit.resize": 640, "edit.image_insert": self.png, "edit.image_insert.duration": 2})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        op = next(o for o in d["video"]["operations"] if o["type"] == "video.image_insert")
+        self.assertEqual((op["width"], op["height"], op["position"], op["duration"]), (640, 360, "before", 2.0))
+        self.assertAlmostEqual(float(op["fps"]), 30.0, places=2)
+        p = str(Path(self.tmp) / "image_insert.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [r for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")]
+        self.assertEqual([r["tool"] for r in res], ["video-editing/trim", "video-editing/resize", "video-editing/image_insert", "video-editing/concat"])
+        self.assertTrue(all(r["ok"] for r in res), res)
+        dur_t, _, _ = self._probe(res[0]["output"])
+        dur_i, size_i, audio_i = self._probe(res[2]["output"])
+        self.assertEqual(size_i, (640, 360), "the still takes the picture's frame (scaled to cover, centre-cropped)"); self.assertFalse(audio_i)
+        self.assertAlmostEqual(dur_i, 2.0, delta=0.1)
+        self.assertEqual(res[2]["data"]["operation"]["type"], "IMAGE_INSERT")
+        dur_j, size_j, audio_j = self._probe(res[3]["output"])
+        self.assertEqual(size_j, (640, 360), "the join does not rescale the picture"); self.assertTrue(audio_j, "the picture's audio is kept (silence under the still)")
+        self.assertAlmostEqual(dur_j, dur_t + 2.0, delta=0.2)
+        qa_dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual(qa_dur["status"], "PASS", qa_dur)
+        prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
+        still = next(e for e in prov["operations"] if e["tool"] == "video-editing/image_insert")
+        join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
+        self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
+        self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.0")
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class AudioProductionRealTests(unittest.TestCase):

@@ -10,7 +10,9 @@ from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, concat_segments as audio_concat_segments, cut_ranges, has_video,
                     ir_audio_operation, is_audio_capable, kept_after_cut, mix_segments)
-from .editing import OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation, kept_duration
+from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
+                      kept_duration)
+from .image_insert import still_frame
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
                         ir_thumbnail, picture_size)
 from .handoffs import JOB_PREFIX
@@ -325,6 +327,36 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(d.decision)
 
+    def image_insert_steps(subject: str, sources: List[str]) -> None:
+        """ADR-070: the still of a `video.image_insert` decision → a silent clip at the picture's own frame / rate (video_image_insert),
+        then the join of that clip and the finished picture in the decided order (video_concat). One IR operation records both; it runs
+        after the finishing (colour / graphics / burnt-in subtitles) and before loudness, so the subject's timeline grows by the still."""
+        nonlocal order
+        for d in decided(subject, IMAGE_INSERT_OP):
+            frame, _why = still_frame(techn.get(sources[0]) or {}, video_ops, subject) if sources else (None, "")
+            w, h, fps = frame if frame is not None else (d.params["width"], d.params["height"], d.params["fps"])   # the plan's own ops first; the decision's frame otherwise
+            dur = float(d.params["duration"])
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            total = round(float(scope["end"]) - float(scope["start"]) + dur, 3)
+            still_id, out_id = f"{subject}_still", f"{subject}_image_insert"
+            inputs = [still_id, current_of[subject]] if d.params["position"] == "before" else [current_of[subject], still_id]
+            params = {"duration": dur, "position": d.params["position"], "width": w, "height": h, "fps": fps}
+            video_ops.append(ir_operation(IMAGE_INSERT_OP, subject, params, [d.id], scope={"start": 0.0, "end": total}, input=current_of[subject], output=out_id,
+                                          image=d.params["image"], inputs=inputs))
+            order += 1
+            ist = ProductionStep(id=f"step_image_insert_{subject}", order=order, skill=IMAGE_INSERT_SKILL, tool=tool_for(IMAGE_INSERT_SKILL), inputs=[],
+                                 params={"asset": subject, "image": d.params["image"], **params}, outputs=[still_id], depends_on=[], evidence=evidence_of([d.id]),
+                                 decision_ids=[d.id], decision_id=d.id)   # no scope on the subject's timeline: the still is its own source
+            steps.append(ist)
+            order += 1
+            jst = ProductionStep(id=f"step_image_join_{subject}", order=order, skill=IMAGE_JOIN_SKILL, tool=tool_for(IMAGE_JOIN_SKILL), inputs=list(inputs),
+                                 params={"asset": subject, "inputs": list(inputs), "width": w, "height": h, "fps": fps}, outputs=[out_id],
+                                 depends_on=[x for x in (ist.id, last_of.get(subject)) if x], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                 temporal_scope={"start": 0.0, "end": total})
+            steps.append(jst)
+            current_of[subject], last_of[subject], scope_of[subject] = out_id, jst.id, {"start": 0.0, "end": total}
+            summary.append(d.decision)
+
     def loudness_steps(subject: str, audio_path: bool = False) -> None:
         """The audio.loudness decision of a subject → one audio.loudness IR operation. On the audio production path the step's skill
         is audio_normalize (audio-production-skill NORMALIZE, with the tolerance the Skill re-measures against); otherwise the existing
@@ -527,6 +559,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         elif concat_dec is None and switch_dec is None and grid_dec is None:
             edit_steps(asset.id, [asset.id])
             finishing_steps(asset.id, [asset.id])
+            image_insert_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
             delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
             timeline_steps(asset.id, [asset.id])
@@ -648,6 +681,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             take_crossfade = crossfade_steps(xf_dec, st.id, total)
         edit_steps(PROGRAMME, inputs)
         finishing_steps(PROGRAMME, inputs)
+        image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         timeline_steps(PROGRAMME, inputs)
@@ -672,6 +706,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         summary.append(f"Switch {' + '.join(inputs)} into one programme per {params['switch']} ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
         finishing_steps(PROGRAMME, inputs)
+        image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)
@@ -697,6 +732,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         summary.append(f"Composite {' + '.join(inputs)} into a {params['cols']}x{params['rows']} grid programme ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
         finishing_steps(PROGRAMME, inputs)
+        image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)

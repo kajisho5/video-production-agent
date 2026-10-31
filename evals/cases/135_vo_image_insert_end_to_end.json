@@ -1,0 +1,34 @@
+{
+ "name": "vo_image_insert_end_to_end",
+ "profile": "generic",
+ "video_editing_ops": {
+  "inputs": 1,
+  "still": "png"
+ },
+ "requirements": {
+  "edit.trim": "4-12",
+  "edit.image_insert.duration": 2,
+  "edit.image_insert.position": "before"
+ },
+ "expect": {
+  "ir_ops": [
+   "video.image_insert"
+  ],
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "tools": [
+    "video-editing/trim",
+    "video-editing/image_insert",
+    "video-editing/concat"
+   ],
+   "qa_status": "PASS",
+   "duration": 10.0,
+   "sources": [
+    1
+   ]
+  }
+ }
+}

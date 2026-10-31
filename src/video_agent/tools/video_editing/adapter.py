@@ -52,7 +52,9 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.2.0 (video-edit
                                                # via ffmpeg-skill/fit), additive to the pinned contract; lowered
                                                # since ADR-062 (issue #52). 0.4.0 (video-editing-skill #13):
                                                # SPEED.smooth, additive to the pinned contract (lowered); FREEZE /
-                                               # REVERSE (#20) lowered since ADR-062.
+                                               # REVERSE (#20) lowered since ADR-062;
+                                               # IMAGE_INSERT (#21, first release v0.4.0)
+                                               # lowered since ADR-070.
 ENGINE_ID = "ffmpeg-skill"
 # the Skill's error vocabulary (contract errors.codes) and the agent's reading of each: (retryable by default, recovery class)
 ERROR_CODES: Dict[str, str] = {
@@ -179,7 +181,7 @@ PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
-    """The contract this adapter was verified against (snapshot of `video-editing contract --json`, 0.4.0 with FREEZE / REVERSE). Used for the package
+    """The contract this adapter was verified against (snapshot of `video-editing contract --json`, 0.4.0 with FREEZE / REVERSE and IMAGE_INSERT, the v0.4.0 release tag's own output). Used for the package
     identity when the Skill is not installed; a live installation always replaces it (and is compared against it: drift)."""
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 
