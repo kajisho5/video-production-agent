@@ -18,6 +18,7 @@ from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
 from .agent.voice import check_voice_keys
+from .agent.dubbing import check_dub_keys, user_files as dub_user_files
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -59,6 +60,7 @@ from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lif
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
+from .tools.dubbing import PACKAGE as DUBBING_PACKAGE, DubbingAdapter, lift_observation as lift_dub_observation, locate_dubbing
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
@@ -95,6 +97,7 @@ class Service:
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
+        self.dubbing_dir = os.environ.get("VIDEO_AGENT_DUBBING_DIR")   # ADR-082: dubbing-skill (DUB)
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
@@ -114,6 +117,7 @@ class Service:
             self.registry.register_package(pkg)
         self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
+        self.registry.register_package(DUBBING_PACKAGE)   # dubbing-skill (ADR-082): same rule
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
@@ -155,6 +159,8 @@ class Service:
             (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
             # ADR-073: always told which ffmpeg-skill to use (never its own current-directory search); paths checked per call like the other Skills
             (locate_voice_enhance(self.voice_enhance_dir), lambda sk: VoiceEnhanceAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-082: told which ffmpeg-skill to use like voice-enhance; the user's cues / reference voice / consent record are checked inside the allowed roots per call
+            (locate_dubbing(self.dubbing_dir), lambda sk: DubbingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
             (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
         ):
@@ -675,6 +681,10 @@ class Service:
         d["captions"] = {"operations": plan["captions_ops"]} if plan.get("captions_ops") else {}
         d["graphics"] = {"operations": plan["graphics_ops"]} if plan.get("graphics_ops") else {}
         d["color"] = {"operations": plan["color_ops"]} if plan.get("color_ops") else {}
+        if plan.get("speech_ops"):   # ADR-082: dubbing; written only when planned (no empty section), so an unchanged request keeps its plan hash
+            d["speech"] = {"operations": plan["speech_ops"]}
+        else:
+            d.pop("speech", None)
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         if plan.get("timelines"):   # ADR-052: written only when planned, so an unchanged request keeps its plan hash
             d["delivery"]["timelines"] = plan["timelines"]
@@ -686,6 +696,7 @@ class Service:
         # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)]
+        images += [f for op in plan.get("speech_ops") or [] for f in dub_user_files(op)]   # ADR-082: the user's cues / reference voice / consent record
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
@@ -974,7 +985,8 @@ class Service:
         # Executor status, "the Plan finished running" per PROVENANCE.md §4, not that it fully passed. Never
         # reached for a Plan that was rejected/blocked/pending approval before execution started (this line is
         # after `ex.run()`, not before it) -- nothing ran yet, so there is nothing to record (I5, resolved).
-        receipt_body = build_receipt(ir.doc, result.status, result.failed_op, out.get("artifacts") or [], (out.get("qa") or {}).get("items"))
+        receipt_body = build_receipt(ir.doc, result.status, result.failed_op, out.get("artifacts") or [], (out.get("qa") or {}).get("items"),
+                                     skill_observations=prov.get("skill_observations"))   # ADR-082: engine obligations (dubbing credits / watermark)
         receipt_path = str(job.dir / "receipt.json")
         Path(receipt_path).write_text(json.dumps(receipt_body, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
         rst = self.artifact_store()
@@ -1017,6 +1029,8 @@ class Service:
                 lifted = [lift_subtitle_result(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("voice-enhance/"):   # ADR-073: engine attribution / licences, parameters, warnings, stem facts
                 lifted = [lift_voice_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("dubbing/"):   # ADR-082: engine licences, obligations (credit / watermark), consent summary, fit, output facts
+                lifted = [lift_dub_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("thumbnail/"):
                 lifted = [lift_thumbnail_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("imagemagick-skill/"):   # ADR-077: the prepared overlay image (operation, backend, size, sha256)
@@ -1384,7 +1398,7 @@ class Service:
 
 
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1490,6 +1504,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
+    check_dub_keys(user_requirements)   # ADR-082: dub.* keys known, files present, in the contract's limits, reference only with its consent record
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
@@ -1548,6 +1563,10 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
         lines += ["", "## Artifacts"]
         for a in out["artifacts"]:
             lines.append(f"- {a['type']} {a['path']} (stage {a['stage']}, qa {a['qa_status']}, sha256 {a['hash'][:12]}…)")
+    ob = (out.get("receipt") or {}).get("obligations")
+    if ob:   # ADR-082: what the published video has to carry (engine / voice credits, embedded watermarks)
+        lines += ["", "## Obligations (carry into the published description or credits)", *[f"- credit: {c}" for c in ob.get("credit") or []],
+                  *[f"- watermark: {w.get('name')}" for w in ob.get("watermarks") or []]]
     ex = out.get("execution") or {}
     if out.get("resume"):
         r = out["resume"]

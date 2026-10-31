@@ -61,7 +61,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    # card offload (ADR-066): the card, the destinations the user named and the copy folder ingest-skill makes in each
                    "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots"),
                    # voice-enhance-skill (ADR-073): the subject (the programme for bleed reduction, with its tracks) and the typed engine parameters
-                   "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db")}
+                   "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),
+                   # dubbing-skill DUB (ADR-082): the subject, the user's files (translated / source cues, reference voice + its consent record) and the typed options
+                   "speech_dub": ("asset", "lang", "cues", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "duck", "voice_gain", "max_overrun")}
 
 
 @dataclass

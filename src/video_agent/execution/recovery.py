@@ -16,6 +16,10 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "UNKNOWN":        {"action": "RETRY_SAME", "hint": "retry once with identical arguments"},
     "SKILL_ERROR":    {"action": "BLOCK", "hint": "the Skill refused or could not validate its output (not retryable as reported by the Skill); see the error code"},
     "INTERRUPTED":    {"action": "BLOCK", "hint": "the Skill was cancelled (interrupt, not a timeout); re-run the job"},
+    # ADR-082 (dubbing-skill CONSENT_REQUIRED): the voice owner's consent record is missing or does not check out. It comes from the user; the
+    # agent never writes, edits or signs one, and never retries (the Skill's ADR-012: not retryable)
+    "CONSENT_REQUIRED": {"action": "BLOCK", "hint": "the reference voice's consent record is missing or does not check out (see the error's reason / problems); "
+                                                    "the user supplies a valid dubbing/consent@1 record -- the agent never makes one -- then re-run"},
 }
 
 

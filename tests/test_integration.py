@@ -3168,3 +3168,60 @@ class ImagePrepareRealTests(unittest.TestCase):
         dur = float(json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", res["video-editing/overlay"]["output"]],
                                               capture_output=True, text=True, check=True).stdout)["format"]["duration"])
         self.assertGreater(dur, 1.0)
+
+
+class DubbingRealTests(unittest.TestCase):
+    """ADR-082 on the real dubbing-skill (main; no release tag) and the real ffmpeg-skill, without any TTS engine (none is installed in CI): the live
+    contract equals the pin, its doctor's verdict on DUB carries the Skill's own code and install line, a plan asking for a dub BLOCKs with that
+    code (nothing downloaded, nothing run), and the argv the adapter builds -- every option `--flag=value`, the programme and the user's cues after
+    `--`, the translation note, a reference voice with its consent record -- is accepted by the real CLI, which answers ENGINE_UNAVAILABLE."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.dubbing import locate_dubbing
+        cls.dub = locate_dubbing()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dub_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.prog = str(src / "prog.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=4", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.prog], check=True)
+        cls.cues = str(src / "en.srt")
+        Path(cls.cues).write_text("1\n00:00:01,000 --> 00:00:02,500\nHello there\n", encoding="utf-8")
+        cls.ref, cls.consent = str(src / "voice.wav"), str(src / "consent.json")
+        Path(cls.ref).write_bytes(b"RIFF not a real clip")
+        Path(cls.consent).write_text(json.dumps({"schema": "dubbing/consent@1"}), encoding="utf-8")
+
+    def setUp(self):
+        if not self.dub or not locate_ffmpeg_skill():
+            self.skipTest("needs a dubbing-skill checkout (VIDEO_AGENT_DUBBING_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_live_contract_doctor_plan_and_argv_on_the_real_skill(self):
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.models import Operation
+        from video_agent.tools.dubbing import DubbingAdapter, breaking_drift, drift, pinned_contract
+        ff = str(locate_ffmpeg_skill().root)
+        ad = DubbingAdapter(self.dub, workspace=str(Path(self.tmp) / "ws"), allowed_inputs=[str(Path(self.tmp) / "src")], ffmpeg_skill_dir=ff)
+        self.assertEqual(ad.version, pinned_contract()["version"])
+        self.assertEqual(breaking_drift(ad.contract), [], "dubbing-skill main changed what the adapter relies on: re-verify the adapter")
+        self.assertEqual(drift(ad.contract), [], "dubbing-skill main drifted from the pin (no release tag: the pin follows main): re-pin")
+        doc = ad.doctor()
+        self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
+        ev = ad.operation_evidence(doc)["DUB"]
+        caps = CapabilityResolver(ff).resolve()
+        self.assertEqual(caps["dubbing"].status, "AVAILABLE", caps["dubbing"].detail)
+        if not ev["ready"]:   # CI: no engine
+            self.assertEqual((ev["code"], caps["dubbing:DUB"].status), ("ENGINE_UNAVAILABLE", "MISSING"))
+            self.assertTrue(ev["install"])
+            svc = Service(workspace=str(Path(self.tmp) / "ws_plan"))
+            ir = svc.plan([self.prog], "youtube", user_requirements={"dub.cues": self.cues, "dub.lang": "en"})
+            b = next(x for x in ir.doc["decisions"] if x["subject"] == "speech.dub")
+            self.assertEqual((b["type"], b["params"]["code"]), ("BLOCK", "ENGINE_UNAVAILABLE"))
+            self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+            out = str(Path(self.tmp) / "ws" / "jobs" / "j" / "dub.mp4")
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            for extra in ({}, {"reference": self.ref, "consent": self.consent, "engine": "chatterbox", "duck": 10, "on_unfit": "keep"}):
+                op = Operation(tool="dubbing/dub", args={"input": "a", "output": "o", "cues": self.cues, "lang": "en", **extra}, inputs=["a"], outputs=["o"])
+                r = ad.run(op, {"a": self.prog, "o": out})
+                err = r.data["error"]
+                self.assertEqual((err["code"], err["recovery_class"], err["retryable"]), ("ENGINE_UNAVAILABLE", "TOOL_MISSING", False), err)
+                self.assertFalse(os.path.exists(out))

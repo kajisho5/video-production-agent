@@ -31,6 +31,7 @@ from .brief import decide_brief
 from .handoffs import decide_jobs
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
+from .dubbing import decide_dub
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -625,6 +626,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]
         return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and (d.subject in OPERATIONS or d.subject == TRIM_OP) and d.params.get("asset_id") == subject for d in decs) \
             or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
+    # ---- dubbing (ADR-082): the user's translated cues spoken over the subject's picture after its edits (dubbing-skill DUB), always CONFIRM
+    decide_dub(eng, m, analysis, subjects, caps, approval_for, probe_ids_of, cap_block)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- a still joined before / after the finished picture (ADR-070): after finishing (whose subtitle decisions it must not contradict) and
     # before the timeline export, which names it among what a cut list does not carry (like every other TRANSFORM it cannot express)
