@@ -1,0 +1,87 @@
+{
+ "name": "ap_filler_remove_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0,
+    "segments": [
+     [
+      3.5,
+      12.0,
+      "えー 本日は um 始めます"
+     ]
+    ],
+    "words": [
+     [
+      4.0,
+      4.4,
+      "えー"
+     ],
+     [
+      4.6,
+      5.2,
+      "本日は"
+     ],
+     [
+      6.0,
+      6.3,
+      "um"
+     ],
+     [
+      7.0,
+      8.0,
+      "始めます"
+     ]
+    ]
+   }
+  ],
+  "transcription": true
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.filler_remove": "ja,en",
+  "audio.normalize": true,
+  "audio.loudness.target_lufs": -16
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "REVIEW",
+  "ir_ops": [
+   "audio.cut",
+   "audio.filler_remove",
+   "audio.loudness"
+  ],
+  "steps": [
+   "audio_cut",
+   "audio_filler_remove",
+   "audio_normalize"
+  ],
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "CUT",
+    "FILLER_REMOVE",
+    "NORMALIZE"
+   ],
+   "qa_status": "PASS",
+   "duration": 10.3
+  },
+  "note": "the words of the transcript, carried through the silence cut, go to FILLER_REMOVE; えー and um (0.7 s) are removed, so the 11.0 s cut delivers 10.3 s and QA expects exactly that from what the Skill reports; removing speech is CONFIRM (REVIEW until approved)"
+ }
+}

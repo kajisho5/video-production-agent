@@ -19,7 +19,7 @@ from ..policy.rules import RuleSet
 from ..skills.registry import SkillRegistry
 from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
-from .audio import MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
+from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, transcript_words, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
@@ -56,6 +56,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "audio.dynamics": ("audio.dynamics.approval", "CONFIRM"),
                  # ADR-068: the speech clean-up preset, CONFIRM like noise reduction, waived by its own explicit requirement
                  "audio.voice_cleanup": ("audio.voice_cleanup.approval", "CONFIRM"),
+                 # ADR-072: removing filler words removes recognised speech: CONFIRM with a CONFIRM floor (the explicit requirement does not waive it)
+                 "audio.filler_remove": ("audio.filler_remove.approval", "CONFIRM"),
                  # explicit camera-switch programme (ADR-045): an explicit switch list waives CONFIRM like any other edit.* op; never AUTO by policy default
                  "video.switch": ("video.switch.approval", "CONFIRM"),
                  # ADR-046 Priority A batch: CONFIRM by default like every other edit.* op (an explicit USER
@@ -188,6 +190,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             why = (f"{len(ids)} input(s) carry audio; a mix sums two or more" if len(ids) < 2
                    else f"{len(ids)} inputs carry audio; the Skill's MIX takes at most {AUDIO_MAX_MIX_INPUTS}" if len(ids) > AUDIO_MAX_MIX_INPUTS
                    else f"audio.mix.levels lists {len(levels)} level(s) for {len(ids)} inputs: which level is meant for which input is not guessed" if levels is not None and len(levels) != len(ids)
+                   # ADR-072: the bed is named by its index among the mixed inputs; an index outside them is not mapped to some other input
+                   else f"audio.mix.duck.input={audio['mix_duck']['input']} names no bed: the mix has inputs 0..{len(ids) - 1} (input 0 is the key)" if audio.get("mix_duck") and audio["mix_duck"]["input"] >= len(ids)
                    else None)
             if why is not None:
                 eng.decide(subject="audio.mix", type="BLOCK", decision="BLOCK: audio mix " + " + ".join(ids), reason=why, confidence=1.0,
@@ -196,12 +200,20 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             else:
                 audio_programme_ok = audio_mix_ok = True
                 words = ", ".join(f"{a} {'muted' if lv['mute'] else format(lv['gain_db'], '+g') + ' dB'}" for a, lv in zip(ids, levels)) if levels else "every input at 0 dB"
+                duck = audio.get("mix_duck")
+                if duck:   # ADR-072: MIX.duck, opt-in with the bed and the amount named; the other fields keep ffmpeg-skill's defaults when unset
+                    words += f"; {ids[duck['input']]} ducked {duck['amount_db']:g} dB under {ids[0]}" + "".join(f", {k} {duck[k]:g}" for k in ("threshold_db", "attack_ms", "release_ms") if k in duck)
                 eng.decide(subject="audio.mix", type="TRANSFORM", decision="audio mix " + " + ".join(ids) + f" → {PROGRAMME_AUDIO} ({words})",
                            reason=f"user asked to mix the audio of the inputs ({m['audio.mix'].source}); the inputs are summed on their own timelines from 0 s and the mix lasts as long as {ids[0]} "
-                                  "(the first input); no silence is cut from a mixed input (it would move one input against the others)",
+                                  "(the first input); no silence is cut from a mixed input (it would move one input against the others)"
+                                  + (f"; the bed {ids[duck['input']]} is lowered by a sidechain compressor keyed by {ids[0]} (needs an engine whose audio tool offers ducking; "
+                                     "otherwise the Skill refuses the step)" if duck else ""),
                            confidence=1.0, evidence=a_ev + probe_ids_of(ids), risk=AUDIO_OPERATIONS["audio.mix"]["risk"], approval=approval_for("audio.mix", explicit=m["audio.mix"]),
-                           provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": ids, **({"levels": levels} if levels else {})}, requirements=audio["requirements"], serves_intent=None)
+                           provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": ids, **({"levels": levels} if levels else {}), **({"duck": duck} if duck else {})},
+                           requirements=audio["requirements"], serves_intent=None)
                 cap_block("audio_mix", "capability.audio_mix")
+        if audio.get("filler_remove") is not None:   # ADR-072: per input, at the transcript's word timings
+            decide_filler_remove(eng, audio, m, analysis, audio_assets, audio_mix_ok, lambda aid: a_ev + probe_ids_of([aid]), approval_for, cap_block)
     # ---- take selection (ADR-053): explicit `edit.takes`; the picks (one per line, in line order) become the concat inputs, the other
     # takes and the music bed get no decision and no step of their own
     takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX, cap_missing=cap_missing)
@@ -560,10 +572,11 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                + (f"; the user confirmed the extraction up front (audio.extract from {extract_req.source})" if extract_req is not None else "; delivering audio only needs confirmation"),
                                confidence=1.0, evidence=a_ev + probe_ids_of([a.id]), risk="MEDIUM", approval=approval_for("audio.extract", explicit=extract_req), provenance="USER",
                                params={"asset_id": a.id}, requirements=audio["requirements"], serves_intent=None)
-            cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove")) for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
+            cut_planned = any(d.subject in ("silence.leading", "silence.trailing") or (d.subject.startswith("silence.internal.") and d.decision.startswith("remove"))
+                              or (d.subject == "audio.filler_remove" and d.type == "TRANSFORM") for d in decs if d.params.get("asset_id") in sources and d.status != "REJECTED")
             if not planned_ops and subject not in normalised and not cut_planned and not audio_programme_ok and any(has_video(a.technical) for a in src):
                 eng.decide(subject="audio.production", type="BLOCK", decision=f"BLOCK: nothing to do on the audio path for {subject}",
-                           reason="a video container on the audio path needs at least one audio operation (cut / normalise / voice clean-up / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
+                           reason="a video container on the audio path needs at least one audio operation (cut / filler removal / normalise / voice clean-up / noise reduction / gain / channels / dynamics / fade); none was decided", confidence=1.0,
                            evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject}, requirements=audio["requirements"])
             for sk in planned_ops:
                 cap_block(sk, f"capability.{sk}")
@@ -657,3 +670,51 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                    approval=approval_for("ai.recommendation"), provenance="AI_GENERATED",
                    params={"asset_id": inf.asset_id, "intent": ai_intent, "executable": False, "ai_params": inf.data.get("params") or {}})
     return decs
+
+
+def decide_filler_remove(eng: DecisionEngine, audio: Dict[str, Any], m: Dict[str, Requirement], analysis: Any, audio_assets: List[Any], mixed: bool,
+                         evidence_of_asset: Any, approval_for: Any, cap_block: Any) -> None:
+    """ADR-072: `audio.filler_remove` → one decision per input on the audio path. TRANSFORM (CONFIRM floor: it removes recognised speech)
+    when its transcript carries word timestamps for every segment; BLOCK when it would move a mixed input against the others, when
+    there is no transcript, or when a segment has no word timestamps (`word_timestamps_missing`: a timing is never guessed); KEEP when
+    nothing was recognised. Which words are fillers is matched by the Skill against the lexicon the user chose."""
+    fr = audio["filler_remove"]
+    reqs = [m[k] for k in audio["filler_remove_keys"]]
+    lex = fr["lexicon"]
+    lex_words = "+".join(lex.get("presets") or []) + (f"{'+' if lex.get('presets') else ''}{len(lex['words'])} word(s)" if lex.get("words") else "") + (f", keeping {len(lex['keep'])}" if lex.get("keep") else "")
+    for a in audio_assets:
+        ev = evidence_of_asset(a.id)
+        base = {"asset_id": a.id, "lexicon": lex, **{k: fr[k] for k in ("pad", "merge_gap", "declick_ms") if k in fr}}
+        trs = [o for o in analysis.observations if o.kind == "transcript" and o.asset_id == a.id]
+        words: List[Dict[str, Any]] = []
+        why, reason_code = None, None
+        if mixed:
+            why, reason_code = "a mixed input keeps its own timeline from 0 s; removing words from it would move it against the other inputs", "mixed_input"
+        elif not trs:
+            why, reason_code = "no transcript of this input (speech recognition did not run or failed): FILLER_REMOVE cuts only at recognised word timings", "no_transcript"
+        else:
+            got, untimed, problem = transcript_words((trs[0].data or {}).get("segments") or [])
+            if problem:
+                why, reason_code = problem + "; the Skill takes only timed, printable words", "word_invalid"
+            elif untimed:
+                why, reason_code = (f"{len(untimed)} transcript segment(s) carry no word timestamps ({', '.join(untimed[:5])}{'...' if len(untimed) > 5 else ''}): "
+                                    "a filler is removed only where a recognised word's own times say it is (transcribe with word timestamps)"), "word_timestamps_missing"
+            elif len(got or []) > FILLER_MAX_WORDS:
+                why, reason_code = f"{len(got or [])} words: more than the Skill takes in one request ({FILLER_MAX_WORDS})", "too_many_words"
+            words = got or []
+        if why is not None:
+            eng.decide(subject="audio.filler_remove", type="BLOCK", decision=f"BLOCK: filler removal on {a.id}", reason=why, confidence=1.0, evidence=ev + [o.id for o in trs[:1]],
+                       risk="HIGH", approval="BLOCK", provenance="USER", params={**base, "reason": reason_code}, requirements=reqs)
+            continue
+        if not words:
+            eng.decide(subject="audio.filler_remove", type="KEEP", decision=f"keep {a.id}: no word recognised", reason="the transcript has no words, so there is no filler to remove",
+                       confidence=1.0, evidence=ev + [trs[0].id], risk="LOW", approval="AUTO", provenance="OBSERVED", params={**base, "transcript_id": trs[0].id, "word_count": 0},
+                       requirements=reqs)
+            continue
+        eng.decide(subject="audio.filler_remove", type="TRANSFORM", decision=f"remove filler words ({lex_words}) from {a.id}",
+                   reason=f"user asked for filler removal ({reqs[0].source}); the Skill removes the words of the transcript ({len(words)} timed word(s)) that match the chosen lexicon, "
+                          "at their recognised times, after this input's silence cut; what is matched is known only when the Skill runs, so the planned length is an upper bound; "
+                          "removing recognised speech always needs confirmation",
+                   confidence=1.0, evidence=ev + [trs[0].id], risk=AUDIO_OPERATIONS["audio.filler_remove"]["risk"], approval=approval_for("audio.filler_remove", floor="CONFIRM"),
+                   provenance="USER", params={**base, "transcript_id": trs[0].id, "word_count": len(words)}, requirements=reqs, serves_intent=None)
+        cap_block("audio_filler_remove", "capability.audio_filler_remove")

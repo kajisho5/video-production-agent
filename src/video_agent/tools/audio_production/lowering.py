@@ -5,11 +5,18 @@ The compiler hands the adapter typed args for the single contract tool `audio-pr
 audio-production-skill speaks in an audio request (sources / tracks / operations with typed params / outputs relative to a
 workspace). This module translates meaning, never syntax: every parameter it emits is checked against the parameter schema
 the Skill's own contract declares for that operation type (name, type, range, enum), so a contract change is refused instead
-of being forwarded blindly. Nothing here builds commands, argv, filters or paths outside the workspace."""
+of being forwarded blindly. Nothing here builds commands, argv, filters or paths outside the workspace.
+
+Strings (ADR-072): a contract string with an `enum` must be one of its values; a free-text contract string (FILLER_REMOVE's word
+text and lexicon words, NORMALIZE.profile) may be any script — えー, um — but never empty, longer than its `max_length`, or carrying a
+control / format character (newline, NUL, bidi override). Nothing else becomes non-ASCII. Arrays are bounded by the contract's own
+`max_items` (FILLER_REMOVE.words: a transcript's words, 100000), otherwise by 32. The request travels as UTF-8 JSON on stdin (the
+Skill reads UTF-8 and answers in ASCII JSON), so a long word list is data in the request document, never argv."""
 from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,6 +39,15 @@ FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "ar
                       "workspace", "allowed_input", "allowed_inputs", "allowed_input_roots", "allowed-input", "ffmpeg_skill", "ffmpeg-skill", "ffmpeg_skill_dir", "path", "paths")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _RANGE_PARAMS = ("remove", "ranges")
+DEFAULT_MAX_ITEMS = 32   # an array the contract does not bound (levels, ranges, presets) never carries more than this
+
+
+def _text(v: Any, spec: Dict[str, Any], what: str) -> str:
+    """A free-text contract string: printable in any script, 1..max_length characters, no control / format / unassigned code point."""
+    limit = int(spec.get("max_length") or 64)
+    if not isinstance(v, str) or not v or len(v) > limit or any(unicodedata.category(c).startswith("C") for c in v):
+        raise ToolError(f"audio-production: {what} must be a printable string of 1..{limit} characters")
+    return v
 
 
 def safe_id(raw: str, fallback: str = PROJECT_ID_FALLBACK) -> str:
@@ -84,11 +100,11 @@ def _value(v: Any, spec: Dict[str, Any], what: str) -> Any:
     if t in ("number", "integer"):
         return _number(v, spec, what)
     if t == "string":
-        if not isinstance(v, str) or not v or len(v) > int(spec.get("max_length") or 64) or "\n" in v or "\x00" in v or not re.match(r"^[A-Za-z0-9 ._:/-]+$", v):
-            raise ToolError(f"audio-production: {what} must be a short plain string")
-        if "enum" in spec and v not in spec["enum"]:
-            raise ToolError(f"audio-production: {what} {v!r} is not one of {spec['enum']}")
-        return v
+        if "enum" in spec:   # a closed vocabulary: exactly one of the contract's values
+            if not isinstance(v, str) or v not in spec["enum"]:
+                raise ToolError(f"audio-production: {what} {v!r} is not one of {spec['enum']}")
+            return v
+        return _text(v, spec, what)
     if t == "boolean":
         if not isinstance(v, bool):
             raise ToolError(f"audio-production: {what} must be a boolean")
@@ -98,11 +114,16 @@ def _value(v: Any, spec: Dict[str, Any], what: str) -> Any:
         props = items.get("properties") or {}
         if set(props) == {"start", "end"}:
             return _ranges(v, what)
-        if not isinstance(v, list) or len(v) > 32:
-            raise ToolError(f"audio-production: {what} must be a list")
+        limit = int(spec.get("max_items") or DEFAULT_MAX_ITEMS)
+        if not isinstance(v, list) or len(v) > limit:
+            raise ToolError(f"audio-production: {what} must be a list of at most {limit} items")
         return [_value(x, items, f"{what}[{i}]") for i, x in enumerate(v)]
     if t == "object":
         props = spec.get("properties") or {}
+        if not props and spec.get("schema"):
+            # ADR-072: another Skill's document (FILLER_REMOVE.transcript, transcription-skill/transcript/0.1) is not forwarded: the agent sends the
+            # transcript's words instead, carried onto the timeline of the audio it cuts (the transcript's own times are the source's)
+            raise ToolError(f"audio-production: {what} ({spec['schema']}) is not sent by this adapter; send the word timings as `words`")
         if not isinstance(v, dict):
             raise ToolError(f"audio-production: {what} must be an object")
         out = {}
@@ -112,6 +133,12 @@ def _value(v: Any, spec: Dict[str, Any], what: str) -> Any:
             if k not in props:
                 raise ToolError(f"audio-production: {what}.{k} is not declared by the contract")
             out[k] = _value(x, props[k], f"{what}.{k}")
+        # required members: an object's `required` list / `required_properties`, or a member's own `required: true` (MIX.duck input / amount_db)
+        need = [str(k) for k in (spec.get("required_properties") or (spec["required"] if isinstance(spec.get("required"), list) else []))]
+        need += [k for k, ps in props.items() if isinstance(ps, dict) and ps.get("required") is True and k not in need]
+        missing = [k for k in need if k not in out]
+        if missing:
+            raise ToolError(f"audio-production: {what} needs {missing}")
         return out
     raise ToolError(f"audio-production: {what}: contract type {t!r} is not lowered by this adapter")
 

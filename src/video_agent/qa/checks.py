@@ -57,6 +57,27 @@ class QAReport:
 REQUIRED_SKILLS = ("media_probe", "loudness_analysis", "delivery_check")   # visual_inspection is optional (contact sheet only)
 
 
+def filler_removed_seconds(ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult]) -> Dict[str, Optional[float]]:
+    """ADR-072: source asset id → the seconds audio-production reports its FILLER_REMOVE removed (`measurements.filler_remove.removed_seconds`
+    of the successful result whose output is the operation's output), or None when no such result says so. What is matched is the
+    Skill's business, so the expected length after it is the plan's upper bound less this observed amount."""
+    out: Dict[str, Optional[float]] = {}
+    for op in (ir_doc.get("audio") or {}).get("operations") or []:
+        if op.get("type") != "audio.filler_remove":
+            continue
+        want = paths.get(str(op.get("output")))
+        val: Optional[float] = None
+        for r in results or []:
+            if not r.ok or not want or not r.output or os.path.abspath(str(r.output)) != os.path.abspath(want):
+                continue
+            meas = (((r.data or {}).get("operation") or {}).get("measurements") or {}).get("filler_remove") or {}
+            sec = meas.get("removed_seconds")
+            if isinstance(sec, (int, float)) and not isinstance(sec, bool) and sec >= 0:
+                val = float(sec)
+        out[str(op.get("asset"))] = val
+    return out
+
+
 def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], tools: Dict[str, str], sheet_dir: Optional[str] = None,
            check_by_artifact: Optional[Dict[str, ToolResult]] = None, qc_by_artifact: Optional[Dict[str, ToolResult]] = None,
            qc_packages: Optional[List[Any]] = None) -> QAReport:
@@ -126,9 +147,14 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
     dur_tol = float(th.get("duration_tolerance_s", 0.5))
     lu_tol = float(th.get("loudness_tolerance_lu", 2.0))
     required = set(ir_doc["qa"]["required"])
+    removed_by_filler = filler_removed_seconds(ir_doc, paths, results)
     for subject in delivery_subjects(ir_doc):   # each asset, or the concat programme (ADR-029) whose expectations derive from the IR chain
         asset_id, asset = subject["id"], {"technical": subject["technical"]}
         kept = subject["duration"]        # expected output duration: kept ranges → concat timeline → speed factor (from the IR, not measured)
+        filler_unknown = [a for a in subject.get("filler_sources") or [] if removed_by_filler.get(a) is None]
+        if subject.get("filler_sources") and not filler_unknown:
+            # ADR-072: the plan's length is an upper bound where fillers were removed; the Skill reported what it removed (its own ranges)
+            kept = round(kept - sum(float(removed_by_filler[a]) for a in subject["filler_sources"]), 3)
         target_lufs = subject["target_lufs"]
         for t in ir_doc["delivery"]["targets"]:
             art = f"{asset_id}_delivery_{t['id']}"
@@ -153,7 +179,14 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 continue
             p = probe_facts(facts(pr))
             v, a = p.get("video") or {}, p.get("audio") or {}
-            if "video" in required and subject.get("audio_only"):
+            if "video" in required and subject.get("audio_only") and filler_unknown:
+                got = p.get("duration") or 0.0
+                rep.items.append(QAItem("video", "duration", "FAIL", round(got, 3), f"at most {kept:.3f}, less what audio-production reports it removed", kind="judgement", artifact=art,
+                                        fix_hint=f"no filler-removal result reports what was removed from {', '.join(filler_unknown)}", threshold_source="plan"))
+                rep.incidents.append(Incident(type="DURATION_MISMATCH", severity="MEDIUM", start=0.0, end=got, evidence=[art],
+                                              possible_cause="the expected length after filler removal is unknown", recommended_action="re-run the filler removal step"))
+                rep.items.append(QAItem("video", "audio_only", "PASS" if not v else "FAIL", v.get("codec") if v else "none", "no video stream (audio deliverable)", artifact=art))
+            elif "video" in required and subject.get("audio_only"):
                 got = p.get("duration") or 0.0   # an audio deliverable: duration is checked, the picture facts are not expected
                 ok = abs(got - kept) <= dur_tol
                 rep.items.append(QAItem("video", "duration", "PASS" if ok else "FAIL", round(got, 3), f"{kept:.3f} ± {dur_tol}", kind="judgement", artifact=art,

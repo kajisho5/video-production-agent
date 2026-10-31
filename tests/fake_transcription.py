@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "transcription" / "contract_0.7.7.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "transcription" / "contract_0.7.8.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_TS_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_TS_CALLS")
 ENGINE = {"id": "faster_whisper", "version": "1.2.1-fake", "execution_mode": "local", "requires_network": False, "deterministic": True, "available": True,
@@ -58,8 +58,15 @@ def transcript(params: dict, fp: str) -> dict:
     side = Path(str(params["input"]) + ".segments.json")   # a real media file may carry its segments in a sidecar (ADR-054 real take assembly)
     if meta is None and side.is_file():
         meta = {"fake": True, "segments": json.loads(side.read_text(encoding="utf-8"))}
+    words_side = Path(str(params["input"]) + ".words.json")   # word timings [[start, end, text], ...] for a real media file (ADR-072 filler removal)
+    if isinstance(meta, dict) and words_side.is_file():
+        meta = dict(meta, words=json.loads(words_side.read_text(encoding="utf-8")))
     if isinstance(meta, dict) and meta.get("fake") and isinstance(meta.get("segments"), list):
-        segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7, "words": None, "speaker_id": None}
+        # ADR-072: with word timestamps requested, a segment carries the words of `words` [[start, end, text], ...] that fall inside it (none → null)
+        timed = meta.get("words") if params.get("word_timestamps") and isinstance(meta.get("words"), list) else None
+        segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7,
+                 "words": ([{"start": float(ws), "end": float(we), "text": wt, "confidence": 0.9} for ws, we, wt in timed if float(a) <= float(ws) and float(we) <= float(b)] or None)
+                 if timed is not None else None, "speaker_id": None}
                 for i, (a, b, t) in enumerate(meta["segments"], 1)]
     tid = "tr_" + hashlib.sha256((fp + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:12]
     prov_params = {"language": params.get("language"), "word_timestamps": bool(params.get("word_timestamps")), "temperature": params.get("temperature", 0.0),

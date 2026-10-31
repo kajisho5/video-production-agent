@@ -5,7 +5,13 @@ small self-describing output file (the format tests/fake_adapter.py probes), and
 
   ok | reused | tool_error | tool_error_final | output_missing | validation_error | cancelled | timeout | hang | malformed | empty |
   two_docs | text | nonzero_ok | wrong_schema | wrong_skill | wrong_version | bad_contract | contract_fail | contract_drift |
-  hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance | voice_engine_old
+  hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance | voice_engine_old | flag_missing
+
+FILLER_REMOVE (0.4.6): exactly one of words / transcript, a non-empty lexicon (the contract's presets + words - keep), matched on
+NFKC-folded single tokens; each match (plus `pad`, never into a neighbouring word) is removed and reported as
+measurements.filler_remove (matched, removed_seconds). MIX.duck: the bed index must name an input. flag_missing: like the real Skill
+with an ffmpeg-skill that lacks --duck / --declick-ms (TOOL_ERROR ffmpeg_skill_flag_missing before any tool runs). The request is read
+as UTF-8 bytes (the real Skill does the same; a Windows console code page cannot carry えー).
 
 FAKE_AP_CALLS: a file every invocation (subcommand + argv) is appended to (security tests read it). Never runs ffmpeg or
 ffmpeg-skill, never imports audio_production. Test double only."""
@@ -16,6 +22,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -149,7 +156,7 @@ def main() -> int:
         return err("PATH_NOT_ALLOWED", "workspace is not a directory", {"reason": "workspace_missing"})
     roots = [os.path.realpath(r) for r in flag_values(argv, "--allowed-input")] or None
     try:
-        req = json.loads(sys.stdin.read())
+        req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     except ValueError:
         return err("INVALID_REQUEST", "request is not valid JSON")
     if MODE == "hang":
@@ -263,6 +270,54 @@ def main() -> int:
         dur = round(sum(durs) - cf * (len(durs) - 1), 3)
     elif t == "MIX":
         dur = durs[0]
+        duck = params.get("duck")
+        if duck is not None:
+            if not isinstance(duck, dict) or set(duck) - {"input", "amount_db", "threshold_db", "attack_ms", "release_ms"} or "input" not in duck or "amount_db" not in duck:
+                return err("INVALID_REQUEST", "MIX.duck must be {input, amount_db, ...}", {"field": "duck"})
+            if not isinstance(duck["input"], int) or not 1 <= duck["input"] < len(in_paths):
+                return err("INVALID_REQUEST", f"MIX.duck.input must name one of inputs 1..{len(in_paths) - 1}", {"field": "duck.input"})
+            if MODE == "flag_missing":
+                return err("TOOL_ERROR", "MIX duck needs ffmpeg-skill/audio --duck, which the located ffmpeg-skill (1.0.0) does not declare",
+                           {"reason": "ffmpeg_skill_flag_missing", "feature": "MIX duck", "tool": "ffmpeg-skill/audio", "missing_flags": ["duck"], "ffmpeg_skill_version": "1.0.0"},
+                           retryable=False, dry_run=dry_run)
+    elif t == "FILLER_REMOVE":
+        if ("words" in params) == ("transcript" in params):
+            return err("INVALID_REQUEST", "FILLER_REMOVE takes exactly one of words / transcript", {"field": "words"})
+        if "transcript" in params:
+            segs = (params["transcript"] or {}).get("segments") or []
+            if any(sg.get("words") is None for sg in segs):
+                return err("INVALID_REQUEST", "transcript segments carry no word timestamps", {"field": "transcript.segments", "reason": "word_timestamps_missing"})
+            words = [w for sg in segs for w in sg["words"]]
+        else:
+            words = params["words"]
+        if not isinstance(words, list) or not words:
+            return err("INVALID_REQUEST", "words must be a non-empty array", {"field": "words", "reason": "word_timestamps_missing"})
+        for w in words:
+            if not isinstance(w, dict) or not isinstance(w.get("start"), (int, float)) or not isinstance(w.get("end"), (int, float)) or not isinstance(w.get("text"), str) or not w["start"] < w["end"]:
+                return err("INVALID_REQUEST", "a word needs start < end and text", {"field": "words", "reason": "word_timestamps_missing"})
+            if w["start"] >= durs[0] - 1e-6:
+                return err("INVALID_TIME_RANGE", f"word {w['text']!r} starts at or after the input's end", {"start": w["start"], "duration": durs[0]})
+        lex = params["lexicon"]
+        norm = lambda x: "".join(c for c in unicodedata.normalize("NFKC", x).casefold() if c.isalnum() or c == "ー")
+        vocab = {norm(x) for pr in lex.get("presets") or [] for x in CONTRACT["filler_lexicons"]["presets"][pr]} | {norm(x) for x in lex.get("words") or []}
+        vocab -= {norm(x) for x in lex.get("keep") or []}
+        if not vocab:
+            return err("INVALID_REQUEST", "the lexicon is empty", {"field": "lexicon"})
+        if MODE == "flag_missing" and (params.get("declick_ms") or 0) > 0:
+            return err("TOOL_ERROR", "FILLER_REMOVE declick_ms needs ffmpeg-skill/cut --declick-ms", {"reason": "ffmpeg_skill_flag_missing", "feature": "FILLER_REMOVE declick_ms",
+                       "tool": "ffmpeg-skill/cut", "missing_flags": ["declick_ms"], "ffmpeg_skill_version": "1.0.0"}, retryable=False, dry_run=dry_run)
+        ws_sorted = sorted(words, key=lambda w: (w["start"], w["end"]))
+        pad = float(params.get("pad") or 0.0)
+        ranges, matched = [], []
+        for i, w in enumerate(ws_sorted):
+            if norm(w["text"]) in vocab:
+                lo = max(w["start"] - pad, ws_sorted[i - 1]["end"] if i else 0.0)
+                hi = min(w["end"] + pad, ws_sorted[i + 1]["start"] if i + 1 < len(ws_sorted) else durs[0])
+                ranges.append((lo, hi)); matched.append({"text": w["text"], "start": w["start"], "end": w["end"]})
+        removed = round(sum(b - a for a, b in ranges), 6)
+        dur = round(durs[0] - removed, 3)
+        fr_meas = {"matched": matched, "matched_count": len(matched), "ranges_count": len(ranges), "removed_seconds": removed, "words_count": len(words),
+                   "lexicon": sorted(vocab), "declick_ms": params.get("declick_ms")}
     else:
         dur = durs[0]
     if t in ("FADE_IN", "FADE_OUT") and float(params["duration"]) > dur + 0.001:
@@ -327,6 +382,8 @@ def main() -> int:
     artifact = {"path": out_path, "duration": dur, "channels": channels, "channel_layout": None, "sample_rate": 48000, "codec": CONTRACT["output_formats"][fmt]["codec"], "size": len(payload), "sha256": digest}
     record.update({"status": "reused" if reused else "completed", "seconds": 0.01, "artifact": dict(artifact, path=os.path.join(plan["work_dir"], op_id[:16] + ".wav")),
                    "tool_commands_observed": [f"{tool} {op_id[:16]} (fake, provenance only)"]})
+    if t == "FILLER_REMOVE":
+        record["measurements"] = {"filler_remove": fr_meas, "effective_ranges": [{"start": a, "end": b} for a, b in ranges]}
     if t == "NORMALIZE":
         record["measurements"] = {"loudness": {"measured_by": "ffmpeg-skill/loudness --measure-only", "target_lufs": params["target_lufs"], "true_peak_db": params["true_peak_db"],
                                                "integrated_lufs": float(params["target_lufs"]) - 0.1, "true_peak_dbtp": float(params["true_peak_db"]) - 0.5, "loudness_range_lu": 3.0}}

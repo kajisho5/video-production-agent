@@ -42,7 +42,9 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "audio_mono": ("asset",), "audio_stereo": ("asset",), "audio_downmix": ("asset",), "audio_fade_in": ("asset", "duration"), "audio_fade_out": ("asset", "duration"),
                    "audio_concat": ("asset", "inputs", "crossfade"),
                    # ADR-063: the mix (levels aligned with the inputs), noise reduction and dynamics, by the contract's parameter names
-                   "audio_mix": ("asset", "inputs", "levels"), "audio_voice_cleanup": ("asset", "level"), "audio_noise_reduction": ("asset", "mode", "strength_db"), "audio_dynamics": ("asset", "gate", "compressor", "limiter"),
+                   "audio_mix": ("asset", "inputs", "levels", "duck"),
+                   # ADR-072: the filler removal (the words travel in the IR operation; the step names how many)
+                   "audio_filler_remove": ("asset", "lexicon", "pad", "merge_gap", "declick_ms", "word_count"), "audio_voice_cleanup": ("asset", "level"), "audio_noise_reduction": ("asset", "mode", "strength_db"), "audio_dynamics": ("asset", "gate", "compressor", "limiter"),
                    # take assembly crossfades (ADR-054): the programme audio replaces the assembled picture's hard-cut audio
                    "audio_mux": ("asset", "video", "audio"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)

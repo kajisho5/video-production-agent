@@ -5,7 +5,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..agent.decision_engine import check_decisions
-from ..agent.audio import (AUDIO_ORDER, DYNAMICS_STAGES, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
+from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STAGES, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH,
+                           FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
                            PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
 from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, SKILL_OF, switch_cams
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
@@ -50,8 +51,9 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
     assets = d["assets"]
     aops = d["audio"]["operations"]
     known: set = set(assets)
-    seen_rank: Dict[str, int] = {}
+    seen_rank: Dict[str, float] = {}
     concat_seen = False
+    programme = next((op for op in aops if op.get("type") in AUDIO_PROGRAMME_OPS), None)
     on_audio_path: set = set()
     for op in aops:
         t = op.get("type")
@@ -95,6 +97,17 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
                 last = r[1]
             if dur and sum(e - s for s, e in rs) >= float(dur) - 0.01:
                 errs.append(f"audio.cut on {subj} would remove everything")
+        elif t == "audio.filler_remove":   # ADR-072: a source asset, after its cut and before everything else; never a mixed input
+            if subj not in assets:
+                errs.append(f"audio.filler_remove on {subj!r}: only a source asset's words are removed")
+            elif seen_rank.get(subj, -1) != -1:   # nothing but its cut before it (a second filler removal sees -0.5)
+                errs.append(f"audio.filler_remove on {subj} must come right after its audio.cut, before every other audio operation")
+            seen_rank[subj] = -0.5
+            if op.get("input") is None or op.get("output") is None:
+                errs.append(f"audio.filler_remove on {subj}: input / output reference missing")
+            if programme is not None and programme.get("type") == "audio.mix" and subj in (programme.get("inputs") or []):
+                errs.append(f"audio.filler_remove on {subj}: a mixed input keeps its own timeline (removing words would move it against the other inputs)")
+            errs.extend(_filler_problems(op, subj))
         elif t in AUDIO_PROGRAMME_OPS:   # audio.concat (ADR-030) or audio.mix (ADR-063): one audio programme per plan
             if concat_seen:
                 errs.append(f"more than one audio programme ({t}; one audio.concat or audio.mix per plan)")
@@ -124,6 +137,20 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
                                 errs.append(f"audio.mix levels[{n}] {x!r} must be {{gain_db -60..60, mute}}")
                         if lv and isinstance(lv[0], dict) and lv[0].get("mute"):
                             errs.append("audio.mix: the first input sets the mix's length and cannot be muted")
+                dk = op.get("duck")
+                if dk is not None:   # ADR-072: MIX.duck, the bed by index (1..inputs-1) and the contract's ranges
+                    if not isinstance(dk, dict) or set(dk) - set(DUCK_FIELDS) or any(f not in dk for f in DUCK_REQUIRED):
+                        errs.append(f"audio.mix duck {dk!r} must be {{input, amount_db, threshold_db?, attack_ms?, release_ms?}}")
+                    else:
+                        for f, v in dk.items():
+                            lo, hi = DUCK_FIELDS[f]
+                            if not (isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= float(v) <= hi):
+                                errs.append(f"audio.mix duck.{f} {v!r} must be within {lo:g}..{hi:g}")
+                        di = dk.get("input")
+                        if isinstance(di, int) and not isinstance(di, bool) and not 1 <= di < len(ins):
+                            errs.append(f"audio.mix duck.input {di} names no bed among inputs 1..{len(ins) - 1} (input 0 is the key)")
+                        elif isinstance(lv, list) and isinstance(di, int) and di < len(lv) and isinstance(lv[di], dict) and lv[di].get("mute"):
+                            errs.append(f"audio.mix duck.input {di} is muted: the ducked bed must be unmuted")
             known.add(subj)
             seen_rank[subj] = -1
             continue
@@ -169,6 +196,47 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
     for op in d["video"]["operations"]:
         if op.get("asset") in on_audio_path:
             errs.append(f"{op.get('type')} on {op.get('asset')}: the asset is on the audio production path (audio deliverable), video operations conflict")
+    return errs
+
+
+def _filler_problems(op: Dict[str, Any], subj: Any) -> List[str]:
+    """ADR-072: an audio.filler_remove record against the contract's FILLER_REMOVE: timed words in order inside the operation's scope,
+    printable text, a non-empty lexicon of the contract's presets / printable words, pad / merge_gap / declick_ms in range."""
+    errs: List[str] = []
+    words = op.get("words")
+    end = float(((op.get("temporal_scope") or {}).get("end")) or 0.0)
+    if not isinstance(words, list) or not words or len(words) > FILLER_MAX_WORDS:
+        errs.append(f"audio.filler_remove on {subj}: words must be 1..{FILLER_MAX_WORDS} timed words")
+        words = []
+    last = -1.0
+    for n, w in enumerate(words):
+        ok = (isinstance(w, dict) and set(w) <= {"start", "end", "text", "confidence"} and all(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool) for k in ("start", "end"))
+              and isinstance(w.get("text"), str) and 0 < len(w["text"]) <= FILLER_WORD_MAX_LENGTH and not any(ord(c) < 32 for c in w["text"]))
+        if not ok:
+            errs.append(f"audio.filler_remove on {subj}: words[{n}] {str(w)[:80]} must be {{start, end, text, confidence?}} with printable text")
+            break
+        if not 0 <= float(w["start"]) < float(w["end"]) or float(w["start"]) < last or (end and float(w["end"]) > end + 0.01):
+            errs.append(f"audio.filler_remove on {subj}: words[{n}] {w['start']}-{w['end']} is empty, out of order or past the audio it cuts ({end:.3f}s)")
+            break
+        if "confidence" in w and not (isinstance(w["confidence"], (int, float)) and 0 <= float(w["confidence"]) <= 1):
+            errs.append(f"audio.filler_remove on {subj}: words[{n}].confidence must be within 0..1")
+            break
+        last = float(w["start"])
+    lex = op.get("lexicon")
+    if not isinstance(lex, dict) or set(lex) - {"presets", "words", "keep"} or not (lex.get("presets") or lex.get("words")):
+        errs.append(f"audio.filler_remove on {subj}: lexicon {lex!r} must name presets and / or words (there is no default)")
+    else:
+        if not set(lex.get("presets") or []) <= set(FILLER_PRESETS):
+            errs.append(f"audio.filler_remove on {subj}: lexicon presets {lex.get('presets')!r} must be among {FILLER_PRESETS}")
+        for part in ("words", "keep"):
+            v = lex.get(part)
+            if v is not None and not (isinstance(v, list) and len(v) <= FILLER_LEXICON_MAX_ITEMS
+                                      and all(isinstance(x, str) and 0 < len(x) <= FILLER_LEXICON_MAX_LENGTH and not any(ord(c) < 32 for c in x) for x in v)):
+                errs.append(f"audio.filler_remove on {subj}: lexicon {part} must be at most {FILLER_LEXICON_MAX_ITEMS} printable words of 1..{FILLER_LEXICON_MAX_LENGTH} characters")
+    for k, (lo, hi) in (("pad", FILLER_PAD_RANGE), ("merge_gap", FILLER_MERGE_GAP_RANGE), ("declick_ms", FILLER_DECLICK_RANGE)):
+        v = op.get(k)
+        if v is not None and not (isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= float(v) <= hi):
+            errs.append(f"audio.filler_remove on {subj}: {k} {v!r} must be within {lo:g}..{hi:g}")
     return errs
 
 
