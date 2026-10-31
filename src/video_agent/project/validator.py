@@ -17,6 +17,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
+from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
 from ..agent.dubbing import FILES as DUB_FILES, OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL
 from ..tools.dubbing.adapter import engines as dub_engines, parameters as dub_parameters, unfit_policies as dub_unfit_policies
@@ -315,6 +316,11 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"video.trim keep range {k} is empty")
                 if dur and k[1] > dur + 0.01:
                     errs.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
+            continue
+        if t == FACE_SUBJECT:   # ADR-090: blurred on the source, before anything re-times it (its own vocabulary, not an editing op)
+            errs.extend(face_problems(op, assets))
+            if any(o.get("asset") == subj and o.get("type") == FACE_SUBJECT for o in ops[:ops.index(op)]):
+                errs.append(f"{t} on {subj}: more than one")
             continue
         if t not in OPERATIONS:
             errs.append(f"unknown video operation type {t!r}")
@@ -1006,6 +1012,10 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                     rep.errors.append(f"the overlay image's {sk} on {op['asset']} has no plan step")
         if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] == FACE_SUBJECT:   # ADR-090: the cut, the redacts and the composite each have their step
+            for sk in FACE_EXEC_SKILLS:
+                if (sk, op["asset"]) not in step_keys:
+                    rep.errors.append(f"{op['type']} on {op['asset']}: {sk} has no plan step")
     for op in d["audio"]["operations"]:
         if op["type"] == "audio.loudness" and (("audio_normalize" if "input" in op else "loudness_normalization"), op["asset"]) not in step_keys:
             rep.errors.append(f"audio.loudness on {op['asset']} has no plan step")

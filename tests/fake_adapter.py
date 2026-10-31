@@ -167,6 +167,14 @@ class FakeAdapter(ToolAdapter):
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
                 Path(out).write_bytes(b"png")
             return ToolResult(op.id, op.tool, True, 0, out, {"outputs": [out]}, [], "", 0.1, attempt, dry_run)
+        if script == "broll":
+            # a fake cutaway composite (tests only, ADR-090): the output is exactly as long as A (broll.py's own contract); every insert must exist
+            assert len(op.args["insert"]) == len(op.args["at"]) == len(op.args["end"]) and op.args.get("audio") == "a", op.args
+            for b in op.args["insert"]:
+                assert os.path.exists(paths.get(b, b)), b
+            if out and not dry_run:
+                _write_fake(out, {"duration": in_dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": ["ffmpeg broll"], "probe": probe_doc(out or "", in_dur)}, ["ffmpeg broll"], "", 0.2, attempt, dry_run)
         if script in ("redact", "deinterlace", "crop", "stabilize"):
             # ADR-046: single-source filter-style ops -- duration is unchanged (none of these re-time the clip)
             dur = in_dur

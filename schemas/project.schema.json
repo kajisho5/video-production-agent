@@ -1243,7 +1243,8 @@
       "video.fit",
       "video.fill",
       "video.overlay",
-      "video.image_insert"
+      "video.image_insert",
+      "video.redact_faces"
      ]
     },
     "asset": {
@@ -1620,6 +1621,62 @@
       },
       "strip": {
        "const": true
+      }
+     }
+    },
+    "regions": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 60,
+     "items": {
+      "type": "object",
+      "required": [
+       "start",
+       "end",
+       "rects"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "start": {
+        "type": "number",
+        "minimum": 0
+       },
+       "end": {
+        "type": "number",
+        "minimum": 0
+       },
+       "rects": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "object",
+         "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+         ],
+         "additionalProperties": false,
+         "properties": {
+          "x": {
+           "type": "integer",
+           "minimum": 0
+          },
+          "y": {
+           "type": "integer",
+           "minimum": 0
+          },
+          "width": {
+           "type": "integer",
+           "minimum": 2
+          },
+          "height": {
+           "type": "integer",
+           "minimum": 2
+          }
+         }
+        }
+       }
       }
      }
     }

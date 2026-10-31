@@ -21,6 +21,7 @@ from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
 from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, transcript_words, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
+from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, decide_faces
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
 from .image_insert import decide_image_insert
@@ -72,6 +73,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.grid": ("video.grid.approval", "CONFIRM"), "video.redact": ("video.redact.approval", "CONFIRM"),
                  "video.deinterlace": ("video.deinterlace.approval", "CONFIRM"), "video.crop": ("video.crop.approval", "CONFIRM"),
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
+                 # ADR-090: blurring measured faces changes the delivered picture irreversibly and the detector misses faces: CONFIRM, floor CONFIRM
+                 FACE_SUBJECT: FACE_APPROVAL_KEY,
                  # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
@@ -597,6 +600,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- measured black bars (ADR-060): a CONFIRM proposal of video.crop with the measured rectangle, on an input that is its own subject
     decide_crop(eng, analysis, subjects, edits, "a programme of several inputs" if concat_ok or takes is not None else "the audio production path" if audio["production"] else None,
                 approval_for, probe_ids_of, cap_block)
+    # ---- blur faces (ADR-090): detection-skill's face tracks → a CONFIRM video.redact_faces on each video input (or a handoff / BLOCK)
+    decide_faces(eng, m, analysis, approval_for, probe_ids_of, cap_missing, cap_block)
     for op in SINGLE_SOURCE_ORDER:
         if op not in edits:
             continue
