@@ -22,6 +22,7 @@ from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
+from .nle import MODES as NLE_MODES, SUBJECT as NLE_SUBJECT, ir_nle
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
 
@@ -240,6 +241,23 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             outputs.append({"role": "TIMELINE", "logical": out_id, "format": d.params["format"],
                             "expected": {"clips": len(clips), "duration": rec["timeline_duration"], "source": subject}})
             summary.append(f"Export the cut of {subject} as an {d.params['format']} timeline ({len(clips)} clip(s), {rec['timeline_duration']:.2f}s)")
+
+    nle_recs: List[Dict[str, Any]] = []   # ADR-086: delivery.nle, written only when planned
+
+    def nle_steps(subject: str, sources: List[str]) -> None:
+        """ADR-086: the `timeline.nle` decision → one step (nle-bridge export / conform) that reads the project IR the job executes; it waits on
+        the subject's timeline step only for order (both read the sources, nothing produced in between)."""
+        nonlocal order
+        for d in [x for x in decisions if x.subject == NLE_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
+            skill = NLE_MODES[d.params["mode"]][0]
+            out_id = f"{subject}_nle"
+            nle_recs.append(ir_nle(subject, d.params["mode"], list(d.params["formats"]), bool(d.params.get("zip")), [d.id], out_id))
+            order += 1
+            dep = next((s_.id for s_ in steps if s_.skill == TIMELINE_SKILL and (s_.params or {}).get("asset") == subject), None)
+            steps.append(ProductionStep(id=f"step_nle_{subject}", order=order, skill=skill, tool=tool_for(skill), inputs=list(dict.fromkeys(sources)),
+                                        params={"asset": subject, "mode": d.params["mode"], "formats": list(d.params["formats"]), "zip": bool(d.params.get("zip"))},
+                                        outputs=[out_id], depends_on=[dep] if dep else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+            summary.append(d.decision)
 
     def qc_steps(subject: str, tolerance_lu: float) -> None:
         """One qc_check step per delivery artifact of the subject (after its check), and one for the subtitle sidecar (ADR-032)."""
@@ -654,6 +672,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             loudness_steps(asset.id)
             delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
             timeline_steps(asset.id, [asset.id])
+            nle_steps(asset.id, [asset.id])
             thumbnail_steps(asset.id, [asset.id])
             qc_steps(asset.id, qc_tolerance_lu)
     def crossfade_steps(xd: Decision, concat_step: str, total: float) -> Dict[str, Any]:
@@ -776,6 +795,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         timeline_steps(PROGRAMME, inputs)
+        nle_steps(PROGRAMME, inputs)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
     if switch_dec is not None:
@@ -851,5 +871,5 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "delivery": delivery,
+    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "nle": list(nle_recs), "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade}

@@ -59,6 +59,8 @@ from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lif
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
+from .tools.nle_bridge import PACKAGE as NLE_BRIDGE_PACKAGE, NleBridgeAdapter, lift_observation as lift_nle_observation, locate_nle_bridge
+from .agent.nle import check_nle_keys
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
@@ -95,6 +97,7 @@ class Service:
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
+        self.nle_bridge_dir = os.environ.get("VIDEO_AGENT_NLE_BRIDGE_DIR")   # ADR-086: nle-bridge-skill (export / conform from the project IR)
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
@@ -114,6 +117,7 @@ class Service:
             self.registry.register_package(pkg)
         self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
+        self.registry.register_package(NLE_BRIDGE_PACKAGE)   # nle-bridge-skill (ADR-086): same rule
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
@@ -155,6 +159,8 @@ class Service:
             (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
             # ADR-073: always told which ffmpeg-skill to use (never its own current-directory search); paths checked per call like the other Skills
             (locate_voice_enhance(self.voice_enhance_dir), lambda sk: VoiceEnhanceAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-086: reads the job's IR snapshot, writes only under the job's artifacts/; its media probe through the agent's own ffmpeg-skill
+            (locate_nle_bridge(self.nle_bridge_dir), lambda sk: NleBridgeAdapter(sk, workspace=self.workspace, ffmpeg_skill_dir=engine)),
             # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
             (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
         ):
@@ -678,6 +684,8 @@ class Service:
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         if plan.get("timelines"):   # ADR-052: written only when planned, so an unchanged request keeps its plan hash
             d["delivery"]["timelines"] = plan["timelines"]
+        if plan.get("nle"):   # ADR-086: nle-bridge hand-off; written only when planned
+            d["delivery"]["nle"] = plan["nle"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
         if (plan.get("qc") or {}).get("enabled"):
             d["qa"]["qc"] = plan["qc"]
@@ -924,6 +932,8 @@ class Service:
             return self._execute_offload(ir, ir_path, job, store, approved, who, timeout)
         job.transition("EXECUTING")
         store.save(job)
+        if (ir.doc.get("delivery") or {}).get("nle"):   # ADR-086: nle-bridge reads the project IR this job executes, as a file of the job
+            save_ir(ir, str(job.dir / "nle" / "project.json"))
         ops, paths = compile_ir(ir, str(job.dir))
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or [])
         ex = Executor(adapter, max_attempts=int(ir.doc["execution"]["recovery_policy"]["max_attempts"]), timeout=timeout, completed_keys=job.completed_ops)
@@ -1015,6 +1025,8 @@ class Service:
                 lifted = [lift_graphics_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("subtitle/"):
                 lifted = [lift_subtitle_result(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("nle-bridge/"):   # ADR-086: the written files with their sha256 / re-read check, every loss warning, relink facts
+                lifted = [lift_nle_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("voice-enhance/"):   # ADR-073: engine attribution / licences, parameters, warnings, stem facts
                 lifted = [lift_voice_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("thumbnail/"):
@@ -1489,6 +1501,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_qc_reference(rm)   # ADR-058: the master file exists, metrics are named, thresholds in range, the qc gate is on
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
+    check_nle_keys(user_requirements)   # ADR-086: delivery.nle export | conform, formats from the nle-bridge contract
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
