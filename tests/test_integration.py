@@ -3171,7 +3171,7 @@ class ImagePrepareRealTests(unittest.TestCase):
 
 
 class ThumbnailDocumentRealTests(unittest.TestCase):
-    """ADR-085 on the real thumbnail-skill (Pillow) and the real ffmpeg-skill: a plan with a caption, a second text and a logo renders one
+    """ADR-088 on the real thumbnail-skill (Pillow) and the real ffmpeg-skill: a plan with a caption, a second text and a logo renders one
     ThumbnailDocument; the PNG has the picture's size and the logo's pixels sit in the box the plan computed from the logo's own header."""
 
     def setUp(self):

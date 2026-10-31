@@ -207,7 +207,7 @@ def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: s
 
 def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
     """IR graphics.thumbnail → thumbnail/extract_frame (a plain frame) or thumbnail/render (frame + caption) arguments."""
-    want = THUMBNAIL_RENDER_TOOL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_TOOL   # ADR-085: texts / logo
+    want = THUMBNAIL_RENDER_TOOL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_TOOL   # ADR-088: texts / logo
     if tool != want:
         raise CompileError(f"graphics.thumbnail cannot be executed by {tool}; this operation needs {want}")
     args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"], "output": out_id}

@@ -1,4 +1,4 @@
-"""ADR-085 (thumbnail-skill roadmap step 4, agent side: the full ThumbnailDocument): a logo image and several text elements on the thumbnail,
+"""ADR-088 (thumbnail-skill roadmap step 4, agent side: the full ThumbnailDocument): a logo image and several text elements on the thumbnail,
 each placed by the plan (the logo at its own aspect ratio read from the file's header), lowered into one thumbnail/render document. Against
 the fake thumbnail process of the pipeline harness (which checks the document's structure as the real Skill does). No Pillow, no ffmpeg."""
 from __future__ import annotations

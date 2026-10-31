@@ -2488,7 +2488,7 @@
      }
     },
     "texts": {
-     "description": "ADR-085: more text elements of a graphics.thumbnail",
+     "description": "ADR-088: more text elements of a graphics.thumbnail",
      "type": "array",
      "maxItems": 8,
      "items": {
@@ -2523,7 +2523,7 @@
      }
     },
     "logo": {
-     "description": "ADR-085: a logo image of a graphics.thumbnail, its box on the canvas",
+     "description": "ADR-088: a logo image of a graphics.thumbnail, its box on the canvas",
      "type": "object",
      "additionalProperties": false,
      "required": [

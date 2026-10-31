@@ -26,7 +26,7 @@ Everything here is vocabulary and arithmetic, no execution:
   from policy `thumbnail.at_ratio` × duration, recorded), `thumbnail.text` (a caption rendered on the frame), `thumbnail.font_size`,
   `thumbnail.position` (center | top | bottom), `thumbnail.format`. Without text the frame is extracted as is (thumbnail/extract_frame);
   with text a ThumbnailDocument is rendered (thumbnail/render). The canvas is the subject's picture size after its edits.
-  The full ThumbnailDocument (ADR-085, thumbnail-skill roadmap step 4): `thumbnail.color` (the caption's #RRGGBB), up to
+  The full ThumbnailDocument (ADR-088, thumbnail-skill roadmap step 4): `thumbnail.color` (the caption's #RRGGBB), up to
   THUMBNAIL_EXTRA_TEXTS more text elements `thumbnail.text2` .. (each with `.position` / `.font_size` / `.color`), and a logo
   `thumbnail.logo=<png|jpg>` (+ `.logo.position` top-left | top-right | bottom-left | bottom-right, `.logo.width` px, `.logo.margin`
   px, `.logo.opacity` 0..1) placed at its own aspect ratio (read from the file's header, never guessed) in a corner of the canvas.
@@ -137,7 +137,7 @@ THUMBNAIL_FRAME_SKILL = "thumbnail_frame"
 THUMBNAIL_RENDER_SKILL = "thumbnail_render"
 THUMBNAIL_FORMATS = ("png", "jpeg")
 THUMBNAIL_POSITIONS = ("center", "top", "bottom")
-THUMBNAIL_EXTRA_TEXTS = 3   # ADR-085: thumbnail.text2 .. thumbnail.text4, beside the caption (thumbnail.text)
+THUMBNAIL_EXTRA_TEXTS = 3   # ADR-088: thumbnail.text2 .. thumbnail.text4, beside the caption (thumbnail.text)
 THUMBNAIL_TEXT_KEYS = tuple(f"thumbnail.text{n}" for n in range(2, 2 + THUMBNAIL_EXTRA_TEXTS))
 THUMBNAIL_TEXT_FIELDS = ("position", "font_size", "color")
 THUMBNAIL_LOGO_POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
@@ -403,7 +403,7 @@ def parse_thumbnail_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
         out["font_size"] = int(_number(vals["thumbnail.font_size"], "thumbnail.font_size", THUMBNAIL_FONT_SIZE_RANGE[0], THUMBNAIL_FONT_SIZE_RANGE[1]))
     if "thumbnail.position" in vals:
         out["position"] = _token(vals["thumbnail.position"], "thumbnail.position", re.compile("^(" + "|".join(THUMBNAIL_POSITIONS) + ")$"), "one of " + ", ".join(THUMBNAIL_POSITIONS))
-    # ADR-085: the full ThumbnailDocument -- the caption's colour, more text elements, a logo image
+    # ADR-088: the full ThumbnailDocument -- the caption's colour, more text elements, a logo image
     pos_re = re.compile("^(" + "|".join(THUMBNAIL_POSITIONS) + ")$")
     if "thumbnail.color" in vals:
         if out["text"] is None:
@@ -488,7 +488,7 @@ def image_size(path: str) -> Optional[Tuple[int, int]]:
 
 
 def thumbnail_layout(width: int, height: int, logo: Optional[Dict[str, Any]], texts: List[Dict[str, Any]], font_size: int, position: str) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
-    """ADR-085: the logo's box on the canvas (its own aspect ratio, default width a sixth of the canvas, margin 24 px, top-right) and each extra
+    """ADR-088: the logo's box on the canvas (its own aspect ratio, default width a sixth of the canvas, margin 24 px, top-right) and each extra
     text with its defaults (the caption's font size and position when not given, white). Pure arithmetic on what the plan already knows."""
     box = None
     if logo:
@@ -638,7 +638,7 @@ def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_id
 
 def ir_thumbnail(subject: str, params: Dict[str, Any], decision_ids: List[str], input_id: str, output: str) -> Dict[str, Any]:
     rec: Dict[str, Any] = {"type": "graphics.thumbnail", "asset": subject, "input": input_id, "output": output}
-    for k in ("timestamp", "format", "width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):   # ADR-085: texts / logo
+    for k in ("timestamp", "format", "width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):   # ADR-088: texts / logo
         if params.get(k) not in (None, []):
             rec[k] = params[k]
     rec["decision_ids"] = list(decision_ids)

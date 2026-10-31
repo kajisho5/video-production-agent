@@ -37,7 +37,7 @@ Speech enhancement through voice-enhance-skill (ADR-073) is opt-in on the audio 
 
 An overlay image is prepared by imagemagick-skill (ADR-077) only when the user gives its size: `--set edit.overlay=logo.png edit.overlay.prepare.width=320 edit.overlay.prepare.height=180` (both; `edit.overlay.prepare.mode=fit|fill|exact`, default fit), `edit.overlay.prepare.pad=none|<colour>` (+ `.gravity`) to pad a fit to exactly that canvas, `edit.overlay.prepare.strip=true` to remove GPS / EXIF first. Never choose a size or a colour yourself; ask. The user's file is never written; without imagemagick-skill the step is handed off (`npx imagemagick-skill`).
 
-A thumbnail can carry more than one text and a logo (ADR-085): `thumbnail.color`, `thumbnail.text2` .. `thumbnail.text4` (each with `.position` / `.font_size` / `.color`) and `thumbnail.logo=<png|jpg>` (+ `.logo.position` top-left | top-right | bottom-left | bottom-right, `.logo.width`, `.logo.margin`, `.logo.opacity`); they are rendered as one thumbnail-skill ThumbnailDocument.
+A thumbnail can carry more than one text and a logo (ADR-088): `thumbnail.color`, `thumbnail.text2` .. `thumbnail.text4` (each with `.position` / `.font_size` / `.color`) and `thumbnail.logo=<png|jpg>` (+ `.logo.position` top-left | top-right | bottom-left | bottom-right, `.logo.width`, `.logo.margin`, `.logo.opacity`); they are rendered as one thumbnail-skill ThumbnailDocument.
 
 ## Offloading a camera card (ingest-skill)
 

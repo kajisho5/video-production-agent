@@ -231,14 +231,14 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             ratio, tsettings = max(0.0, min(1.0, float(r_["value"]))), tsettings + [r_]
         font_size = th["font_size"]
         position = th["position"]
-        if th["text"] is not None or th.get("texts"):   # ADR-085: the extra texts take the caption's size / position when they do not name their own
+        if th["text"] is not None or th.get("texts"):   # ADR-088: the extra texts take the caption's size / position when they do not name their own
             if font_size is None:
                 f_ = resolve_setting(rules, "thumbnail.font_size", 48)
                 font_size, tsettings = int(f_["value"]), tsettings + [f_]
             if position is None:
                 p_ = resolve_setting(rules, "thumbnail.position", "bottom")
                 position, tsettings = (str(p_["value"]) if str(p_["value"]) in ("center", "top", "bottom") else "bottom"), tsettings + [p_]
-        full = bool(th.get("texts") or th.get("logo"))   # ADR-085: more texts and / or a logo → the full ThumbnailDocument
+        full = bool(th.get("texts") or th.get("logo"))   # ADR-088: more texts and / or a logo → the full ThumbnailDocument
         skill = THUMBNAIL_RENDER_SKILL if (th["text"] is not None or full) else THUMBNAIL_FRAME_SKILL
         for subject, sources in subjects:
             if not video_ok(subject, sources, "thumbnail.render", req):

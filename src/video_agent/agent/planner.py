@@ -209,7 +209,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 if d.params.get("text") is not None:
                     params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48),
                                    "color": d.params.get("color", "#FFFFFF"), "position": d.params.get("position", "bottom")})
-                if size and (d.params.get("texts") or d.params.get("logo")):   # ADR-085: the full document, laid out on the subject's own canvas
+                if size and (d.params.get("texts") or d.params.get("logo")):   # ADR-088: the full document, laid out on the subject's own canvas
                     logo, texts = thumbnail_layout(size[0], size[1], d.params.get("logo"), list(d.params.get("texts") or []), int(d.params.get("font_size") or 48),
                                                    d.params.get("position") or "bottom")
                     params.update({"texts": texts, "logo": logo})

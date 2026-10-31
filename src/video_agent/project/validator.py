@@ -555,7 +555,7 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             if (op.get("text") is not None or op.get("texts") or op.get("logo")) and not (op.get("width") and op.get("height")):
                 errs.append(f"graphics.thumbnail on {subj}: a caption / text / logo needs the canvas size (width / height)")
             lg = op.get("logo")
-            if isinstance(lg, dict):   # ADR-085: the logo image is the user's file, inside the allowed input roots, and its box touches the canvas
+            if isinstance(lg, dict):   # ADR-088: the logo image is the user's file, inside the allowed input roots, and its box touches the canvas
                 img = str(lg.get("image") or "")
                 if any(part == ".." for part in img.replace("\\", "/").split("/")) or Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg"):
                     errs.append(f"graphics.thumbnail on {subj}: the logo must be a PNG / JPEG path without '..'")

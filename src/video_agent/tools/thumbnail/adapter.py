@@ -63,7 +63,7 @@ ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["thumbnail", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
 COMMON_ARGS = ("input", "output", "format", "timestamp", "jpeg_quality")
-RENDER_ARGS = ("width", "height", "background", "text", "font_id", "font_size", "color", "position", "texts", "logo")   # ADR-085: more texts, a logo
+RENDER_ARGS = ("width", "height", "background", "text", "font_id", "font_size", "color", "position", "texts", "logo")   # ADR-088: more texts, a logo
 MAX_TEXTS = 8                  # an agent-side bound on extra text elements (the agent's vocabulary asks for at most 3)
 LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg")
 POSITIONS = ("center", "top", "bottom")
@@ -350,7 +350,7 @@ class ThumbnailAdapter(ToolAdapter):
                 if k in args:
                     raise ToolError(f"thumbnail: {k} needs a text")
         assets: List[Dict[str, Any]] = [{"asset_id": "frame", "kind": "video_frame", "path": str(Path(src).resolve()), "timestamp": ts}]
-        # ADR-085: the full ThumbnailDocument -- further text elements (each its own position / size / colour) and a logo image asset
+        # ADR-088: the full ThumbnailDocument -- further text elements (each its own position / size / colour) and a logo image asset
         texts = args.get("texts") or []
         if not isinstance(texts, list) or len(texts) > MAX_TEXTS:
             raise ToolError(f"thumbnail: texts must be a list of at most {MAX_TEXTS} text elements")
