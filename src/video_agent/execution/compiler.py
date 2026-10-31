@@ -207,12 +207,12 @@ def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: s
 
 def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
     """IR graphics.thumbnail → thumbnail/extract_frame (a plain frame) or thumbnail/render (frame + caption) arguments."""
-    want = THUMBNAIL_RENDER_TOOL if op.get("text") is not None else THUMBNAIL_FRAME_TOOL
+    want = THUMBNAIL_RENDER_TOOL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_TOOL   # ADR-085: texts / logo
     if tool != want:
         raise CompileError(f"graphics.thumbnail cannot be executed by {tool}; this operation needs {want}")
     args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"], "output": out_id}
     if want == THUMBNAIL_RENDER_TOOL:
-        for k in ("width", "height", "text", "font_id", "font_size", "color", "position"):
+        for k in ("width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):
             if op.get(k) is not None:
                 args[k] = op[k]
     return args
@@ -477,7 +477,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             out_id = op.get("output") or f"{subject}_thumbnail"
             ext = "png" if op["format"] == "png" else "jpg"
             paths[out_id] = str(job / "artifacts" / f"{st['stem']}_thumbnail.{ext}")
-            skill = THUMBNAIL_RENDER_SKILL if op.get("text") is not None else THUMBNAIL_FRAME_SKILL
+            skill = THUMBNAIL_RENDER_SKILL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_SKILL
             tool = tool_for(skill, subject)
             src = st.get("picture") or st["current"]
             add(tool, lower_thumbnail(tool, op, src, out_id), [src], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)

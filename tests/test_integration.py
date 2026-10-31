@@ -3168,3 +3168,39 @@ class ImagePrepareRealTests(unittest.TestCase):
         dur = float(json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", res["video-editing/overlay"]["output"]],
                                               capture_output=True, text=True, check=True).stdout)["format"]["duration"])
         self.assertGreater(dur, 1.0)
+
+
+class ThumbnailDocumentRealTests(unittest.TestCase):
+    """ADR-085 on the real thumbnail-skill (Pillow) and the real ffmpeg-skill: a plan with a caption, a second text and a logo renders one
+    ThumbnailDocument; the PNG has the picture's size and the logo's pixels sit in the box the plan computed from the logo's own header."""
+
+    def setUp(self):
+        from video_agent.tools.thumbnail import locate_thumbnail
+        if not locate_thumbnail() or not locate_ffmpeg_skill():
+            self.skipTest("needs thumbnail-skill (VIDEO_AGENT_THUMBNAIL_DIR) and ffmpeg-skill; CI clones both")
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("needs Pillow (thumbnail-skill renders with it; CI installs it)")
+
+    def test_logo_and_texts_rendered_by_the_real_skill(self):
+        from PIL import Image
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_thumb_"))
+        src = Path(tmp) / "src"; src.mkdir()
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:size=640x360:rate=25:duration=3", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=3", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video], check=True)
+        logo = str(src / "logo.png")
+        Image.new("RGBA", (200, 100), (255, 0, 0, 255)).save(logo)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "Main", "thumbnail.text2": "Second line",
+                                                            "thumbnail.text2.position": "top", "thumbnail.logo": logo, "thumbnail.logo.position": "bottom-left",
+                                                            "thumbnail.logo.width": 100, "thumbnail.logo.margin": 10})
+        path = str(Path(tmp) / "p.project.json"); save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        th = next(a for a in out["artifacts"] if a["type"] == "THUMBNAIL")
+        img = Image.open(th["path"]).convert("RGB")
+        self.assertEqual(img.size, (640, 360))
+        self.assertEqual(img.getpixel((10 + 50, 360 - 10 - 25)), (255, 0, 0), "the logo fills its 100x50 box at the bottom-left, 10 px in")
+        self.assertNotEqual(img.getpixel((640 - 60, 360 - 35)), (255, 0, 0))

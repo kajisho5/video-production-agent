@@ -15,7 +15,7 @@ from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPE
                       kept_duration)
 from .image_insert import still_frame
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
-                        ir_thumbnail, picture_size)
+                        ir_thumbnail, picture_size, thumbnail_layout)
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
@@ -205,8 +205,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             params: Dict[str, Any] = {"timestamp": min(float(at), max(0.0, float(scope["end"]) - 0.001)), "format": d.params["format"]}
             skill = str(d.params.get("skill") or THUMBNAIL_FRAME_SKILL)
             if skill == THUMBNAIL_RENDER_SKILL:
-                params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48), "color": d.params.get("color", "#FFFFFF"),
-                               "position": d.params.get("position", "bottom"), "width": size[0] if size else None, "height": size[1] if size else None})
+                params.update({"width": size[0] if size else None, "height": size[1] if size else None})
+                if d.params.get("text") is not None:
+                    params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48),
+                                   "color": d.params.get("color", "#FFFFFF"), "position": d.params.get("position", "bottom")})
+                if size and (d.params.get("texts") or d.params.get("logo")):   # ADR-085: the full document, laid out on the subject's own canvas
+                    logo, texts = thumbnail_layout(size[0], size[1], d.params.get("logo"), list(d.params.get("texts") or []), int(d.params.get("font_size") or 48),
+                                                   d.params.get("position") or "bottom")
+                    params.update({"texts": texts, "logo": logo})
             out_id = f"{subject}_thumbnail"
             src = picture_of.get(subject) or current_of[subject]
             graphics_ops.append(ir_thumbnail(subject, params, [d.id], src, out_id))

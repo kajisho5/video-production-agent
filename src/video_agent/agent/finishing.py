@@ -26,6 +26,10 @@ Everything here is vocabulary and arithmetic, no execution:
   from policy `thumbnail.at_ratio` × duration, recorded), `thumbnail.text` (a caption rendered on the frame), `thumbnail.font_size`,
   `thumbnail.position` (center | top | bottom), `thumbnail.format`. Without text the frame is extracted as is (thumbnail/extract_frame);
   with text a ThumbnailDocument is rendered (thumbnail/render). The canvas is the subject's picture size after its edits.
+  The full ThumbnailDocument (ADR-085, thumbnail-skill roadmap step 4): `thumbnail.color` (the caption's #RRGGBB), up to
+  THUMBNAIL_EXTRA_TEXTS more text elements `thumbnail.text2` .. (each with `.position` / `.font_size` / `.color`), and a logo
+  `thumbnail.logo=<png|jpg>` (+ `.logo.position` top-left | top-right | bottom-left | bottom-right, `.logo.width` px, `.logo.margin`
+  px, `.logo.opacity` 0..1) placed at its own aspect ratio (read from the file's header, never guessed) in a corner of the canvas.
 
 Fixed order on a subject after the editing operations: color → graphics → captions.burn → loudness → export → check → thumbnail → qc.
 """
@@ -133,7 +137,15 @@ THUMBNAIL_FRAME_SKILL = "thumbnail_frame"
 THUMBNAIL_RENDER_SKILL = "thumbnail_render"
 THUMBNAIL_FORMATS = ("png", "jpeg")
 THUMBNAIL_POSITIONS = ("center", "top", "bottom")
-THUMBNAIL_KEYS = ("thumbnail", "thumbnail.at", "thumbnail.text", "thumbnail.format", "thumbnail.font_size", "thumbnail.position")
+THUMBNAIL_EXTRA_TEXTS = 3   # ADR-085: thumbnail.text2 .. thumbnail.text4, beside the caption (thumbnail.text)
+THUMBNAIL_TEXT_KEYS = tuple(f"thumbnail.text{n}" for n in range(2, 2 + THUMBNAIL_EXTRA_TEXTS))
+THUMBNAIL_TEXT_FIELDS = ("position", "font_size", "color")
+THUMBNAIL_LOGO_POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
+THUMBNAIL_LOGO_FIELDS = ("position", "width", "margin", "opacity")
+THUMBNAIL_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+THUMBNAIL_KEYS = ("thumbnail", "thumbnail.at", "thumbnail.text", "thumbnail.format", "thumbnail.font_size", "thumbnail.position", "thumbnail.color") \
+    + tuple(k for t in THUMBNAIL_TEXT_KEYS for k in (t,) + tuple(f"{t}.{f}" for f in THUMBNAIL_TEXT_FIELDS)) \
+    + ("thumbnail.logo",) + tuple(f"thumbnail.logo.{f}" for f in THUMBNAIL_LOGO_FIELDS)
 THUMBNAIL_FONT_SIZE_RANGE = (6, 400)
 _TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -361,7 +373,7 @@ def parse_thumbnail_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
     """→ {"enabled", "format" (None = policy), "at" (None = policy ratio), "text", "font_size", "position", "requirements"}."""
     main = m.get("thumbnail")
     refinements = [m[k] for k in THUMBNAIL_KEYS[1:] if k in m and m[k].provenance != "DEFAULT"]
-    out: Dict[str, Any] = {"enabled": False, "format": None, "at": None, "text": None, "font_size": None, "position": None, "requirements": []}
+    out: Dict[str, Any] = {"enabled": False, "format": None, "at": None, "text": None, "font_size": None, "position": None, "color": None, "texts": [], "logo": None, "requirements": []}
     if main is None or main.provenance == "DEFAULT":
         if refinements:
             raise EditRequirementError(f"{refinements[0].key} is set but thumbnail is not: refusing an ambiguous request")
@@ -391,7 +403,105 @@ def parse_thumbnail_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
         out["font_size"] = int(_number(vals["thumbnail.font_size"], "thumbnail.font_size", THUMBNAIL_FONT_SIZE_RANGE[0], THUMBNAIL_FONT_SIZE_RANGE[1]))
     if "thumbnail.position" in vals:
         out["position"] = _token(vals["thumbnail.position"], "thumbnail.position", re.compile("^(" + "|".join(THUMBNAIL_POSITIONS) + ")$"), "one of " + ", ".join(THUMBNAIL_POSITIONS))
+    # ADR-085: the full ThumbnailDocument -- the caption's colour, more text elements, a logo image
+    pos_re = re.compile("^(" + "|".join(THUMBNAIL_POSITIONS) + ")$")
+    if "thumbnail.color" in vals:
+        if out["text"] is None:
+            raise EditRequirementError("thumbnail.color is the caption's colour: it needs thumbnail.text")
+        out["color"] = _token(vals["thumbnail.color"], "thumbnail.color", THUMBNAIL_COLOR_RE, "#RRGGBB")
+    texts: List[Dict[str, Any]] = []
+    for t in THUMBNAIL_TEXT_KEYS:
+        given = [f for f in THUMBNAIL_TEXT_FIELDS if f"{t}.{f}" in vals]
+        if t not in vals:
+            if given:
+                raise EditRequirementError(f"{t}.{given[0]} is set but {t} is not: refusing an ambiguous request")
+            continue
+        el: Dict[str, Any] = {"text": _text(vals[t], t, 2000)}
+        if "position" in given:
+            el["position"] = _token(vals[f"{t}.position"], f"{t}.position", pos_re, "one of " + ", ".join(THUMBNAIL_POSITIONS))
+        if "font_size" in given:
+            el["font_size"] = int(_number(vals[f"{t}.font_size"], f"{t}.font_size", THUMBNAIL_FONT_SIZE_RANGE[0], THUMBNAIL_FONT_SIZE_RANGE[1]))
+        if "color" in given:
+            el["color"] = _token(vals[f"{t}.color"], f"{t}.color", THUMBNAIL_COLOR_RE, "#RRGGBB")
+        texts.append(el)
+    out["texts"] = texts
+    lg = [f for f in THUMBNAIL_LOGO_FIELDS if f"thumbnail.logo.{f}" in vals]
+    if "thumbnail.logo" not in vals:
+        if lg:
+            raise EditRequirementError(f"thumbnail.logo.{lg[0]} is set but thumbnail.logo is not: refusing an ambiguous request")
+    else:
+        path = vals["thumbnail.logo"]
+        if not isinstance(path, str) or not path.strip() or any(part == ".." for part in path.replace("\\", "/").split("/")):
+            raise EditRequirementError("thumbnail.logo must be a path to a PNG / JPEG file (no '..')")
+        if os.path.splitext(path)[1].lower() not in IMAGE_EXTENSIONS:
+            raise EditRequirementError(f"thumbnail.logo must be a PNG / JPEG file: {os.path.basename(path)}")
+        size = image_size(path)
+        if size is None:
+            raise EditRequirementError(f"thumbnail.logo: {os.path.basename(path)} is not a readable PNG / JPEG (its size is read from the file, never guessed)")
+        logo: Dict[str, Any] = {"image": str(Path(path).resolve()), "natural": list(size)}
+        if "position" in lg:
+            logo["position"] = _token(vals["thumbnail.logo.position"], "thumbnail.logo.position", re.compile("^(" + "|".join(THUMBNAIL_LOGO_POSITIONS) + ")$"),
+                                      "one of " + ", ".join(THUMBNAIL_LOGO_POSITIONS))
+        if "width" in lg:
+            logo["width"] = int(_number(vals["thumbnail.logo.width"], "thumbnail.logo.width", 8, 7680))
+        if "margin" in lg:
+            logo["margin"] = int(_number(vals["thumbnail.logo.margin"], "thumbnail.logo.margin", 0, 2000))
+        if "opacity" in lg:
+            logo["opacity"] = float(_number(vals["thumbnail.logo.opacity"], "thumbnail.logo.opacity", 0.0, 1.0))
+        out["logo"] = logo
     return out
+
+
+def image_size(path: str) -> Optional[Tuple[int, int]]:
+    """(width, height) of a PNG (IHDR) or baseline / progressive JPEG (the first SOFn) from the file's own header; None when unreadable."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(26)
+            if head.startswith(b"\x89PNG\r\n\x1a\n") and head[12:16] == b"IHDR":
+                w, h = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+                return (w, h) if w > 0 and h > 0 else None
+            if not head.startswith(b"\xff\xd8"):
+                return None
+            fh.seek(2)
+            while True:
+                b = fh.read(1)
+                while b and b != b"\xff":
+                    b = fh.read(1)
+                while b == b"\xff":
+                    b = fh.read(1)
+                if not b:
+                    return None
+                marker = b[0]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    continue
+                seg = fh.read(2)
+                if len(seg) < 2:
+                    return None
+                n = int.from_bytes(seg, "big")
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    d = fh.read(5)
+                    h, w = int.from_bytes(d[1:3], "big"), int.from_bytes(d[3:5], "big")
+                    return (w, h) if w > 0 and h > 0 else None
+                fh.seek(n - 2, 1)
+    except OSError:
+        return None
+
+
+def thumbnail_layout(width: int, height: int, logo: Optional[Dict[str, Any]], texts: List[Dict[str, Any]], font_size: int, position: str) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """ADR-085: the logo's box on the canvas (its own aspect ratio, default width a sixth of the canvas, margin 24 px, top-right) and each extra
+    text with its defaults (the caption's font size and position when not given, white). Pure arithmetic on what the plan already knows."""
+    box = None
+    if logo:
+        nw, nh = logo["natural"]
+        w = int(logo.get("width") or max(8, round(width / 6)))
+        h = max(1, round(w * nh / nw))
+        m = int(logo.get("margin") if logo.get("margin") is not None else 24)
+        pos = logo.get("position") or "top-right"
+        x = m if pos.endswith("left") else width - w - m
+        y = m if pos.startswith("top") else height - h - m
+        box = {"image": logo["image"], "x": int(x), "y": int(y), "width": w, "height": h, "opacity": float(logo.get("opacity") if logo.get("opacity") is not None else 1.0)}
+    els = [{"text": t["text"], "font_size": int(t.get("font_size") or font_size), "color": t.get("color") or "#FFFFFF", "position": t.get("position") or position} for t in texts]
+    return box, els
 
 
 def qc_requested(m: Dict[str, Requirement]) -> Optional[Requirement]:
@@ -528,8 +638,8 @@ def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_id
 
 def ir_thumbnail(subject: str, params: Dict[str, Any], decision_ids: List[str], input_id: str, output: str) -> Dict[str, Any]:
     rec: Dict[str, Any] = {"type": "graphics.thumbnail", "asset": subject, "input": input_id, "output": output}
-    for k in ("timestamp", "format", "width", "height", "text", "font_id", "font_size", "color", "position"):
-        if params.get(k) is not None:
+    for k in ("timestamp", "format", "width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):   # ADR-085: texts / logo
+        if params.get(k) not in (None, []):
             rec[k] = params[k]
     rec["decision_ids"] = list(decision_ids)
     return rec

@@ -63,7 +63,9 @@ ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["thumbnail", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
 COMMON_ARGS = ("input", "output", "format", "timestamp", "jpeg_quality")
-RENDER_ARGS = ("width", "height", "background", "text", "font_id", "font_size", "color", "position")
+RENDER_ARGS = ("width", "height", "background", "text", "font_id", "font_size", "color", "position", "texts", "logo")   # ADR-085: more texts, a logo
+MAX_TEXTS = 8                  # an agent-side bound on extra text elements (the agent's vocabulary asks for at most 3)
+LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg")
 POSITIONS = ("center", "top", "bottom")
 DEFAULTS = {"font_id": "sans-bold", "font_size": 48, "color": "#FFFFFF", "position": "bottom", "background": "#000000"}
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -343,11 +345,49 @@ class ThumbnailAdapter(ToolAdapter):
             anchor = {"center": ({"x": w / 2, "y": h / 2}, "middle"), "top": ({"x": w / 2, "y": size}, "top"), "bottom": ({"x": w / 2, "y": h - size}, "bottom")}[position]
             elements.append({"element_id": "caption", "type": "text", "z_index": 1,
                              "text": {"text": text, "font_id": font_id, "font_size": size, "color": color, "position": anchor[0], "align": {"horizontal": "center", "vertical": anchor[1]}}})
-        else:
+        elif not (args.get("texts") or args.get("logo")):
             for k in ("font_id", "font_size", "color", "position"):
                 if k in args:
                     raise ToolError(f"thumbnail: {k} needs a text")
-        return {"document_id": pid, "canvas": canvas, "assets": [{"asset_id": "frame", "kind": "video_frame", "path": str(Path(src).resolve()), "timestamp": ts}], "elements": elements}
+        assets: List[Dict[str, Any]] = [{"asset_id": "frame", "kind": "video_frame", "path": str(Path(src).resolve()), "timestamp": ts}]
+        # ADR-085: the full ThumbnailDocument -- further text elements (each its own position / size / colour) and a logo image asset
+        texts = args.get("texts") or []
+        if not isinstance(texts, list) or len(texts) > MAX_TEXTS:
+            raise ToolError(f"thumbnail: texts must be a list of at most {MAX_TEXTS} text elements")
+        for n, t in enumerate(texts, start=2):
+            if not isinstance(t, dict) or sorted(t) != sorted(k for k in ("text", "font_size", "color", "position") if k in t) or "text" not in t:
+                raise ToolError("thumbnail: each of texts is {text, font_size?, color?, position?}")
+            text = t["text"]
+            if not isinstance(text, str) or not text or len(text) > self.text_max or any(ord(c) < 32 and c != "\n" for c in text):
+                raise ToolError(f"thumbnail: text {n} must be a non-empty string of at most {self.text_max} characters (explicit newlines only)")
+            size = self._number(f"font_size of text {n}", t.get("font_size", DEFAULTS["font_size"]), *self.font_size_range, integer=True)
+            position = t.get("position", DEFAULTS["position"])
+            if position not in POSITIONS:
+                raise ToolError(f"thumbnail: position {position!r} of text {n} is not one of {list(POSITIONS)}")
+            anchor = {"center": ({"x": w / 2, "y": h / 2}, "middle"), "top": ({"x": w / 2, "y": size}, "top"), "bottom": ({"x": w / 2, "y": h - size}, "bottom")}[position]
+            elements.append({"element_id": f"text{n}", "type": "text", "z_index": n,
+                             "text": {"text": text, "font_id": DEFAULTS["font_id"], "font_size": size, "color": self._color(f"color of text {n}", t.get("color", DEFAULTS["color"])),
+                                      "position": anchor[0], "align": {"horizontal": "center", "vertical": anchor[1]}}})
+        logo = args.get("logo")
+        if logo is not None:
+            if not isinstance(logo, dict) or set(logo) - {"image", "x", "y", "width", "height", "opacity"} or not {"image", "x", "y", "width", "height"} <= set(logo):
+                raise ToolError("thumbnail: logo is {image, x, y, width, height, opacity?}")
+            img = logo["image"]
+            if not isinstance(img, str) or Path(img).suffix.lower() not in LOGO_EXTENSIONS or not os.path.isfile(img):
+                raise ToolError(f"thumbnail: logo image must be an existing PNG / JPEG file: {Path(str(img)).name}")
+            if self.path_policy is not None:
+                self.path_policy.check_input(img)
+            elif self.allowed_inputs and not any(self._under(img, r) for r in self.allowed_inputs + ([self.workspace] if self.workspace else [])):
+                raise ToolError(f"thumbnail: logo image outside the allowed roots: {img}")
+            lw = self._number("logo width", logo["width"], 1, 7680, integer=True)
+            lh = self._number("logo height", logo["height"], 1, 7680, integer=True)
+            lx = self._number("logo x", logo["x"], -7680, 7680, integer=True)
+            ly = self._number("logo y", logo["y"], -7680, 7680, integer=True)
+            assets.append({"asset_id": "logo", "kind": "image", "path": str(Path(img).resolve())})
+            elements.append({"element_id": "logo", "type": "image", "z_index": 100,
+                             "image": {"asset_id": "logo", "position": {"x": lx, "y": ly}, "size": {"width": lw, "height": lh}, "fit": "contain",
+                                       "opacity": self._number("logo opacity", logo.get("opacity", 1.0), 0.0, 1.0)}})
+        return {"document_id": pid, "canvas": canvas, "assets": assets, "elements": elements}
 
     def build_request(self, tool: str, args: Dict[str, Any], paths: Dict[str, str], op_id: str = "op", timeout: Optional[float] = None) -> Dict[str, Any]:
         if tool not in self.tools:
