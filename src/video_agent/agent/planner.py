@@ -857,7 +857,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         skill = d.params["skill"]
         order += 1
         steps.append(ProductionStep(id=f"step_job_{skill}", order=order, skill=skill, tool=tool_for(skill), inputs=[a.id for a in analysis.assets],
-                                    params={}, outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+                                    params=dict(d.params.get("args") or {}), outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
         summary.append(f"Hand off {skill} ({d.subject}): no adapter here; see the plan's handoff")
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))

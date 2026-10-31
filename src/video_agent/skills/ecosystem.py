@@ -101,11 +101,14 @@ _COMPONENTS: Tuple[Component, ...] = (
     Component("imagemagick-skill", "imagemagick-skill", "utility", "checkout", "active", plugin=True, owns=("静止画編集",), package_install="npx imagemagick-skill",
               note="the agent prepares edit.overlay images with its resize / pad / strip (ADR-077); `npx imagemagick-skill` copies the checkout to "
                    "~/.claude/skills/imagemagick-skill, where the agent finds it (or VIDEO_AGENT_IMAGEMAGICK_DIR); ImageMagick itself is the user's install"),
-    Component("blender", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill"),
+    # ADR-080: package ids are the Skills' own skill_id (the prefix of their provides[].tool_id), as for imagemagick-skill (ADR-077)
+    Component("blender-skill", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill",
+              note="render_3d is handed off with blender-skill/render named from its pinned contract (ADR-080); Blender 4.2+ itself is the user's install"),
     Component("remotion-ffmpeg", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
               package_install="npx remotion-ffmpeg-skill"),
-    Component("hyperframes", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
-              package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci"),
+    Component("hyperframes-skill", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
+              package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci",
+              note="html_scene_render is handed off with hyperframes-skill/render named from its pinned contract (ADR-080); needs Node.js 22+ and a headless Chromium"),
 )
 
 COMPONENTS: Dict[str, Component] = {c.package: c for c in _COMPONENTS}
