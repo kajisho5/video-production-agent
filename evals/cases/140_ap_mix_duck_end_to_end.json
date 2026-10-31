@@ -1,0 +1,60 @@
+{
+ "name": "ap_mix_duck_end_to_end",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   },
+   {
+    "channels": 2,
+    "duration": 20.0
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.mix": true,
+  "audio.mix.levels": [
+   0,
+   -6
+  ],
+  "audio.mix.duck.input": 1,
+  "audio.mix.duck.amount_db": 12,
+  "audio.mix.duck.release_ms": 400
+ },
+ "expect": {
+  "blocked": false,
+  "plan_status": "APPROVED",
+  "ir_ops": [
+   "audio.mix"
+  ],
+  "steps": [
+   "audio_mix"
+  ],
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "operations": [
+    "MIX"
+   ],
+   "qa_status": "PASS",
+   "duration": 16.0
+  },
+  "note": "the bed (input 1) is ducked 12 dB under input 0 by the Skill's MIX.duck; the mix lasts as long as input 0"
+ }
+}

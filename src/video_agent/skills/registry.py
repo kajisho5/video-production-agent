@@ -315,6 +315,9 @@ def default_registry() -> SkillRegistry:
         # ADR-068: audio-production 0.4.3's speech clean-up preset (ffmpeg-skill/audio --voice <level>)
         ("audio_voice_cleanup", "VOICE_CLEANUP", "Speech clean-up preset (light | medium | strong: highpass, de-esser, FFT denoise, compression, limiter)", {"asset": "audio", "level": "light|medium|strong"}, "MEDIUM"),
         ("audio_dynamics", "DYNAMICS", "Gate → compressor → limiter (typed stage parameters)", {"asset": "audio", "stages": "object"}, "MEDIUM"),
+        # ADR-072: audio-production 0.4.6's filler removal at caller-supplied word timings (the transcript's word timestamps)
+        ("audio_filler_remove", "FILLER_REMOVE", "Remove filler words at the transcript's word timings, matched against a chosen lexicon (ja / en presets, own words)",
+         {"asset": "audio", "words": "transcript word timings", "lexicon": "object"}, "MEDIUM"),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production", f"audio-production:{typ}"],
                              risk, True, "CONFIRM", ["audio-production/run"]))

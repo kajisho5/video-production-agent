@@ -27,21 +27,32 @@ Vocabulary and arithmetic only, no execution:
   `audio.noise_reduction.strength_db` (required by the contract; 20..60, the contract's range since audio-production 0.4.5) + `audio.noise_reduction.mode` (fft), and DYNAMICS'
   three stages `audio.dynamics.<gate|compressor|limiter>` (true: the stage with the Skill's own defaults) + `.<field>` (each stage
   field of the contract, e.g. `audio.dynamics.compressor.ratio`). The mix keeps every input on its own timeline from 0 s, so
-  no silence is cut from a mixed input. Ducking: the pinned MIX has none (no sidechain parameter), so none is planned.
+  no silence is cut from a mixed input. Ducking (ADR-072, audio-production 0.4.6 MIX.duck): only on request, with the bed and the
+  amount named explicitly — `audio.mix.duck.input` (the index of the bed among the mixed inputs, 1..; input 0 is the key it ducks
+  under) + `audio.mix.duck.amount_db` (both required, no default) + optional `.threshold_db` / `.attack_ms` / `.release_ms` (the
+  contract's names and ranges; omitted = the engine's own defaults).
+- **Filler removal** (ADR-072, audio-production 0.4.6 FILLER_REMOVE): `audio.filler_remove=ja|en|ja,en` (the Skill's lexicon presets) or
+  `true` with `audio.filler_remove.words` (the user's own words; also adds to the presets) + `.keep` (words never removed) + `.pad` /
+  `.merge_gap` / `.declick_ms`. No default lexicon. The word timings are the transcript's word timestamps (transcription-skill,
+  requested with word timestamps when the key is set), carried through this plan's silence cut onto the cut audio's timeline; a
+  segment without word timestamps is a BLOCK (never a guessed timing). It runs per input right after the cut, before the programme
+  (concat) and the chain; never on a mixed input (it would move that input against the others). What is removed is matched by the
+  Skill, so planned durations after it are upper bounds and QA checks the delivered length against what the Skill reports it removed.
 - **Voice clean-up** (ADR-068, audio-production-skill 0.4.3): `audio.voice_cleanup=light|medium|strong` → VOICE_CLEANUP (the engine's
   speech chain: highpass / de-esser / FFT denoise / compression / limiter by level). light / strong need engine release 1.13+; an
   older engine runs medium only and the Skill refuses the others with TOOL_ERROR `voice_level_unsupported` (never substituted).
-- **Fixed order** after the cut: concat | mix → voice clean-up → noise reduction → gain → channels → dynamics → fade_in → fade_out → normalize
+- **Fixed order** after the cut (and the filler removal of each input): concat | mix → voice clean-up → noise reduction → gain → channels → dynamics → fade_in → fade_out → normalize
   (noise is estimated on the raw signal, dynamics act on the gained / laid-out signal, fades are not pumped by a compressor,
   loudness last so the delivered level is the normalised one).
-- **Four stages:** the Skill supports 15 operation types (0.4.3); the adapter lowers every declared type; the planner generates the
+- **Four stages:** the Skill supports 16 operation types (0.4.6); the adapter lowers every declared type; the planner generates the
   ones listed here (TRIM as a cut, CUT, NORMALIZE, GAIN, FADE_IN, FADE_OUT, MONO / STEREO / DOWNMIX, CONCAT, and since ADR-063
-  MIX, NOISE_REDUCTION, DYNAMICS, since ADR-068 VOICE_CLEANUP); SILENCE_REMOVE (the agent already subtracts margins itself) is executable through the
+  MIX, NOISE_REDUCTION, DYNAMICS, since ADR-068 VOICE_CLEANUP, since ADR-072 FILLER_REMOVE and MIX.duck); SILENCE_REMOVE (the agent already subtracts margins itself) is executable through the
   adapter but not planned.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Requirement
@@ -55,7 +66,9 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "audio.cut":      {"skill": "audio_cut",      "type": "CUT",      "params": ("remove",), "risk": "LOW"},
     "audio.concat":   {"skill": "audio_concat",   "type": "CONCAT",   "params": ("crossfade",), "risk": "MEDIUM"},
     # ADR-063: the other way to build the audio programme (2..8 inputs summed; the first sets the length), and two chain operations
-    "audio.mix":      {"skill": "audio_mix",      "type": "MIX",      "params": ("levels",), "risk": "MEDIUM"},
+    "audio.mix":      {"skill": "audio_mix",      "type": "MIX",      "params": ("levels", "duck"), "risk": "MEDIUM"},
+    # ADR-072: audio-production 0.4.6's filler removal at the transcript's word timings (per input, right after its cut)
+    "audio.filler_remove": {"skill": "audio_filler_remove", "type": "FILLER_REMOVE", "params": ("words", "lexicon", "pad", "merge_gap", "declick_ms"), "risk": "MEDIUM"},
     # ADR-068: audio-production-skill 0.4.3's speech clean-up preset (ffmpeg-skill/audio --voice <level>), one typed level
     "audio.voice_cleanup": {"skill": "audio_voice_cleanup", "type": "VOICE_CLEANUP", "params": ("level",), "risk": "MEDIUM"},
     "audio.noise_reduction": {"skill": "audio_noise_reduction", "type": "NOISE_REDUCTION", "params": ("mode", "strength_db"), "risk": "MEDIUM"},
@@ -73,6 +86,7 @@ SKILL_OF = {k: v["skill"] for k, v in OPERATIONS.items()}
 # the order the planner / compiler apply audio operations on one subject (after the per-asset cut and the concat)
 AUDIO_ORDER = ("audio.voice_cleanup", "audio.noise_reduction", "audio.gain", "audio.mono", "audio.stereo", "audio.downmix", "audio.dynamics", "audio.fade_in", "audio.fade_out", "audio.loudness")
 PROGRAMME_OPS = ("audio.concat", "audio.mix")   # the two ways to build PROGRAMME_AUDIO from 2+ inputs (mutually exclusive)
+SOURCE_OPS = ("audio.cut", "audio.filler_remove")   # per source asset, in this order, before the programme and the AUDIO_ORDER chain
 CHANNEL_SKILLS = ("audio_mono", "audio_stereo", "audio_downmix")
 # ADR-063: the pinned contract's parameters (audio-production 0.4.3, which added VOICE_CLEANUP; tests/test_satellite_params.py checks them against it)
 MAX_MIX_INPUTS = 8                                   # contract max_mix_inputs / MIX.inputs.max
@@ -91,11 +105,27 @@ DYNAMICS_STAGES: Dict[str, Dict[str, Tuple[float, float]]] = {   # DYNAMICS.<sta
 # with an older one the Skill runs only `medium` and refuses the others before any tool runs (TOOL_ERROR voice_level_unsupported).
 VOICE_CLEANUP_LEVELS = ("light", "medium", "strong")
 VOICE_CLEANUP_KEY = "audio.voice_cleanup"
-MIX_KEYS = ("audio.mix", "audio.mix.levels")
+# ADR-072: MIX.duck (audio-production 0.4.6): field -> (min, max); input and amount_db are required by the contract, the rest keep ffmpeg-skill's defaults
+DUCK_FIELDS: Dict[str, Tuple[float, float]] = {"input": (1, MAX_MIX_INPUTS - 1), "amount_db": (0.0, 60.0), "threshold_db": (-60.0, 0.0), "attack_ms": (0.01, 2000.0),
+                                               "release_ms": (0.01, 9000.0)}
+DUCK_REQUIRED = ("input", "amount_db")
+DUCK_KEYS = tuple(f"audio.mix.duck.{f}" for f in DUCK_FIELDS)
+# ADR-072: FILLER_REMOVE (audio-production 0.4.6): the contract's lexicon presets, list sizes / lengths, ranges, and the most words it takes
+FILLER_KEY = "audio.filler_remove"
+FILLER_PRESETS = ("en", "ja")
+FILLER_PAD_RANGE = (0.0, 0.5)
+FILLER_MERGE_GAP_RANGE = (0.0, 2.0)
+FILLER_DECLICK_RANGE = (0.0, 200.0)
+FILLER_LEXICON_MAX_ITEMS = 256
+FILLER_LEXICON_MAX_LENGTH = 64
+FILLER_WORD_MAX_LENGTH = 128
+FILLER_MAX_WORDS = 100000
+FILLER_KEYS = (FILLER_KEY, "audio.filler_remove.words", "audio.filler_remove.keep", "audio.filler_remove.pad", "audio.filler_remove.merge_gap", "audio.filler_remove.declick_ms")
+MIX_KEYS = ("audio.mix", "audio.mix.levels") + DUCK_KEYS
 NOISE_REDUCTION_KEYS = ("audio.noise_reduction.strength_db", "audio.noise_reduction.mode")
 DYNAMICS_KEYS = tuple(k for st, fields in DYNAMICS_STAGES.items() for k in (f"audio.dynamics.{st}",) + tuple(f"audio.dynamics.{st}.{f}" for f in fields))
 REQUIREMENT_KEYS = ("audio.production", "audio.extract", "audio.gain", "audio.fade_in", "audio.fade_out", "audio.channels", "audio.concat", "audio.concat.crossfade", "audio.sample_rate") \
-    + MIX_KEYS + (VOICE_CLEANUP_KEY,) + NOISE_REDUCTION_KEYS + DYNAMICS_KEYS
+    + MIX_KEYS + (VOICE_CLEANUP_KEY,) + NOISE_REDUCTION_KEYS + DYNAMICS_KEYS + FILLER_KEYS
 SAMPLE_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000)
 GAIN_RANGE = (-60.0, 60.0)
 FADE_RANGE = (0.001, 3600.0)
@@ -165,8 +195,8 @@ def parse_audio_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
             if not isinstance(v, str) or v.strip().lower() not in VOICE_CLEANUP_LEVELS:
                 raise EditRequirementError(f"audio.voice_cleanup must be one of {VOICE_CLEANUP_LEVELS} (the Skill's speech clean-up presets), got {v!r}")
             out["voice_cleanup"] = {"level": v.strip().lower()}
-        elif key in MIX_KEYS or key in NOISE_REDUCTION_KEYS or key in DYNAMICS_KEYS:
-            continue   # ADR-063: read together below (each operation from all of its keys)
+        elif key in MIX_KEYS or key in NOISE_REDUCTION_KEYS or key in DYNAMICS_KEYS or key in FILLER_KEYS:
+            continue   # ADR-063 / ADR-072: read together below (each operation from all of its keys)
     if "crossfade" in out and not out.get("concat"):
         raise EditRequirementError("audio.concat.crossfade needs audio.concat=true")
     vals = {k: m[k].value for k in asked}
@@ -178,6 +208,16 @@ def parse_audio_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
         out["mix_levels"] = parse_mix_levels(vals["audio.mix.levels"])
     if out.get("mix") and out.get("concat"):
         raise EditRequirementError("audio.mix and audio.concat both build the audio programme (sum vs join): refusing an ambiguous request")
+    duck = {k.rsplit(".", 1)[1]: vals[k] for k in DUCK_KEYS if k in vals}
+    if duck:
+        out["mix_duck"] = parse_duck(duck, out.get("mix", False), out.get("mix_levels"))
+        out["mix_duck_keys"] = [k for k in DUCK_KEYS if k in vals]
+    fr = {k: vals[k] for k in FILLER_KEYS if k in vals}
+    if fr:
+        out["filler_remove"] = parse_filler_remove(fr)
+        out["filler_remove_keys"] = [k for k in FILLER_KEYS if k in vals]
+        if out["filler_remove"] is None:
+            out.pop("filler_remove")
     nr = [k for k in NOISE_REDUCTION_KEYS if k in vals]
     if nr:
         if "audio.noise_reduction.strength_db" not in vals:
@@ -231,6 +271,145 @@ def parse_mix_levels(v: Any) -> List[Dict[str, Any]]:
     if out[0]["mute"]:
         raise EditRequirementError("audio.mix.levels: the first input sets the mix's length and cannot be muted (put another input first)")
     return out
+
+
+def parse_duck(given: Dict[str, Any], mix: bool, levels: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """ADR-072: `audio.mix.duck.<field>` → the contract's MIX.duck {input, amount_db, threshold_db?, attack_ms?, release_ms?}. Opt-in only:
+    the bed (`input`, its index among the mixed inputs, 1..7; input 0 is the key) and the amount are both named by the user — there is no
+    default bed and no default amount. Whether the index exists is checked by the decision (the inputs are known only then)."""
+    if not mix:
+        raise EditRequirementError("audio.mix.duck.* needs audio.mix=true (ducking lowers one mixed input under input 0)")
+    missing = [f for f in DUCK_REQUIRED if f not in given]
+    if missing:
+        raise EditRequirementError(f"audio.mix.duck needs {' and '.join('audio.mix.duck.' + f for f in missing)}: the bed and how far it is lowered are never guessed")
+    out: Dict[str, Any] = {}
+    for f, v in given.items():
+        lo, hi = DUCK_FIELDS[f]
+        x = _number(v, f"audio.mix.duck.{f}", lo, hi)
+        if f == "input":
+            if float(x) != int(x):
+                raise EditRequirementError(f"audio.mix.duck.input must be an input index (1..{MAX_MIX_INPUTS - 1}), got {v!r}")
+            out[f] = int(x)
+        else:
+            out[f] = float(x)
+    if out["amount_db"] == 0.0:
+        raise EditRequirementError("audio.mix.duck.amount_db=0 lowers nothing; leave ducking unset")
+    if levels is not None and out["input"] < len(levels) and levels[out["input"]].get("mute"):
+        raise EditRequirementError(f"audio.mix.duck.input={out['input']} names a muted input: the Skill ducks an unmuted bed only")
+    return {f: out[f] for f in DUCK_FIELDS if f in out}
+
+
+def _filler_text_list(v: Any, key: str) -> List[str]:
+    """A list of words (a JSON list or a comma-separated string), each printable (any script: えー, um), at most the contract's
+    length, at most its count; duplicates dropped (first kept)."""
+    items = [x.strip() for x in v.split(",")] if isinstance(v, str) else v
+    if not isinstance(items, list) or not items or len(items) > FILLER_LEXICON_MAX_ITEMS:
+        raise EditRequirementError(f"{key} must list 1..{FILLER_LEXICON_MAX_ITEMS} words (a list or comma-separated), got {v!r}")
+    out: List[str] = []
+    for i, x in enumerate(items):
+        if not isinstance(x, str) or not x.strip() or len(x) > FILLER_LEXICON_MAX_LENGTH or any(unicodedata.category(c).startswith("C") for c in x):
+            raise EditRequirementError(f"{key}[{i}] must be a printable word of 1..{FILLER_LEXICON_MAX_LENGTH} characters, got {x!r}")
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def parse_filler_remove(vals: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """ADR-072: `audio.filler_remove` (+ refinements) → {"lexicon": {presets?, words?, keep?}, pad?, merge_gap?, declick_ms?}, or None for an
+    explicit `false`. The lexicon has no default (the contract requires the caller to choose): the value names the Skill's presets
+    (ja | en | ja,en) or is `true`, which needs the user's own `audio.filler_remove.words`."""
+    sw = vals.get(FILLER_KEY)
+    refinements = [k for k in vals if k != FILLER_KEY]
+    if sw is None:
+        raise EditRequirementError(f"{refinements[0]} needs {FILLER_KEY} (ja | en | ja,en, or true with {FILLER_KEY}.words)")
+    presets: List[str] = []
+    if isinstance(sw, bool) or (isinstance(sw, str) and sw.strip().lower() in ("true", "false")):
+        on = _bool(sw, FILLER_KEY)
+        if not on:
+            if refinements:
+                raise EditRequirementError(f"{FILLER_KEY}=false with {', '.join(refinements)}: refusing an ambiguous request")
+            return None
+    else:
+        raw = [x.strip().lower() for x in sw.split(",")] if isinstance(sw, str) else sw
+        if not isinstance(raw, list) or not raw or not all(isinstance(x, str) and x.strip().lower() in FILLER_PRESETS for x in raw):
+            raise EditRequirementError(f"{FILLER_KEY} must name the Skill's lexicon presets ({' | '.join(FILLER_PRESETS)}, comma-separated) or be true with {FILLER_KEY}.words, got {sw!r}")
+        presets = sorted({x.strip().lower() for x in raw})
+    lexicon: Dict[str, Any] = {}
+    if presets:
+        lexicon["presets"] = presets
+    for part in ("words", "keep"):
+        k = f"{FILLER_KEY}.{part}"
+        if k in vals:
+            lexicon[part] = _filler_text_list(vals[k], k)
+    if not lexicon.get("presets") and not lexicon.get("words"):
+        raise EditRequirementError(f"{FILLER_KEY}=true needs {FILLER_KEY}.words (the fillers to remove): there is no default lexicon")
+    if lexicon.get("keep") and not lexicon.get("presets") and set(lexicon["words"]) <= set(lexicon["keep"]):
+        raise EditRequirementError(f"{FILLER_KEY}.keep removes every word of {FILLER_KEY}.words: the lexicon would be empty")
+    out: Dict[str, Any] = {"lexicon": lexicon}
+    for part, rng in (("pad", FILLER_PAD_RANGE), ("merge_gap", FILLER_MERGE_GAP_RANGE), ("declick_ms", FILLER_DECLICK_RANGE)):
+        k = f"{FILLER_KEY}.{part}"
+        if k in vals:
+            out[part] = float(_number(vals[k], k, *rng))
+    return out
+
+
+def transcript_words(segments: List[Dict[str, Any]]) -> Tuple[Optional[List[Dict[str, Any]]], List[str], str]:
+    """ADR-072: the word timings of one transcript (transcription-skill/transcript/0.1 segments) on the source's timeline →
+    (words sorted by time, ids of segments without word timestamps, problem). Only start / end / text / confidence are kept. A
+    segment whose `words` is null (no word timestamps) is reported, never filled in; a word without times or with text the contract
+    does not take (control characters, more than 128 characters) is a problem (None, ..., why). Zero-length words and words whose text
+    is empty are left out (nothing to cut / nothing to match)."""
+    untimed: List[str] = []
+    out: List[Dict[str, Any]] = []
+    for i, seg in enumerate(segments or []):
+        ws = seg.get("words") if isinstance(seg, dict) else None
+        if ws is None:
+            untimed.append(str((seg or {}).get("id") or i) if isinstance(seg, dict) else str(i))
+            continue
+        for w in ws:
+            if not isinstance(w, dict) or not all(isinstance(w.get(k), (int, float)) and not isinstance(w.get(k), bool) for k in ("start", "end")):
+                return None, untimed, f"segment {(seg or {}).get('id') or i}: a word without start / end times"
+            text = w.get("text")
+            if not isinstance(text, str) or len(text) > FILLER_WORD_MAX_LENGTH or any(ord(c) < 32 for c in text):
+                return None, untimed, f"segment {(seg or {}).get('id') or i}: word text {str(text)[:40]!r} is not a printable string of at most {FILLER_WORD_MAX_LENGTH} characters"
+            s_, e_ = float(w["start"]), float(w["end"])
+            if s_ < 0 or not e_ > s_ or not text.strip():
+                continue
+            rec: Dict[str, Any] = {"start": round(s_, 6), "end": round(e_, 6), "text": text}
+            c = w.get("confidence")
+            if isinstance(c, (int, float)) and not isinstance(c, bool) and 0.0 <= float(c) <= 1.0:
+                rec["confidence"] = float(c)
+            out.append(rec)
+    return sorted(out, key=lambda w: (w["start"], w["end"])), untimed, ""
+
+
+def words_after_cut(words: List[Dict[str, Any]], remove: List[List[float]], duration: float) -> Tuple[List[Dict[str, Any]], int]:
+    """ADR-072: word timings on the source's timeline → the same words on the timeline of the source after `remove` was cut out of it
+    (the Skill's CUT joins the kept ranges in order). A word not wholly inside one kept range is left out (count returned): it is cut
+    (partly) already, so FILLER_REMOVE never touches it."""
+    keep: List[List[float]] = []
+    t = 0.0
+    for s_, e_ in sorted(([float(a), float(b)] for a, b in remove), key=lambda r: r[0]):
+        if s_ > t:
+            keep.append([t, s_])
+        t = max(t, e_)
+    if t < float(duration):
+        keep.append([t, float(duration)])
+    out: List[Dict[str, Any]] = []
+    dropped = 0
+    offset = 0.0
+    spans = []
+    for ks, ke in keep:
+        spans.append((ks, ke, offset))
+        offset += ke - ks
+    for w in words:
+        span = next(((ks, ke, off) for ks, ke, off in spans if w["start"] >= ks - 1e-9 and w["end"] <= ke + 1e-9), None)
+        if span is None:
+            dropped += 1
+            continue
+        ks, _, off = span
+        out.append(dict(w, start=round(max(0.0, off + w["start"] - ks), 6), end=round(off + w["end"] - ks, 6)))
+    return out, dropped
 
 
 def channel_operation(target: str, channels: Optional[int]) -> Tuple[Optional[str], str]:
@@ -323,12 +502,14 @@ def audio_subjects(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             cut = next((op for op in aops if op.get("type") == "audio.cut" and op.get("asset") == aid), None)
             if cut is not None:
                 dur = kept_after_cut(dur, cut.get("remove") or [])
-            out[aid] = {"sources": [aid], "duration": dur}
+            out[aid] = {"sources": [aid], "duration": dur}   # ADR-072: an upper bound when the source's fillers are removed (see filler_sources)
     if concat is not None:
         out[concat.get("output", PROGRAMME_AUDIO)] = {"sources": list(concat.get("inputs") or []), "duration": float(concat.get("timeline_duration") or 0.0)}
         for aid in concat.get("inputs") or []:
             out.pop(aid, None)   # the inputs are consumed by the programme
+    fillers = {op["asset"] for op in aops if op.get("type") == "audio.filler_remove"}
     for sid, row in out.items():
+        row["filler_sources"] = [a for a in row["sources"] if a in fillers]   # ADR-072: what the Skill removes there is known only after it ran
         chans = [audio_channels((assets.get(a) or {}).get("technical") or {}) for a in row["sources"]]
         known_chans = [c for c in chans if c is not None]
         expected: Optional[int] = max(known_chans) if chans and len(known_chans) == len(chans) else None

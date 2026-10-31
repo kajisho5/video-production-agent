@@ -296,6 +296,10 @@ class Service:
         user_requirements = {**brief_task.values_of(brief_record), **explicit}   # explicit wins (ADR-061)
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
+        if _filler_removal_requested(user_requirements or {}):
+            # ADR-072: filler words are removed at recognised word timings: a transcript with word timestamps, chosen by the system for the requirement
+            kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
+            params = dict(params or {}, word_timestamps=True)
         takes = _takes_requested(user_requirements or {})
         if takes is not None:   # ADR-053: takes are grouped by what is said in them; a named music bed's beat grid is measured on that input only
             kinds = list(kinds or []) + [k for k in ("transcript",) + ((BEAT_KIND,) if takes["music"] is not None else ()) if k not in (kinds or [])]
@@ -1478,6 +1482,12 @@ def _takes_requested(user_requirements: Dict[str, Any]) -> Optional[Dict[str, An
     from .models import Requirement
     reqs = [Requirement(key=k, value=v, provenance="USER", source="cli") for k, v in user_requirements.items() if k.startswith("edit.takes")]
     return parse_takes_requirements(requirement_map(reqs))
+
+
+def _filler_removal_requested(user_requirements: Dict[str, Any]) -> bool:
+    """ADR-072: `audio.filler_remove` set to anything but false (the value itself was range-checked by `_check_requirement_keys`)."""
+    v = (user_requirements or {}).get("audio.filler_remove")
+    return v is not None and v is not False and not (isinstance(v, str) and v.strip().lower() == "false")
 
 
 def _subtitles_requested(user_requirements: Dict[str, Any]) -> bool:

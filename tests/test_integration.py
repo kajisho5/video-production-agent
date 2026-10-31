@@ -2172,13 +2172,14 @@ class AudioProductionRealTests(unittest.TestCase):
         a = next((s for s in doc["streams"] if s.get("codec_type") == "audio"), {})
         return float(doc["format"]["duration"]), int(a.get("channels") or 0), int(a.get("sample_rate") or 0), any(s.get("codec_type") == "video" for s in doc["streams"])
 
-    def _run(self, name, inputs, reqs, expect_skills, expect_ops, expect_plan_status="APPROVED", pending_subjects=()):
+    def _run(self, name, inputs, reqs, expect_skills, expect_ops, expect_plan_status="APPROVED", pending_subjects=(), svc=None):
         """plan → (status as expected before any approval) → render(approve=all) → COMPLETED. `expect_plan_status` "REVIEW" means the
         plan waits for the CONFIRM decisions in `pending_subjects` (ADR-033: a video container's audio.extract); the explicit
         `approve=["all"]` of render is the existing approval mechanism, after which the saved plan must be APPROVED."""
         from video_agent.tools.audio_production import pinned_contract as ap_pinned
         ws = str(Path(self.tmp) / name)
-        svc = Service(workspace=ws)
+        svc = svc or Service(workspace=ws)
+        ws = svc.workspace
         ir = svc.plan(inputs, "generic", user_requirements=reqs)
         d = ir.doc
         self.assertEqual(d["plan"]["status"], expect_plan_status, d["plan"]["summary"]); self.assertEqual(svc.validate(ir).errors, [])
@@ -2334,6 +2335,79 @@ class AudioProductionRealTests(unittest.TestCase):
         self.assertEqual(res[1]["data"]["operation"]["parameters"], {"level": "light", "audio_stream": 0})
         dur, ch, sr, has_v = self._probe(res[-1]["output"])
         self.assertEqual((ch, has_v), (2, False)); self.assertGreater(dur, 5.0)
+
+    def _fake_recogniser_service(self, ws):
+        """The real engine and the real audio-production-skill; speech recognition is the fake process reading the input's sidecar words
+        (CI has no ASR model), exactly as SubtitleMuxRealTests does."""
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        fake = [sys.executable, str(Path(__file__).resolve().parent / "fake_transcription.py")]
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill(fake, None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                return self._sync_packages(ToolRouter([ts] + [a for a in r.adapters if a.name != "transcription"]))
+        svc = _Svc(workspace=ws, offline=True)
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                caps = dict(real.resolve(refresh))
+                caps["transcription"] = Capability("transcription", "AVAILABLE", "fake recogniser (sidecar words)", {})
+                return caps
+        svc.caps = _Caps()
+        return svc
+
+    def test_filler_remove_end_to_end(self):
+        """ADR-072 on the real Skill (audio-production 0.4.6 FILLER_REMOVE) and the real engine: the recognised words of the 16 s programme
+        (tone from 3 s to 13 s) carried through the silence cut, a Japanese and an English filler matched by the Skill's presets and removed
+        sample-accurately; the lexicon crosses as UTF-8; QA expects the cut length less what the Skill reports it removed."""
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        words = [[3.4, 3.9, "hello"], [4.2, 4.6, "えー"], [5.0, 6.0, "world"], [7.0, 7.3, "um"], [8.0, 9.0, "again"]]
+        src = Path(self.tmp) / "src_fr"; src.mkdir(exist_ok=True)
+        wav = str(src / "speech.wav"); shutil.copyfile(self.wav, wav)
+        Path(wav + ".segments.json").write_text(json.dumps([[3.2, 9.5, "hello えー world um again"]], ensure_ascii=False), encoding="utf-8")
+        Path(wav + ".words.json").write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
+        svc = self._fake_recogniser_service(str(Path(self.tmp) / "F"))
+        svc, p, out, res, prov = self._run("F", [wav], {"audio.production": True, "audio.filler_remove": "ja,en"}, ["audio_cut", "audio_filler_remove"], ["CUT", "FILLER_REMOVE"],
+                                           expect_plan_status="REVIEW", pending_subjects=("audio.filler_remove",), svc=svc)
+        d = load_ir(p).doc
+        cut, fr = d["audio"]["operations"]
+        lead = cut["remove"][0][1]
+        self.assertEqual([(w["start"], w["text"]) for w in fr["words"]], [(round(a - lead, 6), t) for a, _, t in words], "the word times follow the cut")
+        op = res[1]["data"]["operation"]
+        self.assertEqual((op["parameters"]["lexicon"]["presets"], len(op["parameters"]["words"])), (["en", "ja"], 5))
+        meas = op["measurements"]["filler_remove"]
+        self.assertEqual([m_["text"] for m_ in meas["matched"]], ["えー", "um"], "the Japanese word arrived intact and was matched by the Skill")
+        self.assertAlmostEqual(meas["removed_seconds"], 0.4 + 0.3, places=3)
+        cut_len, ch, _, has_v = self._probe(res[0]["output"])
+        dur, ch2, _, _ = self._probe(res[1]["output"])
+        self.assertAlmostEqual(cut_len - dur, 0.7, delta=0.01, msg="sample-accurate: exactly the matched words are gone"); self.assertEqual((ch, ch2, has_v), (2, 2, False))
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertAlmostEqual(float(items["duration"]["expected"].split()[0]), fr["temporal_scope"]["end"] - meas["removed_seconds"], places=3)
+
+    def test_mix_duck_end_to_end(self):
+        """ADR-072 on the real Skill (audio-production 0.4.6 MIX.duck): the 5 s tone is the bed (input 1), ducked 18 dB under the programme
+        (input 0, tone from 3 s); the Skill records the duck it ran and the bed is measurably quieter while the key sounds."""
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout")
+        svc, p, out, res, prov = self._run("G", [self.wav, self.mono], {"audio.production": True, "audio.mix": True, "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 18,
+                                                                       "audio.mix.duck.threshold_db": -40},
+                                           ["audio_mix"], ["MIX"])
+        self.assertEqual(res[0]["data"]["operation"]["parameters"]["duck"], {"input": 1, "amount_db": 18.0, "threshold_db": -40.0})
+        self.assertTrue(any("sidechaincompress" in c for c in res[0]["data"].get("commands") or []), "the engine ran its sidechain compressor (observed command, provenance only)")
+        dur, ch, _, has_v = self._probe(res[0]["output"])
+        self.assertAlmostEqual(dur, 16.0, delta=0.1); self.assertEqual((ch, has_v), (2, False))
+
+        def rms(path, start, length):
+            pr = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-ss", str(start), "-t", str(length), "-i", path, "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True)
+            return float(next(ln for ln in pr.stderr.splitlines() if "mean_volume" in ln).split("mean_volume:")[1].split()[0])
+        # 0-3 s: only the bed sounds (the key is silent) → not ducked; 3.5-4.5 s: key + ducked bed. Same span without ducking for reference
+        plain = self._run("G2", [self.wav, self.mono], {"audio.production": True, "audio.mix": True}, ["audio_mix"], ["MIX"])[3][0]["output"]
+        self.assertGreater(rms(plain, 3.5, 1.0) - rms(res[0]["output"], 3.5, 1.0), 1.0, "the bed is lowered while the key is above the threshold")
 
     def test_refusals_on_real_skill(self):
         if not self.ap:

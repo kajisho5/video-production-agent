@@ -455,7 +455,8 @@ def run_case(case: dict) -> dict:
         inputs = []
         for n, spec in enumerate(ap.get("inputs") or [{"channels": 2}]):
             f = src.parent / (f"in{n}." + ("mp4" if spec.get("video") else "wav"))
-            f.write_bytes(json.dumps({"fake": True, "duration": spec.get("duration", 16.0), "lufs": -11.0, "video": bool(spec.get("video", False)), "channels": spec.get("channels", 2)}).encode())
+            f.write_bytes(json.dumps({"fake": True, "duration": spec.get("duration", 16.0), "lufs": -11.0, "video": bool(spec.get("video", False)), "channels": spec.get("channels", 2),
+                                      **{k: spec[k] for k in ("segments", "words") if k in spec}}, ensure_ascii=False).encode("utf-8"))   # ADR-072: what the fake recogniser hears
             inputs.append(str(f))
         if ap.get("contract_mode"):
             os.environ["FAKE_AP_MODE"] = ap["contract_mode"]
@@ -469,9 +470,14 @@ def run_case(case: dict) -> dict:
             return {"case": case["name"], "ok": False, "failures": [f"contract refused: {e!s:.200}"]}
         drift = ad.drift()
         os.environ.pop("FAKE_AP_MODE", None)
-        extra = [] if ap.get("no_capability") else ["audio-production"] + [f"audio-production:{t}" for t in ("CUT", "NORMALIZE", "GAIN", "MONO", "STEREO", "DOWNMIX", "FADE_IN", "FADE_OUT", "CONCAT", "MIX", "NOISE_REDUCTION", "DYNAMICS", "VOICE_CLEANUP")]
+        extra = [] if ap.get("no_capability") else ["audio-production"] + [f"audio-production:{t}" for t in ("CUT", "NORMALIZE", "GAIN", "MONO", "STEREO", "DOWNMIX", "FADE_IN", "FADE_OUT", "CONCAT", "MIX", "NOISE_REDUCTION", "DYNAMICS", "VOICE_CLEANUP", "FILLER_REMOVE")]
         if drift:
             extra = []   # what the resolver does with a drifted contract: the capability is MISSING
+        adapters = [ad]
+        if ap.get("transcription"):   # ADR-072: filler removal needs the transcript's word timings (the fake recogniser reads the input's own words)
+            from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+            adapters.append(TranscriptionAdapter(TranscriptionSkill([sys.executable, str(ROOT / "tests" / "fake_transcription.py")], None, {}), workspace=str(Path(tmp) / "cache" / "transcription")))
+            extra = extra + ["transcription"]
         caps = FakeCaps(case.get("missing_capabilities", ()), extra=extra)
         if ap.get("unknown_capability"):
             base_caps = caps.resolve()
@@ -480,7 +486,7 @@ def run_case(case: dict) -> dict:
                     c = dict(base_caps); c[ap["unknown_capability"]] = Capability(ap["unknown_capability"], "UNKNOWN", "doctor unknown", {}); return c
             caps = _Caps()
         fake_engine = FakeAdapter(**fake)
-        svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine, ad]), caps=caps, provider=provider)
+        svc = Service(workspace=tmp, adapter=ToolRouter([fake_engine] + adapters), caps=caps, provider=provider)
         try:
             ir = svc.plan(inputs, case.get("profile", "generic"), user_requirements=case.get("requirements"))
         except ValueError as e:

@@ -470,7 +470,8 @@ def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         tech["video"] = None
         if r.get("channels") is not None:
             tech["audio"] = dict(tech.get("audio") or {}, channels=r["channels"])   # the planned layout (mono / stereo / down-mix), not the source's
-        rows.append({"id": sid, "sources": list(r["sources"]), "duration": r["duration"], "technical": tech, "audio_only": True})
+        rows.append({"id": sid, "sources": list(r["sources"]), "duration": r["duration"], "technical": tech, "audio_only": True,
+                     "filler_sources": list(r.get("filler_sources") or [])})   # ADR-072: duration is an upper bound there (QA subtracts what the Skill removed)
     if programme_op is not None:
         rows.append({"id": programme_op.get("output", PROGRAMME), "sources": list(programme_op.get("inputs") or []), "duration": float(programme_op.get("timeline_duration") or 0.0),
                      "technical": dict((assets.get((programme_op.get("inputs") or [""])[0]) or {}).get("technical") or {})})

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, concat_segments as audio_concat_segments, cut_ranges, has_video,
-                    ir_audio_operation, is_audio_capable, kept_after_cut, mix_segments)
+                    ir_audio_operation, is_audio_capable, kept_after_cut, mix_segments, transcript_words, words_after_cut)
 from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
                       kept_duration)
 from .image_insert import still_frame
@@ -505,6 +505,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
         current = asset.id
         last_step: Optional[str] = None
+        audio_remove: List[List[float]] = []   # ADR-072: what this plan cuts out of the input's audio (the filler words' times follow it)
         if (dec_ids or internal) and end > start:
             keep = [[round(start, 3), round(end, 3)]]
             for (rs, re_), did in internal:   # cut each removal out of the kept ranges; the decision carries the range, the planner only subtracts
@@ -526,6 +527,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if asset.id in audio_subjects:
                 # audio production path: the same silence decisions as one audio.cut (explicit remove ranges; the Skill joins the remainder)
                 remove = cut_ranges(removed)
+                audio_remove = remove
                 cut_ids = dec_ids + extract_ids(asset.id)
                 audio_ops.append(ir_audio_operation("audio.cut", asset.id, {"remove": remove}, cut_ids, scope={"start": 0.0, "end": kept_after_cut(dur, remove)}, input=current, output=f"{asset.id}_cut"))
                 st = ProductionStep(id=f"step_cut_{asset.id}", order=order, skill="audio_cut", tool=tool_for("audio_cut"), inputs=[current],
@@ -548,6 +550,30 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             current, last_step = st.outputs[0], st.id
             summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" outside the requested in / out range" if explicit_trim else " of silence")
                            + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
+        fr_dec = next((d for d in decisions if d.subject == "audio.filler_remove" and d.type == "TRANSFORM" and d.status != "REJECTED" and d.params.get("asset_id") == asset.id), None) \
+            if asset.id in audio_subjects else None
+        if fr_dec is not None:
+            # ADR-072: the transcript's word timings carried onto the cut audio's timeline; the Skill matches the lexicon and joins the rest
+            tr = next((o for o in analysis.observations if o.id == fr_dec.params.get("transcript_id")), None)
+            words, _, _ = transcript_words(((tr.data or {}).get("segments") or []) if tr is not None else [])
+            words, dropped = words_after_cut(words or [], audio_remove, dur)
+            if not words:
+                summary.append(f"{asset.path.split('/')[-1]}: no recognised word is left after the cut; no filler removal")
+            else:
+                fr_ids = [fr_dec.id] + extract_ids(asset.id)
+                scope = dict(scope_of.get(asset.id) or {"start": 0.0, "end": round(dur, 3)})
+                p_fr = {"words": words, "lexicon": fr_dec.params["lexicon"], **{k: fr_dec.params[k] for k in ("pad", "merge_gap", "declick_ms") if k in fr_dec.params}}
+                out_id = f"{asset.id}_filler_remove"
+                audio_ops.append(ir_audio_operation("audio.filler_remove", asset.id, p_fr, fr_ids, scope=scope, input=current, output=out_id))
+                order += 1
+                st = ProductionStep(id=f"step_filler_remove_{asset.id}", order=order, skill="audio_filler_remove", tool=tool_for("audio_filler_remove"), inputs=[current],
+                                    params={"asset": asset.id, "lexicon": p_fr["lexicon"], **{k: p_fr[k] for k in ("pad", "merge_gap", "declick_ms") if k in p_fr}, "word_count": len(words)},
+                                    outputs=[out_id], depends_on=[last_step] if last_step else [], evidence=evidence_of(fr_ids), decision_ids=fr_ids, decision_id=fr_dec.id,
+                                    temporal_scope=scope)
+                steps.append(st)
+                current, last_step = out_id, st.id
+                summary.append(f"Remove filler words from {asset.path.split('/')[-1]} at {len(words)} recognised word timing(s)" + (f" ({dropped} word(s) inside the cut left out)" if dropped else "")
+                               + f"; at most {scope['end']:.2f}s remain (what is removed is matched by audio-production)")
         current_of[asset.id] = current
         if last_step:
             last_of[asset.id] = last_step
@@ -636,7 +662,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         name = op_type.split(".", 1)[1]
         if op_type == "audio.mix":
             segments, total = mix_segments(inputs, lengths)
-            p_ = {"levels": audio_concat_dec.params["levels"]} if audio_concat_dec.params.get("levels") else {}
+            p_ = {k: audio_concat_dec.params[k] for k in ("levels", "duck") if audio_concat_dec.params.get(k)}   # ADR-072: MIX.duck rides with the levels
         else:
             cf = float(audio_concat_dec.params.get("crossfade") or 0.0)
             segments, total = audio_concat_segments(inputs, lengths, cf)

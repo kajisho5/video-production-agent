@@ -1,0 +1,75 @@
+{
+ "name": "ap_filler_remove_untimed_segment_blocks",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0,
+    "segments": [
+     [
+      3.5,
+      12.0,
+      "えー 本日は um 始めます"
+     ],
+     [
+      12.5,
+      13.5,
+      "no word timings"
+     ]
+    ],
+    "words": [
+     [
+      4.0,
+      4.4,
+      "えー"
+     ],
+     [
+      4.6,
+      5.2,
+      "本日は"
+     ],
+     [
+      6.0,
+      6.3,
+      "um"
+     ],
+     [
+      7.0,
+      8.0,
+      "始めます"
+     ]
+    ]
+   }
+  ],
+  "transcription": true
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.filler_remove": "ja"
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "audio.filler_remove"
+  ],
+  "plan_status": "BLOCKED",
+  "ir_ops": [
+   "audio.cut"
+  ],
+  "note": "a recognised segment without word timestamps: no filler is removed at a guessed time (word_timestamps_missing)"
+ }
+}

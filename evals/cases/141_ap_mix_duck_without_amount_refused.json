@@ -1,0 +1,38 @@
+{
+ "name": "ap_mix_duck_without_amount_refused",
+ "profile": "generic",
+ "fake": {
+  "silences": [
+   [
+    0.0,
+    3.0
+   ],
+   [
+    13.7,
+    null
+   ]
+  ],
+  "lufs": -11.0
+ },
+ "audio_production": {
+  "inputs": [
+   {
+    "channels": 2,
+    "duration": 16.0
+   },
+   {
+    "channels": 2,
+    "duration": 20.0
+   }
+  ]
+ },
+ "requirements": {
+  "audio.production": true,
+  "audio.mix": true,
+  "audio.mix.duck.input": 1
+ },
+ "expect": {
+  "plan_error": "audio.mix.duck.amount_db",
+  "note": "ducking is opt-in with the bed and the amount named; neither is ever defaulted"
+ }
+}

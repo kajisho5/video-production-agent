@@ -119,9 +119,10 @@ def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: st
 
 
 def lower_audio_op(tool: str, op: Dict[str, Any], current: Any, out_id: str) -> Dict[str, Any]:
-    """IR audio operation (audio.cut / concat / mix / noise_reduction / gain / mono / stereo / downmix / dynamics / fade_in / fade_out)
+    """IR audio operation (audio.cut / filler_remove / concat / mix / noise_reduction / gain / mono / stereo / downmix / dynamics / fade_in / fade_out)
     → audio-production/run arguments: the contract's operation type plus the allowlisted parameters copied by name (remove ranges as
-    [[s, e], …]; MIX levels, NOISE_REDUCTION mode / strength_db and the DYNAMICS stage objects exactly as the decision holds them)."""
+    [[s, e], …]; MIX levels / duck, NOISE_REDUCTION mode / strength_db, the DYNAMICS stage objects, FILLER_REMOVE words / lexicon exactly as
+    the IR holds them)."""
     spec = AUDIO_OPERATIONS[op["type"]]
     if tool != AUDIO_TOOL:
         raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {AUDIO_TOOL}")
@@ -561,7 +562,15 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             tool = tool_for("audio_cut", asset_id)
             add(tool, lower_audio_op(tool, cut, st["current"], out_id), [st["current"]], [out_id], list(cut.get("decision_ids") or []), fp, skill="audio_cut")
             st["current"] = out_id
-        on_audio = cut is not None or any(op["asset"] == asset_id and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]) \
+        filler = next((op for op in d["audio"]["operations"] if op["type"] == "audio.filler_remove" and op["asset"] == asset_id), None)
+        if filler is not None:   # ADR-072: the filler words at their timings on the cut audio (the planner carried them through the cut)
+            st["gen"] += 1
+            out_id = f"{asset_id}_filler_remove"
+            paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_filler_remove" / f"{stem}_filler_remove.wav")
+            tool = tool_for("audio_filler_remove", asset_id)
+            add(tool, lower_audio_op(tool, filler, st["current"], out_id), [st["current"]], [out_id], list(filler.get("decision_ids") or []), fp, skill="audio_filler_remove")
+            st["current"] = out_id
+        on_audio = cut is not None or filler is not None or any(op["asset"] == asset_id and (op["type"] != "audio.loudness" or "input" in op) for op in d["audio"]["operations"]) \
             or asset_id in (audio_concat.get("inputs") or [] if audio_concat else [])
         if on_audio:
             if audio_concat is None:

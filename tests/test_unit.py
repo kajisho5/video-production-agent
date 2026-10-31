@@ -2930,7 +2930,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.7.7", "transcription-skill"))
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.7.8", "transcription-skill"))
         self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
@@ -3006,7 +3006,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
         t = obs["transcript"]
-        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.7.7", "transcription/transcribe", "transcription/transcribe@0.7.7"))
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.7.8", "transcription/transcribe", "transcription/transcribe@0.7.8"))
         self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
         self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
         self.assertEqual(t.fingerprint, res.assets[0].hash)
@@ -3099,10 +3099,10 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription.adapter import check_transcript
         ok = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "asset_1"}).data
         asset = Asset(path=self.src, hash="0" * 64)
-        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.7.7", "k", "transcription/transcribe")
+        o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.7.8", "k", "transcription/transcribe")
         self.assertNotEqual(o.fingerprint, asset.hash)
         tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
-        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.7.7", ad.engines, ad.contract["schemas"])))
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.7.8", ad.engines, ad.contract["schemas"])))
 
     # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
     def test_cached_only_policy(self):
@@ -3157,7 +3157,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
-        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.7.7", ["speech_transcription"]))
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.7.8", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
         self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
@@ -3170,7 +3170,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         root = self._checkout()
         cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
         self.assertEqual(cap.status, "AVAILABLE", cap.detail)
-        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.7.7", "faster_whisper", "local", True))
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.7.8", "faster_whisper", "local", True))
         self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
         self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
         os.environ["FAKE_TS_MODE"] = "model_unavailable"
@@ -5136,7 +5136,7 @@ class AudioProductionAdapterTests(unittest.TestCase):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
         self.assertEqual(ad.version, "0.4.6"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
-        self.assertEqual(len(ad.lowering.supported_types()), 16); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])   # 0.4.6 (ADR-071): + FILLER_REMOVE (the contract lowers it; no plan step requests it yet)
+        self.assertEqual(len(ad.lowering.supported_types()), 16); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])   # 0.4.6 (ADR-071): + FILLER_REMOVE (planned since ADR-072 as audio.filler_remove)
         pk = ad.package()
         self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.6", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
         self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
@@ -5276,6 +5276,58 @@ class AudioProductionAdapterTests(unittest.TestCase):
             self.assertIn("set audio.voice_cleanup to one of ['medium'] or install ffmpeg-skill >= 1.13", err["message"])
             self.assertEqual((classify_error(r), next_attempt(r, 1, 2, 60)["action"]), ("SKILL_ERROR", "BLOCK"), "never retried: the engine cannot run that level")
             self.assertFalse(os.path.exists(paths["a_norm"]))
+
+    def test_filler_remove_and_duck_through_the_boundary(self):
+        """ADR-072 (audio-production-skill 0.4.6): FILLER_REMOVE crosses as typed `words` (a transcript's worth: far more than the 32 items an
+        unbounded array may carry, up to the contract's own max_items) and a lexicon in any script (えー); the request goes as UTF-8 on stdin and
+        the fake (like the Skill) reads UTF-8 bytes, so the Japanese words arrive intact and are matched. MIX.duck crosses as its typed object.
+        The Skill's refusals keep their reason: an ffmpeg-skill without --duck / --declick-ms is TOOL_ERROR ffmpeg_skill_flag_missing and words
+        without timings are INVALID_REQUEST word_timestamps_missing — both never retried."""
+        from video_agent.execution.recovery import classify_error, next_attempt
+        ad = self._adapter(); paths = self._paths()
+        words = [{"start": round(i * 0.003, 6), "end": round(i * 0.003 + 0.002, 6), "text": "word"} for i in range(5000)]
+        words[100] = dict(words[100], text="えー"); words[200] = dict(words[200], text="Um", confidence=0.5)
+        fr = {"operation": "FILLER_REMOVE", "input": "a", "words": words, "lexicon": {"presets": ["en"], "words": ["えー", "あのー"], "keep": ["ah"]}, "pad": 0.0, "output": "a_norm"}
+        r = ad.run(Operation(tool="audio-production/run", args=fr, inputs=["a"], outputs=["a_norm"], id="op_fr"), paths)
+        self.assertTrue(r.ok, r.data.get("error"))
+        sent = r.data["operation"]["parameters"]
+        self.assertEqual((len(sent["words"]), sent["words"][100]["text"], sent["lexicon"]["words"]), (5000, "えー", ["えー", "あのー"]), "non-ASCII words arrive intact (UTF-8 on stdin)")
+        meas = r.data["operation"]["measurements"]["filler_remove"]
+        self.assertEqual([m_["text"] for m_ in meas["matched"]], ["えー", "Um"]); self.assertAlmostEqual(meas["removed_seconds"], 0.004, places=6)
+        os.remove(paths["a_norm"])
+        self.assertIn("えー", ad.preview(Operation(tool="audio-production/run", args=fr, inputs=["a"], outputs=["a_norm"], id="op_fr"), paths)[0], "the preview shows the words as sent, not escaped")
+        # what the lowering refuses before anything runs: more words than the contract's max_items, a control / format character, an enum
+        # string outside its values, an unbounded array over 32, a missing required member, a transcript document (the agent sends words)
+        for bad, msg in (({"words": words * 21}, "at most 100000"), ({"words": [{"start": 0.1, "end": 0.2, "text": "a\nb"}]}, "printable"),
+                         ({"lexicon": {"words": ["\u202ebad"]}}, "printable"), ({"lexicon": {"presets": ["fr"]}}, "is not one of"), ({"lexicon": {"words": [""]}}, "printable"),
+                         ({"words": [{"start": 0.1, "text": "um"}]}, "needs ['end']"), ({"lexicon": {"words": ["x" * 65]}}, "1..64"),
+                         ({"words": None, "transcript": {"schema": "transcription-skill/transcript/0.1", "segments": []}}, "send the word timings as `words`")):
+            r = ad.run(Operation(tool="audio-production/run", args=dict(fr, **bad), inputs=["a"], outputs=["a_norm"], id="op_frb"), paths)
+            self.assertFalse(r.ok, bad); self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST", bad); self.assertIn(msg, r.data["error"]["message"], bad)
+        r = ad.run(Operation(tool="audio-production/run", args={"operation": "MIX", "inputs": ["a", "b"], "levels": [{"gain_db": 0.0}] * 33, "output": "a_norm"}, inputs=["a", "b"], outputs=["a_norm"], id="op_m33"),
+                   dict(paths, b=self.src))
+        self.assertFalse(r.ok); self.assertIn("at most 32 items", r.data["error"]["message"], "an array the contract does not bound keeps the old limit")
+        # MIX.duck: typed object, required members checked here, the bed index by the Skill
+        mix = {"operation": "MIX", "inputs": ["a", "b"], "duck": {"input": 1, "amount_db": 12.0, "release_ms": 300.0}, "output": "a_norm"}
+        r = ad.run(Operation(tool="audio-production/run", args=mix, inputs=["a", "b"], outputs=["a_norm"], id="op_duck"), dict(paths, b=self.src))
+        self.assertTrue(r.ok, r.data.get("error")); self.assertEqual(r.data["operation"]["parameters"]["duck"], {"input": 1, "amount_db": 12.0, "release_ms": 300.0})
+        os.remove(paths["a_norm"])
+        r = ad.run(Operation(tool="audio-production/run", args=dict(mix, duck={"input": 1}), inputs=["a", "b"], outputs=["a_norm"], id="op_duck2"), dict(paths, b=self.src))
+        self.assertFalse(r.ok); self.assertIn("needs ['amount_db']", r.data["error"]["message"])
+        # the Skill's own refusals keep their reason and are never retried
+        os.environ["FAKE_AP_MODE"] = "flag_missing"
+        for args, ins, feature in ((mix, ["a", "b"], "MIX duck"), (dict(fr, declick_ms=5.0), ["a"], "FILLER_REMOVE declick_ms")):
+            r = ad.run(Operation(tool="audio-production/run", args=args, inputs=ins, outputs=["a_norm"], id="op_flag"), dict(paths, b=self.src))
+            err = r.data["error"]
+            self.assertFalse(r.ok); self.assertEqual((err["code"], err["retryable"], err["details"]["reason"], err["details"]["feature"]), ("TOOL_ERROR", False, "ffmpeg_skill_flag_missing", feature))
+            self.assertIn("install an ffmpeg-skill whose contract declares --", err["message"])
+            self.assertEqual((classify_error(r), next_attempt(r, 1, 2, 60)["action"]), ("SKILL_ERROR", "BLOCK"))
+            self.assertFalse(os.path.exists(paths["a_norm"]))
+        os.environ.pop("FAKE_AP_MODE")
+        r = ad.run(Operation(tool="audio-production/run", args=dict(fr, words=[{"start": 0.2, "end": 0.1, "text": "um"}]), inputs=["a"], outputs=["a_norm"], id="op_untimed"), paths)
+        err = r.data["error"]
+        self.assertEqual((err["code"], err["retryable"], err["details"]["reason"]), ("INVALID_REQUEST", False, "word_timestamps_missing"))
+        self.assertIn("transcribe with word timestamps", err["message"])
 
     def test_security_boundary_and_path_policy(self):
         ad = self._adapter(); paths = self._paths()

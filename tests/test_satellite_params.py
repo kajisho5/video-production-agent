@@ -2,7 +2,8 @@
 gamma / lift / gain / levels / curves, and video-editing-skill's TRIM (an explicit in / out range) and ROTATE (lowered here together
 with FREEZE / REVERSE). Part 2 (ADR-063): audio-production-skill 0.4.2's MIX / NOISE_REDUCTION / DYNAMICS and subtitle-skill 0.2.0's
 render `mode: "mux"` (a soft subtitle track). Part 3 (ADR-064): every element of motion-graphics-skill 0.2.3, with every parameter. Part 4 (ADR-065): qc-skill 0.2.3's
-delivery_package check of the deliverable set (the deliverable + its subtitle sidecar / thumbnail) as part of the QC gate. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
+delivery_package check of the deliverable set (the deliverable + its subtitle sidecar / thumbnail) as part of the QC gate. ADR-072: audio-production-skill
+0.4.6's FILLER_REMOVE (at the transcript's word timings) and MIX.duck. Each new parameter: a `--set` key checked by the shared validator (and therefore a brief
 key, ADR-061), a decision, an IR record, a plan step and the compiled Skill request, on the fake engine and the fake Skills
 (tests/test_integration.py runs them on the real Skills)."""
 from __future__ import annotations
@@ -494,16 +495,16 @@ class AudioMixNoiseDynamicsTests(unittest.TestCase):
         clear_modes()
 
     def test_vocabulary_matches_the_pinned_contract(self):
-        """Every range / enum / arity here is the pinned contract's own; MIX's ducking (0.4.6) is not offered yet."""
+        """Every range / enum / arity here is the pinned contract's own; MIX's ducking (0.4.6) is offered since ADR-072 (AudioFillerRemoveDuckTests)."""
         c = audio_contract()
         ops = {o["type"]: o for o in c["operations"]}
         self.assertEqual((ops["MIX"]["inputs"]["max"], c["max_mix_inputs"]), (MAX_MIX_INPUTS, MAX_MIX_INPUTS))
         gain = ops["MIX"]["parameters"]["levels"]["items"]["properties"]["gain_db"]
         self.assertEqual((gain["min"], gain["max"]), MIX_GAIN_RANGE)
-        # 0.4.6 (ADR-071) added MIX.duck (sidechain ducking); the agent does not offer it yet: its MIX carries levels only
+        # 0.4.6 (ADR-071) added MIX.duck (sidechain ducking); since ADR-072 the agent's MIX carries it beside the levels
         self.assertEqual(set(ops["MIX"]["parameters"]), {"levels", "duck"})
         from video_agent.agent.audio import OPERATIONS as AUDIO_OPS
-        self.assertEqual(AUDIO_OPS["audio.mix"]["params"], ("levels",))
+        self.assertEqual(AUDIO_OPS["audio.mix"]["params"], ("levels", "duck"))
         nr = ops["NOISE_REDUCTION"]["parameters"]
         self.assertEqual(tuple(nr["mode"]["enum"]), NOISE_REDUCTION_MODES)
         self.assertEqual((nr["strength_db"]["min"], nr["strength_db"]["max"]), NOISE_REDUCTION_CONTRACT_STRENGTH)
@@ -644,6 +645,279 @@ class AudioMixNoiseDynamicsTests(unittest.TestCase):
         ops["audio.mix"]["levels"][0]["mute"] = False
         ops["audio.mix"]["levels"].append({"gain_db": 0.0})
         self.assertIn("one {gain_db, mute} per input", " ".join(svc.validate(ir).errors))
+
+
+FR_CAPS = PipelineCaps(extra=AUDIO_PRODUCTION_CAPS + [f"audio-production:{t}" for t in ("FILLER_REMOVE", "MIX", "NORMALIZE", "GAIN")])
+# a voice with leading (0-3 s) / trailing (13.7 s-) silence, one recognised segment and its word timings (two fillers: えー and um)
+FR_SEGMENTS = [[3.5, 12.0, "えー 本日は um 始めます"]]
+FR_WORDS = [[4.0, 4.4, "えー"], [4.6, 5.2, "本日は"], [6.0, 6.3, "um"], [7.0, 8.0, "始めます"]]
+
+
+class AudioFillerRemoveDuckTests(unittest.TestCase):
+    """audio.filler_remove (+ .words / .keep / .pad / .merge_gap / .declick_ms) → audio-production FILLER_REMOVE at the transcript's word
+    timings, and audio.mix.duck.* → MIX.duck (ADR-072, audio-production-skill 0.4.6)."""
+
+    def setUp(self):
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        clear_modes()
+
+    def _voice(self, name="voice.wav", words=FR_WORDS, segments=FR_SEGMENTS, duration=16.0):
+        extra = {"segments": segments} if segments is not None else {}
+        if words is not None:
+            extra["words"] = words
+        return pipeline_media(self.tmp, name, video=False, duration=duration, **extra)
+
+    def test_vocabulary_matches_the_pinned_contract(self):
+        from video_agent.agent.audio import (DUCK_FIELDS, DUCK_REQUIRED, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH, FILLER_MAX_WORDS,
+                                             FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, OPERATIONS, SOURCE_OPS)
+        c = audio_contract()
+        ops = {o["type"]: o for o in c["operations"]}
+        fr = ops["FILLER_REMOVE"]["parameters"]
+        self.assertEqual(set(fr), {"words", "transcript", "lexicon", "pad", "merge_gap", "declick_ms"})
+        self.assertEqual((fr["words"]["max_items"], fr["words"]["items"]["properties"]["text"]["max_length"]), (FILLER_MAX_WORDS, FILLER_WORD_MAX_LENGTH))
+        self.assertEqual(tuple(fr["lexicon"]["properties"]["presets"]["items"]["enum"]), FILLER_PRESETS); self.assertEqual(tuple(sorted(c["filler_lexicons"]["presets"])), FILLER_PRESETS)
+        for part in ("words", "keep"):
+            self.assertEqual((fr["lexicon"]["properties"][part]["max_items"], fr["lexicon"]["properties"][part]["items"]["max_length"]), (FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH))
+        for k, rng in (("pad", FILLER_PAD_RANGE), ("merge_gap", FILLER_MERGE_GAP_RANGE), ("declick_ms", FILLER_DECLICK_RANGE)):
+            self.assertEqual((fr[k]["min"], fr[k]["max"]), rng, k)
+        self.assertTrue(fr["lexicon"]["required"]); self.assertNotIn("default", fr["lexicon"], "no default lexicon")
+        duck = ops["MIX"]["parameters"]["duck"]
+        self.assertEqual(set(duck["properties"]), set(DUCK_FIELDS)); self.assertEqual(tuple(duck["required_properties"]), DUCK_REQUIRED)
+        for f, (lo, hi) in DUCK_FIELDS.items():
+            self.assertEqual((duck["properties"][f]["min"], duck["properties"][f]["max"]), (lo, hi), f)
+        self.assertEqual(OPERATIONS["audio.filler_remove"], {"skill": "audio_filler_remove", "type": "FILLER_REMOVE", "params": ("words", "lexicon", "pad", "merge_gap", "declick_ms"), "risk": "MEDIUM"})
+        self.assertEqual(SOURCE_OPS, ("audio.cut", "audio.filler_remove"))
+        from video_agent.skills import default_registry
+        spec = default_registry().get("audio_filler_remove")
+        self.assertEqual(spec.tools, ["audio-production/run"]); self.assertIn("audio-production:FILLER_REMOVE", spec.required_capabilities)
+
+    def test_requirements_and_refusals(self):
+        a = parse_audio_requirements(reqs({"audio.production": True, "audio.filler_remove": "ja,EN", "audio.filler_remove.words": "えーっと, まあ", "audio.filler_remove.keep": ["ah"],
+                                           "audio.filler_remove.pad": 0.05, "audio.filler_remove.merge_gap": 0.3, "audio.filler_remove.declick_ms": 5}))
+        self.assertEqual(a["filler_remove"], {"lexicon": {"presets": ["en", "ja"], "words": ["えーっと", "まあ"], "keep": ["ah"]}, "pad": 0.05, "merge_gap": 0.3, "declick_ms": 5.0})
+        self.assertEqual(parse_audio_requirements(reqs({"audio.production": True, "audio.filler_remove": True, "audio.filler_remove.words": ["like"]}))["filler_remove"],
+                         {"lexicon": {"words": ["like"]}}, "true = the user's own words only")
+        self.assertNotIn("filler_remove", parse_audio_requirements(reqs({"audio.production": True, "audio.filler_remove": False})))
+        d = parse_audio_requirements(reqs({"audio.production": True, "audio.mix": True, "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": "12", "audio.mix.duck.release_ms": 300}))
+        self.assertEqual(d["mix_duck"], {"input": 1, "amount_db": 12.0, "release_ms": 300.0})
+        base = {"audio.production": True}
+        for bad, msg in (({"audio.filler_remove": "ja"}, "audio.production=true"),
+                         (dict(base, **{"audio.filler_remove.pad": 0.1}), "needs audio.filler_remove"),
+                         (dict(base, **{"audio.filler_remove": True}), "no default lexicon"),
+                         (dict(base, **{"audio.filler_remove": "fr"}), "lexicon presets"),
+                         (dict(base, **{"audio.filler_remove": "ja", "audio.filler_remove.pad": 0.6}), "within"),
+                         (dict(base, **{"audio.filler_remove": "ja", "audio.filler_remove.merge_gap": 3}), "within"),
+                         (dict(base, **{"audio.filler_remove": "ja", "audio.filler_remove.declick_ms": 500}), "within"),
+                         (dict(base, **{"audio.filler_remove": "ja", "audio.filler_remove.words": ["a\u0000b"]}), "printable"),
+                         (dict(base, **{"audio.filler_remove": "ja", "audio.filler_remove.words": ["x" * 65]}), "printable"),
+                         (dict(base, **{"audio.filler_remove": True, "audio.filler_remove.words": "um", "audio.filler_remove.keep": "um"}), "empty"),
+                         (dict(base, **{"audio.filler_remove": False, "audio.filler_remove.words": "um"}), "ambiguous"),
+                         (dict(base, **{"audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 12}), "needs audio.mix=true"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.duck.input": 1}), "audio.mix.duck.amount_db"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.duck.amount_db": 12}), "audio.mix.duck.input"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 0}), "lowers nothing"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.duck.input": 0, "audio.mix.duck.amount_db": 6}), "within"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.duck.input": 1.5, "audio.mix.duck.amount_db": 6}), "input index"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 61}), "within"),
+                         (dict(base, **{"audio.mix": True, "audio.mix.levels": "0,mute", "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 6}), "muted")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse_audio_requirements(reqs(bad))
+            self.assertIn(msg, str(cm.exception), str(bad))
+            with self.assertRaises(ValueError, msg=str(bad)):
+                _check_requirement_keys(bad)
+        for key in ("audio.mix.duck", "audio.filler_remove.lexicon", "audio.filler_remove.presets"):
+            with self.assertRaises(ValueError, msg=key) as cm:
+                _check_requirement_keys(dict(base, **{key: True}))
+            self.assertIn("unknown requirement key", str(cm.exception))
+        from video_agent.agent.audio import DUCK_KEYS, FILLER_KEYS
+        for k in DUCK_KEYS + FILLER_KEYS:
+            self.assertIn(k, BRIEF_REQUIREMENT_KEYS, k)
+
+    def test_word_timings_follow_the_cut(self):
+        from video_agent.agent.audio import transcript_words, words_after_cut
+        segs = [{"id": "s1", "words": [{"start": 1.0, "end": 1.4, "text": "um", "confidence": 0.8}, {"start": 0.5, "end": 0.9, "text": "a"}, {"start": 2.0, "end": 2.0, "text": "z"},
+                                       {"start": 2.5, "end": 2.6, "text": "  "}]},
+                {"id": "s2", "words": [{"start": 5.0, "end": 5.5, "text": "えー", "probability": 0.3}, {"start": 7.9, "end": 8.2, "text": "late"}]}]
+        words, untimed, problem = transcript_words(segs)
+        self.assertEqual((untimed, problem), ([], ""))
+        self.assertEqual([(w["start"], w["text"]) for w in words], [(0.5, "a"), (1.0, "um"), (5.0, "えー"), (7.9, "late")], "sorted; zero-length / blank words left out")
+        self.assertEqual(set(words[1]), {"start", "end", "text", "confidence"}); self.assertEqual(set(words[2]), {"start", "end", "text"}, "only the contract's fields travel")
+        out, dropped = words_after_cut(words, [[0.0, 0.7], [3.0, 4.0]], 8.0)
+        self.assertEqual([(w["start"], w["end"], w["text"]) for w in out], [(0.3, 0.7, "um"), (3.3, 3.8, "えー")], "shifted onto the cut audio's timeline")
+        self.assertEqual(dropped, 2, "a word straddling a cut range and one past the end are left out")
+        self.assertEqual(words_after_cut(words[:2], [], 8.0)[0][1]["start"], 1.0, "no cut: unchanged")
+        self.assertEqual(transcript_words([{"id": "s1", "words": None}, {"id": "s2", "words": []}])[1], ["s1"])
+        self.assertIn("without start / end", transcript_words([{"id": "s1", "words": [{"start": None, "end": 1.0, "text": "a"}]}])[2])
+        self.assertIn("printable", transcript_words([{"id": "s1", "words": [{"start": 0.0, "end": 1.0, "text": "a\x01"}]}])[2])
+
+    def test_pipeline_decision_ir_step_and_skill_request(self):
+        v = self._voice()
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        ir = svc.plan([v], "generic", user_requirements={"audio.production": True, "audio.filler_remove": "ja,en", "audio.filler_remove.pad": 0.05}, params={"language": "ja"})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        tr = next(o for o in d["analysis"]["observations"] if o["kind"] == "transcript")
+        self.assertIs(tr["parameters"]["word_timestamps"], True, "the requirement asked the recogniser for word timestamps")
+        dec = next(x for x in d["decisions"] if x["subject"] == "audio.filler_remove")
+        self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["basis"]["approval"]["key"]), ("TRANSFORM", "CONFIRM", "USER", "audio.filler_remove.approval"),
+                         "removing recognised speech is CONFIRM even when asked for explicitly")
+        self.assertIn(tr["id"], dec["evidence"]); self.assertEqual((dec["params"]["transcript_id"], dec["params"]["word_count"]), (tr["id"], 4))
+        self.assertEqual(d["plan"]["status"], "REVIEW"); self.assertEqual([x["subject"] for x in ir.pending_confirmations()], ["audio.filler_remove"])
+        self.assertEqual([s_["skill"] for s_ in d["plan"]["steps"]], ["audio_cut", "audio_filler_remove"])
+        cut, fr = d["audio"]["operations"]
+        self.assertEqual((cut["type"], fr["type"], fr["input"], fr["output"]), ("audio.cut", "audio.filler_remove", f"{fr['asset']}_cut", f"{fr['asset']}_filler_remove"))
+        lead = cut["remove"][0][1]   # the leading silence the cut removes (with its margin)
+        self.assertEqual([(w["start"], w["text"]) for w in fr["words"]], [(round(s_ - lead, 6), t) for s_, _, t in FR_WORDS], "word times on the cut audio's timeline")
+        self.assertEqual((fr["lexicon"], fr["pad"]), ({"presets": ["en", "ja"]}, 0.05))
+        step = d["plan"]["steps"][1]
+        self.assertEqual((step["tool"], step["params"]), ("audio-production/run", {"asset": fr["asset"], "lexicon": {"presets": ["en", "ja"]}, "pad": 0.05, "word_count": 4}))
+        self.assertEqual(lower_audio_op("audio-production/run", fr, "cur", "out"), {"operation": "FILLER_REMOVE", "input": "cur", "words": fr["words"], "lexicon": fr["lexicon"], "pad": 0.05, "output": "out"})
+        p = str(Path(svc.workspace) / "plans" / "fr.project.json"); save_ir(ir, p)
+        self.assertEqual(svc.render(load_ir(p), p)["status"], "WAITING_FOR_APPROVAL", "nothing is removed before the confirmation")
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [x for x in out["execution"]["results"] if x["tool"] == "audio-production/run"]
+        self.assertEqual([x["data"]["operation_type"] for x in res], ["CUT", "FILLER_REMOVE"])
+        meas = res[1]["data"]["operation"]["measurements"]["filler_remove"]
+        self.assertEqual([m_["text"] for m_ in meas["matched"]], ["えー", "um"]); self.assertAlmostEqual(meas["removed_seconds"], 0.9, places=6)
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertEqual(items["duration"]["status"], "PASS", items["duration"])
+        self.assertAlmostEqual(float(items["duration"]["expected"].split()[0]), fr["temporal_scope"]["end"] - 0.9, places=3, msg="QA expects the cut length less what the Skill removed")
+        prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
+        row = next(e for e in prov["operations"] if e["skill"] == "audio_filler_remove")
+        self.assertEqual((row["args"]["operation"], row["args"]["lexicon"], len(row["args"]["words"])), ("FILLER_REMOVE", {"presets": ["en", "ja"]}, 4)); self.assertEqual(row["decision"], [dec["id"]])
+
+    def test_filler_removal_on_each_concat_input(self):
+        """Each input's fillers go right after its own cut, before the join; the programme's expected length is the plan's less both removals."""
+        v1, v2 = self._voice("a.wav"), self._voice("b.wav", words=[[4.0, 4.5, "uh"], [5.0, 6.0, "hello"]], segments=[[3.5, 7.0, "uh hello"]])
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        r = plan_and_render(svc, [v1, v2], {"audio.production": True, "audio.concat": True, "audio.filler_remove": "ja,en"}, profile="generic", name="frc")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        self.assertEqual([s_["skill"] for s_ in d["plan"]["steps"]], ["audio_cut", "audio_filler_remove", "audio_cut", "audio_filler_remove", "audio_concat"])
+        cat = next(op for op in d["audio"]["operations"] if op["type"] == "audio.concat")
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [x for x in out["execution"]["results"] if x["tool"] == "audio-production/run"]
+        removed = [x["data"]["operation"]["measurements"]["filler_remove"]["removed_seconds"] for x in res if x["data"]["operation_type"] == "FILLER_REMOVE"]
+        self.assertEqual(len(removed), 2); self.assertAlmostEqual(sum(removed), 0.7 + 0.5, places=6)
+        items = {i["name"]: i for i in out["qa"]["items"]}
+        self.assertEqual(items["duration"]["status"], "PASS", items["duration"])
+        self.assertAlmostEqual(float(items["duration"]["observed"]), cat["timeline_duration"] - sum(removed), places=2)
+
+    def test_filler_blocks(self):
+        # a segment without word timestamps: never a guessed timing
+        v = self._voice(words=FR_WORDS, segments=FR_SEGMENTS + [[12.5, 13.5, "untimed"]])
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        ir = svc.plan([v], "generic", user_requirements={"audio.production": True, "audio.filler_remove": "ja"}, params={"language": "ja"})
+        blk = [x for x in ir.doc["decisions"] if x["approval"] == "BLOCK"]
+        self.assertEqual([(x["subject"], x["params"]["reason"]) for x in blk], [("audio.filler_remove", "word_timestamps_missing")]); self.assertIn("seg_0002", blk[0]["reason"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED"); self.assertFalse([op for op in ir.doc["audio"]["operations"] if op["type"] == "audio.filler_remove"])
+        # no recogniser installed: the measurement the requirement needs is refused before planning (as for subtitles), nothing is guessed
+        svc2 = pipeline_service(self.tmp, caps=PipelineCaps(missing=("transcription",), extra=FR_CAPS.extra), transcription=False)
+        with self.assertRaises(RuntimeError) as cm:
+            svc2.plan([self._voice("c.wav")], "generic", user_requirements={"audio.production": True, "audio.filler_remove": "en"})
+        self.assertIn("speech_transcription", str(cm.exception))
+        # a recogniser that produced no transcript for the input (failed recognition): BLOCK no_transcript
+        os.environ["FAKE_TS_MODE"] = "model_unavailable"
+        ir2 = svc.plan([self._voice("c2.wav")], "generic", user_requirements={"audio.production": True, "audio.filler_remove": "en"}, params={"language": "ja"})
+        os.environ.pop("FAKE_TS_MODE")
+        self.assertIn(("audio.filler_remove", "no_transcript"), [(x["subject"], x["params"].get("reason")) for x in ir2.doc["decisions"] if x["approval"] == "BLOCK"])
+        # a mixed input keeps its own timeline
+        m = pipeline_media(self.tmp, "music.wav", video=False, duration=20.0)
+        ir3 = svc.plan([self._voice("d.wav"), m], "generic", user_requirements={"audio.production": True, "audio.mix": True, "audio.filler_remove": "ja"}, params={"language": "ja"})
+        self.assertEqual({x["params"]["reason"] for x in ir3.doc["decisions"] if x["subject"] == "audio.filler_remove"}, {"mixed_input"})
+        # without the Skill's FILLER_REMOVE capability nothing else removes words
+        svc4 = pipeline_service(self.tmp, caps=PipelineCaps(extra=AUDIO_PRODUCTION_CAPS))
+        ir4 = svc4.plan([self._voice("e.wav")], "generic", user_requirements={"audio.production": True, "audio.filler_remove": "ja"}, params={"language": "ja"})
+        self.assertIn("capability.audio_filler_remove", {x["subject"] for x in ir4.doc["decisions"] if x["approval"] == "BLOCK"})
+
+    def test_duck_decision_ir_and_skill_request(self):
+        v = self._voice()
+        m = pipeline_media(self.tmp, "music.wav", video=False, duration=20.0)
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        req = {"audio.production": True, "audio.mix": True, "audio.mix.levels": "0,-6", "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 12, "audio.mix.duck.threshold_db": -30}
+        r = plan_and_render(svc, [v, m], req, profile="generic", name="duck")
+        d = r["ir"].doc
+        self.assertEqual(r["validation"].errors, [])
+        dec = next(x for x in d["decisions"] if x["subject"] == "audio.mix")
+        self.assertEqual(dec["params"]["duck"], {"input": 1, "amount_db": 12.0, "threshold_db": -30.0}); self.assertIn("ducked 12 dB under", dec["decision"])
+        mix = next(op for op in d["audio"]["operations"] if op["type"] == "audio.mix")
+        self.assertEqual(mix["duck"], {"input": 1, "amount_db": 12.0, "threshold_db": -30.0})
+        step = next(s_ for s_ in d["plan"]["steps"] if s_["skill"] == "audio_mix")
+        self.assertEqual(step["params"]["duck"], mix["duck"])
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = next(x for x in out["execution"]["results"] if x["tool"] == "audio-production/run" and x["data"]["operation_type"] == "MIX")
+        self.assertEqual(res["data"]["operation"]["parameters"]["duck"], mix["duck"])
+        # a bed index outside the mixed inputs is a BLOCK (never mapped to another input)
+        ir = svc.plan([v, m], "generic", user_requirements=dict(req, **{"audio.mix.levels": "0,-6", "audio.mix.duck.input": 2}))
+        blk = [x for x in ir.doc["decisions"] if x["approval"] == "BLOCK"]
+        self.assertEqual([x["subject"] for x in blk], ["audio.mix"]); self.assertIn("names no bed", blk[0]["reason"])
+
+    def test_an_engine_without_the_flag_refuses_once(self):
+        """An ffmpeg-skill without --duck: the Skill refuses MIX.duck before any tool runs (TOOL_ERROR ffmpeg_skill_flag_missing); one attempt, no mix."""
+        v = self._voice()
+        m = pipeline_media(self.tmp, "music.wav", video=False, duration=20.0)
+        os.environ["FAKE_AP_MODE"] = "flag_missing"
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        out = plan_and_render(svc, [v, m], {"audio.production": True, "audio.mix": True, "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 9}, profile="generic", name="noflag")["out"]
+        self.assertNotEqual(out["execution"]["status"], "COMPLETED")
+        failed = [x for x in out["execution"]["results"] if not x["ok"]]
+        self.assertEqual(len(failed), 1, "not retried")
+        err = failed[0]["data"]["error"]
+        self.assertEqual((err["code"], err["retryable"], err["details"]["reason"], err["details"]["missing_flags"]), ("TOOL_ERROR", False, "ffmpeg_skill_flag_missing", ["duck"]))
+
+    def test_tampered_ir_is_refused(self):
+        from video_agent.project.validator import check_audio_operations
+        v = self._voice()
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        ir = svc.plan([v], "generic", user_requirements={"audio.production": True, "audio.filler_remove": "ja", "audio.gain": -3}, params={"language": "ja"})
+        self.assertEqual(svc.validate(ir).errors, [])
+
+        def errs(mut):
+            bad = json.loads(json.dumps(ir.doc))
+            mut(next(op for op in bad["audio"]["operations"] if op["type"] == "audio.filler_remove"), bad)
+            return " ".join(check_audio_operations(bad))
+        self.assertIn("out of order", errs(lambda op, d: op["words"].reverse()))
+        self.assertIn("past the audio it cuts", errs(lambda op, d: op["words"][-1].update(end=99.0)))
+        self.assertIn("printable", errs(lambda op, d: op["words"][0].update(text="a\nb")))
+        self.assertIn("there is no default", errs(lambda op, d: op.update(lexicon={})))
+        self.assertIn("presets", errs(lambda op, d: op.update(lexicon={"presets": ["fr"]})))
+        self.assertIn("pad", errs(lambda op, d: op.update(pad=0.9)))
+
+        def after_gain(op, d):   # moved behind the chain: no longer right after the cut
+            ops = d["audio"]["operations"]; ops.remove(op); ops.append(op)
+        self.assertIn("right after its audio.cut", errs(after_gain))
+
+    def test_tampered_duck_is_refused(self):
+        from video_agent.project.validator import check_audio_operations
+        m = pipeline_media(self.tmp, "music.wav", video=False, duration=20.0)
+        svc = pipeline_service(self.tmp, caps=FR_CAPS)
+        ir = svc.plan([self._voice(), m], "generic", user_requirements={"audio.production": True, "audio.mix": True, "audio.mix.duck.input": 1, "audio.mix.duck.amount_db": 6})
+        self.assertEqual(svc.validate(ir).errors, [])
+        for duck, msg in (({"input": 2, "amount_db": 6.0}, "names no bed"), ({"input": 1, "amount_db": 99.0}, "within"), ({"input": 1}, "must be {input, amount_db"),
+                          ({"input": 1, "amount_db": 6.0, "knee_db": 2.0}, "must be {input, amount_db")):
+            bad = json.loads(json.dumps(ir.doc))
+            next(op for op in bad["audio"]["operations"] if op["type"] == "audio.mix")["duck"] = duck
+            self.assertIn(msg, " ".join(check_audio_operations(bad)), duck)
+
+    def test_qa_needs_what_the_skill_removed(self):
+        """Without a successful FILLER_REMOVE result that reports removed_seconds, the expected length is unknown: QA FAILs instead of guessing."""
+        from video_agent.models import ToolResult
+        from video_agent.qa.checks import filler_removed_seconds
+        doc = {"audio": {"operations": [{"type": "audio.filler_remove", "asset": "a", "output": "a_filler_remove"}]}}
+        paths = {"a_filler_remove": os.path.join(self.tmp, "x.wav")}
+        ok = ToolResult("o1", "audio-production/run", True, 0, paths["a_filler_remove"], {"operation": {"measurements": {"filler_remove": {"removed_seconds": 1.25}}}}, [], "", 0.1, 1, False)
+        self.assertEqual(filler_removed_seconds(doc, paths, [ok]), {"a": 1.25})
+        silent = ToolResult("o1", "audio-production/run", True, 0, paths["a_filler_remove"], {"operation": {"measurements": {}}}, [], "", 0.1, 1, False)
+        other = ToolResult("o2", "audio-production/run", True, 0, os.path.join(self.tmp, "y.wav"), ok.data, [], "", 0.1, 1, False)
+        failed = ToolResult("o1", "audio-production/run", False, 1, None, ok.data, [], "", 0.1, 1, False)
+        for rs in ([silent], [other], [failed], []):
+            self.assertEqual(filler_removed_seconds(doc, paths, rs), {"a": None})
 
 
 NORMALIZE = {"audio.normalize": True, "audio.loudness.target_lufs": -16}   # a loudness pass after the mux (it keeps the subtitle stream)

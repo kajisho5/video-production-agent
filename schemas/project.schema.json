@@ -1591,7 +1591,8 @@
       "audio.mix",
       "audio.noise_reduction",
       "audio.dynamics",
-      "audio.voice_cleanup"
+      "audio.voice_cleanup",
+      "audio.filler_remove"
      ]
     },
     "asset": {
@@ -1857,6 +1858,123 @@
     },
     "decision_ids": {
      "type": "array"
+    },
+    "words": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 100000,
+     "items": {
+      "type": "object",
+      "required": [
+       "start",
+       "end",
+       "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "start": {
+        "type": "number",
+        "minimum": 0
+       },
+       "end": {
+        "type": "number",
+        "minimum": 0
+       },
+       "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+       },
+       "confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       }
+      }
+     }
+    },
+    "lexicon": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "presets": {
+       "type": "array",
+       "items": {
+        "enum": [
+         "en",
+         "ja"
+        ]
+       }
+      },
+      "words": {
+       "type": "array",
+       "maxItems": 256,
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+       }
+      },
+      "keep": {
+       "type": "array",
+       "maxItems": 256,
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+       }
+      }
+     }
+    },
+    "pad": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 0.5
+    },
+    "merge_gap": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 2.0
+    },
+    "declick_ms": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 200.0
+    },
+    "duck": {
+     "type": "object",
+     "required": [
+      "input",
+      "amount_db"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "input": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 7
+      },
+      "amount_db": {
+       "type": "number",
+       "minimum": 0.0,
+       "maximum": 60.0
+      },
+      "threshold_db": {
+       "type": "number",
+       "minimum": -60.0,
+       "maximum": 0.0
+      },
+      "attack_ms": {
+       "type": "number",
+       "minimum": 0.01,
+       "maximum": 2000.0
+      },
+      "release_ms": {
+       "type": "number",
+       "minimum": 0.01,
+       "maximum": 9000.0
+      }
+     }
     }
    }
   },

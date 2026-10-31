@@ -46,7 +46,7 @@ CONTRACT_SCHEMA = "audio-production/contract@1"
 REQUEST_SCHEMA = "audio-production/request@1"
 RESPONSE_SCHEMA = "audio-production/response@1"
 DOCTOR_SCHEMA = "audio-production/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.6: FILLER_REMOVE and MIX.duck (additive, not lowered yet; pinned in ADR-071). 0.4.5: NOISE_REDUCTION strength_db min 10 -> 20 (what afftdn accepts; audio ADR-17, pinned again in ADR-069). 0.4.4: version-only. 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.")  # 0.4.6: FILLER_REMOVE and MIX.duck (additive; pinned in ADR-071, planned and lowered since ADR-072). 0.4.5: NOISE_REDUCTION strength_db min 10 -> 20 (what afftdn accepts; audio ADR-17, pinned again in ADR-069). 0.4.4: version-only. 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
                                                # version window, ADR-048); operations/request/response unchanged.
                                                # 0.3.0 (audio-production-skill #8): audio_stream added to
                                                # GAIN/FADE_IN/FADE_OUT/MONO/STEREO/DOWNMIX/NOISE_REDUCTION/DYNAMICS.
@@ -65,6 +65,12 @@ ERROR_CODES: Dict[str, str] = {
 # ADR-068: details.reason of the TOOL_ERROR the Skill (0.4.3) returns when the located ffmpeg-skill cannot run a VOICE_CLEANUP level
 # (details.level, details.available_levels, details.ffmpeg_skill_version; retryable false)
 VOICE_LEVEL_UNSUPPORTED = "voice_level_unsupported"
+# ADR-072 (audio-production 0.4.6, its ADR-18 / ADR-19): the located ffmpeg-skill's contract does not declare a flag a requested feature needs
+# (MIX.duck → audio --duck / --duck-threshold / --duck-attack / --duck-release; FILLER_REMOVE.declick_ms > 0 → cut --declick-ms): TOOL_ERROR, refused
+# before any tool ran (details.feature, details.tool, details.missing_flags, details.ffmpeg_skill_version; retryable false)
+FLAG_MISSING = "ffmpeg_skill_flag_missing"
+# FILLER_REMOVE given no timed word (INVALID_REQUEST, details.reason)
+WORD_TIMESTAMPS_MISSING = "word_timestamps_missing"
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
 SCHEMA_VERSIONS = {"contract": "1", "request": "1", "response": "1", "doctor": "1"}
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -472,6 +478,15 @@ class AudioProductionAdapter(ToolAdapter):
                 retry = False
                 levels = details.get("available_levels")
                 message = (message + f" -- set audio.voice_cleanup to one of {levels} or install ffmpeg-skill >= 1.13")[:500] if isinstance(levels, list) and levels else message
+            elif errc == "TOOL_ERROR" and details.get("reason") == FLAG_MISSING:
+                # ADR-072: the same for a feature the located ffmpeg-skill has no flag for (ducking, declick): never retried, never run without it
+                retry = False
+                flags = details.get("missing_flags")
+                hint = "install an ffmpeg-skill whose contract declares " + ", ".join("--" + str(f).replace("_", "-") for f in flags) if isinstance(flags, list) and flags else "install a newer ffmpeg-skill"
+                message = (message + f" -- {hint}, or leave {details.get('feature') or 'the feature'} unset")[:500]
+            elif errc == "INVALID_REQUEST" and details.get("reason") == WORD_TIMESTAMPS_MISSING:
+                retry = False   # ADR-072: the words carry no timings; another attempt sends the same words
+                message = (message + " -- transcribe with word timestamps (audio.filler_remove asks for them) before removing fillers")[:500]
             self._remove_fresh(out_path, t0)
             return self._fail(op, attempt, dry_run, t0, code if code != 0 else 1, errc, message, retryable=bool(retry), details=details,
                               skill_results=doc.get("results") if isinstance(doc.get("results"), list) else None)
