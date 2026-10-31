@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.7.8",
+ "version": "0.7.9",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -74,6 +74,23 @@
    "supported_languages": [],
    "supported_models": [],
    "default_model": "Haas-ja-v1.0",
+   "models": []
+  },
+  {
+   "id": "speechcpp",
+   "version": null,
+   "execution_mode": "local",
+   "description": "speech.cpp (C++ on ggml) through its `speech` command: ReazonSpeech v2, parakeet-tdt_ctc-0.6b-ja and Haas-ja-v1.0 for Japanese with word timestamps, and Qwen3-ASR in 30 languages, on Metal, Vulkan or the CPU with no Python and no CUDA. Optional engine: needs `speech` 0.10.0+ on PATH and models fetched with `speech pull`; recognizes by silero-vad regions; never downloads.",
+   "available": false,
+   "unavailable_reason": "pinned snapshot: availability comes from the installed Skill's contract / doctor",
+   "requires_network": false,
+   "deterministic": false,
+   "capabilities": [
+    "local_execution"
+   ],
+   "supported_languages": [],
+   "supported_models": [],
+   "default_model": "reazonspeech-v2",
    "models": []
   }
  ],

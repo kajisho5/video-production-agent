@@ -940,7 +940,7 @@ class TranscriptionRealTests(unittest.TestCase):
         self.assertTrue(ad.supports("transcription/transcribe") and not ad.supports("transcription/export"))
         eng = {e["id"]: e for e in ad.engine_status()}
         self.assertEqual({k: (e["execution_mode"], e["requires_network"]) for k, e in eng.items()}, {k: ("local", False) for k in eng}, "every implemented engine is local")
-        # no cloud engine, no whisper.cpp: the contract lists implemented engines only -- the same ones as the pin (0.7.7 added the optional local haas_ja)
+        # no cloud engine, no whisper.cpp: the contract lists implemented engines only -- the same ones as the pin (0.7.7 added the optional local haas_ja, 0.7.9 the optional local speechcpp)
         from video_agent.tools.transcription import pinned_contract
         self.assertEqual(list(eng), [e["id"] for e in pinned_contract()["engines"]])
         self.assertEqual(list(eng)[0], "faster_whisper")
