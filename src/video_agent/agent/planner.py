@@ -19,13 +19,14 @@ from .documents import SKILL as DOCUMENT_SKILL, SUBJECT as DOCUMENT_SUBJECT
 from .bgm import BGM_INPUT, BGM_OUTPUT, SUBJECT as BGM_SUBJECT, ir_bgm, skill_of as bgm_skill_of
 from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
-                        ir_thumbnail, picture_size)
+                        ir_thumbnail, picture_size, thumbnail_layout)
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_transcripts, ir_captions_burn, ir_captions_generate, kept_ranges_of
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
+from .nle import MODES as NLE_MODES, SUBJECT as NLE_SUBJECT, ir_nle
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
 from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_dub_operation
@@ -212,8 +213,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             params: Dict[str, Any] = {"timestamp": min(float(at), max(0.0, float(scope["end"]) - 0.001)), "format": d.params["format"]}
             skill = str(d.params.get("skill") or THUMBNAIL_FRAME_SKILL)
             if skill == THUMBNAIL_RENDER_SKILL:
-                params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48), "color": d.params.get("color", "#FFFFFF"),
-                               "position": d.params.get("position", "bottom"), "width": size[0] if size else None, "height": size[1] if size else None})
+                params.update({"width": size[0] if size else None, "height": size[1] if size else None})
+                if d.params.get("text") is not None:
+                    params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48),
+                                   "color": d.params.get("color", "#FFFFFF"), "position": d.params.get("position", "bottom")})
+                if size and (d.params.get("texts") or d.params.get("logo")):   # ADR-088: the full document, laid out on the subject's own canvas
+                    logo, texts = thumbnail_layout(size[0], size[1], d.params.get("logo"), list(d.params.get("texts") or []), int(d.params.get("font_size") or 48),
+                                                   d.params.get("position") or "bottom")
+                    params.update({"texts": texts, "logo": logo})
             out_id = f"{subject}_thumbnail"
             src = picture_of.get(subject) or current_of[subject]
             graphics_ops.append(ir_thumbnail(subject, params, [d.id], src, out_id))
@@ -247,6 +254,23 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             outputs.append({"role": "TIMELINE", "logical": out_id, "format": d.params["format"],
                             "expected": {"clips": len(clips), "duration": rec["timeline_duration"], "source": subject}})
             summary.append(f"Export the cut of {subject} as an {d.params['format']} timeline ({len(clips)} clip(s), {rec['timeline_duration']:.2f}s)")
+
+    nle_recs: List[Dict[str, Any]] = []   # ADR-089: delivery.nle, written only when planned
+
+    def nle_steps(subject: str, sources: List[str]) -> None:
+        """ADR-089: the `timeline.nle` decision → one step (nle-bridge export / conform) that reads the project IR the job executes; it waits on
+        the subject's timeline step only for order (both read the sources, nothing produced in between)."""
+        nonlocal order
+        for d in [x for x in decisions if x.subject == NLE_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
+            skill = NLE_MODES[d.params["mode"]][0]
+            out_id = f"{subject}_nle"
+            nle_recs.append(ir_nle(subject, d.params["mode"], list(d.params["formats"]), bool(d.params.get("zip")), [d.id], out_id))
+            order += 1
+            dep = next((s_.id for s_ in steps if s_.skill == TIMELINE_SKILL and (s_.params or {}).get("asset") == subject), None)
+            steps.append(ProductionStep(id=f"step_nle_{subject}", order=order, skill=skill, tool=tool_for(skill), inputs=list(dict.fromkeys(sources)),
+                                        params={"asset": subject, "mode": d.params["mode"], "formats": list(d.params["formats"]), "zip": bool(d.params.get("zip"))},
+                                        outputs=[out_id], depends_on=[dep] if dep else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+            summary.append(d.decision)
 
     def qc_steps(subject: str, tolerance_lu: float) -> None:
         """One qc_check step per delivery artifact of the subject (after its check), and one for the subtitle sidecar (ADR-032)."""
@@ -742,6 +766,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             loudness_steps(asset.id)
             delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
             timeline_steps(asset.id, [asset.id])
+            nle_steps(asset.id, [asset.id])
             thumbnail_steps(asset.id, [asset.id])
             qc_steps(asset.id, qc_tolerance_lu)
             publish_steps(asset.id)
@@ -884,6 +909,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         timeline_steps(PROGRAMME, inputs)
+        nle_steps(PROGRAMME, inputs)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
         publish_steps(PROGRAMME)
@@ -976,6 +1002,6 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "delivery": delivery,
+    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade,
             "documents": documents}

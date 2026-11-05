@@ -114,6 +114,10 @@ BGM（ADR-092、sound-design-skill → audio-production MIX）: audio path（`au
 
 公開（ADR-087、publish-skill）: QC gate（`--set qc=true`）と一緒に `--set publish.platform=youtube publish.title=… publish.privacy=unlisted`（`publish.description` / `publish.tags` / `publish.thumbnail=true` / `publish.captions=true` は platform が取る時だけ。platform は publish-skill の contract に uploader があるもの）。計画は常に確認が要り、render は QC 後に publish-skill の offline の plan と dry run だけを行って確認トークンを report に出す（何も upload しない）。upload は `video-agent deliver <artifact>` の後に人が `video-agent publish <artifact> --confirm <token>` を 1 回打つ。agent は upload を再試行しない。
 
+サムネイル（ADR-088）: `thumbnail.text` に加えて `thumbnail.color`（#RRGGBB）、`thumbnail.text2` .. `thumbnail.text4`（それぞれ `.position` / `.font_size` / `.color`）、ロゴ `thumbnail.logo=logo.png`（`.logo.position` 四隅、`.logo.width` px、`.logo.margin`、`.logo.opacity`。縦横比はファイルから読む）。どれかがあれば thumbnail-skill の ThumbnailDocument として 1 枚に描く。
+
+NLE への受け渡し（ADR-089、nle-bridge-skill）: `--set delivery.timeline=otio delivery.nle=export`（または `conform`、`delivery.nle.formats=otio,fcp7,edl,srt`、conform は既定で zip）。実行する project IR をそのまま nle-bridge に渡し、Premiere / Resolve 用の OTIO / FCP7 XML / EDL / SRT（conform なら relink manifest と zip）を artifacts の下に書く。運べないものは warning で残る。
+
 話者 id を字幕と編集まで（ADR-096、roadmap step 8）: `speakers.diarize=true` に `speakers.assign=true` を足すと、transcript も計測し、各入力の計測済み turn を transcription-skill の transcribe に `speaker_turns` として渡す（認識の後に diarization-skill と同じ ASSIGN 規則で合成、Skill の cache には入らない）。transcript の segment は匿名の id（`SPEAKER_00` …）を持ち、合成の記録 `speaker_assignment` が付く。そこから SpeechEvent、字幕の cue（subtitle-skill が "SPEAKER_00: …" と書く）、テイク選択の pick（`speakers`）が id を持つ。`speakers.assign` が無ければ従来どおり speaker_id は null のまま（認識だけで話者を決めることはない）。
 
 終了コード: 0 完了 / 2 検証エラー / 3 BLOCKED / 4 承認待ち / 5 QA FAIL (REVIEW) / 130 中断 (CANCELLED) / 1 その他。revise: 5 = 新版なし。
