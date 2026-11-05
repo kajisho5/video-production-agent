@@ -25,6 +25,7 @@ from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, time
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
 from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_dub_operation
+from .publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -304,6 +305,26 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if extra and gated:
                 qc_plan.setdefault("packages", {})[subject] = {"targets": sorted({t for t, _a, _s in gated}), "captions": sc_id, "thumbnail": th_id}
             summary.append(d.decision)
+
+    publish_rec: Dict[str, Any] = {}   # ADR-087: delivery.publish, written only when planned
+
+    def publish_steps(subject: str) -> None:
+        """ADR-087: the `publish.upload` decision of a subject → one step after every QC step of the subject (the upload comes after QC). No IR
+        operation: the compiler never runs it; render makes the Skill's offline plan and dry run, `video-agent publish` the upload."""
+        nonlocal order
+        for d in [x for x in decisions if x.subject == PUBLISH_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
+            target = d.params["target"]
+            art = f"{subject}_delivery_{target}"
+            qc_ids = [s_.id for s_ in steps if s_.skill == QC_SKILL and (s_.params or {}).get("asset") == subject]
+            meta = {k: d.params[k] for k in ("title", "description", "tags", "privacy") if d.params.get(k) is not None}
+            attach = {k: bool(d.params.get(k)) for k in ("thumbnail", "captions")}
+            publish_rec.update({"type": "publish.upload", "asset": subject, "target": target, "artifact": art, "platform": d.params["platform"], **meta, **attach,
+                                **({"caption_language": d.params["caption_language"]} if d.params.get("caption_language") else {}), "decision_ids": [d.id]})
+            order += 1
+            steps.append(ProductionStep(id=f"step_publish_{subject}", order=order, skill=PUBLISH_SKILL, tool=tool_for(PUBLISH_SKILL), inputs=[art],
+                                        params={"asset": subject, "target": target, "platform": d.params["platform"], **meta, **attach}, outputs=[],
+                                        depends_on=qc_ids, evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+            summary.append(d.decision + " -- after QC; the upload needs a human's confirmation token (video-agent publish)")
 
     def edit_steps(subject: str, sources: List[str]) -> None:
         """The single-source editing operations decided for `subject` (video.speed → resize → fit / fill → overlay), chained on its
@@ -676,6 +697,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             timeline_steps(asset.id, [asset.id])
             thumbnail_steps(asset.id, [asset.id])
             qc_steps(asset.id, qc_tolerance_lu)
+            publish_steps(asset.id)
     def crossfade_steps(xd: Decision, concat_step: str, total: float) -> Dict[str, Any]:
         """ADR-054: each pick's audio span (its picture range + the join handles) cut out of its source (audio-production CUT), the spans
         of every run of crossfaded joins joined with the crossfade (CONCAT), the runs joined without one, and the result muxed under the
@@ -799,6 +821,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         timeline_steps(PROGRAMME, inputs)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+        publish_steps(PROGRAMME)
     if switch_dec is not None:
         # ---- explicit camera switch (ADR-045): unlike concat, the programme's duration is the (trimmed) reference input's
         # own duration, not a sum of segments -- multicam cuts between already-aligned sources on the reference timeline.
@@ -824,6 +847,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+        publish_steps(PROGRAMME)
     if grid_dec is not None:
         # ---- explicit comparison grid (ADR-046): unlike concat, the programme's duration is the shortest (trimmed) input's own
         # duration by default -- grid.py runs only as long as its shortest clip unless --pad holds every shorter cell's last frame
@@ -851,6 +875,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+        publish_steps(PROGRAMME)
     # ---- ecosystem jobs handed off (ADR-057): one step per requested job, on the request's assets, with no tool (BLOCKED; the
     # plan's handoff names the owning package and its install command). It waits on nothing and produces nothing the agent tracks.
     # ADR-086: a measurement an explicit requirement asked for that no tool can run here (`handoff: true`) takes the same step
@@ -875,5 +900,5 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "delivery": delivery,
+    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade}

@@ -24,6 +24,7 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 | `audio.take_crossfade` | テイクの組み立てのつなぎ目の音声クロスフェード（ADR-054、計画したときだけ）: `{type: takes.crossfade, asset: programme, crossfade, spans[{asset, video[s,e], audio[s,e], in_handle, out_handle, programme_start, remove[[s,e]], output}], joins[{after, before, at, crossfade, out_handle, in_handle, crossfaded, why?}], concats[{output, inputs[], crossfade}], audio, mux{video, audio, output}, timeline_duration, decision_ids}`。絵の cut list は変えず、validator が A/V 同期を IR から作り直して確かめる | Planner |
 | `captions` / `graphics` / `color` | 予約（Phase 3+） | — |
 | `speech.operations[]` | `speech.dub {asset, input, output, cues, lang, source_cues?, engine?, voice?, on_unfit?, reference?, consent?, duck?, voice_gain?, max_overrun?, temporal_scope, decision_ids}`（ADR-085。dubbing-skill の DUB。subject の edits の後・仕上げの前。計画した時だけ節があり、plan hash もその時だけ含める） | Planner |
+| `delivery.publish` | `{type: publish.upload, asset, target, artifact, platform, title?, description?, tags?, privacy, thumbnail?, captions?, caption_language?, decision_ids}`（ADR-087。承認された upload。計画した時だけ。compiler は op を作らず、render が offline の plan と dry run、`video-agent publish` が upload） | Planner |
 | `delivery.targets[]` | id, preset(ffmpeg-skill export preset 名), platform(check.py platform 名), artifact_type | Profile |
 | `qa` | required layers, thresholds | Profile / defaults |
 | `execution` | workspace, allowed_inputs, budgets, recovery_policy{max_attempts}, approvals{} | plan / render |

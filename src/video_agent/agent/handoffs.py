@@ -36,7 +36,11 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
                                   "ask for --set voice.isolate=true, voice.dereverb=true and / or voice.bleed_reduce=true (with audio.mix=true); every op needs confirmation (EXPERIMENTAL)",
              # ADR-086: diarization-skill's adapter (roadmap step 9; diarization-skill roadmap step 5)
              "speaker_diarization": "speaker diarization is implemented (analysis kind speaker_turns, ADR-086): ask for --set speakers.diarize=true "
-                                    "(+ speakers.num_speakers, or speakers.min_speakers / speakers.max_speakers); without diarization-skill the plan hands it off"}
+                                    "(+ speakers.num_speakers, or speakers.min_speakers / speakers.max_speakers); without diarization-skill the plan hands it off",
+             # ADR-087: publish-skill's adapter (its roadmap step 6)
+             "platform_publish": "publishing is implemented (skill publish_upload, ADR-087): with the QC gate on (--set qc=true) ask for --set publish.platform=<id> "
+                                 "(+ publish.title / publish.description / publish.tags / publish.privacy / publish.thumbnail / publish.captions); the plan asks you to "
+                                 "confirm, render makes publish-skill's offline plan and dry run, and the upload is `video-agent publish <artifact> --confirm <token>` after `deliver`"}
 _ON = (True, "true", "yes", "on", "1")
 _OFF = (False, None, "false", "no", "off", "0", "none")
 
