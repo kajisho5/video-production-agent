@@ -23,6 +23,7 @@ from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPE
 from .crop import decide_crop
 from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, decide_faces
 from .slides import decide_slides
+from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUBJECT, decide_bgm, parse_bgm_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
 from .image_insert import decide_image_insert
@@ -78,6 +79,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
                  # ADR-090: blurring measured faces changes the delivered picture irreversibly and the detector misses faces: CONFIRM, floor CONFIRM
                  FACE_SUBJECT: FACE_APPROVAL_KEY,
+                 # ADR-092: a music bed (a library licence as declared, or generated music) under the mix: CONFIRM, floor CONFIRM
+                 BGM_SUBJECT: BGM_APPROVAL_KEY,
                  # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
@@ -196,6 +199,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if audio.get("mix"):
             # ADR-063: every audio input, in input order, summed into one programme by the Skill's MIX (2..8 inputs; the first sets the length)
             ids = [a.id for a in audio_assets]
+            bgm_req = parse_bgm_requirements({k: r.value for k, r in m.items()})   # ADR-092: sound-design's bed is the mix's last input
+            if bgm_req is not None:
+                ids = ids + [BGM_INPUT]
             levels = audio.get("mix_levels")
             why = (f"{len(ids)} input(s) carry audio; a mix sums two or more" if len(ids) < 2
                    else f"{len(ids)} inputs carry audio; the Skill's MIX takes at most {AUDIO_MAX_MIX_INPUTS}" if len(ids) > AUDIO_MAX_MIX_INPUTS
@@ -218,10 +224,12 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                   "(the first input); no silence is cut from a mixed input (it would move one input against the others)"
                                   + (f"; the bed {ids[duck['input']]} is lowered by a sidechain compressor keyed by {ids[0]} (needs an engine whose audio tool offers ducking; "
                                      "otherwise the Skill refuses the step)" if duck else ""),
-                           confidence=1.0, evidence=a_ev + probe_ids_of(ids), risk=AUDIO_OPERATIONS["audio.mix"]["risk"], approval=approval_for("audio.mix", explicit=m["audio.mix"]),
+                           confidence=1.0, evidence=a_ev + probe_ids_of([i for i in ids if i != BGM_INPUT]), risk=AUDIO_OPERATIONS["audio.mix"]["risk"], approval=approval_for("audio.mix", explicit=m["audio.mix"]),
                            provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": ids, **({"levels": levels} if levels else {}), **({"duck": duck} if duck else {})},
                            requirements=audio["requirements"], serves_intent=None)
                 cap_block("audio_mix", "capability.audio_mix")
+                if bgm_req is not None:
+                    decide_bgm(eng, m, approval_for, a_ev, cap_block)
         if audio.get("filler_remove") is not None:   # ADR-072: per input, at the transcript's word timings
             decide_filler_remove(eng, audio, m, analysis, audio_assets, audio_mix_ok, lambda aid: a_ev + probe_ids_of([aid]), approval_for, cap_block)
         if vreq["ops"]:   # ADR-073: voice-enhance-skill per input after its cut / filler removal (bleed reduction: all mixed inputs), always CONFIRM

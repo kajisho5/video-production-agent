@@ -17,6 +17,7 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
+from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
 from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
 from ..agent.dubbing import FILES as DUB_FILES, OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL
@@ -50,7 +51,8 @@ class ValidationReport:
 
 def produced_subjects(d: Dict[str, Any]) -> set:
     """Logical subjects an operation produced (the video / audio concat programmes) that later operations may reference."""
-    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat", "audio.mix") and op.get("output")}
+    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat", "audio.mix") and op.get("output")} \
+        | {op.get("asset") for op in d["audio"]["operations"] if op.get("type") == BGM_SUBJECT and op.get("asset") == BGM_INPUT}   # ADR-092: the bed is made, not a source
 
 
 def check_audio_operations(d: Dict[str, Any]) -> List[str]:
@@ -84,6 +86,9 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
             continue
         if t in VOICE_OPERATIONS:   # ADR-073: voice-enhance-skill, per input after its cut / filler removal (bleed reduction: the mix's inputs as recorded)
             errs.extend(_voice_problems(op, assets, programme, seen_rank, on_audio_path))
+            continue
+        if t == BGM_SUBJECT:   # ADR-092: the bed sound-design makes, the mix's last input
+            errs.extend(bgm_problems(op, programme))
             continue
         if t not in AUDIO_OPERATIONS:
             errs.append(f"unknown audio operation type {t!r}")
@@ -128,8 +133,9 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
             ins = op.get("inputs") or []
             if len(ins) < 2 or len(set(ins)) != len(ins):
                 errs.append(f"{t} needs two or more distinct inputs")
+            has_bgm = any(o.get("type") == BGM_SUBJECT for o in aops)
             for i in ins:
-                if i not in assets:
+                if i not in assets and not (t == "audio.mix" and i == BGM_INPUT and has_bgm and ins[-1] == BGM_INPUT):   # ADR-092: the bed, last
                     errs.append(f"{t} input {i!r} is not an asset")
             if op.get("output") != subj or subj in assets:
                 errs.append(f"{t}: output must equal the operation's subject and not collide with an asset id")
@@ -1105,6 +1111,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if op["type"] in ("audio.mono", "audio.stereo", "audio.downmix") and (AUDIO_SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] == BGM_SUBJECT and op.get("mode") in ("library", "generate") and (bgm_skill_of(op), op["asset"]) not in step_keys:   # ADR-092
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in speech_operations(d):   # ADR-085
         if (DUB_SKILL, op["asset"]) not in step_keys:

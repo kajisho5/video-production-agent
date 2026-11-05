@@ -34,6 +34,7 @@ from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
 from ..tools.detection import DetectionAdapter, locate_detection
 from ..tools.diarization import DiarizationAdapter, locate_diarization
 from ..tools.slide_sync import SlideSyncAdapter, locate_slide_sync
+from ..tools.sound_design import SoundDesignAdapter, locate_sound_design
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -337,6 +338,11 @@ class CapabilityResolver:
         # import is not). `slide-sync:DETECT` / `:MATCH` follow the doctor's engine, `:IMPORT_PDF` / `:IMPORT_OFFICE` its import readiness (with the install line).
         self._finishing_skill(caps, "slide-sync", locate_slide_sync(env=self.env), lambda sk: SlideSyncAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
                               "VIDEO_AGENT_SLIDE_SYNC_DIR", "slide-sync-skill", "slide-sync", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # sound-design-skill (ADR-092): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (an engine missing is degraded:
+        # library mode needs none). `sound-design:LIBRARY` / `:BGM_GENERATE` follow checks.operations.<op>.ready, with the engine's install line when not ready.
+        self._finishing_skill(caps, "sound-design", locate_sound_design(env=self.env), lambda sk: SoundDesignAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_SOUND_DESIGN_DIR", "sound-design-skill", "sound-design", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
                               item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")

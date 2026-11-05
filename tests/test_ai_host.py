@@ -99,7 +99,7 @@ ECOSYSTEM_JOBS = {
     # speaker_diarization (diarization) too (ADR-086): the implemented measurement speaker_turns (tests/test_diarization.py)
     # dubbing: DUB is the implemented skill speech_dub (ADR-085); the job stays for narration / audio description, now with an install line
     "dubbing": ("dubbing", "dubbing-skill", f"git clone {_GH}dubbing-skill && pip install -e 'dubbing-skill'"),
-    "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
+    # sound_design (sound-design) too (ADR-092): the implemented music bed bgm_library / bgm_generate (tests/test_bgm.py)
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
@@ -185,8 +185,15 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_dubbing(self):
         self.assert_handoff("dubbing")
 
-    def test_sound_design(self):
-        self.assert_handoff("sound_design")
+    def test_sound_design_moved_to_the_sound_design_adapter(self):
+        """ADR-092: `job.sound_design` is no longer a handoff switch; it is refused with how the implemented music bed is asked for."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.sound_design": True})
+        self.assertIn("bgm.library", str(cm.exception))
+        self.assertNotIn("sound_design", svc.registry.names())
+        self.assertEqual(svc.registry.get("bgm_library").tools, ["sound-design/library-pick"])
 
     def test_speaker_diarization_moved_to_the_diarization_adapter(self):
         """ADR-086: `job.speaker_diarization` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a

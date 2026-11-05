@@ -84,7 +84,9 @@ _COMPONENTS: Tuple[Component, ...] = (
               package_install=_clone_pip("dubbing-skill"),
               note="ecosystem.json still says scaffold, but narrate / dub / describe ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and each "
                    "engine is its own install (Chatterbox in its own venv, the VOICEVOX / Style-Bert-VITS2 apps, Kokoro) that `dubbing doctor` names; the agent runs DUB (ADR-085)"),
-    Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),
+    Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音"), package_install=_clone_pip("sound-design-skill"),
+              note="ecosystem.json still says scaffold, but library-pick / generate-bgm ship (README, 0.1.0 unreleased, EXPERIMENTAL); the music bed of the mix "
+                   "(ADR-092): library mode needs no engine, generate-bgm needs ACE-Step 1.5 installed by the user (`sound-design doctor` prints how)"),
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),
               package_install=_clone_pip("diarization-skill", "pyannote"),
               note="speaker turns as the analysis kind speaker_turns (ADR-086); diarize also needs the gated speaker-diarization-community-1 pipeline cloned once "
