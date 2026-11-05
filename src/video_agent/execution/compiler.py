@@ -19,6 +19,7 @@ from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_r
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
+from ..agent.nle import MODES as NLE_MODES
 from ..agent.image_prepare import prepare_chain, prepared_id
 from ..agent.faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, TOOL_NAMES as FACE_TOOL_NAMES
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
@@ -59,6 +60,9 @@ def image_fingerprint(path: str) -> str:
 
 class CompileError(ValueError):
     pass
+
+
+PROJECT_IR = "project_ir"   # ADR-089: the artifact id of the project IR snapshot nle-bridge reads (<job>/nle/project.json, written by the service)
 
 
 def lower_dub(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -558,6 +562,25 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             inputs = list(dict.fromkeys(c["asset"] for c in op["clips"]))
             add(tool, lower_timeline_export(tool, op, project_id, out_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=TIMELINE_SKILL)
 
+    def nle(subject: str) -> None:
+        """ADR-089: nle-bridge export / conform of the subject from the project IR this job executes (the service writes it as
+        <job>/nle/project.json before running); the files land in one directory under artifacts/, next to the deliverables."""
+        st = state[subject]
+        for op in (d.get("delivery") or {}).get("nle") or []:
+            if op["asset"] != subject:
+                continue
+            mode = op["type"].split(".", 1)[1]
+            skill, want = NLE_MODES[mode]
+            tool = tool_for(skill, subject)
+            if tool != want:
+                raise CompileError(f"{op['type']} cannot be executed by {tool}; its tool is {want}")
+            paths[PROJECT_IR] = str(job / "nle" / "project.json")
+            keys[PROJECT_IR] = ""
+            out_id = op.get("output") or f"{subject}_nle"
+            paths[out_id] = str(job / "artifacts" / f"{st['stem']}_nle_{mode}")
+            args = {"project": PROJECT_IR, "subject": subject, "formats": list(op["formats"]), "output": out_id, **({"zip": bool(op.get("zip"))} if mode == "conform" else {})}
+            add(tool, args, [PROJECT_IR], [out_id], list(op.get("decision_ids") or []), st["fp"] + "|ir:" + stable_hash(d.get("delivery", {}).get("timelines") or [])[:16], skill=skill)
+
     def qc_gate(subject: str) -> None:
         """One qc/check per delivery artifact of the subject and one for its subtitle sidecar (ADR-032): kind qa, no output, never reused."""
         qc = (d.get("qa") or {}).get("qc") or {}
@@ -733,6 +756,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             loudness(asset_id)
             delivery(asset_id)
             timeline(asset_id)
+            nle(asset_id)
             thumbnail(asset_id)
             qc_gate(asset_id)
     if audio_concat is not None:
@@ -786,6 +810,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         loudness(subject)
         delivery(subject)
         timeline(subject)
+        nle(subject)
         thumbnail(subject)
         qc_gate(subject)
     if switch is not None:
