@@ -757,3 +757,14 @@
   - validator: テキスト / ロゴには canvas の大きさが要る、ロゴは `..` 無しの PNG / JPEG で allowed roots の中、ロゴの箱が canvas に重なる。
 - 帰結: 背景生成（`thumbnail/generate_background`）、テキストの縁取り / 影 / 背景箱、任意座標のテキストは未配線。
 - 検証: `tests/test_thumbnail_document.py`（5 件: 語彙と拒否、ヘッダの読み取りと配置、lowering と adapter の document（ロゴは allowed roots の外を拒否、`path` キーは禁止語）、pipeline で計画と描画、ロゴだけでも document、改ざんの拒否）、integration `ThumbnailDocumentRealTests`（実 thumbnail-skill + Pillow: 640x360 の PNG で、ロゴの赤が計画した左下の箱に描かれる）。
+
+## ADR-089 nle-bridge-skill の adapter: 実行する project IR を nle-bridge に渡し、export（OTIO / FCP7 XML / EDL / SRT）か conform package を作る（nle-bridge-skill の roadmap step 7 の agent 側、2026-10-31）
+- 事実: nle-bridge-skill main（c0ab78f、step 12 まで。ffmpeg-skill `>=2.0.0 <4.0.0`、relink.json に start timecode とその出所）の contract は入力に「video-production-agent project IR（delivery.timelines[]、ADR-052）」を挙げ、`export <plan> -o <dir> [--subject] [--formats]` と `conform <plan> -o <dir> [--zip] [--ffmpeg-skill]` を出す。IR から subject の `timeline.export` record・assets の path と probe・字幕 cue・timeline 決定の `not_exported`（warning）を自分で読む。network なし、媒体は書かない、入力は読み取りのみ。
+- 決定:
+  - 要求 `delivery.nle` = export | conform（none で無し）、`delivery.nle.formats`（contract の `formats` のカンマ区切り、既定は `default_formats`、timeline 形式を 1 つは含む）、`delivery.nle.zip`（conform だけ、既定 true）。
+  - 決定 `timeline.nle`（DELIVER、既定 AUTO: ファイルだけで媒体を書かず source を参照する、timeline export と同じ。policy `timeline.nle.approval`）。subject の timeline（`delivery.timeline`）が計画されていなければ BLOCK。step `nle_export` / `nle_conform`（tool `nle-bridge/export` / `conform`）を timeline step の後に置く。IR は `delivery.nle[]`（計画した時だけ、rejected-cited の検査にも入る）。
+  - 実行: render は IR を `<job>/nle/project.json` に書いてから compile する。compiler は `nle-bridge export|conform --json --overwrite --output=<job>/artifacts/<stem>_nle_<mode> --subject=<s> --formats=… [--zip] [--ffmpeg-skill=<agent の ffmpeg-skill> | --no-probe] -- <project.json>` を作る（ADR-069）。idempotency key には timeline record の hash を混ぜる。結果は、書かれたファイルが出力ディレクトリの中にあり sha256 が一致し、要求した timeline 形式がそろい、conform なら zip / manifest がある時だけ受ける。warning（NOT_IN_TIMELINE など）・ファイルの sha256 と再読の結果・relink の start timecode とその出所を provenance に残す。
+  - pin の fatal drift: skill_id / contract_version / execution / formats、export / conform の role・writes_media・mutates_input・argv、pin の error code の変化。
+  - ecosystem の snapshot に nle-bridge-skill（ecosystem.json ではまだ planned）を足し、無い時の ADR-051 handoff が repository と install を名指す。
+- 帰結: editor が返した timeline の `diff` と `--timeline-out` を次の plan version として読むこと（step 7 の後半）、beat grid の marker、dissolve、実 NLE での import 確認（その step 8）は未対応。
+- 検証: `tests/test_nle.py`（fake `nle-bridge`、6 件: pin（main c0ab78f）と検査、要求の語彙、argv と受理（hash / 範囲外 / Skill の code）、timeline の後に実行した IR から export し not_exported が warning で届く、conform の zip と relink、timeline 無しの BLOCK、handoff、validator）、integration `NleBridgeRealTests`（実 nle-bridge-skill + 実 ffmpeg-skill: conform package、relink の sha256 が媒体と一致、OTIO を opentimelineio で読み戻す）。

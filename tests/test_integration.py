@@ -3369,3 +3369,41 @@ class ThumbnailDocumentRealTests(unittest.TestCase):
         self.assertEqual(img.size, (640, 360))
         self.assertEqual(img.getpixel((10 + 50, 360 - 10 - 25)), (255, 0, 0), "the logo fills its 100x50 box at the bottom-left, 10 px in")
         self.assertNotEqual(img.getpixel((640 - 60, 360 - 35)), (255, 0, 0))
+
+
+class NleBridgeRealTests(unittest.TestCase):
+    """ADR-089 on the real nle-bridge-skill (main) with the real ffmpeg-skill: the agent hands it the project IR it executes; nle-bridge reads the
+    subject's timeline record itself and writes the conform package (OTIO / FCP7 XML / EDL, relink manifest with the media's sha256, zip)."""
+
+    def setUp(self):
+        from video_agent.tools.nle_bridge import locate_nle_bridge
+        if not locate_nle_bridge() or not locate_ffmpeg_skill():
+            self.skipTest("needs a nle-bridge-skill checkout (VIDEO_AGENT_NLE_BRIDGE_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_conform_package_from_the_executed_ir(self):
+        from video_agent.tools.nle_bridge import breaking_drift, locate_nle_bridge, NleBridgeAdapter
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_nle_"))
+        src = Path(tmp) / "src"; src.mkdir()
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=4", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=4", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video], check=True)
+        ad = NleBridgeAdapter(locate_nle_bridge(), workspace=tmp)
+        self.assertEqual(breaking_drift(ad.contract), [], "nle-bridge-skill main changed what the adapter relies on: re-verify the adapter")
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"delivery.timeline": "otio", "delivery.nle": "conform", "delivery.nle.formats": "otio,fcp7,edl"})
+        path = str(Path(tmp) / "p.project.json"); save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = next(x for x in out["execution"]["results"] if x["tool"] == "nle-bridge/conform")
+        self.assertEqual(sorted(f["format"] for f in res["data"]["files"]), ["edl", "fcp7", "otio"])
+        self.assertTrue(res["output"].endswith(".zip") and os.path.isfile(res["output"]))
+        [m] = res["data"]["relink_media"]
+        self.assertTrue(m["exists"])
+        from video_agent.tools.skill_process import sha256_file
+        self.assertEqual(m["sha256"], sha256_file(video))
+        try:
+            import opentimelineio as otio
+        except ImportError:
+            return
+        tl = otio.adapters.read_from_file(next(f["file"] for f in res["data"]["files"] if f["format"] == "otio"))
+        self.assertEqual(len(list(tl.find_clips())) >= 1, True)

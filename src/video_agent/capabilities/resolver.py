@@ -29,6 +29,7 @@ from ..tools.ingest import IngestAdapter, locate_ingest
 from ..tools.voice_enhance import VoiceEnhanceAdapter, locate_voice_enhance
 from ..tools.dubbing import DubbingAdapter, locate_dubbing
 from ..tools.publish import PublishAdapter, locate_publish
+from ..tools.nle_bridge import NleBridgeAdapter, locate_nle_bridge
 from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
 from ..tools.diarization import DiarizationAdapter, locate_diarization
 
@@ -312,6 +313,9 @@ class CapabilityResolver:
         self._finishing_skill(caps, "publish", locate_publish(env=self.env), lambda sk: PublishAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
                               "VIDEO_AGENT_PUBLISH_DIR", "publish-skill", "publish", per_item=lambda ad, doc: (ad.platform_status(doc), {}),
                               item_evidence=lambda ad, doc: ad.platform_evidence(doc))
+        # nle-bridge-skill (ADR-089): the same rule -- contract against the pinned one (fatal subset), its own doctor (nothing beyond Python needed)
+        self._finishing_skill(caps, "nle-bridge", locate_nle_bridge(env=self.env), lambda sk: NleBridgeAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_NLE_BRIDGE_DIR", "nle-bridge-skill", "nle-bridge", per_item=None)
         # imagemagick-skill (ADR-077): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (sips covers
         # resize / pad but not strip). Each tool gets `imagemagick-skill:<TYPE>` from the doctor's `tools.<name>.usable`, with the backend.
         self._finishing_skill(caps, "imagemagick-skill", locate_imagemagick(env=self.env), lambda sk: ImageMagickAdapter(sk), "VIDEO_AGENT_IMAGEMAGICK_DIR", "imagemagick-skill",
