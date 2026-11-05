@@ -40,7 +40,10 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
              # ADR-087: publish-skill's adapter (its roadmap step 6)
              "platform_publish": "publishing is implemented (skill publish_upload, ADR-087): with the QC gate on (--set qc=true) ask for --set publish.platform=<id> "
                                  "(+ publish.title / publish.description / publish.tags / publish.privacy / publish.thumbnail / publish.captions); the plan asks you to "
-                                 "confirm, render makes publish-skill's offline plan and dry run, and the upload is `video-agent publish <artifact> --confirm <token>` after `deliver`"}
+                                 "confirm, render makes publish-skill's offline plan and dry run, and the upload is `video-agent publish <artifact> --confirm <token>` after `deliver`",
+             # ADR-091: slide-sync-skill's adapter (slide-sync-skill roadmap step 6)
+             "slide_sync": "the slide timeline is implemented (analysis kind slide_timeline, ADR-091): ask for --set slides.detect=true (+ slides.deck=<pdf|pptx|key|odp> "
+                           "for the page on screen in each slide); without slide-sync-skill the plan hands it off"}
 _ON = (True, "true", "yes", "on", "1")
 _OFF = (False, None, "false", "no", "off", "0", "none")
 

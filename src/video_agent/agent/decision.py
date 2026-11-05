@@ -22,6 +22,7 @@ from .decision_engine import DecisionEngine, raise_approval, resolve_approval, r
 from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, transcript_words, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
 from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, decide_faces
+from .slides import decide_slides
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
 from .image_insert import decide_image_insert
@@ -648,6 +649,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)
     # ---- measurements an explicit requirement asks for that cannot run here (ADR-086): recorded and BLOCKED with a handoff, never dropped
     decide_measurement_handoffs(eng, m, analysis, probe_ids_of, cap_missing)
+    # ---- the slide timeline an explicit requirement asks for (ADR-091): handed off when it cannot run here, BLOCKED with slide-sync's code when it failed
+    decide_slides(eng, m, analysis, probe_ids_of, cap_missing)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")

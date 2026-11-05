@@ -5,7 +5,7 @@ Event ≠ Observation ≠ Inference ≠ Decision. Events exist on the time axis;
 (INFERRED / AI_GENERATED). An AI provider can never produce an OBSERVED event.
 
 Defining an event type here does not mean it is detected: only the codes in IMPLEMENTED_CODES are ever generated, from
-the observation kinds that are implemented (silence, loudness, transcript, speaker_turns since ADR-086). Slide / camera / scene /
+the observation kinds that are implemented (silence, loudness, transcript, speaker_turns since ADR-086, slide_timeline since ADR-091). Camera / scene /
 caption types are schema only until an analyzer or skill exists for them. A SpeechEvent says "speech with this transcript exists in this
 interval"; it never says who speaks (speaker_id stays null) and never becomes a command.
 """
@@ -39,7 +39,7 @@ EVENT_CODES: Dict[str, Tuple[str, str]] = {
     "INCIDENT_AUDIO_DROPOUT": ("IncidentEvent", "audio_dropout"), "INCIDENT_CORRUPTED_FRAME": ("IncidentEvent", "corrupted_frame"),
     "USER_DECISION": ("UserDecisionEvent", "approved"),   # subtype refined from metadata.action
 }
-IMPLEMENTED_CODES = ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH", "SPEAKER", "USER_DECISION")   # the only codes this codebase generates
+IMPLEMENTED_CODES = ("AUDIO_SILENCE", "AUDIO_ACTIVE", "LOUDNESS_MEASURE", "SPEECH", "SPEAKER", "SLIDE", "USER_DECISION")   # the only codes this codebase generates
 KIND_FOR_PROVENANCE = {"OBSERVED": "OBSERVED", "DERIVED": "OBSERVED", "INFERRED": "INFERRED", "AI_GENERATED": "INFERRED", "USER": "USER"}
 
 
@@ -124,6 +124,15 @@ def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
         for t in doc.get("turns") or []:
             out.append(mk("SPEAKER", TimeRange(float(t["start"]), float(t["end"])),
                           {"speaker_id": t.get("speaker"), "speaker_count": doc.get("speaker_count"), "anonymous": True, "model": (doc.get("engine") or {}).get("model")}))
+    elif obs.kind == "slide_timeline":
+        # ADR-091: one SlideEvent per measured slide (a picture held at least min_dwell seconds); the deck page only where slide-sync matched one
+        segs = {s.get("index"): s for s in ((obs.data.get("match") or {}).get("segments") or [])}
+        for s in obs.data.get("slides") or []:
+            mseg = segs.get(s.get("index")) or {}
+            e = mk("SLIDE", TimeRange(float(s["start"]), float(s["end"])), {"slide": s.get("index"), "page": mseg.get("page"), "matched": mseg.get("page") is not None if mseg else None,
+                                                                            "reason": mseg.get("reason")})
+            e.confidence = mseg.get("confidence") if isinstance(mseg.get("confidence"), (int, float)) else None
+            out.append(e)
     return out
 
 

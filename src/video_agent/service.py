@@ -24,6 +24,7 @@ from .agent.voice import check_voice_keys
 from .agent.faces import REQUIREMENT_KEYS as _FACE_REQUIREMENT_KEYS, check_face_keys, face_kind
 from .agent.dubbing import check_dub_keys, user_files as dub_user_files
 from .agent.publish import check_publish_keys
+from .agent.slides import check_slide_keys, slide_kind
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -65,6 +66,7 @@ from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lif
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
 from .tools.detection import PACKAGE as DETECTION_PACKAGE, DetectionAdapter, locate_detection
 from .tools.diarization import PACKAGE as DIARIZATION_PACKAGE, DiarizationAdapter, locate_diarization
+from .tools.slide_sync import PACKAGE as SLIDE_SYNC_PACKAGE, SlideSyncAdapter, locate_slide_sync
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
 from .tools.dubbing import PACKAGE as DUBBING_PACKAGE, DubbingAdapter, lift_observation as lift_dub_observation, locate_dubbing
@@ -113,6 +115,7 @@ class Service:
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
         self.detection_dir = os.environ.get("VIDEO_AGENT_DETECTION_DIR")   # ADR-090: detection-skill (face tracks to blur)
         self.diarization_dir = os.environ.get("VIDEO_AGENT_DIARIZATION_DIR")   # ADR-086: diarization-skill (speaker turns)
+        self.slide_sync_dir = os.environ.get("VIDEO_AGENT_SLIDE_SYNC_DIR")   # ADR-091: slide-sync-skill (slide timeline, deck pages)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
                                                video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
@@ -137,6 +140,7 @@ class Service:
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
         self.registry.register_package(DETECTION_PACKAGE)   # detection-skill (ADR-090): same rule
         self.registry.register_package(DIARIZATION_PACKAGE)   # diarization-skill (ADR-086): same rule
+        self.registry.register_package(SLIDE_SYNC_PACKAGE)   # slide-sync-skill (ADR-091): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -190,6 +194,8 @@ class Service:
             (locate_detection(self.detection_dir), lambda sk: DetectionAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots, ffmpeg_skill_dir=engine)),
             # ADR-086: a measurement (analysis kind speaker_turns); the turns file lands in <workspace>/cache/diarization, the input inside the analysis roots
             (locate_diarization(self.diarization_dir), lambda sk: DiarizationAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots)),
+            # ADR-091: a measurement (analysis kind slide_timeline); its files land in <workspace>/cache/slide-sync, the video and the deck inside the analysis roots
+            (locate_slide_sync(self.slide_sync_dir), lambda sk: SlideSyncAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots, ffmpeg_skill_dir=engine)),
         ):
             if located:
                 try:
@@ -358,13 +364,23 @@ class Service:
             # ADR-086: anonymous speaker turns, asked for explicitly (speakers.diarize); without a runnable tool the plan hands the measurement off
             kinds = list(kinds or []) + ([] if sk[0] in (kinds or []) else [sk[0]])
             params = dict(params or {}, **sk[1])
+        allowed: Optional[List[str]] = None
+        sl = slide_kind(user_requirements or {})
+        if sl is not None and "slide_sync" in self.tools_for(None, user_requirements):
+            # ADR-091: the slide timeline (and the deck's pages), asked for explicitly (slides.detect); without a runnable tool the plan hands it off
+            kinds = list(kinds or []) + ([] if sl[0] in (kinds or []) else [sl[0]])
+            params = dict(params or {}, **sl[1])
+            if sl[1].get("deck"):   # the deck is read by the Skill: its directory joins the analysis roots, its content the cache key
+                from .tools.skill_process import sha256_file
+                params["deck_sha256"] = sha256_file(sl[1]["deck"])
+                allowed = [str(Path(p).resolve().parent) for p in inputs] + [str(Path(sl[1]["deck"]).resolve().parent)]
         takes = _takes_requested(user_requirements or {})
         if takes is not None:   # ADR-053: takes are grouped by what is said in them; a named music bed's beat grid is measured on that input only
             kinds = list(kinds or []) + [k for k in ("transcript",) + ((BEAT_KIND,) if takes["music"] is not None else ()) if k not in (kinds or [])]
             if takes["music"] is not None:
                 params = dict(params or {}, beat_input=takes["music"])
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
-                                                ingest_records=ingest_records)
+                                                ingest_records=ingest_records, allowed_inputs=allowed)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {})})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
@@ -1555,7 +1571,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1667,6 +1683,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
     check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
     check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
+    check_slide_keys(user_requirements)   # ADR-091: slides.* keys known, in range, the deck an existing file of a type slide-sync imports
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
