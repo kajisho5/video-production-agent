@@ -560,6 +560,74 @@
        }
       }
      }
+    },
+    "publish": {
+     "description": "ADR-087: the approved upload of one deliverable (publish-skill); render makes its offline plan and dry run, `video-agent publish` the upload",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "type",
+      "asset",
+      "target",
+      "artifact",
+      "platform",
+      "privacy",
+      "decision_ids"
+     ],
+     "properties": {
+      "type": {
+       "const": "publish.upload"
+      },
+      "asset": {
+       "type": "string"
+      },
+      "target": {
+       "type": "string"
+      },
+      "artifact": {
+       "type": "string"
+      },
+      "platform": {
+       "type": "string",
+       "pattern": "^[a-z0-9_-]{1,32}$"
+      },
+      "title": {
+       "type": "string",
+       "maxLength": 10000
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 10000
+      },
+      "tags": {
+       "type": "array",
+       "maxItems": 500,
+       "items": {
+        "type": "string",
+        "maxLength": 10000
+       }
+      },
+      "privacy": {
+       "type": "string",
+       "pattern": "^[a-z]{1,16}$"
+      },
+      "thumbnail": {
+       "type": "boolean"
+      },
+      "captions": {
+       "type": "boolean"
+      },
+      "caption_language": {
+       "type": "string"
+      },
+      "decision_ids": {
+       "type": "array",
+       "minItems": 1,
+       "items": {
+        "type": "string"
+       }
+      }
+     }
     }
    }
   },
