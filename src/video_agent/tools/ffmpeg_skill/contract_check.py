@@ -11,8 +11,11 @@ flag the agent can emit for it appear in its input_schema (with the same arity: 
 catalogued value flag is not), do the catalogued positionals lead its positional list, and does doctor say it can run
 here. A tool that fails any of these is unavailable with the reason (capability `ffmpeg-skill:<tool>` MISSING: the
 plan names it in its handoff and doctor prints it), so a renamed flag never reaches argparse at run time. Only that tool
-is affected. A contract the agent cannot read as 1.x (another major, another skill id, no document) refuses the whole
-package: none of its facts can be trusted.
+is affected. A contract the agent cannot read as 1.x / 2.x (another major, another skill id, no document) refuses the
+whole package: none of its facts can be trusted. contract_version 2.0 (ffmpeg-skill 3.0.0, ADR-082) changed no part of
+the shape read here -- top-level keys, `skill`, `tools[].name` / `input_schema.properties[*].cli|type` / `positional` /
+`required` are those of 1.0 for all 42 tools (ffmpeg-skill bumped the major for cut.py's changed `precision` /
+`keyframe_snapped` meaning, a result field the agent does not read), so both majors are read the same way.
 
 Fatal / non-fatal (ADR-047's split, applied to this Skill): there is no pinned contract file for ffmpeg-skill because the
 catalog is the pin and the contract grows every release (42 tools, descriptions, diagnostics). Fatal: contract_version
@@ -35,7 +38,7 @@ SKILL_ID = "ffmpeg-skill"
 CONTRACT_SCRIPT = "_contract.py"
 CONTRACT_ARGS = ["--json", "--static"]
 DOCTOR_ARGS = ["doctor", "--json"]
-SUPPORTED_CONTRACT_MAJOR = 1
+SUPPORTED_CONTRACT_MAJORS = (1, 2)   # ADR-082: 2.0 = ffmpeg-skill 3.x, same ToolSpec shape as 1.0
 # flags the adapter appends to every command (adapter.command): --json always, --dry-run for a dry run
 RUNNER_FLAGS = ("--json", "--dry-run")
 CHECKED, UNCHECKED, REFUSED = "checked", "unchecked", "refused"
@@ -82,8 +85,8 @@ def check_catalog(contract: Any, doctor: Optional[Dict[str, Any]] = None, script
     cv = contract.get("contract_version")
     skill = contract.get("skill") if isinstance(contract.get("skill"), dict) else {}
     chk = CatalogCheck(CHECKED, contract_version=None if cv is None else str(cv), skill_version=skill.get("version"))
-    if _contract_major(cv) != SUPPORTED_CONTRACT_MAJOR:
-        chk.status, chk.reason = REFUSED, f"ffmpeg-skill contract_version {cv!r} is not {SUPPORTED_CONTRACT_MAJOR}.x (the catalog check reads the 1.x shape only)"
+    if _contract_major(cv) not in SUPPORTED_CONTRACT_MAJORS:
+        chk.status, chk.reason = REFUSED, f"ffmpeg-skill contract_version {cv!r} is not 1.x / 2.x (the catalog check reads the 1.x / 2.x shape only)"
         return chk
     if skill.get("id") != SKILL_ID:
         chk.status, chk.reason = REFUSED, f"contract skill.id {skill.get('id')!r} != {SKILL_ID!r}"

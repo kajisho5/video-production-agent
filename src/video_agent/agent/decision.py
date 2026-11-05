@@ -28,10 +28,12 @@ from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 from .brief import decide_brief
-from .handoffs import decide_jobs
+from .handoffs import decide_jobs, decide_measurement_handoffs
 from .nle import decide_nle
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
+from .dubbing import decide_dub
+from .publish import decide_publish
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -626,6 +628,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]
         return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and (d.subject in OPERATIONS or d.subject == TRIM_OP) and d.params.get("asset_id") == subject for d in decs) \
             or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
+    # ---- dubbing (ADR-085): the user's translated cues spoken over the subject's picture after its edits (dubbing-skill DUB), always CONFIRM
+    decide_dub(eng, m, analysis, subjects, caps, approval_for, probe_ids_of, cap_block)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- a still joined before / after the finished picture (ADR-070): after finishing (whose subtitle decisions it must not contradict) and
     # before the timeline export, which names it among what a cut list does not carry (like every other TRANSFORM it cannot express)
@@ -637,6 +641,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_nle(eng, m, decs, subjects, approval_for, probe_ids_of, cap_block)
     # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here
     decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)
+    # ---- measurements an explicit requirement asks for that cannot run here (ADR-086): recorded and BLOCKED with a handoff, never dropped
+    decide_measurement_handoffs(eng, m, analysis, probe_ids_of, cap_missing)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")
@@ -662,6 +668,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision="deliver the processed file without re-encoding to a platform preset",
                        reason="profile target has no preset (generic: keep source format)", confidence=1.0, evidence=[targets.id], risk="LOW", approval="AUTO", provenance=targets.provenance, params=dict(t),
                        requirements=[targets], serves_intent=_serves(intent, f"delivery.{t['id']}"))
+    # ---- publishing (ADR-087): after the QC gate and the delivery targets it names; always CONFIRM, the upload itself a human's separate command
+    decide_publish(eng, m, decs, subjects, target_list, approval_for, probe_ids_of, cap_block)
     # ---- AI recommendations (provenance AI_GENERATED): proposals only. A recommendation that a measured decision already
     # covers becomes extra evidence on that decision (its confidence / risk / approval are untouched). Anything else is a
     # review item: approval from policy (default CONFIRM), risk from the skill registry, never executable by itself.

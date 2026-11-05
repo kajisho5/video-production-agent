@@ -15,7 +15,7 @@ from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPE
                       kept_duration)
 from .image_insert import still_frame
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
-                        ir_thumbnail, picture_size)
+                        ir_thumbnail, picture_size, thumbnail_layout)
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
@@ -25,6 +25,8 @@ from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, time
 from .nle import MODES as NLE_MODES, SUBJECT as NLE_SUBJECT, ir_nle
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
+from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_dub_operation
+from .publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -64,6 +66,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     captions_ops: List[Dict[str, Any]] = []
     graphics_ops: List[Dict[str, Any]] = []
     color_ops: List[Dict[str, Any]] = []
+    speech_ops: List[Dict[str, Any]] = []   # ADR-085: the `speech` section (dubbing-skill DUB), written only when planned
     qc_plan: Dict[str, Any] = {"enabled": False, "decision_ids": [], "subjects": {}, "sidecars": {}}
     delivery: List[Dict[str, Any]] = []
     timelines: List[Dict[str, Any]] = []
@@ -206,8 +209,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             params: Dict[str, Any] = {"timestamp": min(float(at), max(0.0, float(scope["end"]) - 0.001)), "format": d.params["format"]}
             skill = str(d.params.get("skill") or THUMBNAIL_FRAME_SKILL)
             if skill == THUMBNAIL_RENDER_SKILL:
-                params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48), "color": d.params.get("color", "#FFFFFF"),
-                               "position": d.params.get("position", "bottom"), "width": size[0] if size else None, "height": size[1] if size else None})
+                params.update({"width": size[0] if size else None, "height": size[1] if size else None})
+                if d.params.get("text") is not None:
+                    params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48),
+                                   "color": d.params.get("color", "#FFFFFF"), "position": d.params.get("position", "bottom")})
+                if size and (d.params.get("texts") or d.params.get("logo")):   # ADR-088: the full document, laid out on the subject's own canvas
+                    logo, texts = thumbnail_layout(size[0], size[1], d.params.get("logo"), list(d.params.get("texts") or []), int(d.params.get("font_size") or 48),
+                                                   d.params.get("position") or "bottom")
+                    params.update({"texts": texts, "logo": logo})
             out_id = f"{subject}_thumbnail"
             src = picture_of.get(subject) or current_of[subject]
             graphics_ops.append(ir_thumbnail(subject, params, [d.id], src, out_id))
@@ -321,6 +330,26 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 qc_plan.setdefault("packages", {})[subject] = {"targets": sorted({t for t, _a, _s in gated}), "captions": sc_id, "thumbnail": th_id}
             summary.append(d.decision)
 
+    publish_rec: Dict[str, Any] = {}   # ADR-087: delivery.publish, written only when planned
+
+    def publish_steps(subject: str) -> None:
+        """ADR-087: the `publish.upload` decision of a subject → one step after every QC step of the subject (the upload comes after QC). No IR
+        operation: the compiler never runs it; render makes the Skill's offline plan and dry run, `video-agent publish` the upload."""
+        nonlocal order
+        for d in [x for x in decisions if x.subject == PUBLISH_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED" and x.params.get("asset_id") == subject]:
+            target = d.params["target"]
+            art = f"{subject}_delivery_{target}"
+            qc_ids = [s_.id for s_ in steps if s_.skill == QC_SKILL and (s_.params or {}).get("asset") == subject]
+            meta = {k: d.params[k] for k in ("title", "description", "tags", "privacy") if d.params.get(k) is not None}
+            attach = {k: bool(d.params.get(k)) for k in ("thumbnail", "captions")}
+            publish_rec.update({"type": "publish.upload", "asset": subject, "target": target, "artifact": art, "platform": d.params["platform"], **meta, **attach,
+                                **({"caption_language": d.params["caption_language"]} if d.params.get("caption_language") else {}), "decision_ids": [d.id]})
+            order += 1
+            steps.append(ProductionStep(id=f"step_publish_{subject}", order=order, skill=PUBLISH_SKILL, tool=tool_for(PUBLISH_SKILL), inputs=[art],
+                                        params={"asset": subject, "target": target, "platform": d.params["platform"], **meta, **attach}, outputs=[],
+                                        depends_on=qc_ids, evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+            summary.append(d.decision + " -- after QC; the upload needs a human's confirmation token (video-agent publish)")
+
     def edit_steps(subject: str, sources: List[str]) -> None:
         """The single-source editing operations decided for `subject` (video.speed → resize → fit / fill → overlay), chained on its
         current output. Each becomes one plan step and one IR operation with allowlisted parameters; nothing is inferred."""
@@ -359,6 +388,23 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             steps.append(st)
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(d.decision)
+
+    def dub_steps(subject: str) -> None:
+        """ADR-085: the `speech.dub` decision of a subject → one step (dubbing-skill DUB) and one IR `speech` operation on the subject's picture after
+        its edits and before the finishing: the programme with its dialogue replaced (video stream-copied), on the same timeline."""
+        nonlocal order
+        for d in decided(subject, DUB_OP):
+            out_id = f"{subject}_dub"
+            scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
+            params = {k: d.params[k] for k in DUB_PARAMS if d.params.get(k) is not None}
+            speech_ops.append(ir_dub_operation(subject, params, [d.id], current_of[subject], out_id, scope))
+            order += 1
+            st = ProductionStep(id=f"step_dub_{subject}", order=order, skill=DUB_SKILL, tool=tool_for(DUB_SKILL), inputs=[current_of[subject]],
+                                params={"asset": subject, **params}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [],
+                                evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+            steps.append(st)
+            current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
+            summary.append(d.decision + " -- EXPERIMENTAL, needs confirmation")
 
     def image_insert_steps(subject: str, sources: List[str]) -> None:
         """ADR-070: the still of a `video.image_insert` decision → a silent clip at the picture's own frame / rate (video_image_insert),
@@ -667,6 +713,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 delivery_steps(asset.id, first=asset is analysis.assets[0], single=len(analysis.assets) == 1)
         elif concat_dec is None and switch_dec is None and grid_dec is None:
             edit_steps(asset.id, [asset.id])
+            dub_steps(asset.id)
             finishing_steps(asset.id, [asset.id])
             image_insert_steps(asset.id, [asset.id])
             loudness_steps(asset.id)
@@ -675,6 +722,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             nle_steps(asset.id, [asset.id])
             thumbnail_steps(asset.id, [asset.id])
             qc_steps(asset.id, qc_tolerance_lu)
+            publish_steps(asset.id)
     def crossfade_steps(xd: Decision, concat_step: str, total: float) -> Dict[str, Any]:
         """ADR-054: each pick's audio span (its picture range + the join handles) cut out of its source (audio-production CUT), the spans
         of every run of crossfaded joins joined with the crossfade (CONCAT), the runs joined without one, and the result muxed under the
@@ -790,6 +838,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         if xf_dec is not None:
             take_crossfade = crossfade_steps(xf_dec, st.id, total)
         edit_steps(PROGRAMME, inputs)
+        dub_steps(PROGRAMME)
         finishing_steps(PROGRAMME, inputs)
         image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
@@ -798,6 +847,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         nle_steps(PROGRAMME, inputs)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+        publish_steps(PROGRAMME)
     if switch_dec is not None:
         # ---- explicit camera switch (ADR-045): unlike concat, the programme's duration is the (trimmed) reference input's
         # own duration, not a sum of segments -- multicam cuts between already-aligned sources on the reference timeline.
@@ -816,12 +866,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         durations[PROGRAMME] = total
         summary.append(f"Switch {' + '.join(inputs)} into one programme per {params['switch']} ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
+        dub_steps(PROGRAMME)
         finishing_steps(PROGRAMME, inputs)
         image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+        publish_steps(PROGRAMME)
     if grid_dec is not None:
         # ---- explicit comparison grid (ADR-046): unlike concat, the programme's duration is the shortest (trimmed) input's own
         # duration by default -- grid.py runs only as long as its shortest clip unless --pad holds every shorter cell's last frame
@@ -842,20 +894,23 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         durations[PROGRAMME] = total
         summary.append(f"Composite {' + '.join(inputs)} into a {params['cols']}x{params['rows']} grid programme ({total:.2f}s)")
         edit_steps(PROGRAMME, inputs)
+        dub_steps(PROGRAMME)
         finishing_steps(PROGRAMME, inputs)
         image_insert_steps(PROGRAMME, inputs)
         loudness_steps(PROGRAMME)
         delivery_steps(PROGRAMME, first=True, single=True)
         thumbnail_steps(PROGRAMME, inputs)
         qc_steps(PROGRAMME, qc_tolerance_lu)
+        publish_steps(PROGRAMME)
     # ---- ecosystem jobs handed off (ADR-057): one step per requested job, on the request's assets, with no tool (BLOCKED; the
     # plan's handoff names the owning package and its install command). It waits on nothing and produces nothing the agent tracks.
-    for d in [x for x in decisions if x.subject.startswith(JOB_PREFIX) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
+    # ADR-086: a measurement an explicit requirement asked for that no tool can run here (`handoff: true`) takes the same step
+    for d in [x for x in decisions if (x.subject.startswith(JOB_PREFIX) or x.params.get("handoff") is True) and x.type == "TRANSFORM" and x.status != "REJECTED"]:
         skill = d.params["skill"]
         order += 1
         steps.append(ProductionStep(id=f"step_job_{skill}", order=order, skill=skill, tool=tool_for(skill), inputs=[a.id for a in analysis.assets],
-                                    params={}, outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
-        summary.append(f"Hand off {skill} ({d.subject}): no adapter here; see the plan's handoff")
+                                    params=dict(d.params.get("args") or {}), outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+        summary.append(f"Hand off {skill} ({d.subject}): " + ("not runnable here" if d.params.get("handoff") else "no adapter here") + "; see the plan's handoff")
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:
@@ -871,5 +926,5 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "nle": list(nle_recs), "delivery": delivery,
+    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade}

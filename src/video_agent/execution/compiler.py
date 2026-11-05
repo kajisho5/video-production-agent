@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
-trim → concat → edits → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
+trim → concat → edits → dub (ADR-085) → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
 Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
@@ -22,6 +22,8 @@ from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJE
 from ..agent.nle import MODES as NLE_MODES
 from ..agent.image_prepare import prepare_chain, prepared_id
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
+from ..agent.dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, user_files as dub_user_files
+from ..tools.dubbing.adapter import TOOL_DUB
 from ..tools.voice_enhance.adapter import stem_name as voice_stem_name
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
@@ -60,6 +62,20 @@ class CompileError(ValueError):
 
 
 PROJECT_IR = "project_ir"   # ADR-089: the artifact id of the project IR snapshot nle-bridge reads (<job>/nle/project.json, written by the service)
+
+
+def lower_dub(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
+    """ADR-085: IR `speech.dub` → dubbing/dub's typed arguments: the picture by artifact id, the output id, and the allowlisted parameters copied
+    by name (the user's files as the paths they named; the adapter checks them inside the allowed roots). Nothing else is copied."""
+    if tool != TOOL_DUB:
+        raise CompileError(f"{DUB_OP} cannot be executed by {tool}; the only tool of this operation is {TOOL_DUB}")
+    if (op.get("reference") is None) != (op.get("consent") is None):
+        raise CompileError(f"{DUB_OP}: a reference voice goes only with its consent record (the user's), never one without the other")
+    args: Dict[str, Any] = {"input": current, "output": out_id}
+    for k in DUB_PARAMS:
+        if op.get(k) is not None:
+            args[k] = op[k]
+    return args
 
 
 def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -211,12 +227,12 @@ def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: s
 
 def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
     """IR graphics.thumbnail → thumbnail/extract_frame (a plain frame) or thumbnail/render (frame + caption) arguments."""
-    want = THUMBNAIL_RENDER_TOOL if op.get("text") is not None else THUMBNAIL_FRAME_TOOL
+    want = THUMBNAIL_RENDER_TOOL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_TOOL   # ADR-088: texts / logo
     if tool != want:
         raise CompileError(f"graphics.thumbnail cannot be executed by {tool}; this operation needs {want}")
     args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"], "output": out_id}
     if want == THUMBNAIL_RENDER_TOOL:
-        for k in ("width", "height", "text", "font_id", "font_size", "color", "position"):
+        for k in ("width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):
             if op.get(k) is not None:
                 args[k] = op[k]
     return args
@@ -360,6 +376,21 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, args, inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
             st["current"] = out_id
 
+    def dubs(subject: str) -> None:
+        """ADR-085: the subject's picture after its edits, its dialogue replaced by dubbing-skill (before colour / graphics / subtitles / a still)."""
+        st = state[subject]
+        for op in (d.get("speech") or {}).get("operations") or []:
+            if op["asset"] != subject or op["type"] != DUB_OP:
+                continue
+            st["gen"] += 1
+            out_id = f"{subject}_dub"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_dub" / f"{st['stem']}_dub.mp4")
+            tool = tool_for(DUB_SKILL, subject)
+            # the user's files are part of the key: an edited cue file or a replaced consent record re-runs the dub instead of reusing it
+            fp = st["fp"] + "|" + "|".join(image_fingerprint(f) for f in dub_user_files(op))
+            add(tool, lower_dub(tool, op, st["current"], out_id), [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill=DUB_SKILL)
+            st["current"] = out_id
+
     def inserts(subject: str) -> None:
         """ADR-070: a still joined to the finished picture (after the finishing, before loudness): image_insert, then concat."""
         st = state[subject]
@@ -481,7 +512,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             out_id = op.get("output") or f"{subject}_thumbnail"
             ext = "png" if op["format"] == "png" else "jpg"
             paths[out_id] = str(job / "artifacts" / f"{st['stem']}_thumbnail.{ext}")
-            skill = THUMBNAIL_RENDER_SKILL if op.get("text") is not None else THUMBNAIL_FRAME_SKILL
+            skill = THUMBNAIL_RENDER_SKILL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_SKILL
             tool = tool_for(skill, subject)
             src = st.get("picture") or st["current"]
             add(tool, lower_thumbnail(tool, op, src, out_id), [src], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
@@ -671,6 +702,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 delivery(asset_id)
         elif concat is None and switch is None and grid is None:
             edits(asset_id)
+            dubs(asset_id)
             finishing(asset_id)
             inserts(asset_id)
             loudness(asset_id)
@@ -724,6 +756,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, lower_take_crossfade(tool, "mux", mux, mux["output"]), [mux["video"], mux["audio"]], [mux["output"]], xids, fp, skill=AUDIO_MUX_SKILL)
             state[subject]["current"] = mux["output"]
         edits(subject)
+        dubs(subject)
         finishing(subject)
         inserts(subject)
         loudness(subject)
@@ -743,6 +776,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         args = lower_video_edit(tool, switch, inputs, subject)
         add(tool, args, inputs, [subject], list(switch.get("decision_ids") or []), fp, skill="camera_switch")
         edits(subject)
+        dubs(subject)
         finishing(subject)
         inserts(subject)
         loudness(subject)
@@ -760,6 +794,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         args = lower_video_edit(tool, grid, inputs, subject)
         add(tool, args, inputs, [subject], list(grid.get("decision_ids") or []), fp, skill="video_grid")
         edits(subject)
+        dubs(subject)
         finishing(subject)
         inserts(subject)
         loudness(subject)

@@ -9,10 +9,33 @@ from typing import Any, Dict, List, Optional
 from ..models import now_iso, stable_hash
 
 
+def obligations_of(skill_observations: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """What the published video has to carry because of the engines that made it (ADR-085): every `obligations.credit` line a Skill
+    reported (dubbing-skill DUB: VOICEVOX / Kokoro / Style-Bert-VITS2 voice credits, ADR-012 of that Skill), each once, in the order
+    reported, with where it came from, and the watermarks embedded in the output. Empty lists when nothing obliges anything."""
+    credit: List[str] = []
+    sources: List[Dict[str, Any]] = []
+    watermarks: List[Dict[str, Any]] = []
+    for o in skill_observations or []:
+        ob = ((o.get("data") or {}).get("obligations")) if isinstance(o, dict) else None
+        if not isinstance(ob, dict):
+            continue
+        new = [str(c) for c in ob.get("credit") or [] if str(c) not in credit]
+        credit += new
+        if ob.get("credit") or ob.get("watermark"):
+            sources.append({"kind": o.get("kind"), "source": o.get("source"), "credit": [str(c) for c in ob.get("credit") or []],
+                            "credit_required": ob.get("credit_required"), "watermark": ob.get("watermark")})
+        if ob.get("watermark"):
+            watermarks.append(dict(ob["watermark"]) if isinstance(ob["watermark"], dict) else {"name": str(ob["watermark"])})
+    return {"credit": credit, "watermarks": watermarks, "sources": sources}
+
+
 def build_receipt(ir_doc: Dict[str, Any], result_status: str, failed_op: Optional[str],
-                  artifacts: List[Dict[str, Any]], qa_items: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+                  artifacts: List[Dict[str, Any]], qa_items: Optional[List[Dict[str, Any]]],
+                  skill_observations: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """`artifacts`: the registered Artifact dicts for this job (empty when execution never reached registration).
     `qa_items`: this job's QAReport.items as dicts, None when execution itself did not complete (nothing measured).
+    `skill_observations`: provenance's lifted Skill observations; their `obligations` (credits / watermarks, ADR-085) become `obligations`.
     Emitted once execution reaches ANY terminal Executor status (COMPLETED, FAILED, BLOCKED, CANCELLED) -- "the
     Plan finished running," per PROVENANCE.md §4, not that it fully passed. Never emitted for a Plan that was
     rejected/blocked/pending approval before execution started: nothing ran, so there is nothing to record."""
@@ -45,6 +68,9 @@ def build_receipt(ir_doc: Dict[str, Any], result_status: str, failed_op: Optiona
         "warnings": warnings,
         "failures": failures,
     }
+    ob = obligations_of(skill_observations)
+    if ob["credit"] or ob["watermarks"]:   # ADR-085: written only when an engine obliges something, so other receipts keep their shape
+        body["obligations"] = ob
     body["id"] = "receipt_" + stable_hash(body)[:16]
     body["created_at"] = now_iso()
     return body

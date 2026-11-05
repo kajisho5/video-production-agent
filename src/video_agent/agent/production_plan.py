@@ -62,6 +62,12 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "media_offload": ("source", "destinations", "project", "hash", "name_by", "reel", "roots"),
                    # voice-enhance-skill (ADR-073): the subject (the programme for bleed reduction, with its tracks) and the typed engine parameters
                    "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),
+                   # dubbing-skill DUB (ADR-085): the subject, the user's files (translated / source cues, reference voice + its consent record) and the typed options
+                   "speech_dub": ("asset", "lang", "cues", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "duck", "voice_gain", "max_overrun"),
+                   # handed-off jobs with a pinned Skill contract (ADR-080): the job.<skill>.<name> parameters, named for the handoff (never run here)
+                   "render_3d": ("model", "preset", "transparent"), "html_scene_render": ("scene", "codec"),
+                   # publish-skill (ADR-087): the subject, its delivery target, the platform and the metadata the user approved
+                   "publish_upload": ("asset", "target", "platform", "title", "description", "tags", "privacy", "thumbnail", "captions"),
                    # nle-bridge (ADR-089): the subject, export / conform, the interchange formats and the zip
                    "nle_export": ("asset", "mode", "formats", "zip"), "nle_conform": ("asset", "mode", "formats", "zip")}
 
