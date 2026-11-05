@@ -71,6 +71,8 @@ from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapte
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
 from .tools.dubbing import PACKAGE as DUBBING_PACKAGE, DubbingAdapter, lift_observation as lift_dub_observation, locate_dubbing
 from .tools.publish import PACKAGE as PUBLISH_PACKAGE, PLAN_OK as PUBLISH_PLAN_OK, TOOL_UPLOAD as PUBLISH_TOOL, PublishAdapter, locate_publish
+from .tools.nle_bridge import PACKAGE as NLE_BRIDGE_PACKAGE, NleBridgeAdapter, lift_observation as lift_nle_observation, locate_nle_bridge
+from .agent.nle import check_nle_keys
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
@@ -109,6 +111,7 @@ class Service:
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
         self.dubbing_dir = os.environ.get("VIDEO_AGENT_DUBBING_DIR")   # ADR-085: dubbing-skill (DUB)
         self.publish_dir = os.environ.get("VIDEO_AGENT_PUBLISH_DIR")   # ADR-087: publish-skill (plan / dry run at render; the upload by `video-agent publish`)
+        self.nle_bridge_dir = os.environ.get("VIDEO_AGENT_NLE_BRIDGE_DIR")   # ADR-089: nle-bridge-skill (export / conform from the project IR)
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
         self.detection_dir = os.environ.get("VIDEO_AGENT_DETECTION_DIR")   # ADR-090: detection-skill (face tracks to blur)
         self.diarization_dir = os.environ.get("VIDEO_AGENT_DIARIZATION_DIR")   # ADR-086: diarization-skill (speaker turns)
@@ -133,6 +136,7 @@ class Service:
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
         self.registry.register_package(DUBBING_PACKAGE)   # dubbing-skill (ADR-085): same rule
         self.registry.register_package(PUBLISH_PACKAGE)   # publish-skill (ADR-087): same rule
+        self.registry.register_package(NLE_BRIDGE_PACKAGE)   # nle-bridge-skill (ADR-089): same rule
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
         self.registry.register_package(DETECTION_PACKAGE)   # detection-skill (ADR-090): same rule
         self.registry.register_package(DIARIZATION_PACKAGE)   # diarization-skill (ADR-086): same rule
@@ -181,6 +185,8 @@ class Service:
             (locate_dubbing(self.dubbing_dir), lambda sk: DubbingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             # ADR-087: reads only registered deliverables / thumbnails / sidecars in the workspace; its run() refuses every pipeline operation
             (locate_publish(self.publish_dir), lambda sk: PublishAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-089: reads the job's IR snapshot, writes only under the job's artifacts/; its media probe through the agent's own ffmpeg-skill
+            (locate_nle_bridge(self.nle_bridge_dir), lambda sk: NleBridgeAdapter(sk, workspace=self.workspace, ffmpeg_skill_dir=engine)),
             # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
             (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
             # ADR-090: a measurement (analysis kind face_tracks); its files land in <workspace>/cache/detection, the input inside the analysis roots,
@@ -741,6 +747,8 @@ class Service:
             d["delivery"]["timelines"] = plan["timelines"]
         if plan.get("publish"):   # ADR-087: the approved upload's platform / target / metadata; written only when planned
             d["delivery"]["publish"] = plan["publish"]
+        if plan.get("nle"):   # ADR-089: nle-bridge hand-off; written only when planned
+            d["delivery"]["nle"] = plan["nle"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
         if (plan.get("qc") or {}).get("enabled"):
             d["qa"]["qc"] = plan["qc"]
@@ -748,7 +756,8 @@ class Service:
             d["qa"].pop("qc", None)
         # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
-        images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)]
+        images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)] \
+            + [op["logo"]["image"] for op in plan.get("graphics_ops") or [] if isinstance(op.get("logo"), dict) and op["logo"].get("image")]   # ADR-088: a thumbnail's logo
         images += [f for op in plan.get("speech_ops") or [] for f in dub_user_files(op)]   # ADR-085: the user's cues / reference voice / consent record
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
@@ -988,6 +997,8 @@ class Service:
             return self._execute_offload(ir, ir_path, job, store, approved, who, timeout)
         job.transition("EXECUTING")
         store.save(job)
+        if (ir.doc.get("delivery") or {}).get("nle"):   # ADR-089: nle-bridge reads the project IR this job executes, as a file of the job
+            save_ir(ir, str(job.dir / "nle" / "project.json"))
         ops, paths = compile_ir(ir, str(job.dir))
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or [])
         ex = Executor(adapter, max_attempts=int(ir.doc["execution"]["recovery_policy"]["max_attempts"]), timeout=timeout, completed_keys=job.completed_ops)
@@ -1183,6 +1194,8 @@ class Service:
                 lifted = [lift_graphics_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("subtitle/"):
                 lifted = [lift_subtitle_result(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("nle-bridge/"):   # ADR-089: the written files with their sha256 / re-read check, every loss warning, relink facts
+                lifted = [lift_nle_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("voice-enhance/"):   # ADR-073: engine attribution / licences, parameters, warnings, stem facts
                 lifted = [lift_voice_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("dubbing/"):   # ADR-085: engine licences, obligations (credit / watermark), consent summary, fit, output facts
@@ -1664,6 +1677,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_qc_reference(rm)   # ADR-058: the master file exists, metrics are named, thresholds in range, the qc gate is on
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
+    check_nle_keys(user_requirements)   # ADR-089: delivery.nle export | conform, formats from the nle-bridge contract
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
     check_face_keys(user_requirements)   # ADR-090: edit.redact_faces and its refinements, in range, refinements only with the switch
     check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
