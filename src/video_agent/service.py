@@ -2,6 +2,7 @@
 Request → Requirements → Intent → Analysis → Inference → Decision → Plan → IR → Validate → Execute → QA → Report."""
 from __future__ import annotations
 
+import hmac
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,11 @@ from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
+from .agent.speakers import check_speaker_keys, speaker_kind
+from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
+from .agent.dubbing import check_dub_keys, user_files as dub_user_files
+from .agent.publish import check_publish_keys
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
 from .audit import build_provenance, build_receipt, write_audit
@@ -57,8 +62,11 @@ from .tools.qc import PACKAGE as QC_PACKAGE, QcAdapter, lift_report as lift_qc_r
 from .tools.subtitle import PACKAGE as SUBTITLE_PACKAGE, SubtitleAdapter, lift_result as lift_subtitle_result, locate_subtitle
 from .tools.thumbnail import PACKAGE as THUMBNAIL_PACKAGE, ThumbnailAdapter, lift_observation as lift_thumbnail_observation, locate_thumbnail
 from .tools.ingest import PACKAGE as INGEST_PACKAGE, IngestAdapter, locate_ingest
+from .tools.diarization import PACKAGE as DIARIZATION_PACKAGE, DiarizationAdapter, locate_diarization
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
 from .tools.voice_enhance import PACKAGE as VOICE_ENHANCE_PACKAGE, VoiceEnhanceAdapter, lift_observation as lift_voice_observation, locate_voice_enhance
+from .tools.dubbing import PACKAGE as DUBBING_PACKAGE, DubbingAdapter, lift_observation as lift_dub_observation, locate_dubbing
+from .tools.publish import PACKAGE as PUBLISH_PACKAGE, PLAN_OK as PUBLISH_PLAN_OK, TOOL_UPLOAD as PUBLISH_TOOL, PublishAdapter, locate_publish
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
@@ -95,7 +103,10 @@ class Service:
         self.qc_dir = qc_dir or os.environ.get("VIDEO_AGENT_QC_DIR")
         self.ingest_dir = ingest_dir or os.environ.get("VIDEO_AGENT_INGEST_DIR")   # ADR-066: ingest-skill's card offload (and ADR-059's URL fetch)
         self.voice_enhance_dir = os.environ.get("VIDEO_AGENT_VOICE_ENHANCE_DIR")   # ADR-073: voice-enhance-skill (isolate / dereverb / bleed-reduce)
+        self.dubbing_dir = os.environ.get("VIDEO_AGENT_DUBBING_DIR")   # ADR-085: dubbing-skill (DUB)
+        self.publish_dir = os.environ.get("VIDEO_AGENT_PUBLISH_DIR")   # ADR-087: publish-skill (plan / dry run at render; the upload by `video-agent publish`)
         self.imagemagick_dir = os.environ.get("VIDEO_AGENT_IMAGEMAGICK_DIR")   # ADR-077: imagemagick-skill (overlay image resize / pad / strip)
+        self.diarization_dir = os.environ.get("VIDEO_AGENT_DIARIZATION_DIR")   # ADR-086: diarization-skill (speaker turns)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
         self.caps = caps or CapabilityResolver(self.skill_dir, media_analysis_dir=self.media_analysis_dir, transcription_dir=self.transcription_dir, offline=self.offline,
                                                video_editing_dir=self.video_editing_dir, audio_production_dir=self.audio_production_dir, subtitle_dir=self.subtitle_dir,
@@ -114,7 +125,10 @@ class Service:
             self.registry.register_package(pkg)
         self.registry.register_package(INGEST_PACKAGE)   # ingest-skill's card offload (ADR-066): same rule
         self.registry.register_package(VOICE_ENHANCE_PACKAGE)   # voice-enhance-skill (ADR-073): same rule
+        self.registry.register_package(DUBBING_PACKAGE)   # dubbing-skill (ADR-085): same rule
+        self.registry.register_package(PUBLISH_PACKAGE)   # publish-skill (ADR-087): same rule
         self.registry.register_package(IMAGEMAGICK_PACKAGE)   # imagemagick-skill (ADR-077): same rule
+        self.registry.register_package(DIARIZATION_PACKAGE)   # diarization-skill (ADR-086): same rule
         if self._adapter is not None:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
@@ -155,8 +169,14 @@ class Service:
             (locate_ingest(self.ingest_dir), lambda sk: IngestAdapter(sk)),   # ADR-066: writes only where an approved plan names (checked per call)
             # ADR-073: always told which ffmpeg-skill to use (never its own current-directory search); paths checked per call like the other Skills
             (locate_voice_enhance(self.voice_enhance_dir), lambda sk: VoiceEnhanceAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-085: told which ffmpeg-skill to use like voice-enhance; the user's cues / reference voice / consent record are checked inside the allowed roots per call
+            (locate_dubbing(self.dubbing_dir), lambda sk: DubbingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-087: reads only registered deliverables / thumbnails / sidecars in the workspace; its run() refuses every pipeline operation
+            (locate_publish(self.publish_dir), lambda sk: PublishAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             # ADR-077: its scripts run as `python <checkout>/scripts/<tool>.py` (the current directory is never on their sys.path); paths checked per call
             (locate_imagemagick(self.imagemagick_dir), lambda sk: ImageMagickAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
+            # ADR-086: a measurement (analysis kind speaker_turns); the turns file lands in <workspace>/cache/diarization, the input inside the analysis roots
+            (locate_diarization(self.diarization_dir), lambda sk: DiarizationAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots)),
         ):
             if located:
                 try:
@@ -202,10 +222,14 @@ class Service:
             pkgs = sorted({t.split("/", 1)[0] for t in spec.tools})
             # ADR-057: repository and install commands from the ecosystem snapshot (skills/ecosystem.py), not a guessed `-skill` suffix
             install = list(dict.fromkeys(c for p in pkgs for c in install_commands(p)))
-            out.append({"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
-                        "reason": reason, "provided_by": pkgs, "repositories": [repository(p) for p in pkgs],
-                        "packages": [component(p).to_dict() if component(p) else {"package": p, "repository": repository(p)} for p in pkgs],
-                        "install": install})
+            h = {"step": st["id"], "skill": spec.name, "job": spec.description, "inputs": st.get("inputs", []), "params": st.get("params", {}),
+                 "reason": reason, "provided_by": pkgs, "repositories": [repository(p) for p in pkgs],
+                 "packages": [component(p).to_dict() if component(p) else {"package": p, "repository": repository(p)} for p in pkgs],
+                 "install": install}
+            req = handoff_request(spec.name, st.get("params") or {})   # ADR-080: the pinned Skill's tool, its arguments and where the output goes next
+            if req is not None:
+                h["contract"] = req
+            out.append(h)
         return out
 
     def packages(self) -> List[Dict[str, Any]]:
@@ -311,6 +335,11 @@ class Service:
             # ADR-072: filler words are removed at recognised word timings: a transcript with word timestamps, chosen by the system for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
             params = dict(params or {}, word_timestamps=True)
+        sk = speaker_kind(user_requirements or {})
+        if sk is not None and "speaker_diarization" in self.tools_for(None, user_requirements):
+            # ADR-086: anonymous speaker turns, asked for explicitly (speakers.diarize); without a runnable tool the plan hands the measurement off
+            kinds = list(kinds or []) + ([] if sk[0] in (kinds or []) else [sk[0]])
+            params = dict(params or {}, **sk[1])
         takes = _takes_requested(user_requirements or {})
         if takes is not None:   # ADR-053: takes are grouped by what is said in them; a named music bed's beat grid is measured on that input only
             kinds = list(kinds or []) + [k for k in ("transcript",) + ((BEAT_KIND,) if takes["music"] is not None else ()) if k not in (kinds or [])]
@@ -675,9 +704,15 @@ class Service:
         d["captions"] = {"operations": plan["captions_ops"]} if plan.get("captions_ops") else {}
         d["graphics"] = {"operations": plan["graphics_ops"]} if plan.get("graphics_ops") else {}
         d["color"] = {"operations": plan["color_ops"]} if plan.get("color_ops") else {}
+        if plan.get("speech_ops"):   # ADR-085: dubbing; written only when planned (no empty section), so an unchanged request keeps its plan hash
+            d["speech"] = {"operations": plan["speech_ops"]}
+        else:
+            d.pop("speech", None)
         d["delivery"] = {"targets": plan["delivery"], "naming": profile.data.get("naming", "")}
         if plan.get("timelines"):   # ADR-052: written only when planned, so an unchanged request keeps its plan hash
             d["delivery"]["timelines"] = plan["timelines"]
+        if plan.get("publish"):   # ADR-087: the approved upload's platform / target / metadata; written only when planned
+            d["delivery"]["publish"] = plan["publish"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
         if (plan.get("qc") or {}).get("enabled"):
             d["qa"]["qc"] = plan["qc"]
@@ -687,6 +722,7 @@ class Service:
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)] \
             + [op["logo"]["image"] for op in plan.get("graphics_ops") or [] if isinstance(op.get("logo"), dict) and op["logo"].get("image")]   # ADR-088: a thumbnail's logo
+        images += [f for op in plan.get("speech_ops") or [] for f in dub_user_files(op)]   # ADR-085: the user's cues / reference voice / consent record
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
@@ -955,6 +991,8 @@ class Service:
                 return out
             job.artifacts = [a.to_dict() for a in artifacts]
             out["artifacts"] = job.artifacts
+            if (ir.doc.get("delivery") or {}).get("publish"):   # ADR-087: the offline plan + dry run of the approved upload; nothing is uploaded here
+                out["publish"] = self._publish_prepare(ir, adapter, job, job.artifacts)
             job.transition("COMPLETED" if qa.status != "FAIL" else "REVIEW", f"qa {qa.status}")
             if qa.status == "FAIL":
                 out["status"] = "REVIEW"
@@ -975,7 +1013,8 @@ class Service:
         # Executor status, "the Plan finished running" per PROVENANCE.md §4, not that it fully passed. Never
         # reached for a Plan that was rejected/blocked/pending approval before execution started (this line is
         # after `ex.run()`, not before it) -- nothing ran yet, so there is nothing to record (I5, resolved).
-        receipt_body = build_receipt(ir.doc, result.status, result.failed_op, out.get("artifacts") or [], (out.get("qa") or {}).get("items"))
+        receipt_body = build_receipt(ir.doc, result.status, result.failed_op, out.get("artifacts") or [], (out.get("qa") or {}).get("items"),
+                                     skill_observations=prov.get("skill_observations"))   # ADR-085: engine obligations (dubbing credits / watermark)
         receipt_path = str(job.dir / "receipt.json")
         Path(receipt_path).write_text(json.dumps(receipt_body, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
         rst = self.artifact_store()
@@ -994,6 +1033,107 @@ class Service:
         out["job"] = job.to_dict()
         out["report"] = str(job.dir / "report.md")
         return out
+
+    # ---- publishing (ADR-087): render prepares, a human confirms
+    def _publish_prepare(self, ir: ProjectIR, adapter: Any, job: Job, artifacts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """The approved `delivery.publish` of this plan, after QA / QC: the deliverable's artifact (it must have passed: stage candidate or
+        approved), publish-skill's offline `plan` (PASS / WARN only) and the dry run of `upload` (its confirm_token for exactly these bytes,
+        metadata and platform). Recorded in <job>/publish.json and returned; nothing is uploaded, no network is used."""
+        pub = dict(ir.doc["delivery"]["publish"])
+        rec: Dict[str, Any] = {"platform": pub["platform"], "target": pub["target"], "decision_ids": list(pub.get("decision_ids") or []), "uploaded": False, "attempts": []}
+
+        def done(status: str, why: str = "", **extra: Any) -> Dict[str, Any]:
+            rec.update(status=status, reason=why, **extra)
+            (job.dir / "publish.json").write_text(json.dumps(rec, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+            return rec
+        decs = [ir.decision(x) for x in rec["decision_ids"]]
+        if not decs or any(x is None or x["status"] != "APPROVED" for x in decs):
+            return done("BLOCKED", "the publish decision is not approved")
+        art = next((a for a in artifacts if a.get("logical_name") == pub["artifact"]), None)
+        if art is None:
+            return done("BLOCKED", f"no registered deliverable {pub['artifact']}")
+        rec["artifact_id"] = art["id"]
+        if art.get("stage") not in ("candidate", "approved") or art.get("qa_status") == "FAIL":
+            return done("BLOCKED", f"the deliverable did not pass QA / QC (stage {art.get('stage')}, qa {art.get('qa_status')}, qc {(art.get('qa') or {}).get('qc')}); it is never published")
+        publisher = adapter.adapter_for(PUBLISH_TOOL) if hasattr(adapter, "adapter_for") else None
+        if publisher is None:
+            return done("BLOCKED", "publish-skill is not installed (set VIDEO_AGENT_PUBLISH_DIR or install `publish`)")
+        meta = {k: pub[k] for k in ("title", "description", "tags", "privacy") if pub.get(k) is not None}
+        subj = pub["asset"]
+        if pub.get("thumbnail"):
+            th = next((a for a in artifacts if a.get("type") == "THUMBNAIL" and a.get("logical_name") == f"{subj}_thumbnail"), None)
+            if th is None:
+                return done("BLOCKED", "the plan's thumbnail was not produced")
+            meta["thumbnail"] = th["path"]
+        if pub.get("captions"):
+            sc = next((a for a in artifacts if a.get("type") == "CAPTIONS" and a.get("logical_name") == f"{subj}_captions"), None)
+            if sc is None:
+                return done("BLOCKED", "the plan's subtitle sidecar was not produced")
+            meta["captions"] = [{"path": sc["path"], "language": pub.get("caption_language")}]
+        rec["metadata"] = {k: (v if k not in ("thumbnail", "captions") else (Path(v).name if k == "thumbnail" else [Path(c["path"]).name for c in v])) for k, v in meta.items()}
+        plan = publisher.plan(art["path"], pub["platform"], meta)
+        rec["plan"] = {"verdict": plan.get("verdict"), "error": plan.get("error"), "rows": [r for r in plan.get("checks") or [] if isinstance(r, dict) and r.get("status") != "PASS"]}
+        if plan.get("error") or plan.get("verdict") not in PUBLISH_PLAN_OK:
+            return done("BLOCKED", f"publish-skill plan: {plan.get('verdict') or (plan.get('error') or {}).get('code')}; fix the rows it names, re-render, nothing is uploaded")
+        dry = publisher.dry_run(art["path"], pub["platform"], meta)
+        if dry.get("error"):
+            return done("BLOCKED", f"publish-skill dry run refused: {dry['error']['code']}: {dry['error']['message']}", dry_run={"error": dry["error"]})
+        rec["dry_run"] = {"input": dry.get("input"), "metadata": dry.get("metadata"), "credentials": dry.get("credentials"), "platform": (dry.get("platform") or {}).get("id") or pub["platform"]}
+        return done("AWAITING_CONFIRMATION", "publish-skill's plan and dry run passed; nothing was uploaded", confirm_token=dry["confirm_token"], sha256=art["hash"],
+                    next=f"video-agent deliver {art['id']}, then (a human, once) video-agent publish {art['id']} --confirm {dry['confirm_token']}")
+
+    def publish(self, art_id: str, confirm: str, who: Optional[str] = None) -> Dict[str, Any]:
+        """ADR-087: the one upload of a delivered artifact, with the dry run's token a human typed. Refused unless the artifact is DELIVERED
+        (stage final), its bytes are the ones the dry run hashed, its plan's publish decision is still APPROVED, and the token is the one render
+        recorded; sent once and never retried by the agent (a new attempt only after a failure that published nothing, and only by a human
+        running this again). The result is recorded in <job>/publish.json."""
+        who = who or _default_who()
+        st = self.artifact_store()
+        a = st.get(art_id)
+        if a is None:
+            raise ArtifactError("ARTIFACT_MISSING", art_id)
+        job = JobStore(self.workspace).load(a.job_id)
+        path = job.dir / "publish.json" if job is not None else None
+        if path is None or not path.exists():
+            raise ValueError(f"no planned publish for {art_id}: render records one only for a plan with publish.platform")
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        if rec.get("artifact_id") == art_id and (rec.get("uploaded") or rec.get("status") == "UPLOADED"):
+            raise ValueError(f"{art_id} is already uploaded to {rec.get('platform')}; the agent never uploads it twice and never retries")
+        if rec.get("artifact_id") != art_id or rec.get("status") not in ("AWAITING_CONFIRMATION", "FAILED"):
+            raise ValueError(f"publish of {art_id} is {rec.get('status')}: {rec.get('reason') or ''}".strip())
+        if any(x.get("uploaded") or (x.get("error") or {}).get("code") not in SAFE_REATTEMPT for x in rec.get("attempts") or []):
+            raise ValueError("an upload of this artifact was already attempted and may have published (or did): check the platform; the agent never retries it")
+        if a.stage != "final":
+            raise ValueError(f"artifact {art_id} is {a.stage}: deliver it first (video-agent deliver {art_id}), then publish")
+        if not hmac.compare_digest(str(confirm or ""), str(rec.get("confirm_token") or "")):
+            raise ValueError("the token is not the confirm_token of this artifact's dry run (render printed it); nothing was uploaded")
+        chk = st.integrity(a.path)
+        if not chk["ok"] or chk["sha256"] != rec.get("sha256"):
+            raise ValueError("the deliverable changed since the dry run; re-render; nothing was uploaded")
+        ir_path = (a.provenance or {}).get("ir_path")
+        ir = load_ir(ir_path) if ir_path and os.path.exists(ir_path) else None
+        pub = ((ir.doc.get("delivery") or {}).get("publish") if ir else None) or {}
+        if not pub or ir.doc["plan"].get("id") != a.plan_id or any((ir.decision(x) or {}).get("status") != "APPROVED" for x in pub.get("decision_ids") or []) \
+                or (pub.get("platform"), pub.get("target")) != (rec.get("platform"), rec.get("target")):
+            raise ValueError("the plan's publish decision is no longer the approved one for this artifact; nothing was uploaded")
+        publisher = self.adapter([str(Path(a.path).parent)]).adapter_for(PUBLISH_TOOL)
+        if publisher is None:
+            raise ValueError("publish-skill is not installed (set VIDEO_AGENT_PUBLISH_DIR or install `publish`)")
+        meta = {k: pub[k] for k in ("title", "description", "tags", "privacy") if pub.get(k) is not None}
+        arts = {x.logical_name: x for x in st.list(project_id=a.project_id, job_id=a.job_id)}
+        if pub.get("thumbnail"):
+            meta["thumbnail"] = arts[f"{pub['asset']}_thumbnail"].path
+        if pub.get("captions"):
+            meta["captions"] = [{"path": arts[f"{pub['asset']}_captions"].path, "language": pub.get("caption_language")}]
+        res = publisher.upload(a.path, rec["platform"], meta, confirm)
+        attempt = {"by": who, "at": now_iso(), "uploaded": bool(res.get("uploaded")) and not res.get("error"), "result": res.get("result"), "error": res.get("error"),
+                   "seconds": res.get("seconds")}
+        rec["attempts"].append(attempt)
+        rec.update(uploaded=attempt["uploaded"], status="UPLOADED" if attempt["uploaded"] else "FAILED",
+                   reason=("uploaded once by " + who) if attempt["uploaded"] else f"upload failed: {(attempt['error'] or {}).get('code')}")
+        path.write_text(json.dumps(rec, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        return {"artifact_id": art_id, "platform": rec["platform"], "status": rec["status"], "uploaded": attempt["uploaded"], "result": attempt["result"], "error": attempt["error"],
+                "retried": False, "note": "sent once; the agent never retries an upload"}
 
     @staticmethod
     def _skill_observations(ops, results) -> List[Dict[str, Any]]:
@@ -1018,6 +1158,8 @@ class Service:
                 lifted = [lift_subtitle_result(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("voice-enhance/"):   # ADR-073: engine attribution / licences, parameters, warnings, stem facts
                 lifted = [lift_voice_observation(r, outputs.get(r.op_id))]
+            elif str(r.tool).startswith("dubbing/"):   # ADR-085: engine licences, obligations (credit / watermark), consent summary, fit, output facts
+                lifted = [lift_dub_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("thumbnail/"):
                 lifted = [lift_thumbnail_observation(r, outputs.get(r.op_id))]
             elif str(r.tool).startswith("imagemagick-skill/"):   # ADR-077: the prepared overlay image (operation, backend, size, sha256)
@@ -1384,8 +1526,12 @@ class Service:
                             "no level generates a command: tools are named by the registry, arguments by the compiler, commands by the Skills"}
 
 
+# ADR-087: publish-skill codes after which nothing was published (refused before the network, or the platform's quota / daily limit): a human may run
+# `video-agent publish` again. Any other failure (interrupted, rejected, partial, an unreadable result, a timeout) may have published: never again.
+SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
+                  "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.")
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1491,6 +1637,9 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
+    check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
+    check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
+    check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
@@ -1549,6 +1698,19 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
         lines += ["", "## Artifacts"]
         for a in out["artifacts"]:
             lines.append(f"- {a['type']} {a['path']} (stage {a['stage']}, qa {a['qa_status']}, sha256 {a['hash'][:12]}…)")
+    ob = (out.get("receipt") or {}).get("obligations")
+    if ob:   # ADR-085: what the published video has to carry (engine / voice credits, embedded watermarks)
+        lines += ["", "## Obligations (carry into the published description or credits)", *[f"- credit: {c}" for c in ob.get("credit") or []],
+                  *[f"- watermark: {w.get('name')}" for w in ob.get("watermarks") or []]]
+    pub = out.get("publish")
+    if pub:   # ADR-087: what render prepared; nothing was uploaded
+        lines += ["", f"## Publish to {pub.get('platform')} — {pub.get('status')}", f"- {pub.get('reason') or ''}"]
+        if pub.get("status") == "AWAITING_CONFIRMATION":
+            lines += [f"- deliverable {pub.get('artifact_id')} (sha256 {str(pub.get('sha256') or '')[:12]}…), metadata {json.dumps(pub.get('metadata'), ensure_ascii=False)}",
+                      f"- credentials: {json.dumps((pub.get('dry_run') or {}).get('credentials'), ensure_ascii=False)}",
+                      f"- next (a human, once): {pub.get('next')}"]
+        for r in (pub.get("plan") or {}).get("rows") or []:
+            lines.append(f"  - {r.get('status')} {r.get('check')}: {r.get('value')!r} (limit {r.get('limit')!r}) {r.get('fix') or ''}")
     ex = out.get("execution") or {}
     if out.get("resume"):
         r = out["resume"]

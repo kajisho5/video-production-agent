@@ -219,14 +219,18 @@ def breaking_drift(live: Dict[str, Any], pinned: Dict[str, Any], fatal_keys: Tup
     return out
 
 
+# ADR-082: the ffmpeg-skill contract versions a satellite may declare it targets (1.0 = ffmpeg-skill 2.x, 2.0 = 3.x; same shape)
+ENGINE_CONTRACT_VERSIONS = ("1.0", "2.0")
+
+
 def engine_compat_errors(fs: Dict[str, Any], field: str = "ffmpeg_skill") -> List[str]:
     """A satellite Skill's declaration of how it stays compatible with ffmpeg-skill (ADR-048). Two shapes are valid:
     the older fixed `version_window` dict, or the `compatibility` declaration of the capability-detection model the
     satellites moved to (each checks every tool and flag it uses against the installed ffmpeg-skill and reports the
     result in its own doctor, which the resolver already requires to be ok). Either way the Skill, not this adapter,
     owns the engine check; what is refused is a contract that declares neither."""
-    if str(fs.get("contract_version")) != "1.0":
-        return [f"{field}.contract_version {fs.get('contract_version')!r} != '1.0'"]
+    if str(fs.get("contract_version")) not in ENGINE_CONTRACT_VERSIONS:
+        return [f"{field}.contract_version {fs.get('contract_version')!r} not in {ENGINE_CONTRACT_VERSIONS}"]
     if isinstance(fs.get("version_window"), dict) or fs.get("compatibility"):
         return []
     return [f"{field}: neither version_window nor compatibility declared (the Skill must say how it stays compatible with its engine)"]
