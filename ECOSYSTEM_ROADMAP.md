@@ -102,6 +102,43 @@ Uses 17 of ffmpeg-skill's 42 tools directly (3.x, contract_version 2.0 read like
   - Done when: a template saved from one talk plans a second talk with the same steps; a template naming a parameter a skill has dropped is refused with the reason
 - [ ] **17. FREEZE / REVERSE as plan steps** — moved from step 6 (lowered there, no requirement yet): `edit.freeze` / `edit.reverse` → video-editing FREEZE / REVERSE
   - Done when: a plan step per key, tests; only when a request asks for it
+- [ ] **18. Productions with no source media (text-only PV, openings)** — `plan` today needs input media. Accept a brief with no footage: copy (text lines or a CSV), optional music, a duration, an aspect and a style, and plan an `html_scene_render` (hyperframes-skill) or a source-less `measured_motion` (remotion-ffmpeg-skill) step. `html_scene_render` moves from a handoff (ADR-080) to an adapter. Field review 2026-11-05 (Velisa ROADMAP, third round)
+  - なぜ要るか：オープニング・文字だけのPV・待機画面は素材ゼロから始まり、今は計画の入口で止まる
+  - Needs: hyperframes-skill text animation and shape layers (its new steps)
+  - Done when: `video-agent plan --request "ネオンで、120BPM、15秒、縦型" --copy lines.txt` gives a 1080x1920, 15.0 s plan with no input file, and the render is verified by probe
+- [ ] **19. Motion brief slots** — requirements_extraction gains typed slots for motion work: `motion.style` (a preset name the renderer publishes), `motion.bpm`, `motion.duration`, `aspect` (縦型 → 9:16 1080x1920, 正方形 → 1:1), `loop`, `alpha`, `brand.kit`, `font`. Only values a renderer's contract lists are accepted; an unknown style or a missing duration becomes a question back, never a guess
+  - なぜ要るか：「ネオンで、120BPM、15秒、縦型」の一文で迷わず計画になる。曖昧なまま作り直す時間を無くす
+  - Done when: an eval of 20 Japanese and English briefs maps every stated value to its slot, and an unstated duration is asked, not invented
+- [ ] **20. Relative revisions and references ("もっと速く", "さっきの")** — `revise --feedback` resolves relative words against the previous plan version: speed (tempo, transition duration), colour (saturation, brightness), size, position, with a bounded step per word (e.g. "もっと速く" = durations × 0.8) recorded in the revision. "さっきの" / "2つ前の" / "1つ目のテロップ" resolve to plan versions, render ids and element ids; an unresolvable reference is a question. Each revision shows a diff and a preview still before the full render
+  - なぜ要るか：プレビューを見て口頭で直す反復を、毎回パラメータを言い直さずに回せる
+  - Done when: a three-round eval ("もっと速く" → "色を落ち着かせて" → "さっきのに戻して") lands on the expected parameters, and version 1's render is reused for the last step
+- [ ] **21. Delivery presets for live, broadcast and NLE ("キーフィルで2本", "レイヤー別で")** — named delivery presets the planner picks from the request: `live-dsk` (key + fill, same frames, straight or premultiplied stated), `alpha-master` (ProRes 4444 / 4444 XQ / PNG sequence), `live-playback` (HAP Alpha), `nle-layers` (one alpha file per graphic layer + a manifest, and nle-bridge's timeline), `intermediate` (DNxHR HQ / ProRes 422 HQ), `loudness-set` (-14 LUFS stream, -23 LUFS EBU R128, -24 LKFS ARIB TR-B32), `aspect-set` (16:9 / 9:16 / 1:1). Each preset compiles to ffmpeg-skill export calls and names the qc-skill checks to run (key/fill match, loop seam, stinger cut point)
+  - なぜ要るか：スイッチャーのDSK・送出機・NLE・放送局の各納品を、一言の指示から取り違えなく出せる
+  - Needs: Velisa ROADMAP, Proposals to ffmpeg-skill (alpha masters, key/fill pair, multitrack audio, loudness variants); until then a preset the engine cannot make is reported as a handoff
+  - Done when: "キーフィルで2本、1080i59.94相当の尺で" plans a key and a fill with equal frame counts and a qc key/fill check; an unsupported codec is named in the plan, not dropped
+- [ ] **22. Deadline mode (撮って出し)** — `plan --deadline 30m`: steps are ordered so a deliverable exists as early as possible (proxy cut first, captions and grading after), optional steps that would miss the deadline are dropped with the reason in the plan, and the estimate per step comes from the measured speed of earlier jobs on this machine (hardware encoder present or not)
+  - なぜ要るか：休憩中・終演直後に出すダイジェストで、間に合う範囲を最初に決められる
+  - Done when: a fixture with a 10-minute budget drops the colour step and says so; the estimate is within 30 % of the real run on the CI machine
+- [ ] **23. Long-form and recording-in-progress jobs** — 2-8 h inputs planned in chunks (by slide-sync chapters, silence or fixed length) so analysis and render run chunk by chunk, in parallel up to a stated limit, and `render --resume` restarts at the first unfinished chunk. A source that is still being recorded (ingest-skill's growing flag) is planned on what is on disk and extended when more arrives; only closed chunks are rendered
+  - なぜ要るか：終日収録を休憩ごとに先に処理でき、途中で落ちても最初からやり直さない
+  - Done when: a 2 h fixture killed during chunk 3 resumes at chunk 3 and the output equals an uninterrupted run (framemd5)
+- [ ] **24. Progress and error classes over MCP** — every running step reports progress (step, percent, ETA, chunk) as MCP progress notifications and in `status --json`; every skill error is mapped to one class (`input`, `environment`, `engine`, `policy`, `transient`) with the skill's own code kept, so the host can say what to fix and whether a retry helps
+  - なぜ要るか：長いレンダー中に「あと何分か」「直すのは入力か環境か」をチャットからすぐ答えられる
+  - Done when: an integration test sees monotonic progress for a render and one error of each class from fixtures
+- [ ] **25. Long video → Shorts / Reels / TikTok set** — one plan from a long talk to N vertical clips: candidates from media-analysis-skill highlight signals and the transcript (AI provider, each with quoted words), reframed with detection-skill's subject path, captions burned through subtitle-skill, a hook title card, each clip within the platform's length; every clip CONFIRM before render, then publish-skill per clip
+  - なぜ要るか：配信・講演のアーカイブから縦型の切り出しを同日に出す需要が一番大きい
+  - Needs: media-analysis-skill highlight signals, detection-skill subject path
+  - Done when: a 30-minute fixture yields 3 clips of at most 60 s, 1080x1920, each with burned captions and a reason quoted from the transcript
+- [ ] **26. Chapters from the transcript** — when there are no slides, topic changes in the transcript become chapter proposals (AI provider, CONFIRM, the first words of each chapter as evidence), written as container chapters through ffmpeg-skill metadata and as YouTube description timestamps through publish-skill
+  - なぜ要るか：YouTube のチャプターと学会アーカイブの目次を、スライドがない対談でも作れる
+  - Done when: a fixture with three topics gives three chapters starting at 0:00, each at least 10 s long
+- [ ] **27. YouTube editing pass (jump cut, punch-in, emphasis, SFX)** — one opt-in requirement set for the common YouTube style: silence / filler cuts (audio-production-skill), punch-in zoom on the speaker at a share of the cuts (video-editing-skill punch-in), emphasis captions on key words (remotion-ffmpeg-skill), sound effects at cuts and emphasis (sound-design-skill cue sheet → audio-production MIX), end-screen area kept free (motion-graphics-skill end-screen layout). Every choice is listed in the plan with its reason
+  - なぜ要るか：一般的な YouTube 動画の定番編集を一度の指示で組み、何をしたかが説明できる
+  - Done when: an eval on a 5-minute talking-head fixture plans all five, and a request without "効果音" plans none
+- [ ] **28. Paper edit from a script** — a script (台本) given as input becomes the cut order: each script line is matched to its best take (transcription-skill's script alignment, then the take scores of step 10), lines with no take are listed as missing, and words spoken differently from the script (言い間違い) are proposed for a retake or a cut, CONFIRM with the script line and the spoken words side by side
+  - なぜ要るか：台本どおりに並べる荒編を自動にし、撮り直しが要る箇所を収録当日に洗い出せる
+  - Needs: transcription-skill script alignment
+  - Done when: a fixture with three takes of five lines assembles the five lines in script order, flags one line with a changed word, and reports one missing line
 
 ## Boundaries
 
