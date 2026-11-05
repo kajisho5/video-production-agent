@@ -209,7 +209,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
         self.assertEqual((h["step"], h["provided_by"], h["repositories"]), ("step_job_speaker_diarization", ["diarization"], ["diarization-skill"]))
         self.assertIn(f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'", h["install"])
-        self.assertIn("/plugin install diarization-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install diarization-skill@velisa", h["install"])
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_visual_detection(self):
