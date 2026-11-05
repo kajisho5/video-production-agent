@@ -113,11 +113,12 @@ ECOSYSTEM_JOBS = {
     "dvd_authoring": ("vtskit", "vtskit", "pip install vtskit"),
     "disc_image": ("udfkit", "udfkit", "pip install udfkit"),
     "dvd_line21_captions": ("dvdcc", "dvdcc", "pip install dvdcc"),
+    "disc_author": ("oncemore", "oncemore", "pip install git+https://github.com/kajisho5/oncemore"),
 }
 # ecosystem.json `plugin: true` (listed in the Claude Code marketplace) / `optional: true` (./install.sh --with-optional)
 PLUGINS = {"ingest-skill", "diarization-skill", "detection-skill", "slide-sync-skill", "imagemagick-skill", "blender-skill", "remotion-ffmpeg-skill",
            "hyperframes-skill", "artifacts-skill"}
-OPTIONAL = {"diarization-skill", "detection-skill", "bdmvkit", "vtskit", "udfkit", "dvdcc"}
+OPTIONAL = {"diarization-skill", "detection-skill", "bdmvkit", "vtskit", "udfkit", "dvdcc", "oncemore"}
 
 
 class EcosystemJobHandoffTests(unittest.TestCase):
@@ -276,6 +277,20 @@ class EcosystemJobHandoffTests(unittest.TestCase):
 
     def test_dvd_line21_captions(self):
         self.assert_handoff("dvd_line21_captions")
+
+    def test_disc_author(self):
+        """ADR-094 (oncemore roadmap step 3): a plan asking for a disc names oncemore and stops there; the step has no tool and nothing runs."""
+        self.assert_handoff("disc_author")
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.disc_author": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "disc_author"]
+        self.assertEqual(h["packages"][0]["owns"], ["ディスク作成アプリ(Mac)"])
+        self.assertIn("oncemore/build", svc.registry.get("disc_author").tools)
+        out = svc.render(ir, str(Path(tmp) / "p.json"), approve=["all"])
+        self.assertEqual(out["status"], "FAILED", "no execution path for disc authoring: the validator refuses the phase-2 step before anything runs")
+        self.assertIn("plan step step_job_disc_author cites skill disc_author which is declared for phase 2 and not implemented", out["validation"]["errors"])
+        self.assertEqual(out["job"].get("completed_ops") or {}, {})
 
     def test_every_declared_job_is_covered(self):
         from video_agent.skills.registry import ECOSYSTEM_JOB_SKILLS
