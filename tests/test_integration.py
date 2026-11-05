@@ -1962,7 +1962,7 @@ class VideoEditingRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.2"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.4.4"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
         # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
@@ -2062,7 +2062,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
         self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.2")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.4.4")
         self.assertEqual(len(prov["skill_observations"]), len(rows))
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
@@ -2117,7 +2117,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
-        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.2" for e in rows.values()))
+        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.4.4" for e in rows.values()))
 
     def test_image_insert_before_the_picture_end_to_end(self):
         """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
@@ -2155,7 +2155,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
         self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
         self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
-        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.2")
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.4.4")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")

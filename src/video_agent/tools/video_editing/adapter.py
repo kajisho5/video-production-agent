@@ -178,7 +178,8 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic video editing (typed operations, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.2.json")
+# 0.4.3 / 0.4.4 (video-editing-skill #23 / #24, Dependabot CI bumps): version-only; re-pinned from the v0.4.4 tag (ADR-097).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.4.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
