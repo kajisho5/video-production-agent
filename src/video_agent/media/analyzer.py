@@ -133,7 +133,12 @@ class MediaAnalyzer(Analyzer):
             tl.add_timeline(asset.id)
             dur = probe.get("duration") or 0.0
             has_audio = bool(probe.get("audio"))
-            for kind in [k for k in req.kinds if k != "media_probe" and not ANALYSIS_KINDS[k].get("pairwise")]:
+            kinds_here = [k for k in req.kinds if k != "media_probe" and not ANALYSIS_KINDS[k].get("pairwise")]
+            merge = bool(req.params.get("speaker_merge")) and "speaker_turns" in kinds_here and "transcript" in kinds_here
+            if merge:   # ADR-096: the turns are measured first so transcribe can merge them into the transcript (speaker ids end to end)
+                kinds_here = sorted(kinds_here, key=lambda k: 0 if k == "speaker_turns" else 1)
+            turns_of: Optional[Observation] = None
+            for kind in kinds_here:
                 only = ANALYSIS_KINDS[kind].get("only_input_param")
                 if only and req.params.get(only) != n_input:
                     rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": f"not the input named by {only}"})
@@ -158,6 +163,16 @@ class MediaAnalyzer(Analyzer):
                         continue
                     kp = dict(CROP_TOOL_ARGS)   # the agent's fixed sampling: the observation's parameters and part of its cache key
                     args = {"input": asset.path, **kp}
+                elif kind == "transcript" and merge and turns_of is not None:
+                    # ADR-096: this asset's measured turns go to transcribe inline (merged after recognition by transcription-skill with
+                    # diarization-skill's ASSIGN rule; never part of its recognition cache)
+                    kp = dict(kp, speaker_turns={k: v for k, v in turns_of.data.items() if k != "turns_file"})
+                    args = {"input": asset.path}
+                elif kind in ("face_tracks", "slide_timeline"):
+                    if not asset.technical.get("video"):
+                        rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no video stream"})
+                        continue
+                    args = {"input": asset.path}
                 else:
                     args = {"input": asset.path}
                 o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
@@ -165,7 +180,11 @@ class MediaAnalyzer(Analyzer):
                 if o is None:
                     warnings.append(f"{kind} analysis failed for {p}: {(row.get('error') or {}).get('kind')} {(row.get('error') or {}).get('message', '')}".rstrip())
                     continue
+                if kind == "transcript" and merge and turns_of is not None:
+                    o.parameters = dict(o.parameters or {}, speaker_turns=turns_of.id)   # ADR-096: which measured turns the ids come from
                 obs.append(o)
+                if kind == "speaker_turns":
+                    turns_of = o
                 self._events(kind, o, asset, dur, tl, params)
             if not has_audio:
                 warnings.append(f"{p}: no audio stream; silence and loudness analysis skipped")
@@ -293,6 +312,21 @@ class MediaAnalyzer(Analyzer):
             row["cache"] = (r.data or {}).get("cache")
             row["cache_hit"] = (row["cache"] or {}).get("status") == "hit"
             row["engine"] = (r.data or {}).get("engine")
+        elif kind == "slide_timeline" and isinstance(r.data, dict) and isinstance(r.data.get("timeline"), dict):
+            o = self._lift_slides(r.data, asset, req, source, key, tool, kparams)
+            if os.path.normcase(os.path.realpath(str(((r.data.get("timeline") or {}).get("source") or {}).get("path") or ""))) != os.path.normcase(os.path.realpath(asset.path)):
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": "the slide timeline names another video than this asset"}})
+                return None, row
+        elif kind == "face_tracks" and isinstance(r.data, dict) and isinstance(r.data.get("tracks"), dict):
+            o = self._lift_face_tracks(r.data, asset, req, source, key, tool, kparams)
+            if asset.hash and o.fingerprint != asset.hash:   # the boxes are about this file's bytes (detection-skill's source.fingerprint)
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"face tracks fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+        elif kind == "speaker_turns" and isinstance(r.data, dict) and isinstance(r.data.get("turns"), dict):
+            o = self._lift_turns(r.data, asset, req, source, key, tool, kparams)
+            if asset.hash and o.fingerprint != asset.hash:   # the turns are about this file's bytes (diarization-skill's source.fingerprint)
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"speaker turns fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+                return None, row
+            row["engine"] = (r.data or {}).get("engine")
         elif isinstance(ext_obs, dict) and isinstance(ext_obs.get("analysis"), dict):
             o = self._lift(ext_obs, r.data, kind, asset, req, source, key)
             row["cache"] = (r.data or {}).get("cache")
@@ -344,6 +378,60 @@ class MediaAnalyzer(Analyzer):
                            analyzer=f"{tr.get('engine')}@{tr.get('engine_version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
                            skill_version=str(sk.get("version") or prov.get("skill_version") or ""), tool=tool, external_id=str(tr.get("id") or ""),
                            fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp, parameters=params, cache=dict(data.get("cache") or {}))
+
+    @staticmethod
+    def _lift_slides(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """Lift slide-sync-skill's slide timeline (slide-sync/timeline@1, ADR-091) and, with a deck, its page match (slide-sync/match@1) into an
+        Observation of kind `slide_timeline`: the slides and change times as measured, the detector's parameters, each slide's page / confidence /
+        margin / view / reason (null page = not matched), the deck's summary, and the files the agent wrote. No path of the user's files."""
+        tl = dict(data["timeline"])
+        det = tl.get("detector") or {}
+        sk = data.get("skill") or {}
+        m = data.get("match") if isinstance(data.get("match"), dict) else None
+        body: Dict[str, Any] = {"slides": tl.get("slides") or [], "changes": tl.get("changes") or [], "slide_count": tl.get("slide_count"),
+                                "duration": (tl.get("source") or {}).get("duration"), "detector": {k: det.get(k) for k in ("engine", "engine_version", "method", "threshold", "min_dwell")},
+                                "timeline_file": data.get("timeline_file"), "warnings": list(data.get("warnings") or [])}
+        if m is not None:
+            body["match"] = {"segments": [{k: s.get(k) for k in ("index", "start", "end", "page", "confidence", "margin", "view", "reason", "mixed")} for s in m.get("segments") or []],
+                             "segment_count": m.get("segment_count"), "matched_count": m.get("matched_count"), "pages_shown": m.get("pages_shown") or [],
+                             "pages_not_shown": m.get("pages_not_shown") or [], "matcher": {k: (m.get("matcher") or {}).get(k) for k in ("method", "min_score", "min_margin", "samples")}}
+            body["deck"] = dict(data.get("deck") or {})
+            body["match_file"] = data.get("match_file")
+        return Observation(kind="slide_timeline", asset_id=asset.id, source=source, data=body, observed_at=now_iso(), analysis_id=req.analysis_id,
+                           analyzer=f"slide-sync@{sk.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0], skill_version=str(sk.get("version") or ""),
+                           tool=tool, fingerprint=asset.hash or "", parameters={k: v for k, v in dict(kparams).items() if k != "deck"} | ({"deck": os.path.basename(str(kparams["deck"]))} if kparams.get("deck") else {}))
+
+    @staticmethod
+    def _lift_face_tracks(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """Lift detection-skill's face tracks (detection-skill/tracks@1 made from its detections@1, ADR-090) into an Observation of kind
+        `face_tracks`: the tracks with their redact rectangles as the Skill wrote them, how frames were sampled, the counts, the engine /
+        model / sha256, and the two files the agent wrote into its workspace. OBSERVED: a detector's boxes, never an identity."""
+        tr = dict(data["tracks"])
+        det = dict(data.get("detections") or {})
+        eng = det.get("engine") or {}
+        sk = data.get("skill") or {}
+        fp = str((tr.get("source") or {}).get("fingerprint") or "")
+        body = {"tracks": tr.get("tracks") or [], "counts": tr.get("counts") or {}, "frame_size": tr.get("frame_size") or {}, "method": {k: v for k, v in (tr.get("method") or {}).items() if k != "note"},   # the Skill's prose note quotes flags in backticks (not a fact)
+                "parameters": tr.get("parameters") or {}, "detections": det, "detections_file": data.get("detections_file"), "tracks_file": data.get("tracks_file"),
+                "warnings": list(data.get("warnings") or [])}
+        return Observation(kind="face_tracks", asset_id=asset.id, source=source, data=body, observed_at=str(tr.get("created_at") or now_iso()),
+                           analysis_id=req.analysis_id, analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
+                           skill_version=str(sk.get("version") or tr.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                           parameters={**dict(kparams), "model": eng.get("model"), "model_sha256": eng.get("model_sha256")})
+
+    @staticmethod
+    def _lift_turns(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """Lift diarization-skill's speaker turns (diarization-skill/turns@1, ADR-086) into an Observation of kind `speaker_turns`: the document
+        is the fact (anonymous exclusive turns, overlap regions, engine / model / revision / licence / attribution), stored as the Skill wrote
+        it, plus the turns file the agent wrote into its workspace. OBSERVED: an estimate by a measurement tool, never an inference or a name."""
+        doc = dict(data["turns"])
+        eng = doc.get("engine") or {}
+        sk = data.get("skill") or {}
+        fp = str((doc.get("source") or {}).get("fingerprint") or "")
+        return Observation(kind="speaker_turns", asset_id=asset.id, source=source, data={**doc, "turns_file": data.get("turns_file")}, observed_at=str(doc.get("created_at") or now_iso()),
+                           analysis_id=req.analysis_id, analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
+                           skill_version=str(sk.get("version") or doc.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                           parameters={**dict(kparams), "model": eng.get("model"), "revision": eng.get("revision"), "engine_version": eng.get("version")})
 
     @staticmethod
     def _shape(kind: str, data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:

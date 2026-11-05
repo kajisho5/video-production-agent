@@ -15,7 +15,7 @@ The agent hands one typed operation: {"operation": generate | render, "format": 
 Cues, constraints and formats are validated here against the pinned contract before anything is sent; forbidden keys are refused by name.
 The request carries the workspace (absolute) and workspace-relative output / video paths only. The response is verified: skill / version /
 contract version / status / operation, the output's realpath, sha256 recomputed from the file, size, cue count and (render) the engine identity.
-The agent never identifies speakers (`speaker` is never set) and never sends the sidecar file: the Skill regenerates the subtitle text
+The agent never identifies speakers (`speaker` is only diarization-skill's anonymous SPEAKER_nn, ADR-096) and never sends the sidecar file: the Skill regenerates the subtitle text
 from the typed document, so the sidecar is only checked to exist under an allowed root for the planner's bookkeeping.
 
 Contract discrepancies absorbed here (documented, never patched in either project):
@@ -66,7 +66,8 @@ REQUIRED_ERROR_CODES = ("CANCELLED", "DEPENDENCY_ERROR", "INTERNAL_ERROR", "INVA
 REQUIRED_OUT_OF_SCOPE = ("speech_recognition", "transcription", "speaker_diarization", "ai_editing_decisions", "arbitrary_ffmpeg_execution")
 COMMON_ARGS = ("operation", "format", "document_id", "language", "cues", "constraints", "video_duration", "output")
 RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode")   # mode: the contract's render parameter (burn | mux, ADR-063); absent = the Skill's default (burn)
-CUE_KEYS = ("id", "start", "end", "text")
+CUE_KEYS = ("id", "start", "end", "text", "speaker")   # speaker (ADR-096): only diarization-skill's anonymous SPEAKER_nn of a diarized transcript
+SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
 INTEGER_CONSTRAINTS = ("max_chars_per_line", "max_lines")
 MAX_CUE_TEXT = 2000
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -274,7 +275,7 @@ class SubtitleAdapter(ToolAdapter):
 
     def cues_for(self, raw: Any) -> List[Dict[str, Any]]:
         """The typed cues the agent hands over, checked here before the Skill sees them: unique ids, ordered finite times, plain text.
-        `speaker` / `style` / `metadata` are never emitted (the agent identifies no speakers and styles nothing)."""
+        `style` / `metadata` are never emitted; `speaker` only as diarization-skill's anonymous SPEAKER_nn of a diarized transcript (ADR-096)."""
         if not isinstance(raw, list) or not raw:
             raise ToolError("subtitle-skill: cues must be a non-empty list")
         out: List[Dict[str, Any]] = []
@@ -299,7 +300,12 @@ class SubtitleAdapter(ToolAdapter):
                 raise ToolError(f"subtitle-skill: cue {cid} text must be a non-empty string of at most {MAX_CUE_TEXT} characters")
             if any(ord(ch) < 32 and ch != "\n" for ch in text) or "\x7f" in text:
                 raise ToolError(f"subtitle-skill: cue {cid} text carries control characters")
-            out.append({"id": cid, "start": start, "end": end, "text": text})
+            cue = {"id": cid, "start": start, "end": end, "text": text}
+            if c.get("speaker") is not None:   # ADR-096: an anonymous diarization id only (subtitle-skill writes "SPEAKER_00: text"); never a name
+                if not isinstance(c["speaker"], str) or not SPEAKER_RE.match(c["speaker"]):
+                    raise ToolError(f"subtitle-skill: cue {cid} speaker must be an anonymous SPEAKER_nn id, got {c['speaker']!r}")
+                cue["speaker"] = c["speaker"]
+            out.append(cue)
         return out
 
     def constraints_for(self, raw: Any) -> Optional[Dict[str, Any]]:

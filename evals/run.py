@@ -185,6 +185,48 @@ def _brief_case(case: dict, provider) -> dict:
     return {"case": case["name"], "ok": not failures, "failures": failures}
 
 
+def _faces_case(case: dict) -> dict:
+    """ADR-090: `edit.redact_faces` → detection-skill's face tracks (the analysis kind face_tracks, through the fake `detection` process) → a CONFIRM
+    video.redact_faces whose regions are the measured rectangles over their spans, executed after approval by cut / redact / broll on the fake engine;
+    or, without detection-skill, a BLOCKED plan whose handoff names it."""
+    import os
+    from test_face_redaction import MODES, det_service
+    from pipeline_harness import clear_modes, fake_media
+    from video_agent.project import load_ir, save_ir
+    fc = case["faces"]
+    clear_modes()
+    for k in MODES:
+        os.environ.pop(k, None)
+    tmp = os.path.realpath(tempfile.mkdtemp())
+    exp, failures = case["expect"], []
+    try:
+        svc = det_service(tmp, installed=fc.get("installed", True), skills=["video-editing"])
+        media = fake_media(tmp, duration=16.0, faces=fc.get("faces") or [])
+        ir = svc.plan([media], "generic", user_requirements=case.get("requirements") or {})
+        d = ir.doc
+        dec = next((x for x in d["decisions"] if x["subject"] == "video.redact_faces"), None)
+        got = {"plan_status": d["plan"]["status"], "decision": [dec["type"], dec["approval"]] if dec else None,
+               "regions": [[r["start"], r["end"], len(r["rects"])] for r in (dec or {}).get("params", {}).get("regions") or []],
+               "handoffs": [[h["skill"], h["repositories"]] for h in svc.handoffs(ir)]}
+        if exp.get("rendered_tools") is not None and dec is not None:
+            p = str(Path(tmp) / "p.json")
+            save_ir(ir, p)
+            svc.approve(load_ir(p), p, [dec["id"]])
+            out = svc.render(load_ir(p), p, approve=["all"])
+            got["rendered_tools"] = sorted({r["tool"] for r in (out.get("execution") or {}).get("results") or [] if r["tool"] in ("ffmpeg-skill/cut", "ffmpeg-skill/redact", "ffmpeg-skill/broll")})
+            got["status"] = out["status"]
+        for k, v in exp.items():
+            if got.get(k) != v:
+                failures.append(f"{k} {got.get(k)!r} != {v!r}")
+        errs = svc.validate(ir).errors
+        if d["plan"]["status"] != "BLOCKED" and errs:
+            failures.append(f"IR invalid: {errs}")
+    finally:
+        for k in MODES:
+            os.environ.pop(k, None)
+    return {"case": case["name"], "ok": not failures, "failures": failures}
+
+
 def _offload_case(case: dict) -> dict:
     """ADR-066: a card folder → an offload plan that copies nothing and waits for a CONFIRM, then (approved) ingest-skill's copy to the
     named destinations through the fake `ingest` process, and the copy's inventory as new assets with OBSERVED observations; or, when
@@ -236,6 +278,52 @@ def _offload_case(case: dict) -> dict:
     for k, v in want.items():
         if got.get(k) != v:
             failures.append(f"render {k} {got.get(k)!r} != {v!r}")
+    return {"case": case["name"], "ok": not failures, "failures": failures}
+
+
+def _speakers_case(case: dict) -> dict:
+    """ADR-086: `speakers.diarize` → diarization-skill's turns as the analysis kind speaker_turns (OBSERVED observation + SpeakerEvents)
+    through the fake `diarization` process; or, when DIARIZE cannot run (not installed / not ready), a BLOCKED plan with a handoff."""
+    import os
+    from test_diarization import MODES, dia_service
+    from pipeline_harness import clear_modes, fake_media
+    sp = case["speakers"]
+    clear_modes()
+    for k in MODES:
+        os.environ.pop(k, None)
+    for k, v in (sp.get("modes") or {}).items():
+        os.environ[k] = v
+    tmp = os.path.realpath(tempfile.mkdtemp())
+    exp, failures = case["expect"], []
+    try:
+        svc = dia_service(tmp, installed=sp.get("installed", True))
+        media = fake_media(tmp, duration=16.0, **({"turns": sp["turns"]} if sp.get("turns") else {}))
+        try:
+            ir = svc.plan([media], case.get("profile", "youtube"), user_requirements=case.get("requirements") or {})
+        except ValueError as e:
+            if exp.get("refused") and exp["refused"] in str(e):
+                return {"case": case["name"], "ok": True, "failures": []}
+            return {"case": case["name"], "ok": False, "failures": [f"refused: {e}"]}
+        if exp.get("refused"):
+            failures.append("not refused")
+        d = ir.doc
+        obs = [o for o in d["analysis"]["observations"] if o["kind"] == "speaker_turns"]
+        events = [e for e in d["timeline"]["events"] if e["type"] == "SPEAKER"]
+        got = {"observations": len(obs), "speakers": obs[0]["data"]["speakers"] if obs else None, "events": [[e["range"]["start"], e["metadata"]["speaker_id"]] for e in events],
+               "plan_status": d["plan"]["status"], "handoffs": [[h["skill"], h["repositories"]] for h in svc.handoffs(ir)],
+               "blocked_codes": sorted({x["params"].get("code") for x in d["decisions"] if x["subject"] == "speakers.diarize" and x["type"] == "BLOCK" and x["params"].get("code")}),
+               "provenance": sorted({o["provenance"] for o in obs} | {e["provenance"] for e in events})}
+        for k, v in exp.items():
+            if k != "refused" and got.get(k) != v:
+                failures.append(f"{k} {got.get(k)!r} != {v!r}")
+        errs = svc.validate(ir).errors
+        if d["plan"]["status"] != "BLOCKED" and errs:
+            failures.append(f"IR invalid: {errs}")
+        if got["handoffs"] and not any("has no selected tool" in e for e in errs):   # a handoff step is what the validator refuses to run
+            failures.append(f"handoff step not reported by the validator: {errs}")
+    finally:
+        for k in MODES:
+            os.environ.pop(k, None)
     return {"case": case["name"], "ok": not failures, "failures": failures}
 
 
@@ -326,6 +414,10 @@ def run_case(case: dict) -> dict:
             return {"case": case["name"], "ok": not failures, "failures": failures}
     if case.get("offload") is not None:   # ADR-066: a card offload is its own plan (no media file input)
         return _offload_case(case)
+    if case.get("faces") is not None:   # ADR-090: face tracks through the fake detection-skill, blurred after approval
+        return _faces_case(case)
+    if case.get("speakers") is not None:   # ADR-086: speaker turns through the fake diarization-skill
+        return _speakers_case(case)
     if case.get("brief") is not None:
         return _brief_case(case, provider)
     pipe = case.get("pipeline")

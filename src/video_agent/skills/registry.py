@@ -219,20 +219,19 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
 # (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
-# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below.
+# `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-086:
+# `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns). ADR-087:
+# `platform_publish` (publish) left it the same way: the implemented `publish_upload` below. ADR-091:
+# `slide_sync` (slide-sync) too: the implemented measurement of the same name below (analysis kind slide_timeline). ADR-092: `sound_design`
+# (sound-design) too: its music bed is the implemented bgm_library / bgm_generate below (sound effects are not wired). ADR-093:
+# `measured_motion_graphics` (remotion-ffmpeg-skill) too: the implemented `measured_motion` below. ADR-095: `document_verification` (artifacts-skill)
+# too: the implemented `document_verify` below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
-    _job("dubbing", "AI narration (TTS), dubbing / voice replacement timed to the source, audio description (cloning a voice needs its owner's consent)",
-         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "dub", "HIGH", deterministic=False),
-    _job("sound_design", "Generate a music bed (BGM) or sound effects",
-         {"brief": "text"}, {"artifact": "audio"}, "sound-design", "generate", "MEDIUM", deterministic=False),
-    _job("speaker_diarization", "Speaker diarization: who spoke when, filling the Transcript speaker_id that transcription leaves null",
-         {"asset": "media", "transcript": "observation"}, {"observation": "diarization"}, "diarization", "diarize", "LOW", approval="AUTO", deterministic=False),
+    # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
+    _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
+         {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "narrate", "HIGH", deterministic=False),
     _job("visual_detection", "Face, text (OCR) and object detection on the picture",
          {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
-    _job("slide_sync", "Import a slide deck, detect slide changes in the recording and match each segment to its slide",
-         {"asset": "video", "deck": "pdf|pptx|key"}, {"observation": "slide_segments"}, "slide-sync", "match", "LOW", approval="AUTO"),
-    _job("platform_publish", "Upload a QC-passed deliverable with its metadata to a delivery platform",
-         {"artifact": "delivery", "platform": "str"}, {"receipt": "upload"}, "publish", "upload", "HIGH"),
     # ADR-077: imagemagick-skill's package id is its own `skill.id` (imagemagick-skill), the prefix of its provides[].tool_id; the overlay
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
@@ -240,18 +239,18 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-080: the Skill's own skill_id and provides[].tool_id from a pinned contract (skills/handoff_contracts.py); still a handoff, CONFIRM
     _job("render_3d", "Render a 3D model with headless Blender (still, turntable or 4-view sheet; with alpha for compositing) as a B-roll asset for ffmpeg-skill/overlay",
          {"model": "glb|gltf|fbx|obj|stl|usd|usdz|ply|abc|blend"}, {"artifact": "image|video"}, "blender-skill", "render", "MEDIUM"),
-    _job("measured_motion_graphics", "Remotion motion graphics on the footage, timed from ffmpeg-skill measurements (captions, jump cuts, beat-synced motion)",
-         {"asset": "video"}, {"artifact": "video"}, "remotion-ffmpeg", "pipeline", "MEDIUM"),
     _job("html_scene_render", "Render an HTML scene folder to verified video with HyperFrames (h264 / vp9, or ProRes 4444 with alpha), to join with "
          "video-editing/concat or composite with ffmpeg-skill/overlay", {"scene": "dir with index.html"}, {"artifact": "video"}, "hyperframes-skill", "render", "MEDIUM"),
-    _job("document_verification", "Verify an AI-generated document (script, captions, report) and issue an evidence-backed receipt",
-         {"document": "file"}, {"receipt": "verification"}, "artifacts", "verify", "LOW", approval="AUTO"),
     _job("bluray_authoring", "Author a Blu-ray (BDMV): titles, chapters, menus, subtitles",
          {"asset": "video"}, {"artifact": "BDMV"}, "bdmvkit", "build", "MEDIUM"),
     _job("dvd_authoring", "Author a DVD-Video (VIDEO_TS): titles, menus, subtitles",
          {"asset": "video"}, {"artifact": "VIDEO_TS"}, "vtskit", "author", "MEDIUM"),
     _job("disc_image", "Write a UDF disc image (.iso) of an authored DVD-Video or Blu-ray folder",
          {"disc": "VIDEO_TS|BDMV"}, {"artifact": "iso"}, "udfkit", "image", "LOW"),
+    # ADR-094: the disc authoring app (oncemore roadmap step 3). Handoff only: oncemore's own project (titles, menus, chapters) and its build /
+    # iso / burn are the user's to run with oncemore; nothing here executes it (no adapter, no execution path)
+    _job("disc_author", "Author a DVD-Video or Blu-ray disc with menus, chapters and subtitles from finished videos, as a disc folder or .iso (oncemore, Mac app over a CLI and MCP server)",
+         {"assets": "video[]"}, {"artifact": "VIDEO_TS|BDMV|iso"}, "oncemore", "build", "MEDIUM"),
     _job("dvd_line21_captions", "Insert line-21 closed captions (CEA-608) into DVD MPEG-2 video without re-encoding",
          {"video": "m2v", "captions": "scc|srt"}, {"artifact": "m2v"}, "dvdcc", "caption", "MEDIUM"),
 )
@@ -343,6 +342,11 @@ def default_registry() -> SkillRegistry:
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
     r.register(SkillSpec("speech_transcription", "1.0", "Speech → timestamped Transcript (segments, language, optional word timestamps); recognition only",
                          {"asset": "media"}, {"observation": "transcript", "events": "SPEECH"}, ["ffmpeg", "ffprobe", "transcription"], "LOW", True, "AUTO", ["transcription/transcribe"]))
+    # who spoke when (ADR-086, replacing ADR-057's phase-2 declaration of the same name): diarization-skill's anonymous exclusive speaker turns,
+    # a measurement (analysis kind speaker_turns) that needs the package and its own DIARIZE readiness (`diarization:DIARIZE`, from its
+    # doctor: pyannote.audio, torch and the local pipeline directory). Never a name; nothing is decided from it here.
+    r.register(SkillSpec("speaker_diarization", "1.0", "Who spoke when: anonymous exclusive speaker turns (SPEAKER_nn) of a recording, overlapping speech kept apart; measurement only",
+                         {"asset": "media"}, {"observation": "speaker_turns", "events": "SPEAKER"}, ["diarization", "diarization:DIARIZE"], "LOW", False, "AUTO", ["diarization/diarize"]))
     # multi-source sync measurement (ADR-035): the offset / drift of a recording relative to the reference, by ffmpeg-skill/sync (audio
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
@@ -377,6 +381,45 @@ def default_registry() -> SkillRegistry:
     # explicit op acts on it" shape as sync_analysis feeding camera_switch above. It is not in agent/editing.py's
     # OPERATIONS / EDIT_ORDER; it is the analysis kind `crop_rectangle` (ADR-060), whose stable rectangle becomes a
     # CONFIRM decision proposing video_crop (agent/crop.py).
+    # slide changes of a talk recording (ADR-091, replacing ADR-057's phase-2 declaration of the same name): slide-sync-skill's measured slide timeline
+    # and, with the speaker's deck, the page on screen in each slide; a measurement (analysis kind slide_timeline) that needs the package and its
+    # engine readiness (`slide-sync:DETECT`, from its doctor). Never a slide's meaning; nothing is decided from it here.
+    r.register(SkillSpec("slide_sync", "1.0", "Slide changes of a talk recording (picture cuts held a minimum time) and, with the deck, the page on screen in each slide; measurement only",
+                         {"asset": "video", "deck": "pdf|pptx|key|odp"}, {"observation": "slide_timeline", "events": "SLIDE"}, ["slide-sync", "slide-sync:DETECT"], "LOW", True, "AUTO",
+                         ["slide-sync/detect"]))
+    # document verification (ADR-095, replacing ADR-057's phase-2 `document_verification`): artifacts-skill's structural checks of a document that goes
+    # out with the video, with a policy forbidding leftover placeholder text; read-only, so AUTO. QA gates on its checks (a FAIL check: REVIEW)
+    r.register(SkillSpec("document_verify", "1.0", "Structural verification of a document that goes out with the video (script, report, slides): leftover placeholder text, "
+                                                     "page / slide facts, encryption, scripts; read-only, writes nothing",
+                         {"document": "file"}, {"qa": "document"}, ["artifacts-skill", "artifacts-skill:VERIFY"], "LOW", True, "AUTO", ["artifacts-skill/verify"]))
+    # measured motion graphics (ADR-093, replacing ADR-057's phase-2 `measured_motion_graphics`): remotion-ffmpeg-skill's pipeline (analyze → render, verified)
+    # draws one composition that keeps the source's clock over the edited picture, on the user's own Remotion project; never delivers (the agent does)
+    r.register(SkillSpec("measured_motion", "1.0", "One Remotion composition (captions, pulses on peaks / beats, titles, picture-in-picture) over the picture, timed from ffmpeg-skill "
+                                                     "measurements and verified against its timeline; the user's Remotion project",
+                         {"asset": "video", "project": "dir", "comp": "str"}, {"artifact": "INTERMEDIATE"}, ["remotion-ffmpeg-skill", "remotion-ffmpeg-skill:PIPELINE"], "MEDIUM",
+                         False, "CONFIRM", ["remotion-ffmpeg-skill/pipeline"]))
+    # a music bed for the mix (ADR-092, replacing ADR-057's phase-2 `sound_design`): sound-design-skill picks and fits one of the user's licensed library
+    # files (no engine) or generates one (ACE-Step 1.5), at the mix's length; audio-production MIX places it as its last input
+    r.register(SkillSpec("bgm_library", "1.0", "A music bed from the user's own library (declared licence, tags / mood), trimmed or looped to the mix's length; no engine",
+                         {"library": "dir", "duration": "seconds"}, {"artifact": "audio"}, ["sound-design", "sound-design:LIBRARY"], "MEDIUM", True, "CONFIRM",
+                         ["sound-design/library-pick"]))
+    r.register(SkillSpec("bgm_generate", "1.0", "A generated music bed (ACE-Step 1.5) from a prompt at the mix's length; EXPERIMENTAL, not checked against existing recordings",
+                         {"prompt": "text", "duration": "seconds"}, {"artifact": "audio"}, ["sound-design", "sound-design:BGM_GENERATE"], "MEDIUM", False, "CONFIRM",
+                         ["sound-design/generate-bgm"]))
+    # ---- blur faces (ADR-090): detection-skill's face boxes linked into redact rectangles (analysis kind face_tracks, a measurement that
+    # needs the package and its own FACES readiness `detection:FACES` from its doctor: opencv, the YuNet file and ffmpeg-skill frames), then
+    # an approved video.redact_faces executed by ffmpeg-skill: each segment cut out frame-accurately, its rectangles redacted, every piece
+    # put back over the source at its own time by broll (A's timeline and audio unchanged). Never an identity; no text / object redaction.
+    r.register(SkillSpec("face_detection", "1.0", "Face boxes on frames sampled every N seconds, linked over time into redact rectangles (detection-skill faces + tracks); "
+                                                    "measurement only, never an identity",
+                         {"asset": "video"}, {"observation": "face_tracks"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", ["detection/faces"]))
+    r.register(SkillSpec("face_redact_segment", "1.0", "Cut a time segment that holds measured faces out of the source, frame-accurately, to be blurred",
+                         {"asset": "video", "segments": "str"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/cut"]))
+    r.register(SkillSpec("face_redact_blur", "1.0", "Blur / pixelate one measured face rectangle on a cut segment (the segment is the rectangle's own span)",
+                         {"asset": "video", "x": "int", "y": "int", "width": "int", "height": "int"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/redact"]))
+    r.register(SkillSpec("face_redact_composite", "1.0", "Put every blurred segment back over the source at its own time (broll cutaways; the source's timeline and audio unchanged)",
+                         {"asset": "video", "inserts": "artifact[]"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/broll"]))
     r.register(SkillSpec("cropdetect_analysis", "1.0", "Measure black letterbox/pillarbox bars and report the crop rectangle that removes them (measurement only, no output file)",
                          {"asset": "video"}, {"observation": "crop_rectangle"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/cropdetect"]))
     # ---- Phase 3 finishing Skills (ADR-031 / ADR-032): subtitle-skill replaces the former `caption_generation` declaration (which cited
@@ -436,6 +479,27 @@ def default_registry() -> SkillRegistry:
          {"image": "png|jpg", "width": "int", "height": "int", "color": "str", "gravity": "str"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
+    # ADR-085 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): the programme's dialogue replaced by the
+    # user's translated cues, spoken by a local engine over the programme's own sound. Needs ffmpeg-skill (the Skill's media engine), the package and its
+    # own readiness of DUB (`dubbing:DUB`, from its doctor: the engine installed). CONFIRM always: EXPERIMENTAL, and a synthetic voice replaces someone's words.
+    r.register(SkillSpec("speech_dub", "1.0", "Dub the programme's dialogue: the user's translated cues spoken by a local TTS engine, fitted to each source segment, over the "
+                         "programme's own sound (ducked), picture stream-copied; a reference voice only with its owner's consent record; EXPERIMENTAL",
+                         {"asset": "video", "cues": "srt|vtt|json", "lang": "bcp47"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "dubbing", "dubbing:DUB"], "HIGH", False, "CONFIRM",
+                         ["dubbing/dub"]))
+    # ADR-087 (publish-skill's roadmap step 6, agent side; replacing ADR-057's phase-2 `platform_publish`): a QC-passed deliverable uploaded with its
+    # metadata to a platform publish-skill implements. Never a pipeline operation: render runs its offline plan and dry run; the upload is
+    # `video-agent publish <artifact> --confirm <token>` by a human. CONFIRM always (outward-facing, cannot be undone).
+    r.register(SkillSpec("publish_upload", "1.0", "Upload a QC-passed, delivered deliverable with its metadata to a delivery platform (publish-skill): offline plan and dry run "
+                         "at render, the upload only with the dry run's confirmation token typed by a human; EXPERIMENTAL",
+                         {"artifact": "delivery", "platform": "str"}, {"receipt": "upload"}, ["publish"], "HIGH", False, "CONFIRM", ["publish/upload"]))
+    # ADR-089 (nle-bridge-skill's roadmap step 7, agent side): the project IR the agent executes handed to nle-bridge, which writes the subject's
+    # timeline as OTIO / FCP7 XML / EDL (+ SRT), or a conform package (+ relink manifest, zip). Files only, no media, AUTO by default like timeline_export.
+    r.register(SkillSpec("nle_export", "1.0", "The subject's timeline for Premiere Pro / DaVinci Resolve from the project IR: OTIO, FCP7 XML, CMX 3600 EDL and an SRT "
+                         "sidecar (nle-bridge-skill), every loss a named warning", {"project": "project_ir", "subject": "str"}, {"artifact": "TIMELINE"},
+                         ["nle-bridge"], "LOW", True, "AUTO", ["nle-bridge/export"]))
+    r.register(SkillSpec("nle_conform", "1.0", "A conform package for an NLE from the project IR: the timelines, the plan, a relink manifest (sha256, start timecode, "
+                         "ranges used) and a zip (nle-bridge-skill)", {"project": "project_ir", "subject": "str"}, {"artifact": "TIMELINE"},
+                         ["nle-bridge"], "LOW", True, "AUTO", ["nle-bridge/conform"]))
     r.register(SkillSpec("qc_check", "1.0", "Quality control report of a deliverable (qc-skill; the final promotion gate)", {"artifact": "delivery|captions"}, {"qa": "qc"},
                          ["ffprobe", "qc"], "LOW", True, "AUTO", ["qc/check"]))
     # ---- ADR-057 (roadmap step 1): every other job of the ecosystem, declared for phase 2 so a plan that asks for it (`job.<skill>`)

@@ -274,7 +274,11 @@ class RequestTests(Base):
         base = self.gen_args
         self.refuse(TOOL_GENERATE, base(cues=[]), "non-empty")
         self.refuse(TOOL_GENERATE, base(cues="c1"), "non-empty")
-        self.refuse(TOOL_GENERATE, base(cues=[dict(CUES[0], speaker="A")]), "unknown field")
+        # ADR-096: a speaker only as diarization-skill's anonymous id (a diarized transcript's), never a name
+        self.refuse(TOOL_GENERATE, base(cues=[dict(CUES[0], speaker="A")]), "anonymous SPEAKER_nn")
+        self.refuse(TOOL_GENERATE, base(cues=[dict(CUES[0], speaker="Alice")]), "anonymous SPEAKER_nn")
+        r = self.adapter().build_request(TOOL_GENERATE, base(cues=[dict(CUES[0], speaker="SPEAKER_01")]), self.paths)["request"]
+        self.assertEqual(r["subtitle"]["cues"][0]["speaker"], "SPEAKER_01")
         self.refuse(TOOL_GENERATE, base(cues=[dict(CUES[0], metadata={})]), "unknown field")
         self.refuse(TOOL_GENERATE, base(cues=[dict(CUES[0], id="bad id")]), "identifier")
         self.refuse(TOOL_GENERATE, base(cues=[CUES[0], dict(CUES[1], id="c1")]), "duplicate")

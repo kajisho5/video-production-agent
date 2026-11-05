@@ -21,6 +21,11 @@ from .ai_reasoning import AI_KIND_PREFIX
 from .decision_engine import DecisionEngine, raise_approval, resolve_approval, resolve_setting
 from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPERATIONS as AUDIO_OPERATIONS, transcript_words, PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH, audio_channels, channel_operation, has_video, is_audio_capable, parse_audio_requirements
 from .crop import decide_crop
+from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, decide_faces
+from .slides import decide_slides
+from .documents import APPROVAL_KEY as DOCUMENT_APPROVAL_KEY, SUBJECT as DOCUMENT_SUBJECT, decide_documents
+from .remotion import APPROVAL_KEY as REMOTION_APPROVAL_KEY, SUBJECT as REMOTION_SUBJECT, decide_remotion
+from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUBJECT, decide_bgm, parse_bgm_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
 from .image_insert import decide_image_insert
@@ -28,9 +33,12 @@ from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
 from .timeline import TIMELINE_SUBJECT, decide_timeline
 from .brief import decide_brief
-from .handoffs import decide_jobs
+from .handoffs import decide_jobs, decide_measurement_handoffs
+from .nle import decide_nle
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
+from .dubbing import decide_dub
+from .publish import decide_publish
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -71,6 +79,14 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "video.grid": ("video.grid.approval", "CONFIRM"), "video.redact": ("video.redact.approval", "CONFIRM"),
                  "video.deinterlace": ("video.deinterlace.approval", "CONFIRM"), "video.crop": ("video.crop.approval", "CONFIRM"),
                  "video.stabilize": ("video.stabilize.approval", "CONFIRM"),
+                 # ADR-090: blurring measured faces changes the delivered picture irreversibly and the detector misses faces: CONFIRM, floor CONFIRM
+                 FACE_SUBJECT: FACE_APPROVAL_KEY,
+                 # ADR-092: a music bed (a library licence as declared, or generated music) under the mix: CONFIRM, floor CONFIRM
+                 BGM_SUBJECT: BGM_APPROVAL_KEY,
+                 # ADR-093: a Remotion render of new graphics over the picture: CONFIRM, floor CONFIRM
+                 REMOTION_SUBJECT: REMOTION_APPROVAL_KEY,
+                 # ADR-095: artifacts-skill reads a document and writes nothing: AUTO, like the QC gate's measurement
+                 DOCUMENT_SUBJECT: DOCUMENT_APPROVAL_KEY,
                  # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
@@ -189,6 +205,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if audio.get("mix"):
             # ADR-063: every audio input, in input order, summed into one programme by the Skill's MIX (2..8 inputs; the first sets the length)
             ids = [a.id for a in audio_assets]
+            bgm_req = parse_bgm_requirements({k: r.value for k, r in m.items()})   # ADR-092: sound-design's bed is the mix's last input
+            if bgm_req is not None:
+                ids = ids + [BGM_INPUT]
             levels = audio.get("mix_levels")
             why = (f"{len(ids)} input(s) carry audio; a mix sums two or more" if len(ids) < 2
                    else f"{len(ids)} inputs carry audio; the Skill's MIX takes at most {AUDIO_MAX_MIX_INPUTS}" if len(ids) > AUDIO_MAX_MIX_INPUTS
@@ -211,10 +230,12 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                                   "(the first input); no silence is cut from a mixed input (it would move one input against the others)"
                                   + (f"; the bed {ids[duck['input']]} is lowered by a sidechain compressor keyed by {ids[0]} (needs an engine whose audio tool offers ducking; "
                                      "otherwise the Skill refuses the step)" if duck else ""),
-                           confidence=1.0, evidence=a_ev + probe_ids_of(ids), risk=AUDIO_OPERATIONS["audio.mix"]["risk"], approval=approval_for("audio.mix", explicit=m["audio.mix"]),
+                           confidence=1.0, evidence=a_ev + probe_ids_of([i for i in ids if i != BGM_INPUT]), risk=AUDIO_OPERATIONS["audio.mix"]["risk"], approval=approval_for("audio.mix", explicit=m["audio.mix"]),
                            provenance="USER", params={"asset_id": PROGRAMME_AUDIO, "inputs": ids, **({"levels": levels} if levels else {}), **({"duck": duck} if duck else {})},
                            requirements=audio["requirements"], serves_intent=None)
                 cap_block("audio_mix", "capability.audio_mix")
+                if bgm_req is not None:
+                    decide_bgm(eng, m, approval_for, a_ev, cap_block)
         if audio.get("filler_remove") is not None:   # ADR-072: per input, at the transcript's word timings
             decide_filler_remove(eng, audio, m, analysis, audio_assets, audio_mix_ok, lambda aid: a_ev + probe_ids_of([aid]), approval_for, cap_block)
         if vreq["ops"]:   # ADR-073: voice-enhance-skill per input after its cut / filler removal (bleed reduction: all mixed inputs), always CONFIRM
@@ -596,6 +617,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- measured black bars (ADR-060): a CONFIRM proposal of video.crop with the measured rectangle, on an input that is its own subject
     decide_crop(eng, analysis, subjects, edits, "a programme of several inputs" if concat_ok or takes is not None else "the audio production path" if audio["production"] else None,
                 approval_for, probe_ids_of, cap_block)
+    # ---- blur faces (ADR-090): detection-skill's face tracks → a CONFIRM video.redact_faces on each video input (or a handoff / BLOCK)
+    decide_faces(eng, m, analysis, approval_for, probe_ids_of, cap_missing, cap_block)
     for op in SINGLE_SOURCE_ORDER:
         if op not in edits:
             continue
@@ -620,11 +643,16 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if op == "video.overlay" and p.get("prepare"):   # ADR-077: without imagemagick-skill each preparation step is handed off (ADR-051)
             for sk, _tool, _params in prepare_chain(p["prepare"]):
                 cap_block(sk, f"capability.{sk}")
+    # ---- measured motion graphics (ADR-093): one Remotion composition over the edited picture of each video subject (never on the audio path)
+    if not audio["production"]:
+        decide_remotion(eng, m, subjects, analysis, approval_for, probe_ids_of, cap_block)
     # ---- finishing (ADR-031 / ADR-032): subtitles, colour, motion graphics, thumbnail, QC gate — on the programme or each asset, after the edits
     def has_edit(subject: str) -> bool:
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]
         return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and (d.subject in OPERATIONS or d.subject == TRIM_OP) and d.params.get("asset_id") == subject for d in decs) \
             or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
+    # ---- dubbing (ADR-085): the user's translated cues spoken over the subject's picture after its edits (dubbing-skill DUB), always CONFIRM
+    decide_dub(eng, m, analysis, subjects, caps, approval_for, probe_ids_of, cap_block)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)
     # ---- a still joined before / after the finished picture (ADR-070): after finishing (whose subtitle decisions it must not contradict) and
     # before the timeline export, which names it among what a cut list does not carry (like every other TRANSFORM it cannot express)
@@ -632,8 +660,16 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         decide_image_insert(eng, decs, m, analysis, subjects, edits[IMAGE_INSERT_OP], bool(audio["production"]), approval_for, probe_ids_of, cap_block)
     # ---- timeline export (ADR-052): the cut list of each video subject as an editor timeline
     decide_timeline(eng, m, analysis, decs, subjects, bool(audio["production"]), cap_block, approval_for, probe_ids_of)
+    # ---- the timeline handed to an NLE through nle-bridge (ADR-089): it reads the timeline record above, so it comes after it
+    decide_nle(eng, m, decs, subjects, approval_for, probe_ids_of, cap_block)
     # ---- ecosystem jobs this agent hands off (ADR-057): the ask is recorded and BLOCKED with a handoff, never dropped or done here
     decide_jobs(eng, m, [a.id for a in analysis.assets], probe_ids_of)
+    # ---- measurements an explicit requirement asks for that cannot run here (ADR-086): recorded and BLOCKED with a handoff, never dropped
+    decide_measurement_handoffs(eng, m, analysis, probe_ids_of, cap_missing)
+    # ---- the slide timeline an explicit requirement asks for (ADR-091): handed off when it cannot run here, BLOCKED with slide-sync's code when it failed
+    decide_slides(eng, m, analysis, probe_ids_of, cap_missing)
+    # ---- a document that goes out with the video, verified by artifacts-skill (ADR-095): a read-only measurement QA gates on
+    decide_documents(eng, m, approval_for, cap_block)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")
@@ -659,6 +695,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             eng.decide(subject=f"delivery.{t['id']}", type="DELIVER", decision="deliver the processed file without re-encoding to a platform preset",
                        reason="profile target has no preset (generic: keep source format)", confidence=1.0, evidence=[targets.id], risk="LOW", approval="AUTO", provenance=targets.provenance, params=dict(t),
                        requirements=[targets], serves_intent=_serves(intent, f"delivery.{t['id']}"))
+    # ---- publishing (ADR-087): after the QC gate and the delivery targets it names; always CONFIRM, the upload itself a human's separate command
+    decide_publish(eng, m, decs, subjects, target_list, approval_for, probe_ids_of, cap_block)
     # ---- AI recommendations (provenance AI_GENERATED): proposals only. A recommendation that a measured decision already
     # covers becomes extra evidence on that decision (its confidence / risk / approval are untouched). Anything else is a
     # review item: approval from policy (default CONFIRM), risk from the skill registry, never executable by itself.

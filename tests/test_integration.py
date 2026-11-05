@@ -3179,3 +3179,647 @@ class ImagePrepareRealTests(unittest.TestCase):
         dur = float(json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", res["video-editing/overlay"]["output"]],
                                               capture_output=True, text=True, check=True).stdout)["format"]["duration"])
         self.assertGreater(dur, 1.0)
+
+
+def _luma_frame(path: str, n: int, w: int, h: int) -> bytes:
+    """Frame number `n` (decode order from the first frame, so a shifted start or an edit list cannot pick another frame) of a yuv420p file as its
+    Y plane, read as stored: `-pix_fmt yuv420p` is the file's own format, so no colour-matrix / range conversion happens in the measurement
+    (an untagged source and a bt709-tagged output would otherwise be converted differently to grey by the decoder's scaler)."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=eq(n\\,{int(n)})", "-frames:v", "1", "-pix_fmt", "yuv420p",
+                          "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert len(out) == w * h * 3 // 2, (len(out), w, h)
+    return out[:w * h]
+
+
+def _mean_abs_diff(a: bytes, b: bytes, w: int, rect=None, outside: bool = False) -> float:
+    """Mean |a - b| over a rectangle {x, y, width, height} of two w-wide grey frames (or over everything outside it)."""
+    total = n = 0
+    h = len(a) // w
+    for y in range(0, h, 2):
+        row = y * w
+        for x in range(0, w, 2):
+            inside = rect is not None and rect["x"] <= x < rect["x"] + rect["width"] and rect["y"] <= y < rect["y"] + rect["height"]
+            if (rect is None) or (inside != outside):
+                total += abs(a[row + x] - b[row + x])
+                n += 1
+    return total / max(1, n)
+
+
+class FaceRedactionRealTests(unittest.TestCase):
+    """ADR-090 on the real detection-skill (main, contract 0.1.0) and the real ffmpeg-skill: the live contract equals the pin, its doctor says
+    whether FACES can run (YuNet needs opencv and the model file in DETECTION_MODELS_DIR; ffmpeg-skill is the agent's own checkout), and a face
+    that is on screen only from 2 s to 5 s is blurred during its measured span and nowhere else, after the user's approval. Runs whenever a
+    detection-skill checkout is installed (the CI integration job installs it with `[faces]` and fetches the YuNet file pinned by sha256)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.detection import locate_detection
+        cls.det = locate_detection()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_det_"))
+
+    def setUp(self):
+        if not self.det:
+            self.skipTest("needs a detection-skill checkout (VIDEO_AGENT_DETECTION_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def adapter(self):
+        from video_agent.tools.detection import DetectionAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        return DetectionAdapter(self.det, workspace=ws, allowed_inputs=[str(Path(self.tmp) / "src")], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+
+    def test_live_contract_and_doctor(self):
+        ad = self.adapter()
+        self.assertEqual(ad.drift(), [], "the installed detection-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertTrue(doc["ready"].get("tracks"), doc.get("problems"))
+        ev = ad.operation_evidence(doc)["FACES"]
+        if os.environ.get("DETECTION_MODELS_DIR"):
+            self.assertEqual(ad.operation_status(doc), {"FACES": "supported"}, doc.get("problems"))
+        else:
+            self.assertEqual(ad.operation_status(doc), {"FACES": "unavailable"})
+            self.assertIn(ev["code"], ("MODEL_NOT_FOUND", "ENGINE_UNAVAILABLE"))
+            self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
+
+    def test_face_blurred_only_during_its_span_end_to_end(self):
+        if not os.environ.get("DETECTION_MODELS_DIR"):
+            self.skipTest("needs the YuNet model file in DETECTION_MODELS_DIR")
+        face = Path(self.det.root) / "tests" / "fixtures" / "astronaut.jpg"   # detection-skill's own public-domain fixture (one face)
+        self.assertTrue(face.is_file(), face)
+        src = str(Path(self.tmp) / "src" / "faces.mp4")
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x202020:s=1280x720:r=30:d=8", "-loop", "1", "-i", str(face),
+                        "-f", "lavfi", "-i", "sine=f=440:r=48000:d=8", "-filter_complex", "[0][1]overlay=384:104:enable='between(t,2,5)':shortest=1[v]",
+                        "-map", "[v]", "-map", "2:a", "-t", "8", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", src], check=True)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([src], "generic", user_requirements={"edit.redact_faces": True})
+        d = ir.doc
+        obs = next(o for o in d["analysis"]["observations"] if o["kind"] == "face_tracks")
+        self.assertGreaterEqual(len(obs["data"]["tracks"]), 1, obs["data"])
+        [dec] = [x for x in d["decisions"] if x["subject"] == "video.redact_faces"]
+        self.assertEqual((dec["type"], dec["approval"]), ("TRANSFORM", "CONFIRM"))
+        regions = dec["params"]["regions"]
+        self.assertGreaterEqual(regions[0]["start"], 1.0, regions)
+        self.assertLessEqual(regions[-1]["end"], 6.0, regions)
+        rect = regions[0]["rects"][0]
+        self.assertTrue(384 - 40 <= rect["x"] <= 384 + 512 and 104 - 40 <= rect["y"] <= 104 + 512, rect)
+        p = str(Path(self.tmp) / "ws" / "faces.project.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertNotEqual(out["status"], "COMPLETED", "nothing is blurred before the approval")
+        svc.approve(load_ir(p), p, [dec["id"]])
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        art = next(a for a in out["artifacts"] if a["type"] in ("MASTER", "DELIVERY"))
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], check=True, capture_output=True).stdout)
+        self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="broll keeps the source's length")
+        mid = int(round((regions[0]["start"] + regions[-1]["end"]) / 2 * 30))   # the same frame number in both files (30 fps, as made above)
+        a, b = _luma_frame(src, mid, 1280, 720), _luma_frame(art["path"], mid, 1280, 720)
+        inside, outside = _mean_abs_diff(a, b, 1280, rect), _mean_abs_diff(a, b, 1280, rect, outside=True)
+        tags = {f: subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range,color_space,start_time", "-of", "csv=p=0", f],
+                                  capture_output=True, text=True).stdout.strip() for f in (src, art["path"])}
+        self.assertGreater(inside, 6.0, f"the face rectangle is blurred while the face is on screen (frame {mid})")
+        self.assertLess(outside, 2.0, f"nothing outside the rectangle changes (frame {mid}: inside {inside:.2f}, outside {outside:.2f}; {tags})")
+        for n in (15, 210):   # before and after the face's span: the picture is the source's (re-encoded only)
+            self.assertLess(_mean_abs_diff(_luma_frame(src, n, 1280, 720), _luma_frame(art["path"], n, 1280, 720), 1280), 2.0, f"frame {n} ({tags})")
+
+
+class DubbingRealTests(unittest.TestCase):
+    """ADR-085 on the real dubbing-skill (main; no release tag) and the real ffmpeg-skill, without any TTS engine (none is installed in CI): the live
+    contract equals the pin, its doctor's verdict on DUB carries the Skill's own code and install line, a plan asking for a dub BLOCKs with that
+    code (nothing downloaded, nothing run), and the argv the adapter builds -- every option `--flag=value`, the programme and the user's cues after
+    `--`, the translation note, a reference voice with its consent record -- is accepted by the real CLI, which answers ENGINE_UNAVAILABLE."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.dubbing import locate_dubbing
+        cls.dub = locate_dubbing()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dub_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.prog = str(src / "prog.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=4", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.prog], check=True)
+        cls.cues = str(src / "en.srt")
+        Path(cls.cues).write_text("1\n00:00:01,000 --> 00:00:02,500\nHello there\n", encoding="utf-8")
+        cls.ref, cls.consent = str(src / "voice.wav"), str(src / "consent.json")
+        Path(cls.ref).write_bytes(b"RIFF not a real clip")
+        Path(cls.consent).write_text(json.dumps({"schema": "dubbing/consent@1"}), encoding="utf-8")
+
+    def setUp(self):
+        if not self.dub or not locate_ffmpeg_skill():
+            self.skipTest("needs a dubbing-skill checkout (VIDEO_AGENT_DUBBING_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_live_contract_doctor_plan_and_argv_on_the_real_skill(self):
+        from video_agent.capabilities import CapabilityResolver
+        from video_agent.models import Operation
+        from video_agent.tools.dubbing import DubbingAdapter, breaking_drift, drift, pinned_contract
+        ff = str(locate_ffmpeg_skill().root)
+        ad = DubbingAdapter(self.dub, workspace=str(Path(self.tmp) / "ws"), allowed_inputs=[str(Path(self.tmp) / "src")], ffmpeg_skill_dir=ff)
+        self.assertEqual(ad.version, pinned_contract()["version"])
+        self.assertEqual(breaking_drift(ad.contract), [], "dubbing-skill main changed what the adapter relies on: re-verify the adapter")
+        self.assertEqual(drift(ad.contract), [], "dubbing-skill main drifted from the pin (no release tag: the pin follows main): re-pin")
+        doc = ad.doctor()
+        self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
+        ev = ad.operation_evidence(doc)["DUB"]
+        caps = CapabilityResolver(ff).resolve()
+        self.assertEqual(caps["dubbing"].status, "AVAILABLE", caps["dubbing"].detail)
+        if not ev["ready"]:   # CI: no engine
+            self.assertEqual((ev["code"], caps["dubbing:DUB"].status), ("ENGINE_UNAVAILABLE", "MISSING"))
+            self.assertTrue(ev["install"])
+            svc = Service(workspace=str(Path(self.tmp) / "ws_plan"))
+            ir = svc.plan([self.prog], "youtube", user_requirements={"dub.cues": self.cues, "dub.lang": "en"})
+            b = next(x for x in ir.doc["decisions"] if x["subject"] == "speech.dub")
+            self.assertEqual((b["type"], b["params"]["code"]), ("BLOCK", "ENGINE_UNAVAILABLE"))
+            self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+            out = str(Path(self.tmp) / "ws" / "jobs" / "j" / "dub.mp4")
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            for extra in ({}, {"reference": self.ref, "consent": self.consent, "engine": "chatterbox", "duck": 10, "on_unfit": "keep"}):
+                op = Operation(tool="dubbing/dub", args={"input": "a", "output": "o", "cues": self.cues, "lang": "en", **extra}, inputs=["a"], outputs=["o"])
+                r = ad.run(op, {"a": self.prog, "o": out})
+                err = r.data["error"]
+                self.assertEqual((err["code"], err["recovery_class"], err["retryable"]), ("ENGINE_UNAVAILABLE", "TOOL_MISSING", False), err)
+                self.assertFalse(os.path.exists(out))
+class DiarizationRealTests(unittest.TestCase):
+    """ADR-086 on the real diarization-skill (main, contract 0.1.0): the live contract equals the pin, and without pyannote.audio / the gated
+    pipeline (the CI integration job installs neither: the weights need a Hugging Face account) its doctor marks DIARIZE not ready with the
+    Skill's own code, the adapter's diarize returns that code verbatim (exit 3, nothing guessed), and a plan asking for speaker turns hands the
+    measurement off naming diarization-skill. Runs whenever a diarization-skill checkout is installed (VIDEO_AGENT_DIARIZATION_DIR)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.diarization import locate_diarization
+        cls.dia = locate_diarization()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dia_"))
+
+    def setUp(self):
+        if not self.dia:
+            self.skipTest("needs a diarization-skill checkout (VIDEO_AGENT_DIARIZATION_DIR)")
+        if not shutil.which("ffmpeg"):
+            self.skipTest("needs ffmpeg")
+
+    def _wav(self) -> str:
+        p = str(Path(self.tmp) / "src" / "talk.wav")
+        if not os.path.exists(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=16000", "-t", "16", p], check=True)
+        return p
+
+    def test_live_contract_doctor_and_diarize_code(self):
+        from video_agent.tools.diarization import DiarizationAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        ad = DiarizationAdapter(self.dia, workspace=ws, allowed_inputs=[str(Path(self._wav()).parent)])
+        self.assertEqual(ad.drift(), [], "the installed diarization-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        status = ad.operation_status(doc)
+        self.assertEqual(status["ASSIGN"], "supported")
+        if status["DIARIZE"] == "supported":
+            self.skipTest("this machine has pyannote.audio and the pipeline: the not-ready path is not what it can show")
+        self.assertEqual(doc["status"], "degraded")
+        ev = ad.operation_evidence(doc)["DIARIZE"]
+        self.assertIn(ev["code"], ("ENGINE_UNAVAILABLE", "PIPELINE_NOT_FOUND"))
+        self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
+        r = ad.measure("diarization/diarize", ad.measurement_args("diarization/diarize", "speaker_turns", self._wav(), "talk", {"num_speakers": 2}, "an", "use"))
+        self.assertFalse(r.ok)
+        self.assertIn(r.data["error"]["code"], ("ENGINE_UNAVAILABLE", "PIPELINE_NOT_FOUND"))
+        self.assertEqual((r.exit_code, r.data["error"]["recovery_class"]), (3, "TOOL_MISSING"))
+
+    def test_plan_hands_the_measurement_off_when_diarize_is_not_ready(self):
+        if not locate_ffmpeg_skill():
+            self.skipTest("needs ffmpeg-skill")
+        svc = Service(workspace=str(Path(self.tmp) / "ws_plan"))
+        if svc.caps.resolve().get("diarization:DIARIZE") and svc.caps.resolve()["diarization:DIARIZE"].status == "AVAILABLE":
+            self.skipTest("DIARIZE is ready on this machine")
+        ir = svc.plan([self._wav()], "generic", user_requirements={"speakers.diarize": True})
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
+        self.assertFalse([o for o in ir.doc["analysis"]["observations"] if o["kind"] == "speaker_turns"])
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
+        self.assertEqual(h["repositories"], ["diarization-skill"])
+        self.assertIn("diarization:DIARIZE", h["reason"])
+
+
+class PublishRealTests(unittest.TestCase):
+    """ADR-087 on the real publish-skill (main; no release tag) and the real ffmpeg-skill, offline: the live contract against the pin, the
+    offline plan and the dry run of a real deliverable through the adapter's argv (every option `--flag=value`, the file after `--`): a
+    confirm_token bound to the file's sha256, nothing uploaded, no network. No credentials are present and no upload is attempted."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.publish import locate_publish
+        cls.pub = locate_publish()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_pub_"))
+        (Path(cls.tmp) / "ws").mkdir()
+        cls.final = str(Path(cls.tmp) / "ws" / "final.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=3", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=3", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.final], check=True)
+
+    def setUp(self):
+        if not self.pub or not locate_ffmpeg_skill():
+            self.skipTest("needs a publish-skill checkout (VIDEO_AGENT_PUBLISH_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_live_contract_plan_and_dry_run_on_the_real_skill(self):
+        from video_agent.tools.publish import PublishAdapter, breaking_drift, drift, platforms
+        from video_agent.tools.skill_process import sha256_file
+        ad = PublishAdapter(self.pub, workspace=str(Path(self.tmp) / "ws"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(breaking_drift(ad.contract), [], "publish-skill main changed what the adapter relies on: re-verify the adapter")
+        self.assertTrue(set(platforms()) <= set(ad.platforms), "every pinned platform is still implemented on main")
+        if drift(ad.contract):   # a platform or limit added on main (another uploader landing): reported, the pin is renewed separately
+            print("publish-skill drift (non-fatal):", drift(ad.contract)[:3])
+        meta = {"title": "Integration test", "description": "line one\nline two", "tags": ["a", "-b"], "privacy": "private"}
+        plan = ad.plan(self.final, "youtube", meta)
+        self.assertIsNone(plan.get("error"), plan.get("error"))
+        self.assertIn(plan["verdict"], ("PASS", "WARN", "INCOMPLETE"), plan)
+        dry = ad.dry_run(self.final, "youtube", meta)
+        self.assertIsNone(dry.get("error"), dry.get("error"))
+        self.assertEqual((dry["dry_run"], dry["uploaded"], dry["network_used"]), (True, False, False))
+        self.assertEqual(dry["input"]["sha256"], sha256_file(self.final))
+        self.assertEqual((dry["metadata"]["title"], dry["metadata"]["tags"]), ("Integration test", ["a", "-b"]), "a value starting with '-' stays a value")
+        self.assertRegex(dry["confirm_token"], r"^confirm-[0-9a-f]{16}$")
+        self.assertNotEqual(ad.dry_run(self.final, "youtube", dict(meta, title="Other"))["confirm_token"], dry["confirm_token"], "the token binds the metadata")
+
+
+class ThumbnailDocumentRealTests(unittest.TestCase):
+    """ADR-088 on the real thumbnail-skill (Pillow) and the real ffmpeg-skill: a plan with a caption, a second text and a logo renders one
+    ThumbnailDocument; the PNG has the picture's size and the logo's pixels sit in the box the plan computed from the logo's own header."""
+
+    def setUp(self):
+        from video_agent.tools.thumbnail import locate_thumbnail
+        if not locate_thumbnail() or not locate_ffmpeg_skill():
+            self.skipTest("needs thumbnail-skill (VIDEO_AGENT_THUMBNAIL_DIR) and ffmpeg-skill; CI clones both")
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("needs Pillow (thumbnail-skill renders with it; CI installs it)")
+
+    def test_logo_and_texts_rendered_by_the_real_skill(self):
+        from PIL import Image
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_thumb_"))
+        src = Path(tmp) / "src"; src.mkdir()
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:size=640x360:rate=25:duration=3", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=3", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video], check=True)
+        logo = str(src / "logo.png")
+        Image.new("RGBA", (200, 100), (255, 0, 0, 255)).save(logo)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "Main", "thumbnail.text2": "Second line",
+                                                            "thumbnail.text2.position": "top", "thumbnail.logo": logo, "thumbnail.logo.position": "bottom-left",
+                                                            "thumbnail.logo.width": 100, "thumbnail.logo.margin": 10})
+        path = str(Path(tmp) / "p.project.json"); save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        th = next(a for a in out["artifacts"] if a["type"] == "THUMBNAIL")
+        img = Image.open(th["path"]).convert("RGB")
+        self.assertEqual(img.size, (640, 360))
+        self.assertEqual(img.getpixel((10 + 50, 360 - 10 - 25)), (255, 0, 0), "the logo fills its 100x50 box at the bottom-left, 10 px in")
+        self.assertNotEqual(img.getpixel((640 - 60, 360 - 35)), (255, 0, 0))
+
+
+class NleBridgeRealTests(unittest.TestCase):
+    """ADR-089 on the real nle-bridge-skill (main) with the real ffmpeg-skill: the agent hands it the project IR it executes; nle-bridge reads the
+    subject's timeline record itself and writes the conform package (OTIO / FCP7 XML / EDL, relink manifest with the media's sha256, zip)."""
+
+    def setUp(self):
+        from video_agent.tools.nle_bridge import locate_nle_bridge
+        if not locate_nle_bridge() or not locate_ffmpeg_skill():
+            self.skipTest("needs a nle-bridge-skill checkout (VIDEO_AGENT_NLE_BRIDGE_DIR) and ffmpeg-skill; CI clones both")
+
+    def test_conform_package_from_the_executed_ir(self):
+        from video_agent.tools.nle_bridge import breaking_drift, locate_nle_bridge, NleBridgeAdapter
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_nle_"))
+        src = Path(tmp) / "src"; src.mkdir()
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=4", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=4", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video], check=True)
+        ad = NleBridgeAdapter(locate_nle_bridge(), workspace=tmp)
+        self.assertEqual(breaking_drift(ad.contract), [], "nle-bridge-skill main changed what the adapter relies on: re-verify the adapter")
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"delivery.timeline": "otio", "delivery.nle": "conform", "delivery.nle.formats": "otio,fcp7,edl"})
+        path = str(Path(tmp) / "p.project.json"); save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = next(x for x in out["execution"]["results"] if x["tool"] == "nle-bridge/conform")
+        self.assertEqual(sorted(f["format"] for f in res["data"]["files"]), ["edl", "fcp7", "otio"])
+        self.assertTrue(res["output"].endswith(".zip") and os.path.isfile(res["output"]))
+        [m] = res["data"]["relink_media"]
+        self.assertTrue(m["exists"])
+        from video_agent.tools.skill_process import sha256_file
+        self.assertEqual(m["sha256"], sha256_file(video))
+        try:
+            import opentimelineio as otio
+        except ImportError:
+            return
+        tl = otio.adapters.read_from_file(next(f["file"] for f in res["data"]["files"] if f["format"] == "otio"))
+        self.assertEqual(len(list(tl.find_clips())) >= 1, True)
+
+
+def _slide_png(path: str, n: int) -> str:
+    """A 1280x720 slide with its own big shapes (slide n of a deck), written by Pillow."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (1280, 720), (245, 245, 240))
+    d = ImageDraw.Draw(img)
+    for k in range(n + 2):
+        x = 80 + (k * 230 + n * 97) % 1000
+        y = 90 + (k * 170 + n * 61) % 450
+        d.rectangle([x, y, x + 140 + 30 * n, y + 90 + 20 * k], fill=((60 * n) % 255, (90 * k) % 255, (40 * (n + k)) % 255))
+    d.ellipse([900 - 60 * n, 500 - 40 * n, 1100 - 60 * n, 660 - 40 * n], fill=(20, 20 + 70 * n, 160))
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+    return path
+
+
+class SlideSyncRealTests(unittest.TestCase):
+    """ADR-091 on the real slide-sync-skill (main, contract 0.1.0) and the real ffmpeg-skill: the live contract equals the pin, its doctor reports the
+    engine ready, and a recording of three slides (4 s / 5 s / 4 s) is measured as three slides; with the deck (the same three slides as a PDF, in another
+    order) each slide is matched to its page. Runs whenever a slide-sync-skill checkout is installed (the CI integration job installs it with `[pdf]`)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.slide_sync import locate_slide_sync
+        cls.ss = locate_slide_sync()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_ss_"))
+
+    def setUp(self):
+        if not self.ss:
+            self.skipTest("needs a slide-sync-skill checkout (VIDEO_AGENT_SLIDE_SYNC_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_and_doctor(self):
+        from video_agent.tools.slide_sync import SlideSyncAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        ad = SlideSyncAdapter(self.ss, workspace=ws, ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.drift(), [], "the installed slide-sync-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(ad.operation_status(doc)["DETECT"], "supported", doc.get("problems"))
+
+    def test_slides_measured_and_matched_to_the_deck(self):
+        src = Path(self.tmp) / "src"
+        pngs = [_slide_png(str(src / f"s{n}.png"), n) for n in (1, 2, 3)]
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-t", "4", "-i", pngs[0], "-loop", "1", "-t", "5", "-i", pngs[1], "-loop", "1", "-t", "4", "-i", pngs[2],
+                        "-f", "lavfi", "-i", "sine=f=330:r=48000:d=13", "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0,fps=30,format=yuv420p[v]", "-map", "[v]", "-map", "3:a",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-t", "13", video], check=True)
+        from PIL import Image
+        deck = str(Path(self.tmp) / "decks" / "deck.pdf")
+        Path(deck).parent.mkdir(parents=True, exist_ok=True)
+        imgs = [Image.open(p).convert("RGB") for p in (pngs[2], pngs[0], pngs[1])]   # the deck's order differs from the talk's: page 1 = slide 3
+        imgs[0].save(deck, save_all=True, append_images=imgs[1:], resolution=96)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"slides.detect": True})
+        [obs] = [o for o in ir.doc["analysis"]["observations"] if o["kind"] == "slide_timeline"]
+        self.assertEqual(obs["data"]["slide_count"], 3, obs["data"]["slides"])
+        self.assertEqual([round(c) for c in obs["data"]["changes"]], [4, 9])
+        self.assertEqual(len([e for e in ir.doc["timeline"]["events"] if e["type"] == "SLIDE"]), 3)
+        try:
+            import pypdfium2  # noqa: F401
+        except ImportError:
+            self.skipTest("needs pypdfium2 (slide-sync-skill[pdf]) for the deck")
+        ir = svc.plan([video], "generic", user_requirements={"slides.detect": True, "slides.deck": deck})
+        self.assertFalse([d for d in ir.doc["decisions"] if d["subject"] == "slides.detect" and d["type"] == "BLOCK"], [d["reason"] for d in ir.doc["decisions"] if d["type"] == "BLOCK"])
+        [obs] = [o for o in ir.doc["analysis"]["observations"] if o["kind"] == "slide_timeline"]
+        self.assertEqual(obs["data"]["deck"]["page_count"], 3)
+        self.assertEqual([s["page"] for s in obs["data"]["match"]["segments"]], [2, 3, 1], obs["data"]["match"])
+        self.assertEqual(svc.validate(ir).errors, [])
+
+
+class SoundDesignBgmRealTests(unittest.TestCase):
+    """ADR-092 on the real sound-design-skill (main, contract 0.1.0), the real audio-production-skill and the real ffmpeg-skill: the live contract equals
+    the pin, its doctor reports library mode ready, and a voice recording mixed with a bed picked from a library of the user's own licensed file (looped
+    to the voice's length by library-pick) is rendered after approval, as long as the voice. Runs whenever sound-design-skill and audio-production-skill
+    checkouts are installed (the CI integration job clones both; library mode needs no engine)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.sound_design import locate_sound_design
+        from video_agent.tools.audio_production import locate_audio_production
+        cls.sd = locate_sound_design()
+        cls.ap = locate_audio_production()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_sd_"))
+
+    def setUp(self):
+        if not self.sd:
+            self.skipTest("needs a sound-design-skill checkout (VIDEO_AGENT_SOUND_DESIGN_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_and_doctor(self):
+        from video_agent.tools.sound_design import SoundDesignAdapter
+        ad = SoundDesignAdapter(self.sd, workspace=str(Path(self.tmp) / "ws_adapter"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.drift(), [], "the installed sound-design-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(ad.operation_status(doc)["LIBRARY"], "supported", doc.get("problems"))
+
+    def test_library_bed_mixed_under_the_voice_end_to_end(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout (VIDEO_AGENT_AUDIO_PRODUCTION_DIR)")
+        src = Path(self.tmp) / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        voice = str(src / "voice.wav")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=440:r=48000:d=8", "-ac", "2", voice], check=True)
+        bed = str(Path(self.tmp) / "incoming" / "bed.wav")
+        Path(bed).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=220:r=48000:d=3", "-ac", "2", bed], check=True)
+        lib = str(Path(self.tmp) / "lib")
+        os.makedirs(lib, exist_ok=True)
+        from video_agent.tools.skill_process import invoke
+        code, out, err = invoke(self.sd, ["library-import", bed, "--library", lib, "--licence", "CC0-1.0", "--kind", "bgm", "--tags", "drone", "--loopable",
+                                          "--ffmpeg-skill", str(locate_ffmpeg_skill().root), "--json"], timeout=300)
+        self.assertEqual(code, 0, out + err)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([voice], "generic", user_requirements={"audio.production": True, "audio.mix": True, "audio.mix.levels": "0,-12", "bgm.library": lib, "bgm.tags": "drone"})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        bgm = next(op for op in d["audio"]["operations"] if op["type"] == "audio.bgm")
+        self.assertAlmostEqual(bgm["duration"], 8.0, delta=0.05)
+        p = str(Path(self.tmp) / "ws" / "bgm.project.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        pick = next(r for r in out["execution"]["results"] if r["tool"] == "sound-design/library-pick")
+        self.assertEqual((pick["data"]["licence"]["licence"], pick["data"]["fit"]["mode"]), ("CC0-1.0", "loop"))
+        art = next(a for a in out["artifacts"] if a["type"] in ("MASTER", "DELIVERY"))
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], check=True, capture_output=True).stdout)
+        self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="the mix lasts as long as the voice (its first input)")
+
+
+class RemotionRealTests(unittest.TestCase):
+    """ADR-093 on the real remotion-ffmpeg-skill checkout (main = v0.12.1): the live contract equals the pin and its doctor answers (python / node / npm /
+    ffmpeg-skill / ffmpeg; the agent's PIPELINE capability follows it), and a plan naming a Remotion project whose `npm install` has not run is BLOCKED
+    with the Skill's own fix line instead of rendering. A real Remotion render (npm install plus Remotion's browser download) is not run in CI."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.remotion import locate_remotion
+        cls.rf = locate_remotion()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_rf_"))
+
+    def setUp(self):
+        if not self.rf:
+            self.skipTest("needs a remotion-ffmpeg-skill checkout (VIDEO_AGENT_REMOTION_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_doctor_and_uninstalled_project(self):
+        from video_agent.tools.remotion import RemotionAdapter
+        ad = RemotionAdapter(self.rf, workspace=str(Path(self.tmp) / "ws_adapter"))
+        self.assertEqual(ad.drift(), [], "the installed remotion-ffmpeg-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        node = next((c for c in doc.get("checks") or [] if c.get("check") == "node"), {})
+        self.assertEqual(ad.operation_status(doc)["PIPELINE"], "supported" if doc.get("status") == "ok" else "unavailable")
+        self.assertIn("node", [c.get("check") for c in doc.get("checks") or []], node)
+        proj = Path(self.tmp) / "motion"
+        proj.mkdir(parents=True, exist_ok=True)
+        (proj / "package.json").write_text("{}", encoding="utf-8")
+        st = ad.project_status(str(proj))
+        self.assertFalse(st["ok"])
+        self.assertIn("npm install", st["fix"])
+        src = str(Path(self.tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        make_media(src)
+        ir = Service(workspace=str(Path(self.tmp) / "ws")).plan([src], "generic", user_requirements={"remotion.comp": "Captioned", "remotion.project": str(proj)})
+        [blk] = [d for d in ir.doc["decisions"] if d["subject"] == "video.measured_motion"]
+        self.assertEqual(blk["type"], "BLOCK")
+        self.assertIn("npm install", blk["reason"])
+
+
+class DocumentVerifyRealTests(unittest.TestCase):
+    """ADR-095 on the real artifacts-skill (main, contract 0.3.0) run from its checkout: the live contract equals the pin, its doctor has a format's
+    structural verification ready (Markdown needs only the standard library), and a video rendered with a Markdown script beside it ends COMPLETED when
+    the script is clean and in REVIEW (QA FAIL, `leftover_placeholder_text`) when it still carries a TODO -- the roadmap's done-when."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.artifacts import locate_artifacts
+        cls.af = locate_artifacts()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_af_"))
+
+    def setUp(self):
+        if not self.af:
+            self.skipTest("needs an artifacts-skill checkout (VIDEO_AGENT_ARTIFACTS_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_and_doctor(self):
+        from video_agent.tools.artifacts import ArtifactsAdapter
+        ad = ArtifactsAdapter(self.af)
+        self.assertEqual(ad.drift(), [], "the installed artifacts-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertEqual(ad.operation_status(doc)["VERIFY"], "supported", doc.get("problems"))
+        self.assertIn("markdown", doc["formats"])
+
+    def test_placeholder_in_the_script_fails_qa_end_to_end(self):
+        src = str(Path(self.tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        make_media(src)
+        docs = Path(self.tmp) / "docs"
+        docs.mkdir(parents=True, exist_ok=True)
+        results = {}
+        for name, text in (("clean.md", "# Script\n\n- Hello.\n- The end.\n"), ("draft.md", "# Script\n\n- Hello.\n- TODO: write the ending.\n")):
+            (docs / name).write_text(text, encoding="utf-8")
+            svc = Service(workspace=str(Path(self.tmp) / f"ws_{name}"))
+            ir = svc.plan([src], "generic", user_requirements={"document.verify": str(docs / name)})
+            step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] == "document_verify")
+            self.assertEqual(step["tool"], "artifacts-skill/verify")
+            p = str(Path(self.tmp) / f"{name}.json")
+            save_ir(ir, p)
+            results[name] = svc.render(load_ir(p), p, approve=["all"])
+        clean, draft = results["clean.md"], results["draft.md"]
+        self.assertEqual(clean["status"], "COMPLETED", clean.get("qa"))
+        self.assertEqual([(i["name"], i["status"]) for i in clean["qa"]["items"] if i["layer"] == "document"], [("verdict", "PASS")])
+        self.assertEqual(draft["status"], "REVIEW", draft.get("qa"))
+        items = {i["name"]: i for i in draft["qa"]["items"] if i["layer"] == "document"}
+        self.assertEqual((items["verdict"]["status"], items["leftover_placeholder_text"]["status"], items["leftover_placeholder_text"]["observed"]), ("FAIL", "FAIL", ["todo"]))
+
+
+class SpeakerIdsRealTests(unittest.TestCase):
+    """ADR-096 (speaker ids end to end) against the real Skills where CI can run them: the real transcription-skill's own merge
+    (`transcription speakers`, the same ASSIGN rule its transcribe applies to `speaker_turns`) of a canned transcript with diarization-skill
+    turns is admitted by the agent's transcript check and becomes SpeechEvents with the ids; and a plan with `speakers.assign=true` +
+    subtitles renders through the real subtitle-skill and ffmpeg-skill into a sidecar whose cues read "SPEAKER_00: ...". Recognition and
+    diarization are the fake processes (CI has neither an ASR model nor the gated pyannote pipeline)."""
+
+    SPEECH = [[1.0, 4.5, "hello there"], [6.0, 9.5, "and goodbye"]]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_spk_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.media = str(src / "talk.mp4")
+        make_media(cls.media)
+        Path(cls.media + ".segments.json").write_text(json.dumps(cls.SPEECH), encoding="utf-8")
+
+    def test_real_transcription_merge_is_admitted(self):
+        import hashlib
+        sk = locate_transcription()
+        if not sk:
+            self.skipTest("needs a transcription-skill checkout (VIDEO_AGENT_TRANSCRIPTION_DIR)")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import fake_transcription
+        from video_agent.models import Asset, Observation
+        from video_agent.temporal import events_from_observation
+        from video_agent.tools.transcription.adapter import TranscriptionAdapter, check_transcript, pinned_contract
+        fp = hashlib.sha256(Path(self.media).read_bytes()).hexdigest()
+        tr = fake_transcription.transcript({"input": self.media, "asset_id": "a", "language": "en"}, fp)
+        tr["provenance"]["parameters_hash"] = "0" * 64   # the canned document as transcription-skill's validator wants it (no engine in CI)
+        turns = {"schema": "diarization-skill/turns@1", "source": {"fingerprint": "sha256:" + fp, "filename": "talk.mp4"}, "speakers": ["SPEAKER_00", "SPEAKER_01"],
+                 "turns": [{"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"}, {"start": 5.2, "end": 16.0, "speaker": "SPEAKER_01"}], "overlap": {"available": False, "regions": []}}
+        t_in, d_in, m_out = (str(Path(self.tmp) / n) for n in ("t.json", "turns.json", "merged.json"))
+        Path(t_in).write_text(json.dumps(tr, ensure_ascii=False), encoding="utf-8")
+        Path(d_in).write_text(json.dumps(turns), encoding="utf-8")
+        p = subprocess.run(list(sk.command) + ["speakers", t_in, f"--turns={d_in}", f"--output={m_out}", "--json"], capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, **dict(getattr(sk, "env", None) or {})))
+        code, out, err = p.returncode, p.stdout, p.stderr
+        self.assertEqual(code, 0, out + err)
+        merged = json.loads(Path(m_out).read_text(encoding="utf-8"))
+        self.assertEqual([s["speaker_id"] for s in merged["segments"]], ["SPEAKER_00", "SPEAKER_01"])
+        c = pinned_contract()
+        params = {"asset_id": "a", "speaker_turns": TranscriptionAdapter.check_turns(turns, {"speaker_turns": 1})}
+        self.assertEqual(check_transcript(merged, params, c["version"], {e["id"]: e for e in c["engines"]}, c["schemas"]), [])
+        asset = Asset(path=self.media, provenance="USER")
+        ev = events_from_observation(Observation(kind="transcript", asset_id=asset.id, source="transcription/transcribe@0.8.0", tool="transcription/transcribe", data=merged), asset)
+        self.assertEqual([e.metadata["speaker_id"] for e in ev], ["SPEAKER_00", "SPEAKER_01"])
+
+    def test_sidecar_cues_name_the_anonymous_speaker(self):
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.tools.diarization import DiarizationAdapter
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.skill_process import CliSkill
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        here = Path(__file__).resolve().parent
+        ws = str(Path(self.tmp) / "ws")
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill([sys.executable, str(here / "fake_transcription.py")], None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                dia = DiarizationAdapter(CliSkill("diarization", [sys.executable, str(here / "fake_diarization.py")], None, {}), workspace=self.workspace,
+                                         allowed_inputs=[str(Path(self.workspace).parent / "src"), self.workspace])
+                return self._sync_packages(ToolRouter([ts, dia] + [a for a in r.adapters if a.name not in ("transcription", "diarization")]))
+        svc = _Svc(workspace=ws, offline=True)
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                caps = dict(real.resolve(refresh))
+                for n in ("transcription", "diarization", "diarization:DIARIZE"):
+                    caps[n] = Capability(n, "AVAILABLE", "fake process", {})
+                return caps
+        svc.caps = _Caps()
+        cap = real.resolve().get("subtitle")
+        if cap is None or cap.status != "AVAILABLE":
+            self.skipTest(f"needs subtitle-skill (VIDEO_AGENT_SUBTITLE_DIR): {getattr(cap, 'detail', 'not resolved')[:120]}")
+        ir = svc.plan([self.media], "generic", user_requirements={"speakers.diarize": True, "speakers.assign": True, "subtitle": True}, params={"language": "en"})
+        [gen] = [op for op in ir.doc["captions"]["operations"] if op["type"] == "captions.generate"]
+        self.assertEqual([c.get("speaker") for c in gen["cues"]], ["SPEAKER_00", "SPEAKER_01"])
+        p = str(Path(self.tmp) / "spk.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution"))
+        srt = Path(out["paths"][gen["output"]]).read_text(encoding="utf-8")
+        self.assertIn("SPEAKER_00: hello there", srt)
+        self.assertIn("SPEAKER_01: and goodbye", srt)

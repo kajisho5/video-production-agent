@@ -80,20 +80,42 @@ _COMPONENTS: Tuple[Component, ...] = (
               package_install=_clone_pip("voice-enhance-skill"),
               note="ecosystem.json still says scaffold, but isolate / dereverb / bleed-reduce ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and "
                    "each engine is its own install (deep-filter + the DeepFilterNet3 model, `[wpe]`, `[bleed]`) that `voice-enhance doctor` names (ADR-073)"),
-    Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説")),
-    Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音")),
+    Component("dubbing", "dubbing-skill", "audio", "pip", "scaffold", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説"),
+              package_install=_clone_pip("dubbing-skill"),
+              note="ecosystem.json still says scaffold, but narrate / dub / describe ship (README, 0.1.0 unreleased, all EXPERIMENTAL); the core is stdlib-only and each "
+                   "engine is its own install (Chatterbox in its own venv, the VOICEVOX / Style-Bert-VITS2 apps, Kokoro) that `dubbing doctor` names; the agent runs DUB (ADR-085)"),
+    Component("sound-design", "sound-design-skill", "audio", "pip", "scaffold", owns=("BGM生成", "効果音"), package_install=_clone_pip("sound-design-skill"),
+              note="ecosystem.json still says scaffold, but library-pick / generate-bgm ship (README, 0.1.0 unreleased, EXPERIMENTAL); the music bed of the mix "
+                   "(ADR-092): library mode needs no engine, generate-bgm needs ACE-Step 1.5 installed by the user (`sound-design doctor` prints how)"),
     Component("diarization", "diarization-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("話者識別",),
-              package_install=_clone_pip("diarization-skill", "pyannote")),
+              package_install=_clone_pip("diarization-skill", "pyannote"),
+              note="speaker turns as the analysis kind speaker_turns (ADR-086); diarize also needs the gated speaker-diarization-community-1 pipeline cloned once "
+                   "and DIARIZATION_PIPELINE_DIR set (`diarization doctor` prints the steps; the Skill never downloads)"),
     Component("detection", "detection-skill", "recognize", "pip", "active", plugin=True, optional=True, owns=("顔検出", "文字検出(OCR)", "物体検出"),
-              package_install=_clone_pip("detection-skill", "all")),
+              package_install=_clone_pip("detection-skill", "all"),
+              note="face tracks to blur as the analysis kind face_tracks (ADR-090); faces also need the YuNet model file face_detection_yunet_2026may.onnx "
+                   "in DETECTION_MODELS_DIR (`detection doctor` prints where to get it; the Skill never downloads)"),
     Component("slide-sync", "slide-sync-skill", "recognize", "pip", "active", plugin=True, owns=("スライド取込", "スライド切替検出"),
-              package_install=_clone_pip("slide-sync-skill", "pdf")),
-    Component("artifacts", "artifacts-skill", "verify", "pip", "active", plugin=True, owns=("生成文書の検証",), package_install=_clone_pip("artifacts-skill", "all")),
-    Component("publish", "publish-skill", "delivery", "pip", "scaffold", owns=("配信先アップロード", "アップロード制限")),
+              package_install=_clone_pip("slide-sync-skill", "pdf"),
+              note="slide timeline (and the deck page on screen) as the analysis kind slide_timeline (ADR-091); a pptx / key / odp deck also needs LibreOffice"),
+    # ADR-095: the package id is the contract's skill_id `artifacts-skill`, the prefix of its provides[].tool_id (ADR-077's rule)
+    Component("artifacts-skill", "artifacts-skill", "verify", "pip", "active", plugin=True, owns=("生成文書の検証",), package_install=_clone_pip("artifacts-skill", "all"),
+              note="a document that goes out with the video verified before the job is done (skill document_verify, ADR-095)"),
+    Component("publish", "publish-skill", "delivery", "pip", "scaffold", owns=("配信先アップロード", "アップロード制限"),
+              package_install=_clone_pip("publish-skill"),
+              note="ecosystem.json still says scaffold, but plan / upload ship (README, 0.1.0 unreleased, EXPERIMENTAL) with the uploaders its contract names; "
+                   "`[keychain]` adds the OS keychain for credentials; the agent plans the upload and a human confirms it (ADR-087)"),
+    # ADR-089: nle-bridge-skill is `planned` in ecosystem.json until Velisa updates it (its own roadmap); export / conform / diff / import ship (README)
+    Component("nle-bridge", "nle-bridge-skill", "delivery", "pip", "planned", owns=("NLE連携(タイムライン受け渡し)",), package_install=_clone_pip("nle-bridge-skill"),
+              note="ecosystem.json still says planned, but export / conform / diff / import ship (README, 0.1.0 unreleased, EXPERIMENTAL, standard library only); "
+                   "the agent hands it its project IR for delivery.nle (ADR-089)"),
     Component("bdmvkit", "bdmvkit", "delivery", "pip", "active", optional=True, owns=("Blu-ray作成",), package_install="pip install bdmvkit"),
     Component("vtskit", "vtskit", "delivery", "pip", "active", optional=True, owns=("DVD-Video作成",), package_install="pip install vtskit"),
     Component("udfkit", "udfkit", "delivery", "pip", "active", optional=True, owns=("ディスクイメージ(UDF)",), package_install="pip install udfkit"),
     Component("dvdcc", "dvdcc", "delivery", "pip", "active", optional=True, owns=("DVD字幕(CEA-608)",), package_install="pip install dvdcc"),
+    # ADR-094: the disc authoring app over the four kits (vendored); not on PyPI (its SKILL.md: pip install from the repository)
+    Component("oncemore", "oncemore", "delivery", "pip", "active", optional=True, owns=("ディスク作成アプリ(Mac)",),
+              package_install="pip install git+https://github.com/kajisho5/oncemore", note="MCP: claude mcp add --scope user oncemore -- oncemore mcp"),
     # ADR-077: the agent's package id is imagemagick-skill (the Skill's own skill.id and tool-id prefix; ecosystem.json's id is `imagemagick`)
     Component("imagemagick-skill", "imagemagick-skill", "utility", "checkout", "active", plugin=True, owns=("静止画編集",), package_install="npx imagemagick-skill",
               note="the agent prepares edit.overlay images with its resize / pad / strip (ADR-077); `npx imagemagick-skill` copies the checkout to "
@@ -101,8 +123,10 @@ _COMPONENTS: Tuple[Component, ...] = (
     # ADR-080: package ids are the Skills' own skill_id (the prefix of their provides[].tool_id), as for imagemagick-skill (ADR-077)
     Component("blender-skill", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill",
               note="render_3d is handed off with blender-skill/render named from its pinned contract (ADR-080); Blender 4.2+ itself is the user's install"),
-    Component("remotion-ffmpeg", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
-              package_install="npx remotion-ffmpeg-skill"),
+    # ADR-093: the package id is the Skill's own skill_id (remotion-ffmpeg-skill), the prefix of its provides[].tool_id
+    Component("remotion-ffmpeg-skill", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
+              package_install="npx remotion-ffmpeg-skill",
+              note="one composition over the edited picture as the skill measured_motion (ADR-093); Remotion needs Node 18+ and the user's own project (init.py, npm install)"),
     Component("hyperframes-skill", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
               package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci",
               note="html_scene_render is handed off with hyperframes-skill/render named from its pinned contract (ADR-080); needs Node.js 22+ and a headless Chromium"),

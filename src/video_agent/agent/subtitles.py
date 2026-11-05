@@ -19,7 +19,8 @@ Vocabulary and arithmetic only, no execution and no recognition:
   source after the trim (kept ranges), the concat (timeline offsets) and the speed factor. Every cue is mapped through exactly
   those operations — a cue inside a removed range is dropped, one overlapping a cut edge is clipped — so the sidecar is in sync
   with what is delivered. Nothing is re-timed by guesswork.
-- **What is never done here**: speaker names (speaker_id is null and stays null), translation, rewriting, line breaking (the
+- **What is never done here**: speaker names (a cue carries an anonymous SPEAKER_nn only when the transcript records the speaker merge
+  `speakers.assign=true` asked for, ADR-096; subtitle-skill writes it as "SPEAKER_00: ..."), translation, rewriting, line breaking (the
   Skill's constraints report warnings; the cue text is the recognised text), burning into a source file (the burn-in input is
   always an intermediate inside the agent workspace — the Skill accepts workspace-relative inputs only).
 """
@@ -32,6 +33,7 @@ from ..models import Requirement
 from .editing import EditRequirementError, _bool, _number
 
 FORMATS = ("srt", "vtt")
+SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")   # ADR-096: diarization-skill's anonymous ids, the only speaker a cue may carry
 REQUIREMENT_KEYS = ("subtitle", "subtitle.format", "subtitle.burn_in", "subtitle.mode", "subtitle.max_chars_per_line", "subtitle.max_lines")
 # subtitle-skill render's `mode` (contract capabilities.render_modes, pinned 0.2.0): burn into the picture, or mux a soft track. Muxing is
 # subtitle-skill's job (ecosystem.json: 字幕生成・検証 / 字幕焼き込み; the contract's render delegates to ffmpeg-skill/caption --mode mux),
@@ -129,10 +131,12 @@ def map_cue(start: float, end: float, keep: List[List[float]], offset: float = 0
     return round(ms, 3), round(me, 3)
 
 
-def cues_from_segments(segments: List[Dict[str, Any]], keep: List[List[float]], offset: float = 0.0, speed: float = 1.0, id_prefix: str = "c") -> List[Dict[str, Any]]:
+def cues_from_segments(segments: List[Dict[str, Any]], keep: List[List[float]], offset: float = 0.0, speed: float = 1.0, id_prefix: str = "c",
+                       speakers: bool = False) -> List[Dict[str, Any]]:
     """Transcript segments → subtitle cues on the delivered timeline (ids `c0001`…, deterministic order, no overlap: a cue
     starting before the previous one ended is clipped to start there). Text is the recognised text, trimmed; empty cues and
-    cues that fall into removed material are dropped. speaker is never set."""
+    cues that fall into removed material are dropped. `speaker` is set only when `speakers` (ADR-096: the transcript records the
+    speaker merge an explicit requirement asked for) and the segment carries an anonymous SPEAKER_nn id; never a name."""
     out: List[Dict[str, Any]] = []
     prev_end = -1.0
     for seg in sorted(segments, key=lambda s: (float(s.get("start", 0.0)), str(s.get("id")))):
@@ -147,9 +151,20 @@ def cues_from_segments(segments: List[Dict[str, Any]], keep: List[List[float]], 
             s = prev_end
         if e - s < MIN_CUE:
             continue
-        out.append({"id": f"{id_prefix}{len(out) + 1:04d}", "start": round(s, 3), "end": round(e, 3), "text": text})
+        cue = {"id": f"{id_prefix}{len(out) + 1:04d}", "start": round(s, 3), "end": round(e, 3), "text": text}
+        if speakers and isinstance(seg.get("speaker_id"), str) and SPEAKER_RE.match(seg["speaker_id"]):
+            cue["speaker"] = seg["speaker_id"]
+        out.append(cue)
         prev_end = round(e, 3)
     return out
+
+
+def cues_from_transcripts(transcripts: List[Any], keep: List[List[float]], offset: float = 0.0, speed: float = 1.0, id_prefix: str = "c") -> List[Dict[str, Any]]:
+    """The cues of one input's transcript observation(s). ADR-096: they carry the segments' anonymous speaker ids only when every one of
+    them records transcription-skill's speaker merge (`speaker_assignment`, asked for by speakers.assign); otherwise no speaker at all."""
+    segs = [s for o in transcripts for s in ((o.data or {}).get("segments") or [])]
+    merged = bool(transcripts) and all(isinstance((o.data or {}).get("speaker_assignment"), dict) for o in transcripts)
+    return cues_from_segments(segs, keep, offset=offset, speed=speed, id_prefix=id_prefix, speakers=merged)
 
 
 def valid_language(lang: Any) -> str:

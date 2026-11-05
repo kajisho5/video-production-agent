@@ -17,7 +17,17 @@ from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
 from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, SYNC_TOLERANCE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
+from ..agent.documents import SKILL as DOCUMENT_SKILL, document_problems
+from ..agent.remotion import SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT, remotion_problems
+from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
+from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
+from ..agent.dubbing import FILES as DUB_FILES, OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL
+from ..tools.dubbing.adapter import engines as dub_engines, parameters as dub_parameters, unfit_policies as dub_unfit_policies
+from ..agent.publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
+from ..tools.publish.adapter import LANG_RE as PUBLISH_LANG_RE, platforms as publish_platforms
+from ..agent.nle import MODES as NLE_MODES
+from ..tools.nle_bridge.adapter import formats as nle_formats
 from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -43,7 +53,8 @@ class ValidationReport:
 
 def produced_subjects(d: Dict[str, Any]) -> set:
     """Logical subjects an operation produced (the video / audio concat programmes) that later operations may reference."""
-    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat", "audio.mix") and op.get("output")}
+    return {op.get("output") for op in d["video"]["operations"] + d["audio"]["operations"] if op.get("type") in ("video.concat", "video.switch", "video.grid", "audio.concat", "audio.mix") and op.get("output")} \
+        | {op.get("asset") for op in d["audio"]["operations"] if op.get("type") == BGM_SUBJECT and op.get("asset") == BGM_INPUT}   # ADR-092: the bed is made, not a source
 
 
 def check_audio_operations(d: Dict[str, Any]) -> List[str]:
@@ -77,6 +88,9 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
             continue
         if t in VOICE_OPERATIONS:   # ADR-073: voice-enhance-skill, per input after its cut / filler removal (bleed reduction: the mix's inputs as recorded)
             errs.extend(_voice_problems(op, assets, programme, seen_rank, on_audio_path))
+            continue
+        if t == BGM_SUBJECT:   # ADR-092: the bed sound-design makes, the mix's last input
+            errs.extend(bgm_problems(op, programme))
             continue
         if t not in AUDIO_OPERATIONS:
             errs.append(f"unknown audio operation type {t!r}")
@@ -121,8 +135,9 @@ def check_audio_operations(d: Dict[str, Any]) -> List[str]:
             ins = op.get("inputs") or []
             if len(ins) < 2 or len(set(ins)) != len(ins):
                 errs.append(f"{t} needs two or more distinct inputs")
+            has_bgm = any(o.get("type") == BGM_SUBJECT for o in aops)
             for i in ins:
-                if i not in assets:
+                if i not in assets and not (t == "audio.mix" and i == BGM_INPUT and has_bgm and ins[-1] == BGM_INPUT):   # ADR-092: the bed, last
                     errs.append(f"{t} input {i!r} is not an asset")
             if op.get("output") != subj or subj in assets:
                 errs.append(f"{t}: output must equal the operation's subject and not collide with an asset id")
@@ -314,6 +329,16 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                 if dur and k[1] > dur + 0.01:
                     errs.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
             continue
+        if t == REMOTION_SUBJECT:   # ADR-093: after the edits, before the finishing; keeps the clock and the frame
+            errs.extend(remotion_problems(op))
+            if subj not in known:
+                errs.append(f"{t} references {subj!r} before it exists")
+            continue
+        if t == FACE_SUBJECT:   # ADR-090: blurred on the source, before anything re-times it (its own vocabulary, not an editing op)
+            errs.extend(face_problems(op, assets))
+            if any(o.get("asset") == subj and o.get("type") == FACE_SUBJECT for o in ops[:ops.index(op)]):
+                errs.append(f"{t} on {subj}: more than one")
+            continue
         if t not in OPERATIONS:
             errs.append(f"unknown video operation type {t!r}")
             continue
@@ -444,6 +469,139 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def speech_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list((d.get("speech") or {}).get("operations") or [])
+
+
+def check_speech_operations(d: Dict[str, Any]) -> List[str]:
+    """ADR-085: the `speech` section (dubbing-skill DUB). One dub per video subject, on its picture after the edits (input: the subject itself or
+    the output of one of its video operations), output `<subject>_dub`; the user's files without traversal, of their kind, inside the allowed
+    input roots; a reference voice only with its consent record; engine / on_unfit / numbers inside the pinned dubbing contract; never on the
+    audio production path (no picture there)."""
+    errs: List[str] = []
+    ops = speech_operations(d)
+    if not ops:
+        return errs
+    assets = d["assets"]
+    subjects_known = set(assets) | produced_subjects(d)
+    allowed_roots = [str(Path(r)) for r in (d.get("execution") or {}).get("allowed_inputs") or []]
+    video_outputs: Dict[str, set] = {}
+    for op in d["video"]["operations"]:
+        if op.get("output"):
+            video_outputs.setdefault(op.get("asset"), set()).add(op["output"])
+        if op.get("type") == "video.trim":   # a trim's output is implicit: <asset>_trim
+            video_outputs.setdefault(op.get("asset"), set()).add(f"{op.get('asset')}_trim")
+    on_audio_path = {op.get("asset") for op in d["audio"]["operations"] if "input" in op or op.get("type") != "audio.loudness"}
+    seen: set = set()
+    ranges = dub_parameters()
+    for op in ops:
+        t, subj = op.get("type"), op.get("asset")
+        if t != DUB_OP:
+            errs.append(f"unknown speech operation type {t!r}")
+            continue
+        extra = sorted(k for k in op if k not in ("type", "asset", "input", "output", "temporal_scope", "decision_ids") + DUB_PARAMS)
+        if extra:
+            errs.append(f"{t}: parameters {extra} are not in the operation's vocabulary")
+        if subj not in subjects_known:
+            continue   # reported by the caller
+        if subj in seen:
+            errs.append(f"{t}: more than one dub of {subj}")
+        seen.add(subj)
+        if on_audio_path:
+            errs.append(f"{t} on {subj}: the audio production path delivers no picture to dub")
+        if op.get("input") != subj and op.get("input") not in video_outputs.get(subj, set()):
+            errs.append(f"{t} on {subj} must take the subject's picture after its edits, not {op.get('input')!r}")
+        if op.get("output") != f"{subj}_dub":
+            errs.append(f"{t} on {subj} must write {subj}_dub")
+        for k, exts in DUB_FILES.items():
+            name = k.split(".", 1)[1]
+            f = op.get(name)
+            if f is None:
+                if name in ("cues",):
+                    errs.append(f"{t} needs {name} (the user's translated cues)")
+                continue
+            if any(part == ".." for part in str(f).replace("\\", "/").split("/")):
+                errs.append(f"{t} {name} path contains '..'")
+            elif Path(f).suffix.lower() not in exts:
+                errs.append(f"{t} {name} must be one of {', '.join(exts)}: {Path(f).name}")
+            elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
+                errs.append(f"{t} {name} is outside the allowed input roots: {Path(f).name}")
+        if (op.get("reference") is None) != (op.get("consent") is None):
+            errs.append(f"{t}: a reference voice only together with its owner's consent record (both from the user)")
+        if op.get("engine") is not None and op["engine"] not in dub_engines():
+            errs.append(f"{t}: engine {op['engine']!r} is not one dubbing-skill's DUB takes ({', '.join(dub_engines())})")
+        if op.get("on_unfit") is not None and op["on_unfit"] not in dub_unfit_policies():
+            errs.append(f"{t}: on_unfit {op['on_unfit']!r} must be one of {', '.join(dub_unfit_policies())}")
+        for name, (lo, hi) in ranges.items():
+            v = op.get(name)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= float(v) <= hi):
+                errs.append(f"{t}: {name} {v!r} must be within [{lo:g}, {hi:g}] (the dubbing contract's limits)")
+    return errs
+
+
+def check_publish(d: Dict[str, Any]) -> List[str]:
+    """ADR-087: `delivery.publish`. A planned deliverable of a delivery target of this plan, after the QC gate of its subject; a platform the
+    pinned publish-skill contract implements with an uploader; only the metadata fields that platform takes, its privacy values; an attached
+    thumbnail / sidecar that this plan produces for the subject (captions with a BCP-47 language)."""
+    pub = (d.get("delivery") or {}).get("publish")
+    if not pub:
+        return []
+    errs: List[str] = []
+    if pub.get("type") != PUBLISH_SUBJECT:
+        errs.append(f"delivery.publish type {pub.get('type')!r} is not {PUBLISH_SUBJECT}")
+    subj, target = pub.get("asset"), pub.get("target")
+    plats = publish_platforms()
+    plat = plats.get(str(pub.get("platform")))
+    if plat is None:
+        return errs + [f"delivery.publish platform {pub.get('platform')!r} has no uploader in the pinned publish-skill contract ({', '.join(sorted(plats))})"]
+    if target not in {t.get("id") for t in d["delivery"].get("targets") or []}:
+        errs.append(f"delivery.publish target {target!r} is not a delivery target of this plan")
+    if pub.get("artifact") != f"{subj}_delivery_{target}":
+        errs.append(f"delivery.publish must name the deliverable {subj}_delivery_{target}")
+    fields = set(plat["metadata_fields"])
+    for k in ("title", "description", "tags", "thumbnail", "captions"):
+        if pub.get(k) not in (None, False, "", []) and k not in fields:
+            errs.append(f"delivery.publish: {pub['platform']} does not take {k}")
+    if pub.get("privacy") not in (plat["privacy"] or ["private", "unlisted", "public"]):
+        errs.append(f"delivery.publish privacy {pub.get('privacy')!r} is not one {pub['platform']} takes ({', '.join(plat['privacy'])})")
+    qc = (d.get("qa") or {}).get("qc") or {}
+    if not qc.get("enabled") or target not in ((qc.get("subjects") or {}).get(subj) or {}).get("targets", []):
+        errs.append(f"delivery.publish of {subj}/{target} needs the QC gate on that deliverable (publishing comes after QC)")
+    outputs = {(o.get("role"), (o.get("expected") or {}).get("source")) for o in d["plan"].get("outputs") or []}
+    if pub.get("thumbnail") and ("THUMBNAIL", subj) not in outputs:
+        errs.append(f"delivery.publish attaches a thumbnail, and the plan makes none for {subj}")
+    if pub.get("captions") and (("CAPTIONS", subj) not in outputs or not PUBLISH_LANG_RE.match(str(pub.get("caption_language") or ""))):
+        errs.append(f"delivery.publish attaches captions: the plan must make a sidecar for {subj} with a BCP-47 caption_language")
+    if not pub.get("decision_ids"):
+        errs.append("delivery.publish cites no decision")
+    return errs
+
+
+def check_nle(d: Dict[str, Any]) -> List[str]:
+    """ADR-089: `delivery.nle`. One hand-off per subject, of a subject whose timeline is planned (nle-bridge reads that record), formats from
+    the pinned nle-bridge contract with at least one timeline format, `zip` only on a conform."""
+    errs: List[str] = []
+    timelines = {t.get("asset") for t in (d.get("delivery") or {}).get("timelines") or []}
+    seen: set = set()
+    for op in (d.get("delivery") or {}).get("nle") or []:
+        t, subj = op.get("type"), op.get("asset")
+        mode = str(t or "").split(".", 1)[-1]
+        if mode not in NLE_MODES:
+            errs.append(f"unknown delivery.nle type {t!r}")
+            continue
+        if subj in seen:
+            errs.append(f"{t}: more than one NLE hand-off of {subj}")
+        seen.add(subj)
+        if subj not in timelines:
+            errs.append(f"{t} of {subj}: nle-bridge reads the subject's delivery.timelines record, and none is planned")
+        fmts = list(op.get("formats") or [])
+        if not fmts or any(f not in nle_formats() for f in fmts) or len(set(fmts)) != len(fmts) or fmts == ["srt"]:
+            errs.append(f"{t} of {subj}: formats {fmts!r} must be distinct names from {', '.join(nle_formats())} with a timeline format")
+        if "zip" in op and mode != "conform":
+            errs.append(f"{t} of {subj}: zip is a conform option")
+    return errs
+
+
 def finishing_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for sec in ("color", "graphics", "captions") for op in (d.get(sec) or {}).get("operations") or []]
 
@@ -552,8 +710,18 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             sc = scope_of(subj)
             if sc and float(op.get("timestamp", 0)) > float(sc["end"]) + 0.01:
                 errs.append(f"graphics.thumbnail on {subj}: timestamp {op.get('timestamp')} is after the picture ends ({sc['end']:.3f})")
-            if op.get("text") is not None and not (op.get("width") and op.get("height")):
-                errs.append(f"graphics.thumbnail on {subj}: a caption needs the canvas size (width / height)")
+            if (op.get("text") is not None or op.get("texts") or op.get("logo")) and not (op.get("width") and op.get("height")):
+                errs.append(f"graphics.thumbnail on {subj}: a caption / text / logo needs the canvas size (width / height)")
+            lg = op.get("logo")
+            if isinstance(lg, dict):   # ADR-088: the logo image is the user's file, inside the allowed input roots, and its box touches the canvas
+                img = str(lg.get("image") or "")
+                if any(part == ".." for part in img.replace("\\", "/").split("/")) or Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo must be a PNG / JPEG path without '..'")
+                elif allowed_roots and not any(_under(img, r) for r in allowed_roots):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo image is outside the allowed input roots: {Path(img).name}")
+                if op.get("width") and op.get("height") and not (int(lg.get("x", 0)) < int(op["width"]) and int(lg.get("y", 0)) < int(op["height"])
+                                                                 and int(lg.get("x", 0)) + int(lg.get("width", 0)) > 0 and int(lg.get("y", 0)) + int(lg.get("height", 0)) > 0):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo box lies outside the canvas")
         else:
             errs.append(f"unknown graphics operation type {t!r}")
     for op in (d.get("captions") or {}).get("operations") or []:
@@ -584,6 +752,12 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             for src in op.get("sources") or []:
                 if not any(o.get("id") == src and o.get("kind") == "transcript" for o in d["analysis"].get("observations") or []):
                     errs.append(f"captions.generate on {subj}: source {src} is not a transcript observation of this project")
+            # ADR-096: a cue names a speaker only as an anonymous id one of its source transcripts got from a recorded speaker merge
+            merged = {s for o in d["analysis"].get("observations") or [] if o.get("id") in (op.get("sources") or []) and o.get("kind") == "transcript"
+                      for s in (((o.get("data") or {}).get("speaker_assignment") or {}).get("speakers") or [])}
+            for c in cues:
+                if c.get("speaker") is not None and c["speaker"] not in merged:
+                    errs.append(f"captions.generate cue {c.get('id')}: speaker {c['speaker']!r} is not an id a source transcript got from a recorded speaker merge")
         elif t in ("captions.burn", "captions.mux"):   # ADR-063: the mux is the same render (mode mux); one of the two per subject
             if seen.get(("burn", subj)):
                 errs.append(f"more than one captions.burn / captions.mux on {subj}")
@@ -857,7 +1031,9 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rejected = {x["id"] for x in d["decisions"] if x["status"] == "REJECTED"}
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
-    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + d["delivery"]["targets"] + timelines + xf_rec:
+    xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-087: a rejected publish decision is rejected-cited
+    xf_rec += list(d["delivery"].get("nle") or [])   # ADR-089: a rejected hand-off decision is rejected-cited
+    for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + speech_operations(d) + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
                 rep.errors.append(f"{op.get('type') or 'delivery.' + op.get('id', '?')} cites REJECTED decision {did}; re-plan (revise) before rendering")
@@ -865,14 +1041,17 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_video_operations(d)
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
+    rep.errors += check_speech_operations(d)   # ADR-085
     rep.errors += check_timeline_exports(d)
+    rep.errors += check_nle(d)   # ADR-089
     rep.errors += check_take_assembly(d)
+    rep.errors += check_publish(d)   # ADR-087
     rep.errors += check_plan_dependencies(d)
     for op in timelines:
         for did in op.get("decision_ids") or []:
             if did not in ids:
                 rep.errors.append(f"operation {op.get('type')} cites unknown decision {did}")
-    for op in d["video"]["operations"] + d["audio"]["operations"] + finishing_operations(d):
+    for op in d["video"]["operations"] + d["audio"]["operations"] + finishing_operations(d) + speech_operations(d):
         if op["asset"] not in assets and op["asset"] not in produced_subjects(d):
             rep.errors.append(f"operation {op['type']} references unknown asset {op['asset']}")
             continue
@@ -933,6 +1112,12 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                     rep.errors.append(f"the overlay image's {sk} on {op['asset']} has no plan step")
         if op["type"] in SKILL_OF and (SKILL_OF[op["type"]], op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] == REMOTION_SUBJECT and (REMOTION_SKILL, op["asset"]) not in step_keys:   # ADR-093
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] == FACE_SUBJECT:   # ADR-090: the cut, the redacts and the composite each have their step
+            for sk in FACE_EXEC_SKILLS:
+                if (sk, op["asset"]) not in step_keys:
+                    rep.errors.append(f"{op['type']} on {op['asset']}: {sk} has no plan step")
     for op in d["audio"]["operations"]:
         if op["type"] == "audio.loudness" and (("audio_normalize" if "input" in op else "loudness_normalization"), op["asset"]) not in step_keys:
             rep.errors.append(f"audio.loudness on {op['asset']} has no plan step")
@@ -942,6 +1127,13 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
         if op["type"] in VOICE_OPERATIONS and (VOICE_OPERATIONS[op["type"]]["skill"], op["asset"]) not in step_keys:   # ADR-073
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+        if op["type"] == BGM_SUBJECT and op.get("mode") in ("library", "generate") and (bgm_skill_of(op), op["asset"]) not in step_keys:   # ADR-092
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    for op in speech_operations(d):   # ADR-085
+        if (DUB_SKILL, op["asset"]) not in step_keys:
+            rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    if d["delivery"].get("publish") and (PUBLISH_SKILL, d["delivery"]["publish"].get("asset")) not in step_keys:   # ADR-087
+        rep.errors.append(f"delivery.publish of {d['delivery']['publish'].get('asset')} has no plan step")
     for t in d["delivery"]["targets"]:
         if t.get("preset") and ("delivery_export", t["id"]) not in step_keys:
             rep.errors.append(f"delivery target {t['id']} has no export step")
@@ -956,6 +1148,9 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         want = GENERATE_SKILL if op["type"] == "captions.generate" else MUX_SKILL if op["type"] == "captions.mux" else BURN_SKILL
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    for op in d["delivery"].get("nle") or []:   # ADR-089
+        if (NLE_MODES.get(str(op.get("type")).split(".", 1)[-1], ("?",))[0], op.get("asset")) not in step_keys:
+            rep.errors.append(f"{op.get('type')} of {op.get('asset')} has no plan step")
     for op in timelines:
         if (TIMELINE_SKILL, op.get("asset")) not in step_keys:
             rep.errors.append(f"timeline.export on {op.get('asset')} has no plan step")
@@ -981,6 +1176,10 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 if not any((s.get("params") or {}).get("asset") == subj and (s.get("params") or {}).get("target") == target and (s.get("params") or {}).get("kind") == "delivery_package"
                            for s in qc_steps):
                     rep.errors.append(f"qa.qc: package {subj}/{target} has no qc_check step")
+    for doc in (d.get("qa") or {}).get("documents") or []:   # ADR-095: each verified document has its step, by id
+        rep.errors.extend(document_problems(doc))
+        if not any(s["skill"] == DOCUMENT_SKILL and (s.get("params") or {}).get("document") == doc.get("id") for s in d["plan"]["steps"]):
+            rep.errors.append(f"qa.documents: {doc.get('id')} has no {DOCUMENT_SKILL} step")
     # temporal layer: events are validated domain objects on existing assets, within their duration, with real evidence
     durations = {aid: (a.get("technical") or {}).get("duration") for aid, a in assets.items()}
     known_evidence = {o.get("id") for o in d["analysis"].get("observations") or []} | {x.get("id") for x in d["decisions"]} | {i.get("id") for i in d["analysis"].get("inferences") or []}
@@ -1065,6 +1264,12 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("imagemagick-skill")   # ADR-077: the overlay image's preparation exists only in imagemagick-skill
         if any(op["type"] in VOICE_OPERATIONS for op in d["audio"]["operations"]):
             needed.add("voice-enhance")   # ADR-073: speech enhancement exists only in voice-enhance-skill
+        if speech_operations(d):
+            needed.add("dubbing")   # ADR-085: dubbing exists only in dubbing-skill
+        if d["delivery"].get("publish"):
+            needed.add("publish")   # ADR-087: uploading exists only in publish-skill
+        if d["delivery"].get("nle"):
+            needed.add("nle-bridge")   # ADR-089: the NLE interchange exists only in nle-bridge-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):
@@ -1077,6 +1282,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("subtitle")
         if ((d.get("qa") or {}).get("qc") or {}).get("enabled"):
             needed.add("qc")
+        if (d.get("qa") or {}).get("documents"):
+            needed.add("artifacts-skill")   # ADR-095
         if any(t.get("preset") == "prores" for t in d["delivery"]["targets"]):
             needed.add("encoder:prores_ks")
         if any(t.get("preset") == "h265" for t in d["delivery"]["targets"]):

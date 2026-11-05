@@ -436,6 +436,19 @@
     }
    }
   },
+  "speech": {
+   "type": "object",
+   "additionalProperties": false,
+   "description": "ADR-085: dubbing-skill DUB on the subject's picture after its edits; present only when planned",
+   "properties": {
+    "operations": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/speech_op"
+     }
+    }
+   }
+  },
   "delivery": {
    "type": "object",
    "required": [
@@ -541,6 +554,121 @@
        },
        "decision_ids": {
         "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    "publish": {
+     "description": "ADR-087: the approved upload of one deliverable (publish-skill); render makes its offline plan and dry run, `video-agent publish` the upload",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "type",
+      "asset",
+      "target",
+      "artifact",
+      "platform",
+      "privacy",
+      "decision_ids"
+     ],
+     "properties": {
+      "type": {
+       "const": "publish.upload"
+      },
+      "asset": {
+       "type": "string"
+      },
+      "target": {
+       "type": "string"
+      },
+      "artifact": {
+       "type": "string"
+      },
+      "platform": {
+       "type": "string",
+       "pattern": "^[a-z0-9_-]{1,32}$"
+      },
+      "title": {
+       "type": "string",
+       "maxLength": 10000
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 10000
+      },
+      "tags": {
+       "type": "array",
+       "maxItems": 500,
+       "items": {
+        "type": "string",
+        "maxLength": 10000
+       }
+      },
+      "privacy": {
+       "type": "string",
+       "pattern": "^[a-z]{1,16}$"
+      },
+      "thumbnail": {
+       "type": "boolean"
+      },
+      "captions": {
+       "type": "boolean"
+      },
+      "caption_language": {
+       "type": "string"
+      },
+      "decision_ids": {
+       "type": "array",
+       "minItems": 1,
+       "items": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "nle": {
+     "description": "ADR-089: the project IR handed to nle-bridge-skill (export / conform) for a subject's timeline",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "type",
+       "asset",
+       "formats",
+       "output",
+       "decision_ids"
+      ],
+      "properties": {
+       "type": {
+        "enum": [
+         "nle.export",
+         "nle.conform"
+        ]
+       },
+       "asset": {
+        "type": "string"
+       },
+       "formats": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "string",
+         "pattern": "^[a-z0-9]{1,8}$"
+        }
+       },
+       "zip": {
+        "type": "boolean"
+       },
+       "output": {
+        "type": "string"
+       },
+       "decision_ids": {
+        "type": "array",
+        "minItems": 1,
         "items": {
          "type": "string"
         }
@@ -708,6 +836,53 @@
            "null"
           ]
          }
+        }
+       }
+      }
+     }
+    },
+    "documents": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "id",
+       "path",
+       "name",
+       "sha256",
+       "decision_ids"
+      ],
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "path": {
+        "type": "string",
+        "minLength": 1
+       },
+       "name": {
+        "type": "string",
+        "minLength": 1
+       },
+       "sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+       },
+       "preset": {
+        "enum": [
+         "print-a4",
+         "print-letter",
+         "slides-16x9",
+         "spreadsheet-no-cached-errors",
+         "web-no-external"
+        ]
+       },
+       "decision_ids": {
+        "type": "array",
+        "items": {
+         "type": "string"
         }
        }
       }
@@ -1230,7 +1405,10 @@
       "video.fit",
       "video.fill",
       "video.overlay",
-      "video.image_insert"
+      "video.image_insert",
+      "video.redact_faces",
+      "video.measured_motion",
+      "video.measured_motion"
      ]
     },
     "asset": {
@@ -1609,6 +1787,93 @@
        "const": true
       }
      }
+    },
+    "regions": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 60,
+     "items": {
+      "type": "object",
+      "required": [
+       "start",
+       "end",
+       "rects"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "start": {
+        "type": "number",
+        "minimum": 0
+       },
+       "end": {
+        "type": "number",
+        "minimum": 0
+       },
+       "rects": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "object",
+         "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+         ],
+         "additionalProperties": false,
+         "properties": {
+          "x": {
+           "type": "integer",
+           "minimum": 0
+          },
+          "y": {
+           "type": "integer",
+           "minimum": 0
+          },
+          "width": {
+           "type": "integer",
+           "minimum": 2
+          },
+          "height": {
+           "type": "integer",
+           "minimum": 2
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "comp": {
+     "enum": [
+      "Captioned",
+      "PeakPulse",
+      "Titled",
+      "BeatMontage",
+      "Karaoke",
+      "Pip"
+     ]
+    },
+    "project": {
+     "type": "string"
+    },
+    "captions": {
+     "type": "string"
+    },
+    "options": {
+     "type": "string"
+    },
+    "font_file": {
+     "type": "string"
+    },
+    "beats": {
+     "type": "boolean"
+    },
+    "conform": {
+     "type": "boolean"
+    },
+    "fast": {
+     "type": "boolean"
     }
    },
    "additionalProperties": false
@@ -1639,7 +1904,8 @@
       "audio.filler_remove",
       "voice.bleed_reduce",
       "voice.dereverb",
-      "voice.isolate"
+      "voice.isolate",
+      "audio.bgm"
      ]
     },
     "asset": {
@@ -1737,7 +2003,9 @@
     },
     "mode": {
      "enum": [
-      "fft"
+      "fft",
+      "library",
+      "generate"
      ]
     },
     "level": {
@@ -2055,6 +2323,38 @@
      "type": "number",
      "minimum": 0,
      "maximum": 30
+    },
+    "library": {
+     "type": "string"
+    },
+    "prompt": {
+     "type": "string",
+     "maxLength": 511
+    },
+    "tags": {
+     "type": "array",
+     "maxItems": 16,
+     "items": {
+      "type": "string",
+      "maxLength": 64
+     }
+    },
+    "mood": {
+     "type": "array",
+     "maxItems": 16,
+     "items": {
+      "type": "string",
+      "maxLength": 64
+     }
+    },
+    "file": {
+     "type": "string",
+     "maxLength": 255
+    },
+    "seed": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 4294967295
     }
    }
   },
@@ -2123,6 +2423,10 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 2000
+       },
+       "speaker": {
+        "type": "string",
+        "pattern": "^SPEAKER_[0-9]{2,}$"
        }
       }
      }
@@ -2486,6 +2790,79 @@
      "items": {
       "type": "string"
      }
+    },
+    "texts": {
+     "description": "ADR-088: more text elements of a graphics.thumbnail",
+     "type": "array",
+     "maxItems": 8,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "text"
+      ],
+      "properties": {
+       "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+       },
+       "font_size": {
+        "type": "integer",
+        "minimum": 6,
+        "maximum": 400
+       },
+       "color": {
+        "type": "string",
+        "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
+       },
+       "position": {
+        "enum": [
+         "center",
+         "top",
+         "bottom"
+        ]
+       }
+      }
+     }
+    },
+    "logo": {
+     "description": "ADR-088: a logo image of a graphics.thumbnail, its box on the canvas",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "image",
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "properties": {
+      "image": {
+       "type": "string"
+      },
+      "x": {
+       "type": "integer"
+      },
+      "y": {
+       "type": "integer"
+      },
+      "width": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 7680
+      },
+      "height": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 7680
+      },
+      "opacity": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 1
+      }
+     }
     }
    }
   },
@@ -2627,6 +3004,97 @@
     },
     "decision_ids": {
      "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "speech_op": {
+   "type": "object",
+   "required": [
+    "type",
+    "asset",
+    "input",
+    "output",
+    "cues",
+    "lang",
+    "decision_ids"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "type": {
+     "enum": [
+      "speech.dub"
+     ]
+    },
+    "asset": {
+     "type": "string"
+    },
+    "input": {
+     "type": "string"
+    },
+    "output": {
+     "type": "string"
+    },
+    "cues": {
+     "type": "string"
+    },
+    "source_cues": {
+     "type": "string"
+    },
+    "lang": {
+     "type": "string",
+     "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}$"
+    },
+    "engine": {
+     "type": "string",
+     "pattern": "^[a-z0-9_]{1,32}$"
+    },
+    "voice": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$"
+    },
+    "on_unfit": {
+     "type": "string",
+     "pattern": "^[a-z]{1,16}$"
+    },
+    "reference": {
+     "type": "string"
+    },
+    "consent": {
+     "type": "string"
+    },
+    "duck": {
+     "type": "number"
+    },
+    "voice_gain": {
+     "type": "number"
+    },
+    "max_overrun": {
+     "type": "number",
+     "minimum": 0
+    },
+    "temporal_scope": {
+     "type": "object",
+     "required": [
+      "start",
+      "end"
+     ],
+     "properties": {
+      "start": {
+       "type": "number",
+       "minimum": 0
+      },
+      "end": {
+       "type": "number",
+       "minimum": 0
+      }
+     }
+    },
+    "decision_ids": {
+     "type": "array",
+     "minItems": 1,
      "items": {
       "type": "string"
      }

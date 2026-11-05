@@ -52,6 +52,15 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # black letterbox / pillarbox bars (ADR-060): ffmpeg-skill cropdetect.py over windows spread across the file, with the agent's fixed
     # sampling (CROP_TOOL_ARGS below). A measurement only: whether to crop is a CONFIRM decision (agent/crop.py), never this kind's
     "crop_rectangle": {"skill": "cropdetect_analysis", "needs_audio": False, "params": ()},
+    # faces to blur (ADR-090): detection-skill's face boxes on frames sampled every `every` seconds, linked over time into redact rectangles
+    # (`detection tracks`, `window`); a measurement only: whether to blur is a CONFIRM decision (agent/faces.py), never this kind's
+    "face_tracks": {"skill": "face_detection", "needs_audio": False, "params": ("every", "min_score", "window")},
+    # who spoke when (ADR-086): diarization-skill's anonymous exclusive speaker turns (SPEAKER_nn), a measurement only; the counts are the
+    # Skill's own optional hints (speakers.num_speakers / .min_speakers / .max_speakers), the stream its --audio-stream
+    "speaker_turns": {"skill": "speaker_diarization", "needs_audio": True, "params": ("num_speakers", "min_speakers", "max_speakers", "audio_stream")},
+    # slide changes of a talk recording (ADR-091): slide-sync-skill's measured timeline and, with the speaker's deck, the page on screen in each slide;
+    # deck_sha256 is part of the cache key only (the deck's content, not just its path), never sent to the Skill
+    "slide_timeline": {"skill": "slide_sync", "needs_audio": False, "params": ("threshold", "min_dwell", "deck", "deck_sha256")},
 }
 # what the agent asks cropdetect.py for (ADR-060): 10 s of footage over 5 windows spread across the file, the rectangle to the nearest
 # even pixel (`--round 2`; cropdetect's default 16 cuts up to 14 px into the picture). Recorded as the observation's parameters

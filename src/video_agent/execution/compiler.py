@@ -1,5 +1,5 @@
 """Compiler: Project IR → ordered Operations with typed adapter args. Fixed order per subject:
-trim → concat → edits → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
+trim → concat → edits → dub (ADR-085) → colour → graphics → captions (sidecar, burn-in or soft track) → a joined still (ADR-070) → loudness → export → check → timeline → thumbnail → QC gate.
 Paths for intermediates are decided here; no engine flags appear here.
 
 Idempotency keys are chained: key(op) = H(source fingerprint, tool, args, tool version, keys of the ops that
@@ -19,8 +19,16 @@ from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_r
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
+from ..agent.nle import MODES as NLE_MODES
 from ..agent.image_prepare import prepare_chain, prepared_id
+from ..agent.documents import SKILL as DOCUMENT_SKILL, TOOL_NAME as DOCUMENT_TOOL_NAME
+from ..agent.remotion import FILE_KEYS as REMOTION_FILE_KEYS, PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
+from ..tools.remotion.adapter import render_name as remotion_render_name
+from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, TOOL_NAMES as BGM_TOOL_NAMES, skill_of as bgm_skill_of
+from ..agent.faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, TOOL_NAMES as FACE_TOOL_NAMES
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
+from ..agent.dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, user_files as dub_user_files
+from ..tools.dubbing.adapter import TOOL_DUB
 from ..tools.voice_enhance.adapter import stem_name as voice_stem_name
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
@@ -56,6 +64,23 @@ def image_fingerprint(path: str) -> str:
 
 class CompileError(ValueError):
     pass
+
+
+PROJECT_IR = "project_ir"   # ADR-089: the artifact id of the project IR snapshot nle-bridge reads (<job>/nle/project.json, written by the service)
+
+
+def lower_dub(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
+    """ADR-085: IR `speech.dub` → dubbing/dub's typed arguments: the picture by artifact id, the output id, and the allowlisted parameters copied
+    by name (the user's files as the paths they named; the adapter checks them inside the allowed roots). Nothing else is copied."""
+    if tool != TOOL_DUB:
+        raise CompileError(f"{DUB_OP} cannot be executed by {tool}; the only tool of this operation is {TOOL_DUB}")
+    if (op.get("reference") is None) != (op.get("consent") is None):
+        raise CompileError(f"{DUB_OP}: a reference voice goes only with its consent record (the user's), never one without the other")
+    args: Dict[str, Any] = {"input": current, "output": out_id}
+    for k in DUB_PARAMS:
+        if op.get(k) is not None:
+            args[k] = op[k]
+    return args
 
 
 def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -123,6 +148,47 @@ def lower_image_insert(tool: str, join_tool: str, op: Dict[str, Any], image_id: 
     still = {"input": image_id, "duration": float(op["duration"]), **frame, "output": still_id}
     join = {"inputs": [still_id, current] if op["position"] == "before" else [current, still_id], **frame, "output": out_id}
     return still, join
+
+
+def lower_redact_faces(tools: Dict[str, str], op: Dict[str, Any], current: str, seg_ids: List[str], blur_ids: List[List[str]], out_id: str
+                       ) -> Tuple[List[Dict[str, Any]], List[List[Dict[str, Any]]], Dict[str, Any]]:
+    """ADR-090: IR `video.redact_faces` → (one cut per region, the redacts of each region in order, the broll). Each region is cut out of the
+    source frame-accurately ([start, end] as decided), each of its rectangles redacted on that piece (redact.py's x / y / width / height,
+    mode and its one parameter), and every last piece shown over the source at its own [start, end] with the source's own audio (`audio: a`).
+    The tools are the plan's; each skill has exactly one."""
+    for skill, want in FACE_TOOL_NAMES.items():
+        if str(tools.get(skill) or "").split("/", 1)[-1] != want:
+            raise CompileError(f"{FACE_SUBJECT} needs a {want} tool for {skill}, the plan names {tools.get(skill)}")
+    cuts: List[Dict[str, Any]] = []
+    blurs: List[List[Dict[str, Any]]] = []
+    last: List[str] = []
+    extra = {k: op[k] for k in ("blur_strength", "block_size") if op.get(k) is not None}
+    for reg, seg_id, ids in zip(op["regions"], seg_ids, blur_ids):
+        if len(ids) != len(reg["rects"]):
+            raise CompileError(f"{FACE_SUBJECT}: {len(reg['rects'])} rectangle(s) but {len(ids)} output id(s)")
+        cuts.append({"input": current, "segments": f"{float(reg['start']):.3f}-{float(reg['end']):.3f}", "accurate": True, "output": seg_id})
+        prev, row = seg_id, []
+        for r, bid in zip(reg["rects"], ids):
+            row.append({"input": prev, "x": int(r["x"]), "y": int(r["y"]), "width": int(r["width"]), "height": int(r["height"]), "mode": op["mode"], **extra, "output": bid})
+            prev = bid
+        blurs.append(row)
+        last.append(prev)
+    broll = {"input": current, "insert": last, "at": [f"{float(r['start']):.3f}" for r in op["regions"]], "end": [f"{float(r['end']):.3f}" for r in op["regions"]],
+             "audio": "a", "output": out_id}
+    return cuts, blurs, broll
+
+
+def lower_bgm(tool: str, op: Dict[str, Any], out_id: str, library_id: Optional[str]) -> Dict[str, Any]:
+    """ADR-092: IR `audio.bgm` → sound-design library-pick / generate-bgm arguments: the decided parameters by the Skill's names, the duration the
+    mix needs, the library as an artifact id (a user folder, like a LUT). The tool is the plan's; each mode has exactly one."""
+    want = BGM_TOOL_NAMES[bgm_skill_of(op)]
+    if tool.split("/", 1)[-1] != want:
+        raise CompileError(f"{BGM_SUBJECT} ({op.get('mode')}) needs a {want} tool, the plan names {tool}")
+    args: Dict[str, Any] = {k: op[k] for k in (("tags", "mood", "file", "crossfade") if op["mode"] == "library" else ("prompt", "tags", "seed")) if op.get(k) is not None}
+    if op["mode"] == "library":
+        args["library"] = library_id
+    args.update(duration=float(op["duration"]), output=out_id)
+    return args
 
 
 def lower_audio_loudness(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -207,12 +273,12 @@ def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: s
 
 def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
     """IR graphics.thumbnail → thumbnail/extract_frame (a plain frame) or thumbnail/render (frame + caption) arguments."""
-    want = THUMBNAIL_RENDER_TOOL if op.get("text") is not None else THUMBNAIL_FRAME_TOOL
+    want = THUMBNAIL_RENDER_TOOL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_TOOL   # ADR-088: texts / logo
     if tool != want:
         raise CompileError(f"graphics.thumbnail cannot be executed by {tool}; this operation needs {want}")
     args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"], "output": out_id}
     if want == THUMBNAIL_RENDER_TOOL:
-        for k in ("width", "height", "text", "font_id", "font_size", "color", "position"):
+        for k in ("width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):
             if op.get(k) is not None:
                 args[k] = op[k]
     return args
@@ -355,6 +421,47 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             args = lower_video_edit(tool, op, st["current"], out_id, refs)
             add(tool, args, inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
             st["current"] = out_id
+        for op in d["video"]["operations"]:   # ADR-093: one Remotion composition over the edited picture, before the finishing
+            if op["asset"] != subject or op["type"] != REMOTION_SUBJECT:
+                continue
+            st["gen"] += 1
+            tool = tool_for(REMOTION_SKILL, subject)
+            if tool.split("/", 1)[-1] != "pipeline":
+                raise CompileError(f"{REMOTION_SUBJECT} needs a pipeline tool, the plan names {tool}")
+            out_id = op.get("output") or f"{subject}_measured_motion"
+            out_dir = job / "ops" / f"{st['stem']}_{st['gen']:02d}_measured_motion"
+            paths[out_id] = str(out_dir / remotion_render_name(paths[st["current"]], op["comp"]))
+            args: Dict[str, Any] = {"input": st["current"]}
+            ins = [st["current"]]
+            for k in REMOTION_PARAMS:
+                if op.get(k) is None:
+                    continue
+                if k in REMOTION_FILE_KEYS or k == "project":   # the user's files / project, by path like a LUT
+                    ref = f"{subject}_measured_motion_{k}"
+                    paths[ref], keys[ref] = op[k], ""
+                    args[k] = ref
+                    if k != "project":
+                        ins.append(ref)
+                else:
+                    args[k] = op[k]
+            args["output"] = out_id
+            add(tool, args, ins, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=REMOTION_SKILL)
+            st["current"] = out_id
+
+    def dubs(subject: str) -> None:
+        """ADR-085: the subject's picture after its edits, its dialogue replaced by dubbing-skill (before colour / graphics / subtitles / a still)."""
+        st = state[subject]
+        for op in (d.get("speech") or {}).get("operations") or []:
+            if op["asset"] != subject or op["type"] != DUB_OP:
+                continue
+            st["gen"] += 1
+            out_id = f"{subject}_dub"
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_dub" / f"{st['stem']}_dub.mp4")
+            tool = tool_for(DUB_SKILL, subject)
+            # the user's files are part of the key: an edited cue file or a replaced consent record re-runs the dub instead of reusing it
+            fp = st["fp"] + "|" + "|".join(image_fingerprint(f) for f in dub_user_files(op))
+            add(tool, lower_dub(tool, op, st["current"], out_id), [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill=DUB_SKILL)
+            st["current"] = out_id
 
     def inserts(subject: str) -> None:
         """ADR-070: a still joined to the finished picture (after the finishing, before loudness): image_insert, then concat."""
@@ -477,7 +584,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             out_id = op.get("output") or f"{subject}_thumbnail"
             ext = "png" if op["format"] == "png" else "jpg"
             paths[out_id] = str(job / "artifacts" / f"{st['stem']}_thumbnail.{ext}")
-            skill = THUMBNAIL_RENDER_SKILL if op.get("text") is not None else THUMBNAIL_FRAME_SKILL
+            skill = THUMBNAIL_RENDER_SKILL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_SKILL
             tool = tool_for(skill, subject)
             src = st.get("picture") or st["current"]
             add(tool, lower_thumbnail(tool, op, src, out_id), [src], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
@@ -497,6 +604,25 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             tool = tool_for(TIMELINE_SKILL, subject)
             inputs = list(dict.fromkeys(c["asset"] for c in op["clips"]))
             add(tool, lower_timeline_export(tool, op, project_id, out_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=TIMELINE_SKILL)
+
+    def nle(subject: str) -> None:
+        """ADR-089: nle-bridge export / conform of the subject from the project IR this job executes (the service writes it as
+        <job>/nle/project.json before running); the files land in one directory under artifacts/, next to the deliverables."""
+        st = state[subject]
+        for op in (d.get("delivery") or {}).get("nle") or []:
+            if op["asset"] != subject:
+                continue
+            mode = op["type"].split(".", 1)[1]
+            skill, want = NLE_MODES[mode]
+            tool = tool_for(skill, subject)
+            if tool != want:
+                raise CompileError(f"{op['type']} cannot be executed by {tool}; its tool is {want}")
+            paths[PROJECT_IR] = str(job / "nle" / "project.json")
+            keys[PROJECT_IR] = ""
+            out_id = op.get("output") or f"{subject}_nle"
+            paths[out_id] = str(job / "artifacts" / f"{st['stem']}_nle_{mode}")
+            args = {"project": PROJECT_IR, "subject": subject, "formats": list(op["formats"]), "output": out_id, **({"zip": bool(op.get("zip"))} if mode == "conform" else {})}
+            add(tool, args, [PROJECT_IR], [out_id], list(op.get("decision_ids") or []), st["fp"] + "|ir:" + stable_hash(d.get("delivery", {}).get("timelines") or [])[:16], skill=skill)
 
     def qc_gate(subject: str) -> None:
         """One qc/check per delivery artifact of the subject and one for its subtitle sidecar (ADR-032): kind qa, no output, never reused."""
@@ -599,6 +725,25 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         stem = f"{idx:02d}_{Path(asset['path']).stem}"  # index keeps two inputs with the same file name apart
         state[asset_id] = {"current": asset_id, "gen": 0, "stem": stem, "fp": fp}
         st = state[asset_id]
+        faces = next((op for op in d["video"]["operations"] if op["asset"] == asset_id and op["type"] == FACE_SUBJECT), None)
+        if faces is not None:   # ADR-090: faces blurred on the source timeline, before the trim re-times it
+            ids = list(faces.get("decision_ids") or [])
+            seg_ids = [f"{asset_id}_faces_seg{n:02d}" for n in range(1, len(faces["regions"]) + 1)]
+            blur_ids = [[f"{asset_id}_faces_blur{n:02d}_{k}" for k in range(1, len(reg["rects"]) + 1)] for n, reg in enumerate(faces["regions"], start=1)]
+            out_id = faces.get("output") or f"{asset_id}_redact_faces"
+            ftools = {sk: tool_for(sk, asset_id) for sk in FACE_TOOL_NAMES}
+            cuts, blurs, broll = lower_redact_faces(ftools, faces, st["current"], seg_ids, blur_ids, out_id)
+            st["gen"] += 1
+            fdir = job / "ops" / f"{stem}_{st['gen']:02d}_redact_faces"
+            for c, row in zip(cuts, blurs):
+                paths[c["output"]] = str(fdir / f"{c['output']}.mp4")
+                add(ftools[FACE_SEGMENT_SKILL], c, [c["input"]], [c["output"]], ids, fp, skill=FACE_SEGMENT_SKILL)
+                for b in row:
+                    paths[b["output"]] = str(fdir / f"{b['output']}.mp4")
+                    add(ftools[FACE_BLUR_SKILL], b, [b["input"]], [b["output"]], ids, fp, skill=FACE_BLUR_SKILL)
+            paths[out_id] = str(fdir / f"{stem}_redact_faces.mp4")
+            add(ftools[FACE_COMPOSITE_SKILL], broll, [broll["input"]] + list(broll["insert"]), [out_id], ids, fp, skill=FACE_COMPOSITE_SKILL)
+            st["current"] = out_id
         for op in d["video"]["operations"]:
             if op["asset"] != asset_id or op["type"] != "video.trim":
                 continue
@@ -648,17 +793,33 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 delivery(asset_id)
         elif concat is None and switch is None and grid is None:
             edits(asset_id)
+            dubs(asset_id)
             finishing(asset_id)
             inserts(asset_id)
             loudness(asset_id)
             delivery(asset_id)
             timeline(asset_id)
+            nle(asset_id)
             thumbnail(asset_id)
             qc_gate(asset_id)
+    bgm = next((op for op in d["audio"]["operations"] if op["type"] == BGM_SUBJECT), None)
+    if bgm is not None:   # ADR-092: the bed sound-design makes for the mix; the mix takes it as its last input
+        lib_id = None
+        if bgm.get("library"):
+            lib_id = "bgm_library"
+            paths[lib_id] = bgm["library"]
+            keys[lib_id] = ""
+        out_id = bgm["output"]
+        paths[out_id] = str(job / "ops" / "00_bgm" / f"{out_id}.wav")
+        sk = bgm_skill_of(bgm)
+        tool = tool_for(sk, BGM_INPUT)
+        add(tool, lower_bgm(tool, bgm, out_id, lib_id), [lib_id] if lib_id else [], [out_id], list(bgm.get("decision_ids") or []),
+            "bgm:" + stable_hash([bgm.get(k) for k in ("mode", "library", "prompt", "tags", "mood", "file", "crossfade", "seed", "duration")])[:16], skill=sk)
+        state[BGM_INPUT] = {"current": out_id, "gen": 1, "stem": "bgm", "fp": "bgm"}
     if audio_concat is not None:
         subject = audio_concat.get("output") or PROGRAMME_AUDIO
         inputs = [state[a]["current"] for a in audio_concat["inputs"]]
-        fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) for a in audio_concat["inputs"]])[:16]
+        fp = "concat:" + stable_hash([source_fingerprint(d["assets"][a]) if a in d["assets"] else a for a in audio_concat["inputs"]])[:16]
         state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
         name = audio_concat["type"].split(".", 1)[1]
         paths[subject] = str(job / "ops" / f"{subject}_01_{name}" / f"{subject}.wav")
@@ -700,11 +861,13 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, lower_take_crossfade(tool, "mux", mux, mux["output"]), [mux["video"], mux["audio"]], [mux["output"]], xids, fp, skill=AUDIO_MUX_SKILL)
             state[subject]["current"] = mux["output"]
         edits(subject)
+        dubs(subject)
         finishing(subject)
         inserts(subject)
         loudness(subject)
         delivery(subject)
         timeline(subject)
+        nle(subject)
         thumbnail(subject)
         qc_gate(subject)
     if switch is not None:
@@ -718,6 +881,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         args = lower_video_edit(tool, switch, inputs, subject)
         add(tool, args, inputs, [subject], list(switch.get("decision_ids") or []), fp, skill="camera_switch")
         edits(subject)
+        dubs(subject)
         finishing(subject)
         inserts(subject)
         loudness(subject)
@@ -735,10 +899,18 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         args = lower_video_edit(tool, grid, inputs, subject)
         add(tool, args, inputs, [subject], list(grid.get("decision_ids") or []), fp, skill="video_grid")
         edits(subject)
+        dubs(subject)
         finishing(subject)
         inserts(subject)
         loudness(subject)
         delivery(subject)
         thumbnail(subject)
         qc_gate(subject)
+    for doc in (d.get("qa") or {}).get("documents") or []:   # ADR-095: artifacts-skill verifies the document read-only; QA gates on its checks
+        tool = tool_for(DOCUMENT_SKILL, "")
+        if tool.rsplit("/", 1)[-1] != DOCUMENT_TOOL_NAME:
+            raise CompileError(f"{DOCUMENT_SKILL} needs a verify tool, the plan names {tool}")
+        paths[doc["id"]], keys[doc["id"]] = doc["path"], ""
+        add(tool, {"input": doc["id"], **({"preset": doc["preset"]} if doc.get("preset") else {})}, [doc["id"]], [], list(doc.get("decision_ids") or []), "", kind="qa",
+            skill=DOCUMENT_SKILL)
     return ops, paths

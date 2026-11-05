@@ -65,8 +65,11 @@ def infer_speech(analysis: AnalysisResult, rules: RuleSet) -> List[Inference]:
         speech = [e for e in analysis.timeline.query(type="SPEECH", timeline_id=tl_id) if e.provenance == "OBSERVED"]
         if not speech:
             continue   # no recognition → no speech inference (never inferred from silence alone)
-        if any(e.metadata.get("speaker_id") is not None for e in speech):
-            raise ValueError(f"asset {asset.id}: a SpeechEvent carries a speaker id; speaker identification is not part of this system")
+        # ADR-096: a speaker id only as an anonymous id of the speaker merge the asset's transcript records (speakers.assign); never otherwise
+        merged = {s for o in analysis.observations if o.asset_id == asset.id and o.kind == "transcript"
+                  for s in (((o.data or {}).get("speaker_assignment") or {}).get("speakers") or [])}
+        if any(e.metadata.get("speaker_id") is not None and e.metadata["speaker_id"] not in merged for e in speech):
+            raise ValueError(f"asset {asset.id}: a SpeechEvent carries a speaker id no recorded speaker merge gave it; speaker identification is not part of this system")
         dur: Optional[float] = asset.technical.get("duration")
         transcript_ids = sorted({o.id for o in analysis.observations if o.asset_id == asset.id and o.kind == "transcript"})
         # ---- logical speech intervals

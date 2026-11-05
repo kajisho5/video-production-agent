@@ -27,7 +27,16 @@ from ..tools.subtitle import SubtitleAdapter, locate_subtitle
 from ..tools.thumbnail import ThumbnailAdapter, locate_thumbnail
 from ..tools.ingest import IngestAdapter, locate_ingest
 from ..tools.voice_enhance import VoiceEnhanceAdapter, locate_voice_enhance
+from ..tools.dubbing import DubbingAdapter, locate_dubbing
+from ..tools.publish import PublishAdapter, locate_publish
+from ..tools.nle_bridge import NleBridgeAdapter, locate_nle_bridge
 from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
+from ..tools.detection import DetectionAdapter, locate_detection
+from ..tools.diarization import DiarizationAdapter, locate_diarization
+from ..tools.slide_sync import SlideSyncAdapter, locate_slide_sync
+from ..tools.remotion import RemotionAdapter, locate_remotion
+from ..tools.sound_design import SoundDesignAdapter, locate_sound_design
+from ..tools.artifacts import ArtifactsAdapter, locate_artifacts
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
             "pcm_s16le", "flac", "libmp3lame", "libvorbis", "libopus"]   # audio encoders audio-production-skill's output formats need (ADR-030)
@@ -297,10 +306,53 @@ class CapabilityResolver:
         self._finishing_skill(caps, "voice-enhance", locate_voice_enhance(env=self.env),
                               lambda sk: VoiceEnhanceAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None), "VIDEO_AGENT_VOICE_ENHANCE_DIR", "voice-enhance-skill",
                               "voice-enhance", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # dubbing-skill (ADR-085): the same rule -- contract against the pinned one (fatal subset: the consent gate included), its own doctor ok /
+        # degraded (an engine not installed is degraded). DUB gets `dubbing:DUB` from the doctor's `operations.dub.ready`, with the Skill's own code,
+        # the default engine, its alternatives and every DUB engine's status / install line (a plan naming another engine is judged on that one).
+        self._finishing_skill(caps, "dubbing", locate_dubbing(env=self.env),
+                              lambda sk: DubbingAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None), "VIDEO_AGENT_DUBBING_DIR", "dubbing-skill",
+                              "dubbing", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # publish-skill (ADR-087): the same rule -- contract against the pinned one (fatal subset: the confirmation gate included), its own doctor
+        # ok / degraded (no ffmpeg-skill for plan, no keychain: degraded). Each implemented platform gets `publish:<PLATFORM>` with the fields it
+        # takes and whether its credentials are present (reported only: they are the user's, checked by the Skill at upload time).
+        self._finishing_skill(caps, "publish", locate_publish(env=self.env), lambda sk: PublishAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_PUBLISH_DIR", "publish-skill", "publish", per_item=lambda ad, doc: (ad.platform_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.platform_evidence(doc))
+        # nle-bridge-skill (ADR-089): the same rule -- contract against the pinned one (fatal subset), its own doctor (nothing beyond Python needed)
+        self._finishing_skill(caps, "nle-bridge", locate_nle_bridge(env=self.env), lambda sk: NleBridgeAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_NLE_BRIDGE_DIR", "nle-bridge-skill", "nle-bridge", per_item=None)
         # imagemagick-skill (ADR-077): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (sips covers
         # resize / pad but not strip). Each tool gets `imagemagick-skill:<TYPE>` from the doctor's `tools.<name>.usable`, with the backend.
         self._finishing_skill(caps, "imagemagick-skill", locate_imagemagick(env=self.env), lambda sk: ImageMagickAdapter(sk), "VIDEO_AGENT_IMAGEMAGICK_DIR", "imagemagick-skill",
                               "npx imagemagick-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # detection-skill (ADR-090): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (tracks / check run, an
+        # engine or model missing). `detection:FACES` follows the doctor's ready.faces and ready.video_frames (ffmpeg-skill named: the agent's own checkout),
+        # with the code its faces command would return (FFMPEG_SKILL_NOT_FOUND / ENGINE_UNAVAILABLE / MODEL_NOT_FOUND) and the doctor's install lines.
+        self._finishing_skill(caps, "detection", locate_detection(env=self.env), lambda sk: DetectionAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_DETECTION_DIR", "detection-skill", "detection", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # diarization-skill (ADR-086): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (ASSIGN / CHECK run,
+        # DIARIZE not ready: pyannote.audio, torch or the pipeline directory missing). `diarization:DIARIZE` follows the doctor's ready.diarize, with the
+        # code its diarize would return (ENGINE_UNAVAILABLE / PIPELINE_NOT_FOUND / FFMPEG_NOT_FOUND) and the doctor's install lines.
+        self._finishing_skill(caps, "diarization", locate_diarization(env=self.env), lambda sk: DiarizationAdapter(sk), "VIDEO_AGENT_DIARIZATION_DIR", "diarization-skill",
+                              "diarization", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # slide-sync-skill (ADR-091): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (the engine is ready, deck
+        # import is not). `slide-sync:DETECT` / `:MATCH` follow the doctor's engine, `:IMPORT_PDF` / `:IMPORT_OFFICE` its import readiness (with the install line).
+        self._finishing_skill(caps, "slide-sync", locate_slide_sync(env=self.env), lambda sk: SlideSyncAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_SLIDE_SYNC_DIR", "slide-sync-skill", "slide-sync", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # remotion-ffmpeg-skill (ADR-093): contract against the pinned one (fatal subset), its doctor (python / node / npm / ffmpeg-skill / ffmpeg) ok or fail;
+        # `remotion-ffmpeg-skill:PIPELINE` follows it, with the doctor's fix lines. The user's project is checked per plan (its node_modules/remotion).
+        self._finishing_skill(caps, "remotion-ffmpeg-skill", locate_remotion(env=self.env), lambda sk: RemotionAdapter(sk), "VIDEO_AGENT_REMOTION_DIR", "remotion-ffmpeg-skill",
+                              "npx remotion-ffmpeg-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # sound-design-skill (ADR-092): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (an engine missing is degraded:
+        # library mode needs none). `sound-design:LIBRARY` / `:BGM_GENERATE` follow checks.operations.<op>.ready, with the engine's install line when not ready.
+        self._finishing_skill(caps, "sound-design", locate_sound_design(env=self.env), lambda sk: SoundDesignAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_SOUND_DESIGN_DIR", "sound-design-skill", "sound-design", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
+                              item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # artifacts-skill (ADR-095): the same rule; `artifacts-skill:VERIFY` follows its doctor (some format's structural verification available)
+        self._finishing_skill(caps, "artifacts-skill", locate_artifacts(env=self.env), lambda sk: ArtifactsAdapter(sk), "VIDEO_AGENT_ARTIFACTS_DIR", "artifacts-skill",
+                              "artifacts-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
         asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
         try:

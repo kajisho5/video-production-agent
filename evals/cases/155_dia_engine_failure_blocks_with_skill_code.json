@@ -1,0 +1,12 @@
+{
+ "name": "dia_engine_failure_blocks_with_skill_code",
+ "profile": "youtube",
+ "speakers": {"modes": {"FAKE_DIA_MODE": "fail:ENGINE_FAILED"}},
+ "requirements": {"speakers.diarize": true},
+ "expect": {
+  "observations": 0,
+  "plan_status": "BLOCKED",
+  "blocked_codes": ["ENGINE_FAILED"],
+  "handoffs": []
+ }
+}

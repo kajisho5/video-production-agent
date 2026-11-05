@@ -1,0 +1,12 @@
+{
+ "name": "dia_pipeline_missing_hands_off",
+ "profile": "youtube",
+ "speakers": {"modes": {"FAKE_DIA_READY": "pipeline"}},
+ "requirements": {"speakers.diarize": true},
+ "expect": {
+  "observations": 0,
+  "events": [],
+  "plan_status": "BLOCKED",
+  "handoffs": [["speaker_diarization", ["diarization-skill"]]]
+ }
+}

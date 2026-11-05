@@ -95,28 +95,30 @@ _GH = "https://github.com/kajisho5/"
 ECOSYSTEM_JOBS = {
     # media_ingest (ingest) left this table with its adapter (ADR-066): the card offload is the implemented skill media_offload;
     # voice_enhancement (voice-enhance) left it the same way (ADR-073): the implemented skills voice_isolate / voice_dereverb / voice_bleed_reduce
-    "dubbing": ("dubbing", "dubbing-skill", f"none yet: dubbing-skill is a scaffold repository with no released package ({_GH}dubbing-skill)"),
-    "sound_design": ("sound-design", "sound-design-skill", f"none yet: sound-design-skill is a scaffold repository with no released package ({_GH}sound-design-skill)"),
-    "speaker_diarization": ("diarization", "diarization-skill", f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'"),
+    # slide_sync (slide-sync) too (ADR-091): the implemented measurement slide_timeline (tests/test_slides.py)
+    # speaker_diarization (diarization) too (ADR-086): the implemented measurement speaker_turns (tests/test_diarization.py)
+    # dubbing: DUB is the implemented skill speech_dub (ADR-085); the job stays for narration / audio description, now with an install line
+    "dubbing": ("dubbing", "dubbing-skill", f"git clone {_GH}dubbing-skill && pip install -e 'dubbing-skill'"),
+    # sound_design (sound-design) too (ADR-092): the implemented music bed bgm_library / bgm_generate (tests/test_bgm.py)
+    # measured_motion_graphics (remotion-ffmpeg-skill) too (ADR-093): the implemented measured_motion (tests/test_remotion.py)
+    # document_verification (artifacts-skill) too (ADR-095): the implemented document_verify (tests/test_documents.py)
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
-    "slide_sync": ("slide-sync", "slide-sync-skill", f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'"),
-    "platform_publish": ("publish", "publish-skill", f"none yet: publish-skill is a scaffold repository with no released package ({_GH}publish-skill)"),
+    # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
     # ADR-080: blender-skill / hyperframes-skill are named by their own skill_id (the prefix of the tool id their pinned contract provides)
     "render_3d": ("blender-skill", "blender-skill", "npx blender-skill"),
-    "measured_motion_graphics": ("remotion-ffmpeg", "remotion-ffmpeg-skill", "npx remotion-ffmpeg-skill"),
     "html_scene_render": ("hyperframes-skill", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
-    "document_verification": ("artifacts", "artifacts-skill", f"git clone {_GH}artifacts-skill && pip install -e 'artifacts-skill[all]'"),
     "bluray_authoring": ("bdmvkit", "bdmvkit", "pip install bdmvkit"),
     "dvd_authoring": ("vtskit", "vtskit", "pip install vtskit"),
     "disc_image": ("udfkit", "udfkit", "pip install udfkit"),
     "dvd_line21_captions": ("dvdcc", "dvdcc", "pip install dvdcc"),
+    "disc_author": ("oncemore", "oncemore", "pip install git+https://github.com/kajisho5/oncemore"),
 }
 # ecosystem.json `plugin: true` (listed in the Claude Code marketplace) / `optional: true` (./install.sh --with-optional)
 PLUGINS = {"ingest-skill", "diarization-skill", "detection-skill", "slide-sync-skill", "imagemagick-skill", "blender-skill", "remotion-ffmpeg-skill",
            "hyperframes-skill", "artifacts-skill"}
-OPTIONAL = {"diarization-skill", "detection-skill", "bdmvkit", "vtskit", "udfkit", "dvdcc"}
+OPTIONAL = {"diarization-skill", "detection-skill", "bdmvkit", "vtskit", "udfkit", "dvdcc", "oncemore"}
 
 
 class EcosystemJobHandoffTests(unittest.TestCase):
@@ -184,20 +186,64 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_dubbing(self):
         self.assert_handoff("dubbing")
 
-    def test_sound_design(self):
-        self.assert_handoff("sound_design")
+    def test_sound_design_moved_to_the_sound_design_adapter(self):
+        """ADR-092: `job.sound_design` is no longer a handoff switch; it is refused with how the implemented music bed is asked for."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.sound_design": True})
+        self.assertIn("bgm.library", str(cm.exception))
+        self.assertNotIn("sound_design", svc.registry.names())
+        self.assertEqual(svc.registry.get("bgm_library").tools, ["sound-design/library-pick"])
 
-    def test_speaker_diarization(self):
-        self.assert_handoff("speaker_diarization")
+    def test_speaker_diarization_moved_to_the_diarization_adapter(self):
+        """ADR-086: `job.speaker_diarization` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a
+        plan asking for it without diarization-skill still hands the step over naming diarization-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.speaker_diarization": True})
+        self.assertIn("speakers.diarize=true", str(cm.exception))
+        self.assertEqual(svc.registry.get("speaker_diarization").phase, 1)
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"speakers.diarize": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
+        self.assertEqual((h["step"], h["provided_by"], h["repositories"]), ("step_job_speaker_diarization", ["diarization"], ["diarization-skill"]))
+        self.assertIn(f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'", h["install"])
+        self.assertIn("/plugin install diarization-skill@ai-video-production-os", h["install"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_visual_detection(self):
         self.assert_handoff("visual_detection")
 
-    def test_slide_sync(self):
-        self.assert_handoff("slide_sync")
+    def test_slide_sync_moved_to_the_slide_sync_adapter(self):
+        """ADR-091: `job.slide_sync` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a plan
+        asking for it without slide-sync-skill still hands the step over naming slide-sync-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.slide_sync": True})
+        self.assertIn("slides.detect=true", str(cm.exception))
+        self.assertEqual(svc.registry.get("slide_sync").phase, 1)
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"slides.detect": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "slide_sync"]
+        self.assertEqual((h["step"], h["provided_by"], h["repositories"]), ("step_job_slide_sync", ["slide-sync"], ["slide-sync-skill"]))
+        self.assertIn(f"git clone {_GH}slide-sync-skill && pip install -e 'slide-sync-skill[pdf]'", h["install"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
-    def test_platform_publish(self):
-        self.assert_handoff("platform_publish")
+    def test_platform_publish_moved_to_the_publish_adapter(self):
+        """ADR-087: `job.platform_publish` is no longer a handoff switch; it is refused with how publishing is asked for, and a plan asking to
+        publish without publish-skill still hands the step over naming publish-skill and its install command."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps(extra=["qc"]))
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.platform_publish": True})
+        self.assertIn("publish.platform=<id>", str(cm.exception))
+        self.assertNotIn("platform_publish", svc.registry.names())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"qc": True, "publish.platform": "youtube", "publish.title": "Talk"})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "publish_upload"]
+        self.assertEqual((h["provided_by"], h["repositories"]), (["publish"], ["publish-skill"]))
+        self.assertIn(f"git clone {_GH}publish-skill && pip install -e 'publish-skill'", h["install"])
+        self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_still_image_edit(self):
         self.assert_handoff("still_image_edit")
@@ -205,14 +251,27 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_render_3d(self):
         self.assert_handoff("render_3d")
 
-    def test_measured_motion_graphics(self):
-        self.assert_handoff("measured_motion_graphics")
+    def test_measured_motion_graphics_moved_to_the_remotion_adapter(self):
+        """ADR-093: `job.measured_motion_graphics` is no longer a handoff switch; it is refused with how the implemented step is asked for."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.measured_motion_graphics": True})
+        self.assertIn("remotion.comp", str(cm.exception))
+        self.assertEqual(svc.registry.get("measured_motion").tools, ["remotion-ffmpeg-skill/pipeline"])
 
     def test_html_scene_render(self):
         self.assert_handoff("html_scene_render")
 
-    def test_document_verification(self):
-        self.assert_handoff("document_verification")
+    def test_document_verification_moved_to_the_artifacts_adapter(self):
+        """ADR-095: `job.document_verification` is no longer a handoff switch; it is refused with how the implemented step is asked for."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.document_verification": True})
+        self.assertIn("document.verify", str(cm.exception))
+        self.assertNotIn("document_verification", svc.registry.names())
+        self.assertEqual(svc.registry.get("document_verify").tools, ["artifacts-skill/verify"])
 
     def test_bluray_authoring(self):
         self.assert_handoff("bluray_authoring")
@@ -225,6 +284,20 @@ class EcosystemJobHandoffTests(unittest.TestCase):
 
     def test_dvd_line21_captions(self):
         self.assert_handoff("dvd_line21_captions")
+
+    def test_disc_author(self):
+        """ADR-094 (oncemore roadmap step 3): a plan asking for a disc names oncemore and stops there; the step has no tool and nothing runs."""
+        self.assert_handoff("disc_author")
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.disc_author": True})
+        [h] = [h for h in svc.handoffs(ir) if h["skill"] == "disc_author"]
+        self.assertEqual(h["packages"][0]["owns"], ["ディスク作成アプリ(Mac)"])
+        self.assertIn("oncemore/build", svc.registry.get("disc_author").tools)
+        out = svc.render(ir, str(Path(tmp) / "p.json"), approve=["all"])
+        self.assertEqual(out["status"], "FAILED", "no execution path for disc authoring: the validator refuses the phase-2 step before anything runs")
+        self.assertIn("plan step step_job_disc_author cites skill disc_author which is declared for phase 2 and not implemented", out["validation"]["errors"])
+        self.assertEqual(out["job"].get("completed_ops") or {}, {})
 
     def test_every_declared_job_is_covered(self):
         from video_agent.skills.registry import ECOSYSTEM_JOB_SKILLS
