@@ -52,6 +52,9 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # black letterbox / pillarbox bars (ADR-060): ffmpeg-skill cropdetect.py over windows spread across the file, with the agent's fixed
     # sampling (CROP_TOOL_ARGS below). A measurement only: whether to crop is a CONFIRM decision (agent/crop.py), never this kind's
     "crop_rectangle": {"skill": "cropdetect_analysis", "needs_audio": False, "params": ()},
+    # faces to blur (ADR-090): detection-skill's face boxes on frames sampled every `every` seconds, linked over time into redact rectangles
+    # (`detection tracks`, `window`); a measurement only: whether to blur is a CONFIRM decision (agent/faces.py), never this kind's
+    "face_tracks": {"skill": "face_detection", "needs_audio": False, "params": ("every", "min_score", "window")},
     # who spoke when (ADR-086): diarization-skill's anonymous exclusive speaker turns (SPEAKER_nn), a measurement only; the counts are the
     # Skill's own optional hints (speakers.num_speakers / .min_speakers / .max_speakers), the stream its --audio-stream
     "speaker_turns": {"skill": "speaker_diarization", "needs_audio": True, "params": ("num_speakers", "min_speakers", "max_speakers", "audio_stream")},

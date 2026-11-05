@@ -3181,6 +3181,110 @@ class ImagePrepareRealTests(unittest.TestCase):
         self.assertGreater(dur, 1.0)
 
 
+def _luma_frame(path: str, n: int, w: int, h: int) -> bytes:
+    """Frame number `n` (decode order from the first frame, so a shifted start or an edit list cannot pick another frame) of a yuv420p file as its
+    Y plane, read as stored: `-pix_fmt yuv420p` is the file's own format, so no colour-matrix / range conversion happens in the measurement
+    (an untagged source and a bt709-tagged output would otherwise be converted differently to grey by the decoder's scaler)."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=eq(n\\,{int(n)})", "-frames:v", "1", "-pix_fmt", "yuv420p",
+                          "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert len(out) == w * h * 3 // 2, (len(out), w, h)
+    return out[:w * h]
+
+
+def _mean_abs_diff(a: bytes, b: bytes, w: int, rect=None, outside: bool = False) -> float:
+    """Mean |a - b| over a rectangle {x, y, width, height} of two w-wide grey frames (or over everything outside it)."""
+    total = n = 0
+    h = len(a) // w
+    for y in range(0, h, 2):
+        row = y * w
+        for x in range(0, w, 2):
+            inside = rect is not None and rect["x"] <= x < rect["x"] + rect["width"] and rect["y"] <= y < rect["y"] + rect["height"]
+            if (rect is None) or (inside != outside):
+                total += abs(a[row + x] - b[row + x])
+                n += 1
+    return total / max(1, n)
+
+
+class FaceRedactionRealTests(unittest.TestCase):
+    """ADR-090 on the real detection-skill (main, contract 0.1.0) and the real ffmpeg-skill: the live contract equals the pin, its doctor says
+    whether FACES can run (YuNet needs opencv and the model file in DETECTION_MODELS_DIR; ffmpeg-skill is the agent's own checkout), and a face
+    that is on screen only from 2 s to 5 s is blurred during its measured span and nowhere else, after the user's approval. Runs whenever a
+    detection-skill checkout is installed (the CI integration job installs it with `[faces]` and fetches the YuNet file pinned by sha256)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.detection import locate_detection
+        cls.det = locate_detection()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_det_"))
+
+    def setUp(self):
+        if not self.det:
+            self.skipTest("needs a detection-skill checkout (VIDEO_AGENT_DETECTION_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def adapter(self):
+        from video_agent.tools.detection import DetectionAdapter
+        ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
+        return DetectionAdapter(self.det, workspace=ws, allowed_inputs=[str(Path(self.tmp) / "src")], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+
+    def test_live_contract_and_doctor(self):
+        ad = self.adapter()
+        self.assertEqual(ad.drift(), [], "the installed detection-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        self.assertTrue(doc["ready"].get("tracks"), doc.get("problems"))
+        ev = ad.operation_evidence(doc)["FACES"]
+        if os.environ.get("DETECTION_MODELS_DIR"):
+            self.assertEqual(ad.operation_status(doc), {"FACES": "supported"}, doc.get("problems"))
+        else:
+            self.assertEqual(ad.operation_status(doc), {"FACES": "unavailable"})
+            self.assertIn(ev["code"], ("MODEL_NOT_FOUND", "ENGINE_UNAVAILABLE"))
+            self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
+
+    def test_face_blurred_only_during_its_span_end_to_end(self):
+        if not os.environ.get("DETECTION_MODELS_DIR"):
+            self.skipTest("needs the YuNet model file in DETECTION_MODELS_DIR")
+        face = Path(self.det.root) / "tests" / "fixtures" / "astronaut.jpg"   # detection-skill's own public-domain fixture (one face)
+        self.assertTrue(face.is_file(), face)
+        src = str(Path(self.tmp) / "src" / "faces.mp4")
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x202020:s=1280x720:r=30:d=8", "-loop", "1", "-i", str(face),
+                        "-f", "lavfi", "-i", "sine=f=440:r=48000:d=8", "-filter_complex", "[0][1]overlay=384:104:enable='between(t,2,5)':shortest=1[v]",
+                        "-map", "[v]", "-map", "2:a", "-t", "8", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", src], check=True)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([src], "generic", user_requirements={"edit.redact_faces": True})
+        d = ir.doc
+        obs = next(o for o in d["analysis"]["observations"] if o["kind"] == "face_tracks")
+        self.assertGreaterEqual(len(obs["data"]["tracks"]), 1, obs["data"])
+        [dec] = [x for x in d["decisions"] if x["subject"] == "video.redact_faces"]
+        self.assertEqual((dec["type"], dec["approval"]), ("TRANSFORM", "CONFIRM"))
+        regions = dec["params"]["regions"]
+        self.assertGreaterEqual(regions[0]["start"], 1.0, regions)
+        self.assertLessEqual(regions[-1]["end"], 6.0, regions)
+        rect = regions[0]["rects"][0]
+        self.assertTrue(384 - 40 <= rect["x"] <= 384 + 512 and 104 - 40 <= rect["y"] <= 104 + 512, rect)
+        p = str(Path(self.tmp) / "ws" / "faces.project.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p)
+        self.assertNotEqual(out["status"], "COMPLETED", "nothing is blurred before the approval")
+        svc.approve(load_ir(p), p, [dec["id"]])
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["status"], "COMPLETED", out)
+        art = next(a for a in out["artifacts"] if a["type"] in ("MASTER", "DELIVERY"))
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], check=True, capture_output=True).stdout)
+        self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="broll keeps the source's length")
+        mid = int(round((regions[0]["start"] + regions[-1]["end"]) / 2 * 30))   # the same frame number in both files (30 fps, as made above)
+        a, b = _luma_frame(src, mid, 1280, 720), _luma_frame(art["path"], mid, 1280, 720)
+        inside, outside = _mean_abs_diff(a, b, 1280, rect), _mean_abs_diff(a, b, 1280, rect, outside=True)
+        tags = {f: subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range,color_space,start_time", "-of", "csv=p=0", f],
+                                  capture_output=True, text=True).stdout.strip() for f in (src, art["path"])}
+        self.assertGreater(inside, 6.0, f"the face rectangle is blurred while the face is on screen (frame {mid})")
+        self.assertLess(outside, 2.0, f"nothing outside the rectangle changes (frame {mid}: inside {inside:.2f}, outside {outside:.2f}; {tags})")
+        for n in (15, 210):   # before and after the face's span: the picture is the source's (re-encoded only)
+            self.assertLess(_mean_abs_diff(_luma_frame(src, n, 1280, 720), _luma_frame(art["path"], n, 1280, 720), 1280), 2.0, f"frame {n} ({tags})")
+
+
 class DubbingRealTests(unittest.TestCase):
     """ADR-085 on the real dubbing-skill (main; no release tag) and the real ffmpeg-skill, without any TTS engine (none is installed in CI): the live
     contract equals the pin, its doctor's verdict on DUB carries the Skill's own code and install line, a plan asking for a dub BLOCKs with that

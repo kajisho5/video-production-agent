@@ -58,6 +58,12 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "grid": {"positional": ["inputs"], "flags": {"cols": "int", "rows": "int", "cell_width": "int", "cell_height": "int", "fps": "float", "label": "str", "font": "str", "font_size": "int",
                                                   "font_color": "str", "pad": "bool", "audio_from": "int", "gap": "int", "background": "str", "crf": "int", "preset": "str", "output": "path_out"},
              "produces_output": True, "result_keys": ["output", "probe"]},
+    # ---- ADR-090 blur faces (verified against ffmpeg-skill 2.24.1 and 3.1.1 `_contract.py --json --static` and broll.py --help): broll.py
+    # shows each cutaway B over A for [at, end] and resumes A, the output as long as A, A's audio stream-copied with --audio a (its default,
+    # passed explicitly); --insert / --at / --end are repeated once per cutaway, in the same order. The agent uses it only to put the
+    # redacted pieces of the source back at their own times.
+    "broll": {"positional": ["input"], "flags": {"insert": "list[path_in]", "at": "list[str]", "end": "list[str]", "audio": "str", "output": "path_out"},
+              "produces_output": True, "result_keys": ["output", "probe"]},
     # ---- ADR-052 timeline export (verified against ffmpeg-skill v2.21.0 --help and a real --json capture): render.py reads a
     # project.json and, with --export-timeline FILE, writes the project's cut as an editor timeline (.otio / .fcpxml / .edl by
     # extension) instead of rendering. The project is never a free-form document: the adapter writes it from the typed
