@@ -133,7 +133,12 @@ class MediaAnalyzer(Analyzer):
             tl.add_timeline(asset.id)
             dur = probe.get("duration") or 0.0
             has_audio = bool(probe.get("audio"))
-            for kind in [k for k in req.kinds if k != "media_probe" and not ANALYSIS_KINDS[k].get("pairwise")]:
+            kinds_here = [k for k in req.kinds if k != "media_probe" and not ANALYSIS_KINDS[k].get("pairwise")]
+            merge = bool(req.params.get("speaker_merge")) and "speaker_turns" in kinds_here and "transcript" in kinds_here
+            if merge:   # ADR-096: the turns are measured first so transcribe can merge them into the transcript (speaker ids end to end)
+                kinds_here = sorted(kinds_here, key=lambda k: 0 if k == "speaker_turns" else 1)
+            turns_of: Optional[Observation] = None
+            for kind in kinds_here:
                 only = ANALYSIS_KINDS[kind].get("only_input_param")
                 if only and req.params.get(only) != n_input:
                     rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": f"not the input named by {only}"})
@@ -158,6 +163,11 @@ class MediaAnalyzer(Analyzer):
                         continue
                     kp = dict(CROP_TOOL_ARGS)   # the agent's fixed sampling: the observation's parameters and part of its cache key
                     args = {"input": asset.path, **kp}
+                elif kind == "transcript" and merge and turns_of is not None:
+                    # ADR-096: this asset's measured turns go to transcribe inline (merged after recognition by transcription-skill with
+                    # diarization-skill's ASSIGN rule; never part of its recognition cache)
+                    kp = dict(kp, speaker_turns={k: v for k, v in turns_of.data.items() if k != "turns_file"})
+                    args = {"input": asset.path}
                 elif kind in ("face_tracks", "slide_timeline"):
                     if not asset.technical.get("video"):
                         rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no video stream"})
@@ -170,7 +180,11 @@ class MediaAnalyzer(Analyzer):
                 if o is None:
                     warnings.append(f"{kind} analysis failed for {p}: {(row.get('error') or {}).get('kind')} {(row.get('error') or {}).get('message', '')}".rstrip())
                     continue
+                if kind == "transcript" and merge and turns_of is not None:
+                    o.parameters = dict(o.parameters or {}, speaker_turns=turns_of.id)   # ADR-096: which measured turns the ids come from
                 obs.append(o)
+                if kind == "speaker_turns":
+                    turns_of = o
                 self._events(kind, o, asset, dur, tl, params)
             if not has_audio:
                 warnings.append(f"{p}: no audio stream; silence and loudness analysis skipped")

@@ -7,7 +7,8 @@ Event ≠ Observation ≠ Inference ≠ Decision. Events exist on the time axis;
 Defining an event type here does not mean it is detected: only the codes in IMPLEMENTED_CODES are ever generated, from
 the observation kinds that are implemented (silence, loudness, transcript, speaker_turns since ADR-086, slide_timeline since ADR-091). Camera / scene /
 caption types are schema only until an analyzer or skill exists for them. A SpeechEvent says "speech with this transcript exists in this
-interval"; it never says who speaks (speaker_id stays null) and never becomes a command.
+interval"; it never says who speaks (speaker_id stays null unless the transcript records the speaker merge an explicit requirement asked for,
+ADR-096: then an anonymous SPEAKER_nn) and never becomes a command.
 """
 from __future__ import annotations
 
@@ -107,14 +108,16 @@ def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
         if dur is not None:   # the integrated measurement covers the whole programme; without a duration there is no range to place it on
             out.append(mk("LOUDNESS_MEASURE", TimeRange(0.0, dur), dict(obs.data)))
     elif obs.kind == "transcript":
-        # one SpeechEvent per recognised segment: interval + text as recognised. No merge, no speaker, no importance, no edit point.
+        # one SpeechEvent per recognised segment: interval + text as recognised. No merge, no importance, no edit point. A speaker id only
+        # when the transcript records transcription-skill's merge of diarization-skill's turns (ADR-096): an anonymous SPEAKER_nn of those turns
         tr = obs.data
+        sa = tr.get("speaker_assignment") if isinstance(tr.get("speaker_assignment"), dict) else None
         for seg in tr.get("segments") or []:
-            if seg.get("speaker_id") is not None:
-                raise ValueError(f"transcript segment {seg.get('id')} carries a speaker id; recognition never identifies speakers")
+            if seg.get("speaker_id") is not None and (sa is None or seg["speaker_id"] not in (sa.get("speakers") or [])):
+                raise ValueError(f"transcript segment {seg.get('id')} carries a speaker id {seg['speaker_id']!r} no recorded speaker merge gave it; recognition never identifies speakers")
             e = mk("SPEECH", TimeRange(float(seg["start"]), float(seg["end"])),
                    {"text": seg.get("text", ""), "language": tr.get("language"), "language_source": tr.get("language_source"), "segment_id": seg.get("id"),
-                    "transcript_id": tr.get("id"), "engine": tr.get("engine"), "speaker_id": None, "words": len(seg["words"]) if isinstance(seg.get("words"), list) else None})
+                    "transcript_id": tr.get("id"), "engine": tr.get("engine"), "speaker_id": seg.get("speaker_id") if sa is not None else None, "words": len(seg["words"]) if isinstance(seg.get("words"), list) else None})
             e.confidence = seg.get("confidence") if isinstance(seg.get("confidence"), (int, float)) else None
             out.append(e)
     elif obs.kind == "speaker_turns":

@@ -23,7 +23,7 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_S
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
-from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_segments, ir_captions_burn, ir_captions_generate, kept_ranges_of
+from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_transcripts, ir_captions_burn, ir_captions_generate, kept_ranges_of
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 from .nle import MODES as NLE_MODES, SUBJECT as NLE_SUBJECT, ir_nle
@@ -165,8 +165,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 if concat is not None:   # where the input's first kept range lands on the programme timeline (map_point already removed the trimmed material)
                     seg = next((s_ for s_ in concat.get("segments") or [] if s_.get("input") == src), None)
                     offset = round(float(seg["timeline_range"][0]), 3) if seg else 0.0
-                segs = [seg_ for o in analysis.observations if o.kind == "transcript" and o.asset_id == src for seg_ in ((o.data or {}).get("segments") or [])]
-                cues += cues_from_segments(segs, keep, offset=offset, speed=speed, id_prefix=f"c{n + 1}_" if len(sources) > 1 else "c")
+                cues += cues_from_transcripts([o for o in analysis.observations if o.kind == "transcript" and o.asset_id == src], keep, offset=offset, speed=speed,
+                                              id_prefix=f"c{n + 1}_" if len(sources) > 1 else "c")
                 tmap["inputs"][src] = {"keep": keep, "offset": offset}
             cues.sort(key=lambda c: (c["start"], c["id"]))
             out_id = f"{subject}_captions"

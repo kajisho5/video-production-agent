@@ -418,7 +418,10 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
         sil = next((o for o in analysis.observations if o.asset_id == a.id and o.kind == "silence"), None)
         facts[a.id] = {"index": n, "raw": raw, "clean": clean_text(raw), "transcript": tr.id, "speech": [float(segs[0]["start"]), float(segs[-1]["end"])], "duration": dur,
                        "loudness": loud.id if loud is not None else None, "lufs": lf.get("lufs"), "true_peak": lf.get("true_peak"),
-                       "silence": sil.id if sil is not None else None, "silences": _silence_ranges(sil.data, dur) if sil is not None else []}
+                       "silence": sil.id if sil is not None else None, "silences": _silence_ranges(sil.data, dur) if sil is not None else [],
+                       # ADR-096: who speaks in the take -- the anonymous ids a diarized transcript carries (speakers.assign), in order of first speech
+                       "speakers": list(dict.fromkeys(str(s["speaker_id"]) for s in segs if s.get("speaker_id")))
+                       if isinstance(tr.data.get("speaker_assignment"), dict) else None}
     if silent_takes:
         return block(GROUP_SUBJECT, f"no recognised speech in take(s) {', '.join(silent_takes)}",
                      "a take is grouped by what is said in it; without a transcript of it, it cannot be placed on a line",
@@ -463,6 +466,8 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
                                   "keep": list(rec["keep"]), "speech": [round(x, 3) for x in facts[rec["pick"]]["speech"]], "similarity_threshold": tk["similarity"],
                                   "unmeasured": [dict(u) for u in UNMEASURED], "music_bed": music.id if music is not None else None,
                                   "text": facts[ln["anchor"]]["raw"][:200]}
+        if facts[rec["pick"]].get("speakers") is not None:   # ADR-096: the picked take's speakers, from the diarized transcript
+            params["speakers"] = facts[rec["pick"]]["speakers"]
         why = (f"line {rec['line']}: {len(ln['takes'])} take(s) grouped by transcript similarity >= {tk['similarity']:g}; "
                f"{rec['pick']} scores {by[rec['pick']]['score']:g}" + "".join(f", {t['asset_id']} {t['score']:g}" for t in ranked if t["asset_id"] != rec["pick"])
                + " (fillers / restarts / coverage from the transcript, clipping / loudness / pauses from the audio measurements; sharpness, exposure and faces are not measured here)")

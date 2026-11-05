@@ -167,9 +167,11 @@ def _print_analysis(analysis) -> int:
             tr = o.data
             prov = tr.get("provenance") or {}
             print(f"    transcript {tr.get('id')}  language {tr.get('language')} ({tr.get('language_source')})  {len(tr.get('segments') or [])} segment(s)  "
-                  f"engine {tr.get('engine')}@{tr.get('engine_version')} {prov.get('execution_mode')}  model {prov.get('model')}  speaker_id null (recognition only)")
+                  f"engine {tr.get('engine')}@{tr.get('engine_version')} {prov.get('execution_mode')}  model {prov.get('model')}  "
+                  + (f"speaker_id from diarization-skill turns ({len((tr.get('speaker_assignment') or {}).get('speakers') or [])} anonymous speaker(s), ADR-096)"
+                     if isinstance(tr.get("speaker_assignment"), dict) else "speaker_id null (recognition only)"))
             for seg in (tr.get("segments") or [])[:20]:
-                print(f"      {seg['start']:8.3f}-{seg['end']:8.3f}  {seg.get('text', '')[:100]}")
+                print(f"      {seg['start']:8.3f}-{seg['end']:8.3f}  " + (f"[{seg['speaker_id']}] " if seg.get("speaker_id") else "") + f"{seg.get('text', '')[:100]}")
             if len(tr.get("segments") or []) > 20:
                 print(f"      … {len(tr['segments']) - 20} more segment(s)")
     for e in analysis.timeline.query():

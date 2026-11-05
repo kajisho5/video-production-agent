@@ -52,6 +52,13 @@ _FP_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LANG_RE = re.compile(r"^[a-z]{2,3}$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ENGINE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# ADR-096: diarization-skill's turns handed to transcribe's `speaker_turns` (transcription-skill 0.8.0 merges them after recognition with
+# diarization-skill's own ASSIGN rule, never into its cache); only then may a segment carry a speaker_id, and only an anonymous one of the turns
+TURNS_SCHEMA = "diarization-skill/turns@1"
+SPEAKERS_TOOL = "transcription/speakers"
+SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
+TURNS_KEYS = ("schema", "source", "speakers", "turns", "overlap", "engine", "parameters", "created_at", "speaker_count", "speech_seconds", "skill", "skill_version",
+              "tool", "warnings", "duration", "processing_seconds", "counts")
 
 
 class ContractError(ToolError):
@@ -256,7 +263,10 @@ class TranscriptionAdapter(ToolAdapter):
         declared = (self.tools.get(tool) or {}).get("input") or {}
         params = {k: v for k, v in (parameters or {}).items() if k in PARAMETER_KEYS and k in declared}
         budget = {k: v for k, v in (parameters or {}).items() if k in BUDGET_KEYS}
-        return {"input": path, "asset_id": asset_id, "kind": kind, "parameters": params, "budget": budget, "analysis_id": analysis_id, "cache_policy": cache_policy}
+        out = {"input": path, "asset_id": asset_id, "kind": kind, "parameters": params, "budget": budget, "analysis_id": analysis_id, "cache_policy": cache_policy}
+        if (parameters or {}).get("speaker_turns") is not None:   # ADR-096: the measured turns of the same asset, merged by the Skill after recognition
+            out["speaker_turns"] = parameters["speaker_turns"]
+        return out
 
     # ---- input boundary (the Skill enforces it again with the same roots; the adapter refuses early and never widens)
     def check_input(self, raw: str) -> str:
@@ -344,9 +354,29 @@ class TranscriptionAdapter(ToolAdapter):
             params["workspace"] = self.workspace
         if self.allowed_inputs:
             params["allowed_input_roots"] = list(self.allowed_inputs)
+        if args.get("speaker_turns") is not None:
+            params["speaker_turns"] = self.check_turns(args["speaker_turns"], declared)
         if dry_run:
             params["dry_run"] = True
         return {"tool": tool, "params": params}
+
+    @staticmethod
+    def check_turns(turns: Any, declared: Dict[str, Any]) -> Dict[str, Any]:
+        """ADR-096: the speaker turns handed to transcribe, inline (never a path: nothing outside the request crosses the boundary): a
+        diarization-skill/turns@1 document with a content fingerprint, anonymous SPEAKER_nn ids and exclusive turns of those ids; only the
+        document's own keys are sent (the agent's turns_file note is dropped)."""
+        if "speaker_turns" not in declared:
+            raise ToolError("transcription: this transcription-skill does not take speaker_turns (0.8.0 or later merges them)")
+        if not isinstance(turns, dict) or turns.get("schema") != TURNS_SCHEMA:
+            raise ToolError(f"transcription: speaker_turns must be a {TURNS_SCHEMA} document")
+        if not _FP_RE.match(str((turns.get("source") or {}).get("fingerprint") or "")):
+            raise ToolError("transcription: speaker_turns need source.fingerprint (sha256:<hex>)")
+        speakers = turns.get("speakers")
+        if not isinstance(speakers, list) or any(not isinstance(s, str) or not SPEAKER_RE.match(s) for s in speakers):
+            raise ToolError("transcription: speaker_turns speakers must be anonymous SPEAKER_nn ids")
+        if not isinstance(turns.get("turns"), list) or any(not isinstance(t, dict) or t.get("speaker") not in speakers for t in turns["turns"]):
+            raise ToolError("transcription: every speaker turn must name one of the document's speakers")
+        return {k: v for k, v in turns.items() if k in TURNS_KEYS}
 
     def preview(self, op: Operation, paths: Dict[str, str]) -> List[str]:
         req = self.build_request(op.tool, op.args)
@@ -434,6 +464,21 @@ def check_transcript(tr: Dict[str, Any], params: Dict[str, Any], skill_version: 
     """A Transcript document is accepted only when its identity, provenance and structure are exactly what the request and
     the contract say. Partial or inconsistent documents are refused as a whole (no partial transcript is ever a success)."""
     errs: List[str] = []
+    turns = params.get("speaker_turns") if isinstance(params.get("speaker_turns"), dict) else None
+    if turns is not None:   # ADR-096: the merge the request asked for, recorded by the Skill, about this very file and these turns
+        sa = tr.get("speaker_assignment")
+        if not isinstance(sa, dict):
+            errs.append("speaker_turns were sent but the transcript has no speaker_assignment")
+        else:
+            fp_tr, fp_turns = str((tr.get("source") or {}).get("fingerprint") or ""), str((turns.get("source") or {}).get("fingerprint") or "")
+            if sa.get("tool") != SPEAKERS_TOOL or sa.get("skill") != CONTRACT_ID:
+                errs.append(f"speaker_assignment by {sa.get('skill')!r} / {sa.get('tool')!r}, not {CONTRACT_ID} / {SPEAKERS_TOOL}")
+            if sa.get("source_fingerprint") != fp_turns or fp_turns != fp_tr or sa.get("source_match") is not True:
+                errs.append("speaker_assignment is not about the turns sent and this transcript's file (fingerprints differ)")
+            if list(sa.get("speakers") or []) != list(turns.get("speakers") or []):
+                errs.append("speaker_assignment speakers differ from the turns sent")
+    elif "speaker_assignment" in tr:
+        errs.append("transcript carries a speaker_assignment no speaker_turns were sent for")
     if tr.get("schema") != schemas.get("transcript", TRANSCRIPT_SCHEMA):
         errs.append(f"transcript schema {tr.get('schema')!r} != {schemas.get('transcript', TRANSCRIPT_SCHEMA)}")
     for k in ("id", "asset_id", "language", "language_source", "duration", "segments", "source", "engine", "engine_version", "created_at", "provenance"):
@@ -497,8 +542,11 @@ def check_transcript(tr: Dict[str, Any], params: Dict[str, Any], skill_version: 
             errs.append(f"segment {s.get('id')} timestamps invalid or out of order ({st}, {en})")
             break
         prev_end = en
-        if "speaker_id" in s and s["speaker_id"] is not None:
+        if "speaker_id" in s and s["speaker_id"] is not None and turns is None:
             errs.append(f"segment {s.get('id')} carries speaker_id {s['speaker_id']!r}: recognition never identifies speakers")
+            break
+        if turns is not None and s.get("speaker_id") is not None and s["speaker_id"] not in (turns.get("speakers") or []):
+            errs.append(f"segment {s.get('id')} speaker_id {s['speaker_id']!r} is not one of the speaker turns' anonymous ids")
             break
         if not isinstance(s.get("text"), str):
             errs.append(f"segment {s.get('id')} text is not a string")

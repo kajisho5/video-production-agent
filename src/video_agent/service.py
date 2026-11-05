@@ -18,7 +18,7 @@ from .agent.editing import PROGRAMME, delivery_subjects, parse_edit_requirements
 from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
-from .agent.speakers import check_speaker_keys, speaker_kind
+from .agent.speakers import check_speaker_keys, speaker_assign_requested, speaker_kind
 from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.faces import REQUIREMENT_KEYS as _FACE_REQUIREMENT_KEYS, check_face_keys, face_kind
@@ -382,6 +382,10 @@ class Service:
             # ADR-086: anonymous speaker turns, asked for explicitly (speakers.diarize); without a runnable tool the plan hands the measurement off
             kinds = list(kinds or []) + ([] if sk[0] in (kinds or []) else [sk[0]])
             params = dict(params or {}, **sk[1])
+            if speaker_assign_requested(user_requirements or {}):
+                # ADR-096: speaker ids end to end -- the transcript is measured too, and transcribe merges this asset's turns into it
+                kinds = kinds + ([] if "transcript" in kinds else ["transcript"])
+                params = dict(params, speaker_merge=True)
         allowed: Optional[List[str]] = None
         sl = slide_kind(user_requirements or {})
         if sl is not None and "slide_sync" in self.tools_for(None, user_requirements):

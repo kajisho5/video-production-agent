@@ -3734,3 +3734,92 @@ class DocumentVerifyRealTests(unittest.TestCase):
         self.assertEqual(draft["status"], "REVIEW", draft.get("qa"))
         items = {i["name"]: i for i in draft["qa"]["items"] if i["layer"] == "document"}
         self.assertEqual((items["verdict"]["status"], items["leftover_placeholder_text"]["status"], items["leftover_placeholder_text"]["observed"]), ("FAIL", "FAIL", ["todo"]))
+
+
+class SpeakerIdsRealTests(unittest.TestCase):
+    """ADR-096 (speaker ids end to end) against the real Skills where CI can run them: the real transcription-skill's own merge
+    (`transcription speakers`, the same ASSIGN rule its transcribe applies to `speaker_turns`) of a canned transcript with diarization-skill
+    turns is admitted by the agent's transcript check and becomes SpeechEvents with the ids; and a plan with `speakers.assign=true` +
+    subtitles renders through the real subtitle-skill and ffmpeg-skill into a sidecar whose cues read "SPEAKER_00: ...". Recognition and
+    diarization are the fake processes (CI has neither an ASR model nor the gated pyannote pipeline)."""
+
+    SPEECH = [[1.0, 4.5, "hello there"], [6.0, 9.5, "and goodbye"]]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_spk_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.media = str(src / "talk.mp4")
+        make_media(cls.media)
+        Path(cls.media + ".segments.json").write_text(json.dumps(cls.SPEECH), encoding="utf-8")
+
+    def test_real_transcription_merge_is_admitted(self):
+        import hashlib
+        sk = locate_transcription()
+        if not sk:
+            self.skipTest("needs a transcription-skill checkout (VIDEO_AGENT_TRANSCRIPTION_DIR)")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import fake_transcription
+        from video_agent.models import Asset, Observation
+        from video_agent.temporal import events_from_observation
+        from video_agent.tools.transcription.adapter import TranscriptionAdapter, check_transcript, pinned_contract
+        fp = hashlib.sha256(Path(self.media).read_bytes()).hexdigest()
+        tr = fake_transcription.transcript({"input": self.media, "asset_id": "a", "language": "en"}, fp)
+        tr["provenance"]["parameters_hash"] = "0" * 64   # the canned document as transcription-skill's validator wants it (no engine in CI)
+        turns = {"schema": "diarization-skill/turns@1", "source": {"fingerprint": "sha256:" + fp, "filename": "talk.mp4"}, "speakers": ["SPEAKER_00", "SPEAKER_01"],
+                 "turns": [{"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"}, {"start": 5.2, "end": 16.0, "speaker": "SPEAKER_01"}], "overlap": {"available": False, "regions": []}}
+        t_in, d_in, m_out = (str(Path(self.tmp) / n) for n in ("t.json", "turns.json", "merged.json"))
+        Path(t_in).write_text(json.dumps(tr, ensure_ascii=False), encoding="utf-8")
+        Path(d_in).write_text(json.dumps(turns), encoding="utf-8")
+        p = subprocess.run(list(sk.command) + ["speakers", t_in, f"--turns={d_in}", f"--output={m_out}", "--json"], capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, **dict(getattr(sk, "env", None) or {})))
+        code, out, err = p.returncode, p.stdout, p.stderr
+        self.assertEqual(code, 0, out + err)
+        merged = json.loads(Path(m_out).read_text(encoding="utf-8"))
+        self.assertEqual([s["speaker_id"] for s in merged["segments"]], ["SPEAKER_00", "SPEAKER_01"])
+        c = pinned_contract()
+        params = {"asset_id": "a", "speaker_turns": TranscriptionAdapter.check_turns(turns, {"speaker_turns": 1})}
+        self.assertEqual(check_transcript(merged, params, c["version"], {e["id"]: e for e in c["engines"]}, c["schemas"]), [])
+        asset = Asset(path=self.media, provenance="USER")
+        ev = events_from_observation(Observation(kind="transcript", asset_id=asset.id, source="transcription/transcribe@0.8.0", tool="transcription/transcribe", data=merged), asset)
+        self.assertEqual([e.metadata["speaker_id"] for e in ev], ["SPEAKER_00", "SPEAKER_01"])
+
+    def test_sidecar_cues_name_the_anonymous_speaker(self):
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.tools.diarization import DiarizationAdapter
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.skill_process import CliSkill
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        here = Path(__file__).resolve().parent
+        ws = str(Path(self.tmp) / "ws")
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill([sys.executable, str(here / "fake_transcription.py")], None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                dia = DiarizationAdapter(CliSkill("diarization", [sys.executable, str(here / "fake_diarization.py")], None, {}), workspace=self.workspace,
+                                         allowed_inputs=[str(Path(self.workspace).parent / "src"), self.workspace])
+                return self._sync_packages(ToolRouter([ts, dia] + [a for a in r.adapters if a.name not in ("transcription", "diarization")]))
+        svc = _Svc(workspace=ws, offline=True)
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                caps = dict(real.resolve(refresh))
+                for n in ("transcription", "diarization", "diarization:DIARIZE"):
+                    caps[n] = Capability(n, "AVAILABLE", "fake process", {})
+                return caps
+        svc.caps = _Caps()
+        cap = real.resolve().get("subtitle")
+        if cap is None or cap.status != "AVAILABLE":
+            self.skipTest(f"needs subtitle-skill (VIDEO_AGENT_SUBTITLE_DIR): {getattr(cap, 'detail', 'not resolved')[:120]}")
+        ir = svc.plan([self.media], "generic", user_requirements={"speakers.diarize": True, "speakers.assign": True, "subtitle": True}, params={"language": "en"})
+        [gen] = [op for op in ir.doc["captions"]["operations"] if op["type"] == "captions.generate"]
+        self.assertEqual([c.get("speaker") for c in gen["cues"]], ["SPEAKER_00", "SPEAKER_01"])
+        p = str(Path(self.tmp) / "spk.json")
+        save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution"))
+        srt = Path(out["paths"][gen["output"]]).read_text(encoding="utf-8")
+        self.assertIn("SPEAKER_00: hello there", srt)
+        self.assertIn("SPEAKER_01: and goodbye", srt)
