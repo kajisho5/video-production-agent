@@ -24,6 +24,8 @@ from ..agent.dubbing import FILES as DUB_FILES, OP as DUB_OP, PARAMS as DUB_PARA
 from ..tools.dubbing.adapter import engines as dub_engines, parameters as dub_parameters, unfit_policies as dub_unfit_policies
 from ..agent.publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 from ..tools.publish.adapter import LANG_RE as PUBLISH_LANG_RE, platforms as publish_platforms
+from ..agent.nle import MODES as NLE_MODES
+from ..tools.nle_bridge.adapter import formats as nle_formats
 from ..tools.voice_enhance.adapter import MAX_TRACKS as VOICE_MAX_TRACKS, PARAMETERS as VOICE_PARAMETERS
 from ..models import Event
 from ..temporal import Session, classify, validate_event, validate_session
@@ -568,6 +570,31 @@ def check_publish(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def check_nle(d: Dict[str, Any]) -> List[str]:
+    """ADR-089: `delivery.nle`. One hand-off per subject, of a subject whose timeline is planned (nle-bridge reads that record), formats from
+    the pinned nle-bridge contract with at least one timeline format, `zip` only on a conform."""
+    errs: List[str] = []
+    timelines = {t.get("asset") for t in (d.get("delivery") or {}).get("timelines") or []}
+    seen: set = set()
+    for op in (d.get("delivery") or {}).get("nle") or []:
+        t, subj = op.get("type"), op.get("asset")
+        mode = str(t or "").split(".", 1)[-1]
+        if mode not in NLE_MODES:
+            errs.append(f"unknown delivery.nle type {t!r}")
+            continue
+        if subj in seen:
+            errs.append(f"{t}: more than one NLE hand-off of {subj}")
+        seen.add(subj)
+        if subj not in timelines:
+            errs.append(f"{t} of {subj}: nle-bridge reads the subject's delivery.timelines record, and none is planned")
+        fmts = list(op.get("formats") or [])
+        if not fmts or any(f not in nle_formats() for f in fmts) or len(set(fmts)) != len(fmts) or fmts == ["srt"]:
+            errs.append(f"{t} of {subj}: formats {fmts!r} must be distinct names from {', '.join(nle_formats())} with a timeline format")
+        if "zip" in op and mode != "conform":
+            errs.append(f"{t} of {subj}: zip is a conform option")
+    return errs
+
+
 def finishing_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for sec in ("color", "graphics", "captions") for op in (d.get(sec) or {}).get("operations") or []]
 
@@ -676,8 +703,18 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             sc = scope_of(subj)
             if sc and float(op.get("timestamp", 0)) > float(sc["end"]) + 0.01:
                 errs.append(f"graphics.thumbnail on {subj}: timestamp {op.get('timestamp')} is after the picture ends ({sc['end']:.3f})")
-            if op.get("text") is not None and not (op.get("width") and op.get("height")):
-                errs.append(f"graphics.thumbnail on {subj}: a caption needs the canvas size (width / height)")
+            if (op.get("text") is not None or op.get("texts") or op.get("logo")) and not (op.get("width") and op.get("height")):
+                errs.append(f"graphics.thumbnail on {subj}: a caption / text / logo needs the canvas size (width / height)")
+            lg = op.get("logo")
+            if isinstance(lg, dict):   # ADR-088: the logo image is the user's file, inside the allowed input roots, and its box touches the canvas
+                img = str(lg.get("image") or "")
+                if any(part == ".." for part in img.replace("\\", "/").split("/")) or Path(img).suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo must be a PNG / JPEG path without '..'")
+                elif allowed_roots and not any(_under(img, r) for r in allowed_roots):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo image is outside the allowed input roots: {Path(img).name}")
+                if op.get("width") and op.get("height") and not (int(lg.get("x", 0)) < int(op["width"]) and int(lg.get("y", 0)) < int(op["height"])
+                                                                 and int(lg.get("x", 0)) + int(lg.get("width", 0)) > 0 and int(lg.get("y", 0)) + int(lg.get("height", 0)) > 0):
+                    errs.append(f"graphics.thumbnail on {subj}: the logo box lies outside the canvas")
         else:
             errs.append(f"unknown graphics operation type {t!r}")
     for op in (d.get("captions") or {}).get("operations") or []:
@@ -982,6 +1019,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
     xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-087: a rejected publish decision is rejected-cited
+    xf_rec += list(d["delivery"].get("nle") or [])   # ADR-089: a rejected hand-off decision is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + speech_operations(d) + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
@@ -992,6 +1030,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_finishing_operations(d)
     rep.errors += check_speech_operations(d)   # ADR-085
     rep.errors += check_timeline_exports(d)
+    rep.errors += check_nle(d)   # ADR-089
     rep.errors += check_take_assembly(d)
     rep.errors += check_publish(d)   # ADR-087
     rep.errors += check_plan_dependencies(d)
@@ -1094,6 +1133,9 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         want = GENERATE_SKILL if op["type"] == "captions.generate" else MUX_SKILL if op["type"] == "captions.mux" else BURN_SKILL
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
+    for op in d["delivery"].get("nle") or []:   # ADR-089
+        if (NLE_MODES.get(str(op.get("type")).split(".", 1)[-1], ("?",))[0], op.get("asset")) not in step_keys:
+            rep.errors.append(f"{op.get('type')} of {op.get('asset')} has no plan step")
     for op in timelines:
         if (TIMELINE_SKILL, op.get("asset")) not in step_keys:
             rep.errors.append(f"timeline.export on {op.get('asset')} has no plan step")
@@ -1207,6 +1249,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             needed.add("dubbing")   # ADR-085: dubbing exists only in dubbing-skill
         if d["delivery"].get("publish"):
             needed.add("publish")   # ADR-087: uploading exists only in publish-skill
+        if d["delivery"].get("nle"):
+            needed.add("nle-bridge")   # ADR-089: the NLE interchange exists only in nle-bridge-skill
         if d["audio"]["operations"]:
             needed.add("filter:loudnorm")
         if (d.get("color") or {}).get("operations"):
