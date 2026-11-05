@@ -15,7 +15,7 @@ from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPE
                       kept_duration)
 from .image_insert import still_frame
 from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
-from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
+from .documents import SKILL as DOCUMENT_SKILL, SUBJECT as DOCUMENT_SUBJECT
 from .bgm import BGM_INPUT, BGM_OUTPUT, SUBJECT as BGM_SUBJECT, ir_bgm, skill_of as bgm_skill_of
 from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
@@ -976,6 +976,17 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         steps.append(ProductionStep(id=f"step_job_{skill}", order=order, skill=skill, tool=tool_for(skill), inputs=[a.id for a in analysis.assets],
                                     params=dict(d.params.get("args") or {}), outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
         summary.append(f"Hand off {skill} ({d.subject}): " + ("not runnable here" if d.params.get("handoff") else "no adapter here") + "; see the plan's handoff")
+    # ---- ADR-095: a document verified by artifacts-skill (read-only; QA gates on its checks). It waits on nothing and produces nothing
+    documents: List[Dict[str, Any]] = []
+    for d in [x for x in decisions if x.subject == DOCUMENT_SUBJECT and x.type == "DELIVER" and x.status != "REJECTED"]:
+        doc_id = d.params["asset_id"]
+        documents.append({"id": doc_id, "path": d.params["path"], "name": d.params["name"], "sha256": d.params["sha256"],
+                          **({"preset": d.params["preset"]} if d.params.get("preset") else {}), "decision_ids": [d.id]})
+        order += 1
+        steps.append(ProductionStep(id=f"step_document_verify_{doc_id}", order=order, skill=DOCUMENT_SKILL, tool=tool_for(DOCUMENT_SKILL), inputs=[],
+                                    params={"document": doc_id, "name": d.params["name"], **({"preset": d.params["preset"]} if d.params.get("preset") else {})},
+                                    outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
+        summary.append(d.decision)
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:
@@ -992,4 +1003,5 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
     return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
-            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade}
+            "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade,
+            "documents": documents}

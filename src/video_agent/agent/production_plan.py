@@ -66,6 +66,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "face_redact_composite": ("asset", "inserts"),
                    # ADR-092: the music bed sound-design makes for the mix (library pick or generated), at the mix's length
                    # ADR-093: the Remotion composition (the user's files by name only)
+                   # ADR-095: the document artifacts-skill verifies (by name; the path is in qa.documents)
+                   "document_verify": ("document", "name", "preset"),
                    "measured_motion": ("asset", "comp", "project", "captions", "options", "font_file", "beats", "conform", "fast"),
                    "bgm_library": ("asset", "library", "tags", "mood", "file", "crossfade", "duration"), "bgm_generate": ("asset", "prompt", "tags", "seed", "duration"),
                    "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),

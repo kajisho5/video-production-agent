@@ -80,12 +80,13 @@ def filler_removed_seconds(ir_doc: Dict[str, Any], paths: Dict[str, str], result
 
 def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], tools: Dict[str, str], sheet_dir: Optional[str] = None,
            check_by_artifact: Optional[Dict[str, ToolResult]] = None, qc_by_artifact: Optional[Dict[str, ToolResult]] = None,
-           qc_packages: Optional[List[Any]] = None) -> QAReport:
+           qc_packages: Optional[List[Any]] = None, documents: Optional[Dict[str, Optional[ToolResult]]] = None) -> QAReport:
     """check_by_artifact maps artifact id -> the check ToolResult the executor already produced, so QA does not measure twice.
     qc_by_artifact maps artifact id -> the qc/check ToolResult of the QC gate (ADR-032): admitted only when its fingerprint is the
     sha256 QA computes itself; its verdict is an additional gate beside the agent's own checks, never a replacement.
     qc_packages: (qc op args, ToolResult) of each deliverable set the gate checked together (ADR-065, kind delivery_package): admitted only
     when every member's fingerprint is QA's own sha256 of it; its verdict becomes a `delivery_package` item on every member.
+    documents: document id -> the artifacts-skill verify ToolResult of each `qa.documents` entry (ADR-095), as QA items (layer document).
     tools: skill → tool id map selected by SkillRegistry for this environment. QA has no default engine; a missing
     measurement skill is an explicit error, never a silent fallback."""
     if tools is None:
@@ -301,7 +302,43 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 rep.items.append(QAItem("delivery", "image", "PASS" if ok else "FAIL", f"{size} bytes", f"non-empty {o.get('format')}", artifact=art))
     for args, r in (qc_packages or []) if qc_enabled else []:
         package_items(rep, args, r, paths)
+    for doc in (ir_doc.get("qa") or {}).get("documents") or []:
+        rep.items.extend(document_items(doc, (documents or {}).get(doc["id"]), rep))
     return rep
+
+
+def document_items(doc: Dict[str, Any], r: Optional[ToolResult], rep: "QAReport") -> List[QAItem]:
+    """ADR-095: artifacts-skill's verdict on a document that goes out with the video, as QA items (layer document). Admission first: the
+    report is about the file the plan recorded (the sha256 the adapter took before the run equals the plan's and QA's own of the file now).
+    Then the verdict (pass / warn → PASS / WARN, fail → FAIL, unknown → WARN: never rounded up to a pass) and every check that did not pass,
+    by the Skill's own id; a leftover placeholder (`leftover_placeholder_text`) is a FAIL with the markers found."""
+    art = f"document:{doc.get('name')}"
+    if r is None:
+        return [QAItem("document", "verdict", "FAIL", "no report", "an admitted artifacts-skill report", kind="judgement", artifact=art,
+                       fix_hint="the document verification was planned but no report exists")]
+    data = r.data if isinstance(r.data, dict) else {}
+    if not r.ok:
+        err = data.get("error") or {}
+        return [QAItem("document", "verdict", "FAIL", f"{err.get('code')}: {err.get('message')}", "an admitted artifacts-skill report", kind="judgement", artifact=art,
+                       fix_hint="artifacts-skill could not verify the document")]
+    now = _sha256(doc["path"]) if os.path.isfile(str(doc.get("path") or "")) else None
+    if data.get("sha256") != doc.get("sha256") or now != doc.get("sha256"):
+        return [QAItem("document", "verdict", "FAIL", f"sha256 {str(data.get('sha256'))[:12]} (now {str(now)[:12]})", f"the planned document sha256 {str(doc.get('sha256'))[:12]}",
+                       kind="judgement", artifact=art, fix_hint="the document changed since the plan: plan again to verify the new file")]
+    status = str(data.get("status"))
+    mapped = {"pass": "PASS", "warn": "WARN", "fail": "FAIL"}.get(status, "WARN")
+    items = [QAItem("document", "verdict", mapped, status, "pass", kind="judgement", artifact=art, fix_hint="" if mapped == "PASS" else "see the document checks")]
+    for c in data.get("checks") or []:
+        st = {"fail": "FAIL", "warn": "WARN", "unknown": "WARN"}.get(str(c.get("status")))
+        if st is None:
+            continue
+        observed = data.get("placeholders") if c.get("id") == "leftover_placeholder_text" and data.get("placeholders") else (c.get("message") or c.get("status"))
+        items.append(QAItem("document", str(c.get("id")), st, observed, "pass", kind="judgement", artifact=art,
+                            fix_hint="remove the leftover placeholder text from the document" if c.get("id") == "leftover_placeholder_text" else str(c.get("message") or "")[:300]))
+    if mapped == "FAIL":
+        rep.incidents.append(Incident(type="DELIVERY_SPEC_FAILURE", severity="HIGH", evidence=[art], possible_cause="artifacts-skill reports a failing check on the document",
+                                      recommended_action="fix the document (e.g. remove leftover placeholder text) and render again"))
+    return items
 
 
 def package_items(rep: "QAReport", args: Dict[str, Any], r: Optional[ToolResult], paths: Dict[str, str]) -> None:

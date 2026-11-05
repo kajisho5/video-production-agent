@@ -23,6 +23,7 @@ from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPE
 from .crop import decide_crop
 from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, decide_faces
 from .slides import decide_slides
+from .documents import APPROVAL_KEY as DOCUMENT_APPROVAL_KEY, SUBJECT as DOCUMENT_SUBJECT, decide_documents
 from .remotion import APPROVAL_KEY as REMOTION_APPROVAL_KEY, SUBJECT as REMOTION_SUBJECT, decide_remotion
 from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUBJECT, decide_bgm, parse_bgm_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
@@ -84,6 +85,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  BGM_SUBJECT: BGM_APPROVAL_KEY,
                  # ADR-093: a Remotion render of new graphics over the picture: CONFIRM, floor CONFIRM
                  REMOTION_SUBJECT: REMOTION_APPROVAL_KEY,
+                 # ADR-095: artifacts-skill reads a document and writes nothing: AUTO, like the QC gate's measurement
+                 DOCUMENT_SUBJECT: DOCUMENT_APPROVAL_KEY,
                  # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
@@ -665,6 +668,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_measurement_handoffs(eng, m, analysis, probe_ids_of, cap_missing)
     # ---- the slide timeline an explicit requirement asks for (ADR-091): handed off when it cannot run here, BLOCKED with slide-sync's code when it failed
     decide_slides(eng, m, analysis, probe_ids_of, cap_missing)
+    # ---- a document that goes out with the video, verified by artifacts-skill (ADR-095): a read-only measurement QA gates on
+    decide_documents(eng, m, approval_for, cap_block)
     # ---- delivery
     targets = m.get("delivery.targets")
     platform_req = m.get("delivery.platform")   # a named-platform hint in the request text (agent/requirements.py's KEYWORDS, e.g. "upload this to youtube")
