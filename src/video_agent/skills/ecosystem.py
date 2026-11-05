@@ -118,8 +118,10 @@ _COMPONENTS: Tuple[Component, ...] = (
     # ADR-080: package ids are the Skills' own skill_id (the prefix of their provides[].tool_id), as for imagemagick-skill (ADR-077)
     Component("blender-skill", "blender-skill", "visual", "checkout", "active", plugin=True, owns=("3D素材・3Dレンダリング",), package_install="npx blender-skill",
               note="render_3d is handed off with blender-skill/render named from its pinned contract (ADR-080); Blender 4.2+ itself is the user's install"),
-    Component("remotion-ffmpeg", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
-              package_install="npx remotion-ffmpeg-skill"),
+    # ADR-093: the package id is the Skill's own skill_id (remotion-ffmpeg-skill), the prefix of its provides[].tool_id
+    Component("remotion-ffmpeg-skill", "remotion-ffmpeg-skill", "visual", "checkout", "active", plugin=True, owns=("計測連動モーショングラフィックス(Remotion)",),
+              package_install="npx remotion-ffmpeg-skill",
+              note="one composition over the edited picture as the skill measured_motion (ADR-093); Remotion needs Node 18+ and the user's own project (init.py, npm install)"),
     Component("hyperframes-skill", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
               package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci",
               note="html_scene_render is handed off with hyperframes-skill/render named from its pinned contract (ADR-080); needs Node.js 22+ and a headless Chromium"),

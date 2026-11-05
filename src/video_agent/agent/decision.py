@@ -23,6 +23,7 @@ from .audio import FILLER_MAX_WORDS, MAX_MIX_INPUTS as AUDIO_MAX_MIX_INPUTS, OPE
 from .crop import decide_crop
 from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, decide_faces
 from .slides import decide_slides
+from .remotion import APPROVAL_KEY as REMOTION_APPROVAL_KEY, SUBJECT as REMOTION_SUBJECT, decide_remotion
 from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUBJECT, decide_bgm, parse_bgm_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
@@ -81,6 +82,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  FACE_SUBJECT: FACE_APPROVAL_KEY,
                  # ADR-092: a music bed (a library licence as declared, or generated music) under the mix: CONFIRM, floor CONFIRM
                  BGM_SUBJECT: BGM_APPROVAL_KEY,
+                 # ADR-093: a Remotion render of new graphics over the picture: CONFIRM, floor CONFIRM
+                 REMOTION_SUBJECT: REMOTION_APPROVAL_KEY,
                  # ADR-062: the explicit trim and the rotation, CONFIRM by default like every other edit.* op (an explicit USER requirement waives it)
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
@@ -637,6 +640,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if op == "video.overlay" and p.get("prepare"):   # ADR-077: without imagemagick-skill each preparation step is handed off (ADR-051)
             for sk, _tool, _params in prepare_chain(p["prepare"]):
                 cap_block(sk, f"capability.{sk}")
+    # ---- measured motion graphics (ADR-093): one Remotion composition over the edited picture of each video subject (never on the audio path)
+    if not audio["production"]:
+        decide_remotion(eng, m, subjects, analysis, approval_for, probe_ids_of, cap_block)
     # ---- finishing (ADR-031 / ADR-032): subtitles, colour, motion graphics, thumbnail, QC gate — on the programme or each asset, after the edits
     def has_edit(subject: str) -> bool:
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]

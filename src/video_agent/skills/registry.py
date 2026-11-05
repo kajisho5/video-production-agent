@@ -223,7 +223,8 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 # `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns). ADR-087:
 # `platform_publish` (publish) left it the same way: the implemented `publish_upload` below. ADR-091:
 # `slide_sync` (slide-sync) too: the implemented measurement of the same name below (analysis kind slide_timeline). ADR-092: `sound_design`
-# (sound-design) too: its music bed is the implemented bgm_library / bgm_generate below (sound effects are not wired).
+# (sound-design) too: its music bed is the implemented bgm_library / bgm_generate below (sound effects are not wired). ADR-093:
+# `measured_motion_graphics` (remotion-ffmpeg-skill) too: the implemented `measured_motion` below.
 ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
     _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
@@ -237,8 +238,6 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-080: the Skill's own skill_id and provides[].tool_id from a pinned contract (skills/handoff_contracts.py); still a handoff, CONFIRM
     _job("render_3d", "Render a 3D model with headless Blender (still, turntable or 4-view sheet; with alpha for compositing) as a B-roll asset for ffmpeg-skill/overlay",
          {"model": "glb|gltf|fbx|obj|stl|usd|usdz|ply|abc|blend"}, {"artifact": "image|video"}, "blender-skill", "render", "MEDIUM"),
-    _job("measured_motion_graphics", "Remotion motion graphics on the footage, timed from ffmpeg-skill measurements (captions, jump cuts, beat-synced motion)",
-         {"asset": "video"}, {"artifact": "video"}, "remotion-ffmpeg", "pipeline", "MEDIUM"),
     _job("html_scene_render", "Render an HTML scene folder to verified video with HyperFrames (h264 / vp9, or ProRes 4444 with alpha), to join with "
          "video-editing/concat or composite with ffmpeg-skill/overlay", {"scene": "dir with index.html"}, {"artifact": "video"}, "hyperframes-skill", "render", "MEDIUM"),
     _job("document_verification", "Verify an AI-generated document (script, captions, report) and issue an evidence-backed receipt",
@@ -385,6 +384,12 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("slide_sync", "1.0", "Slide changes of a talk recording (picture cuts held a minimum time) and, with the deck, the page on screen in each slide; measurement only",
                          {"asset": "video", "deck": "pdf|pptx|key|odp"}, {"observation": "slide_timeline", "events": "SLIDE"}, ["slide-sync", "slide-sync:DETECT"], "LOW", True, "AUTO",
                          ["slide-sync/detect"]))
+    # measured motion graphics (ADR-093, replacing ADR-057's phase-2 `measured_motion_graphics`): remotion-ffmpeg-skill's pipeline (analyze → render, verified)
+    # draws one composition that keeps the source's clock over the edited picture, on the user's own Remotion project; never delivers (the agent does)
+    r.register(SkillSpec("measured_motion", "1.0", "One Remotion composition (captions, pulses on peaks / beats, titles, picture-in-picture) over the picture, timed from ffmpeg-skill "
+                                                     "measurements and verified against its timeline; the user's Remotion project",
+                         {"asset": "video", "project": "dir", "comp": "str"}, {"artifact": "INTERMEDIATE"}, ["remotion-ffmpeg-skill", "remotion-ffmpeg-skill:PIPELINE"], "MEDIUM",
+                         False, "CONFIRM", ["remotion-ffmpeg-skill/pipeline"]))
     # a music bed for the mix (ADR-092, replacing ADR-057's phase-2 `sound_design`): sound-design-skill picks and fits one of the user's licensed library
     # files (no engine) or generates one (ACE-Step 1.5), at the mix's length; audio-production MIX places it as its last input
     r.register(SkillSpec("bgm_library", "1.0", "A music bed from the user's own library (declared licence, tags / mood), trimmed or looped to the mix's length; no engine",

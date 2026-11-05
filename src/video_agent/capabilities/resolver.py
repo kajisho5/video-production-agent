@@ -34,6 +34,7 @@ from ..tools.imagemagick import ImageMagickAdapter, locate_imagemagick
 from ..tools.detection import DetectionAdapter, locate_detection
 from ..tools.diarization import DiarizationAdapter, locate_diarization
 from ..tools.slide_sync import SlideSyncAdapter, locate_slide_sync
+from ..tools.remotion import RemotionAdapter, locate_remotion
 from ..tools.sound_design import SoundDesignAdapter, locate_sound_design
 
 ENCODERS = ["libx264", "libx265", "aac", "prores_ks", "libaom-av1", "libsvtav1", "h264_nvenc", "hevc_nvenc", "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "h264_qsv",
@@ -339,6 +340,10 @@ class CapabilityResolver:
         self._finishing_skill(caps, "slide-sync", locate_slide_sync(env=self.env), lambda sk: SlideSyncAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
                               "VIDEO_AGENT_SLIDE_SYNC_DIR", "slide-sync-skill", "slide-sync", per_item=lambda ad, doc: (ad.operation_status(doc), {}),
                               item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # remotion-ffmpeg-skill (ADR-093): contract against the pinned one (fatal subset), its doctor (python / node / npm / ffmpeg-skill / ffmpeg) ok or fail;
+        # `remotion-ffmpeg-skill:PIPELINE` follows it, with the doctor's fix lines. The user's project is checked per plan (its node_modules/remotion).
+        self._finishing_skill(caps, "remotion-ffmpeg-skill", locate_remotion(env=self.env), lambda sk: RemotionAdapter(sk), "VIDEO_AGENT_REMOTION_DIR", "remotion-ffmpeg-skill",
+                              "npx remotion-ffmpeg-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # sound-design-skill (ADR-092): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (an engine missing is degraded:
         # library mode needs none). `sound-design:LIBRARY` / `:BGM_GENERATE` follow checks.operations.<op>.ready, with the engine's install line when not ready.
         self._finishing_skill(caps, "sound-design", locate_sound_design(env=self.env), lambda sk: SoundDesignAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),

@@ -21,6 +21,8 @@ from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.nle import MODES as NLE_MODES
 from ..agent.image_prepare import prepare_chain, prepared_id
+from ..agent.remotion import FILE_KEYS as REMOTION_FILE_KEYS, PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
+from ..tools.remotion.adapter import render_name as remotion_render_name
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, TOOL_NAMES as BGM_TOOL_NAMES, skill_of as bgm_skill_of
 from ..agent.faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, TOOL_NAMES as FACE_TOOL_NAMES
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT
@@ -417,6 +419,32 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 inputs.append(img_id)
             args = lower_video_edit(tool, op, st["current"], out_id, refs)
             add(tool, args, inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            st["current"] = out_id
+        for op in d["video"]["operations"]:   # ADR-093: one Remotion composition over the edited picture, before the finishing
+            if op["asset"] != subject or op["type"] != REMOTION_SUBJECT:
+                continue
+            st["gen"] += 1
+            tool = tool_for(REMOTION_SKILL, subject)
+            if tool.split("/", 1)[-1] != "pipeline":
+                raise CompileError(f"{REMOTION_SUBJECT} needs a pipeline tool, the plan names {tool}")
+            out_id = op.get("output") or f"{subject}_measured_motion"
+            out_dir = job / "ops" / f"{st['stem']}_{st['gen']:02d}_measured_motion"
+            paths[out_id] = str(out_dir / remotion_render_name(paths[st["current"]], op["comp"]))
+            args: Dict[str, Any] = {"input": st["current"]}
+            ins = [st["current"]]
+            for k in REMOTION_PARAMS:
+                if op.get(k) is None:
+                    continue
+                if k in REMOTION_FILE_KEYS or k == "project":   # the user's files / project, by path like a LUT
+                    ref = f"{subject}_measured_motion_{k}"
+                    paths[ref], keys[ref] = op[k], ""
+                    args[k] = ref
+                    if k != "project":
+                        ins.append(ref)
+                else:
+                    args[k] = op[k]
+            args["output"] = out_id
+            add(tool, args, ins, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=REMOTION_SKILL)
             st["current"] = out_id
 
     def dubs(subject: str) -> None:

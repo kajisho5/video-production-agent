@@ -1359,7 +1359,9 @@
       "video.fill",
       "video.overlay",
       "video.image_insert",
-      "video.redact_faces"
+      "video.redact_faces",
+      "video.measured_motion",
+      "video.measured_motion"
      ]
     },
     "asset": {
@@ -1794,6 +1796,37 @@
        }
       }
      }
+    },
+    "comp": {
+     "enum": [
+      "Captioned",
+      "PeakPulse",
+      "Titled",
+      "BeatMontage",
+      "Karaoke",
+      "Pip"
+     ]
+    },
+    "project": {
+     "type": "string"
+    },
+    "captions": {
+     "type": "string"
+    },
+    "options": {
+     "type": "string"
+    },
+    "font_file": {
+     "type": "string"
+    },
+    "beats": {
+     "type": "boolean"
+    },
+    "conform": {
+     "type": "boolean"
+    },
+    "fast": {
+     "type": "boolean"
     }
    },
    "additionalProperties": false

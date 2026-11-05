@@ -100,13 +100,13 @@ ECOSYSTEM_JOBS = {
     # dubbing: DUB is the implemented skill speech_dub (ADR-085); the job stays for narration / audio description, now with an install line
     "dubbing": ("dubbing", "dubbing-skill", f"git clone {_GH}dubbing-skill && pip install -e 'dubbing-skill'"),
     # sound_design (sound-design) too (ADR-092): the implemented music bed bgm_library / bgm_generate (tests/test_bgm.py)
+    # measured_motion_graphics (remotion-ffmpeg-skill) too (ADR-093): the implemented measured_motion (tests/test_remotion.py)
     "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
     # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
     # ADR-080: blender-skill / hyperframes-skill are named by their own skill_id (the prefix of the tool id their pinned contract provides)
     "render_3d": ("blender-skill", "blender-skill", "npx blender-skill"),
-    "measured_motion_graphics": ("remotion-ffmpeg", "remotion-ffmpeg-skill", "npx remotion-ffmpeg-skill"),
     "html_scene_render": ("hyperframes-skill", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
     "document_verification": ("artifacts", "artifacts-skill", f"git clone {_GH}artifacts-skill && pip install -e 'artifacts-skill[all]'"),
     "bluray_authoring": ("bdmvkit", "bdmvkit", "pip install bdmvkit"),
@@ -250,8 +250,14 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_render_3d(self):
         self.assert_handoff("render_3d")
 
-    def test_measured_motion_graphics(self):
-        self.assert_handoff("measured_motion_graphics")
+    def test_measured_motion_graphics_moved_to_the_remotion_adapter(self):
+        """ADR-093: `job.measured_motion_graphics` is no longer a handoff switch; it is refused with how the implemented step is asked for."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.measured_motion_graphics": True})
+        self.assertIn("remotion.comp", str(cm.exception))
+        self.assertEqual(svc.registry.get("measured_motion").tools, ["remotion-ffmpeg-skill/pipeline"])
 
     def test_html_scene_render(self):
         self.assert_handoff("html_scene_render")

@@ -3643,3 +3643,44 @@ class SoundDesignBgmRealTests(unittest.TestCase):
         art = next(a for a in out["artifacts"] if a["type"] in ("MASTER", "DELIVERY"))
         probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], check=True, capture_output=True).stdout)
         self.assertAlmostEqual(float(probe["format"]["duration"]), 8.0, delta=0.15, msg="the mix lasts as long as the voice (its first input)")
+
+
+class RemotionRealTests(unittest.TestCase):
+    """ADR-093 on the real remotion-ffmpeg-skill checkout (main = v0.12.1): the live contract equals the pin and its doctor answers (python / node / npm /
+    ffmpeg-skill / ffmpeg; the agent's PIPELINE capability follows it), and a plan naming a Remotion project whose `npm install` has not run is BLOCKED
+    with the Skill's own fix line instead of rendering. A real Remotion render (npm install plus Remotion's browser download) is not run in CI."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.remotion import locate_remotion
+        cls.rf = locate_remotion()
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_rf_"))
+
+    def setUp(self):
+        if not self.rf:
+            self.skipTest("needs a remotion-ffmpeg-skill checkout (VIDEO_AGENT_REMOTION_DIR)")
+        if not (shutil.which("ffmpeg") and locate_ffmpeg_skill()):
+            self.skipTest("needs ffmpeg and ffmpeg-skill")
+
+    def test_live_contract_doctor_and_uninstalled_project(self):
+        from video_agent.tools.remotion import RemotionAdapter
+        ad = RemotionAdapter(self.rf, workspace=str(Path(self.tmp) / "ws_adapter"))
+        self.assertEqual(ad.drift(), [], "the installed remotion-ffmpeg-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        self.assertEqual(ad.breaking_drift(), [])
+        doc = ad.doctor()
+        node = next((c for c in doc.get("checks") or [] if c.get("check") == "node"), {})
+        self.assertEqual(ad.operation_status(doc)["PIPELINE"], "supported" if doc.get("status") == "ok" else "unavailable")
+        self.assertIn("node", [c.get("check") for c in doc.get("checks") or []], node)
+        proj = Path(self.tmp) / "motion"
+        proj.mkdir(parents=True, exist_ok=True)
+        (proj / "package.json").write_text("{}", encoding="utf-8")
+        st = ad.project_status(str(proj))
+        self.assertFalse(st["ok"])
+        self.assertIn("npm install", st["fix"])
+        src = str(Path(self.tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        make_media(src)
+        ir = Service(workspace=str(Path(self.tmp) / "ws")).plan([src], "generic", user_requirements={"remotion.comp": "Captioned", "remotion.project": str(proj)})
+        [blk] = [d for d in ir.doc["decisions"] if d["subject"] == "video.measured_motion"]
+        self.assertEqual(blk["type"], "BLOCK")
+        self.assertIn("npm install", blk["reason"])
