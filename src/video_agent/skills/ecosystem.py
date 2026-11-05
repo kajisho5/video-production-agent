@@ -105,6 +105,10 @@ _COMPONENTS: Tuple[Component, ...] = (
               package_install=_clone_pip("publish-skill"),
               note="ecosystem.json still says scaffold, but plan / upload ship (README, 0.1.0 unreleased, EXPERIMENTAL) with the uploaders its contract names; "
                    "`[keychain]` adds the OS keychain for credentials; the agent plans the upload and a human confirms it (ADR-087)"),
+    # ADR-089: nle-bridge-skill is `planned` in ecosystem.json until Velisa updates it (its own roadmap); export / conform / diff / import ship (README)
+    Component("nle-bridge", "nle-bridge-skill", "delivery", "pip", "planned", owns=("NLE連携(タイムライン受け渡し)",), package_install=_clone_pip("nle-bridge-skill"),
+              note="ecosystem.json still says planned, but export / conform / diff / import ship (README, 0.1.0 unreleased, EXPERIMENTAL, standard library only); "
+                   "the agent hands it its project IR for delivery.nle (ADR-089)"),
     Component("bdmvkit", "bdmvkit", "delivery", "pip", "active", optional=True, owns=("Blu-ray作成",), package_install="pip install bdmvkit"),
     Component("vtskit", "vtskit", "delivery", "pip", "active", optional=True, owns=("DVD-Video作成",), package_install="pip install vtskit"),
     Component("udfkit", "udfkit", "delivery", "pip", "active", optional=True, owns=("ディスクイメージ(UDF)",), package_install="pip install udfkit"),
