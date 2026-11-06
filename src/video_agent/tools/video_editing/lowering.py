@@ -18,6 +18,9 @@ from ..base import ToolError
 
 REQUEST_SCHEMA = "video-editing/request@1"
 PREFIX = "video-editing/"
+# operation types the pinned contract (0.5.0) declares that have no lowering here yet: PUNCH_IN (video-editing-skill #32) and CONDENSE (#38).
+# They stay contract-only (adapter.supports() is False, never offered); tests pin this list so another new type still fails them (ADR-097 addendum 6).
+NOT_LOWERED: Tuple[str, ...] = ("CONDENSE", "PUNCH_IN")
 # agent-side typed argument keys, per operation type; everything else is refused (never forwarded)
 ARGS: Dict[str, Tuple[str, ...]] = {
     "TRIM": ("input", "output", "start", "end", "accurate", "precision"),

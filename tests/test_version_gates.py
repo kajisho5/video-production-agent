@@ -12,11 +12,13 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from video_agent.tools.color_grading import adapter as cg  # noqa: E402
 from video_agent.tools.diarization import adapter as dia  # noqa: E402
 from video_agent.tools.motion_graphics import adapter as mg  # noqa: E402
 from video_agent.tools.qc import adapter as qc  # noqa: E402
 from video_agent.tools.subtitle import adapter as st  # noqa: E402
 from video_agent.tools.transcription import adapter as tr  # noqa: E402
+from video_agent.tools.video_editing import adapter as ve  # noqa: E402
 
 
 def with_version(contract, version):
@@ -28,8 +30,8 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        self.assertEqual(mg.pinned_contract()["version"], "0.2.10")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only
-        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10"):
+        self.assertEqual(mg.pinned_contract()["version"], "0.2.16")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only; addendum 6: 0.2.16
+        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16"):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
             self.assertEqual(mg.contract_breaking_drift(live), [], v)
@@ -53,12 +55,13 @@ class VersionGateTests(unittest.TestCase):
 
     def test_subtitle_release_versions(self):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
-        self.assertEqual(st.pinned_contract()["version"], "0.4.3")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
-        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3"):
+        # ADR-097 addendum 6: 0.5.0 .. 0.8.0 add opt-in render / generate inputs and formats; the request the adapter builds is unchanged, so the gate takes 0.5.x .. 0.8.x
+        self.assertEqual(st.pinned_contract()["version"], "0.8.0")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
+        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3"):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)
-        for v in ("0.5.0", "1.0.0"):
+        for v in ("0.9.0", "1.0.0"):
             self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)
 
     def test_diarization_versions(self):
@@ -71,6 +74,27 @@ class VersionGateTests(unittest.TestCase):
             self.assertEqual(dia.breaking_drift(live), [], v)
         for v in ("0.4.0", "1.0.0"):
             self.assertTrue(dia.check_contract(with_version(dia.pinned_contract(), v)), v)
+
+    def test_video_editing_versions(self):
+        # ADR-097 addendum 6: video-editing-skill 0.5.0 bumps contract_version to "5.0" for the opt-in operations / fields 0.4.8 .. 0.4.18 added;
+        # the request the adapter builds is unchanged, so the gate takes 0.5.x besides 0.1.x .. 0.4.x
+        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), ("0.5.0", "5.0"))
+        for v in ("0.4.0", "0.4.18", "0.5.0", "0.5.3"):
+            live = with_version(ve.pinned_contract(), v)
+            self.assertEqual(ve.check_contract(live), [], v)
+            self.assertEqual(ve.contract_breaking_drift(live), [], v)
+        for v in ("0.6.0", "1.0.0"):
+            self.assertTrue(ve.check_contract(with_version(ve.pinned_contract(), v)), v)
+
+    def test_color_grading_versions(self):
+        # ADR-097 addendum 6: color-grading-skill 0.5.0 (OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE, the alpha guard; pinned blocks unchanged)
+        self.assertEqual(cg.pinned_contract()["version"], "0.5.0")
+        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2"):
+            live = with_version(cg.pinned_contract(), v)
+            self.assertEqual(cg.check_contract(live), [], v)
+            self.assertEqual(cg.contract_breaking_drift(live), [], v)
+        for v in ("0.6.0", "1.0.0"):
+            self.assertTrue(cg.check_contract(with_version(cg.pinned_contract(), v)), v)
 
 
 if __name__ == "__main__":

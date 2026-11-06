@@ -50,7 +50,7 @@ COLOR_TOOL = "color-grading/run"
 # read from the pinned color-grading contract (the data file the adapter pins, read as data so the agent layer never imports a tool
 # package), the way ADR-064 reads motion-graphics. A re-pin that adds or narrows a parameter changes the keys and the plan-time check with
 # it; tests/test_satellite_params.py::ColorContractVocabularyTests says so, and the IR schema is checked against the same contract there.
-COLOR_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "color_grading" / "contract_0.4.0.json"
+COLOR_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "color_grading" / "contract_0.5.0.json"
 _COLOR_CONTRACT: Dict[str, Any] = json.loads(COLOR_CONTRACT_PATH.read_text(encoding="utf-8"))
 PRIMARY_CORRECTION_SPEC: Dict[str, Dict[str, Any]] = next(
     o for o in _COLOR_CONTRACT["operations"] if o.get("type") == "PRIMARY_CORRECTION")["parameters"]
@@ -97,7 +97,7 @@ GRAPHICS_SKILL = "motion_graphics"
 # ADR-064: the vocabulary is read from the pinned motion-graphics contract (the data file the adapter pins, read as data so the agent
 # layer never imports a tool package): every element type it offers, each with every parameter it declares, by the contract's names
 # and ranges. A re-pin that adds an element or a parameter changes this vocabulary with it (tests/test_satellite_params.py says so).
-MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.10.json"
+MOTION_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "motion_graphics" / "contract_0.2.16.json"
 _MOTION_CONTRACT: Dict[str, Any] = json.loads(MOTION_CONTRACT_PATH.read_text(encoding="utf-8"))
 MOTION_ELEMENT_SPECS: Dict[str, Dict[str, Any]] = {str(e["type"]): e for e in _MOTION_CONTRACT["element_types"]}
 # element type → (its `--set` key, the contract parameter that key's value sets; None = the key is a plain switch: the element has no
@@ -110,6 +110,9 @@ MOTION_BASE: Dict[str, Tuple[str, Optional[str]]] = {
     # ADR-078: motion-graphics-skill 0.2.7 (its ADR-22) implements shape, a solid rectangle; a switch whose width / height / color are required
     "shape": ("motion.shape", None)}
 ELEMENT_TYPES = tuple(MOTION_BASE)
+# element types the pinned contract declares that the agent does not plan yet (no `--set` key, no lowering): logo and rendered_layer came with the
+# 0.2.16 re-pin (ADR-097 addendum 6). Listed so that a re-pin adding another type still fails tests/test_satellite_params.py until it is decided.
+MOTION_NOT_PLANNED = ("logo", "rendered_layer")
 # path parameters travel in the IR under a short name (the adapter turns the artifact id back into the contract's path parameter)
 MOTION_PATH_PARAMS = {"image_path": "image", "video_path": "video"}
 FADE_TYPES = tuple(t for a in _MOTION_CONTRACT.get("animations") or [] if a.get("kind") == "fade" for t in a.get("applies_to") or [])

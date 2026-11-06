@@ -108,7 +108,9 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
 
 
 # 0.1.8 / 0.1.9 (media-analysis-skill #22 / #23): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.9.json")
+# 0.1.10 .. 0.1.13 (media-analysis-skill #24 .. #27): kind edit_style (tool media-analysis/style, algorithm_version 2, burned_in_interval in
+# 0.1.13) and its capability filter:edgedetect; the existing tools are unchanged. Re-pinned from the v0.1.13 tag (ADR-097 addendum 6).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.13.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

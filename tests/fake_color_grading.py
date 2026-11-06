@@ -9,6 +9,9 @@ and misbehaves on request via FAKE_CG_MODE:
   contract_drift | hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance | not_hdr (HDR_TO_SDR
   on an SDR source → TOOL_ERROR from the engine, like the real Skill without force)
 
+A source whose fake probe says an alpha pix_fmt (e.g. "yuva444p10le") is refused for the contract's `alpha.refused_for` operations with
+UNSUPPORTED_FORMAT / alpha_not_preserved (exit 6), as color-grading-skill 0.5.0 does; RETAG / STRIP_DOVI still run on it.
+
 FAKE_CG_CALLS: a file every invocation (subcommand + argv) is appended to. Never runs ffmpeg or ffmpeg-skill, never imports
 color_grading. Test double only."""
 from __future__ import annotations
@@ -22,7 +25,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.4.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.5.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_CG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_CG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -184,6 +187,14 @@ def main() -> int:
     if not isinstance(ops, list) or not ops or len(ops) > CONTRACT["request"]["max_operations"]:
         return err("INVALID_REQUEST", "operations must be a non-empty array")
     meta = probe(src)
+    # color-grading-skill 0.5.0 (its ADR-25): a source with an alpha plane is refused before anything runs for every operation the contract's
+    # `alpha.refused_for` lists (they re-encode through ffmpeg-skill/color, which writes no alpha); RETAG / STRIP_DOVI stream-copy and keep it
+    alpha = CONTRACT.get("alpha") or {}
+    if alpha and re.match(alpha["pix_fmt_pattern"], str(meta.get("pix_fmt") or "")) and isinstance(pj.get("operations"), list):
+        lossy = sorted(str(o.get("op_id")) for o in pj["operations"] if isinstance(o, dict) and o.get("type") in alpha["refused_for"])
+        if lossy:
+            return err("UNSUPPORTED_FORMAT", f"source has an alpha channel ({meta['pix_fmt']}); operation(s) {lossy} would lose it",
+                       {"reason": "alpha_not_preserved", "pix_fmt": meta["pix_fmt"], "op_ids": lossy})
     results = []
     for i, op in enumerate(ops):
         where = f"operations[{i}]"

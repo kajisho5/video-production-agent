@@ -39,7 +39,10 @@ CONTRACT_SCHEMA = "color-grading/contract@1"
 REQUEST_SCHEMA = "color-grading/request@1"
 RESPONSE_SCHEMA = "color-grading/response@1"
 DOCTOR_SCHEMA = "color-grading/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.")  # 0.4.0 (color-grading-skill #8): gamma/lift/gain/levels/curves
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.", "0.5.")  # 0.5.0 (color-grading-skill #31 .. #37, ADR-097 addendum 6): OCIO_TRANSFORM /
+                                               # MATCH_CAMERA / LEGALIZE (not lowered), the pinned blocks kept byte-identical (#34),
+                                               # alpha sources refused for re-encoding ops (#36: UNSUPPORTED_FORMAT, mapped to
+                                               # UNSUPPORTED_MEDIA below). 0.4.0 (color-grading-skill #8): gamma/lift/gain/levels/curves
                                                # added to PRIMARY_CORRECTION.
                                                # 0.3.0 (color-grading-skill #7): reencoded/dropped_non_av_streams
                                                # surfaced, audio_stream added to HDR_TO_SDR/LUT_APPLY/RETAG/
@@ -50,6 +53,10 @@ REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arb
 COMMON_ARGS = ("operation", "input", "output", "format", "lut", "expect")
 EXPECT_KEYS = ("width", "height", "duration", "duration_tolerance", "pix_fmt")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# color-grading-skill 0.5.0 (its ADR-25): an alpha source is refused for every operation that re-encodes through ffmpeg-skill/color
+# (UNSUPPORTED_FORMAT, details.reason alpha_not_preserved, exit 6). That is the source media, not arguments the compiler got wrong, so it gets
+# its own recovery class (UNSUPPORTED_MEDIA: BLOCK, never retried) instead of the generic INVALID_ARGS (ADR-097 addendum 6).
+ALPHA_REFUSAL_REASON = "alpha_not_preserved"
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "execution", "ffmpeg_skill", "request", "response", "provenance",
               "schema_versions", "errors", "lut", "color_space", "hdr_sdr")
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "changes_duration", "changes_resolution", "deterministic")
@@ -66,7 +73,7 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # ADR-048: `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, reported by its doctor).
 FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -135,7 +142,8 @@ def check_contract(contract: Any) -> List[str]:
         if k not in forbidden:
             errs.append(f"request.forbidden_fields lacks {k!r}")
     retry, exit_codes = error_table(contract)
-    for c in ("INVALID_REQUEST", "INVALID_INPUT", "PATH_NOT_ALLOWED", "UNSUPPORTED_OPERATION", "MISSING_INPUT", "TOOL_ERROR", "OUTPUT_ERROR", "VALIDATION_ERROR", "CANCELLED", "INTERNAL_ERROR"):
+    for c in ("INVALID_REQUEST", "INVALID_INPUT", "PATH_NOT_ALLOWED", "UNSUPPORTED_OPERATION", "UNSUPPORTED_FORMAT", "MISSING_INPUT", "TOOL_ERROR", "OUTPUT_ERROR", "VALIDATION_ERROR",
+              "CANCELLED", "INTERNAL_ERROR"):
         if c not in retry:
             errs.append(f"errors.codes lacks {c}")
     if not exit_codes:
@@ -491,7 +499,10 @@ class ColorGradingAdapter(ToolAdapter):
         return data
 
     def _fail(self, op: Operation, attempt: int, dry_run: bool, t0: float, code: int, errc: str, message: str, retryable: bool, details: Optional[Dict[str, Any]] = None) -> ToolResult:
-        return failed_result(op, SKILL_ID, getattr(self, "version", ""), attempt, dry_run, t0, code, errc, message, retryable, details)
+        r = failed_result(op, SKILL_ID, getattr(self, "version", ""), attempt, dry_run, t0, code, errc, message, retryable, details)
+        if errc == "UNSUPPORTED_FORMAT" and (details or {}).get("reason") == ALPHA_REFUSAL_REASON:
+            r.data["error"]["recovery_class"] = "UNSUPPORTED_MEDIA"
+        return r
 
 
 def lift_observation(result: ToolResult, asset_id: Optional[str] = None) -> Optional[Observation]:
