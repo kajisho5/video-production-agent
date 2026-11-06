@@ -179,7 +179,8 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 
 
 # 0.4.3 / 0.4.4 / 0.4.5 (video-editing-skill #23 / #24 / #27): version-only; re-pinned from the v0.4.5 tag (ADR-097).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.5.json")
+# 0.4.6 / 0.4.7 (video-editing-skill #29 / #28): version-only (#29 changes a test only, #28 the roadmap); re-pinned from the v0.4.7 tag (ADR-097).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.7.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
