@@ -5,6 +5,7 @@ when VIDEO_AGENT_COLOR_GRADING_DIR names a checkout (and VIDEO_AGENT_FFMPEG_SKIL
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
@@ -239,20 +241,40 @@ class ColorGradingAdapterTests(unittest.TestCase):
             ad.measure("color-grading/run", {})
 
 
-def assert_doctor_healthy(tc: unittest.TestCase, doc: dict) -> None:
-    """The doctor is "ok", or "degraded" for exactly one reason: the optional PyOpenColorIO extra is not installed, so OCIO_TRANSFORM (an
-    operation the agent does not plan) is unavailable and nothing else is (color-grading-skill 0.5.0, ADR-097 addendum 6). Any problem, any
-    other unavailable operation or a degraded doctor with OCIO present still fails."""
+# color-grading-skill 0.5.0 makes MATCH_CAMERA and LEGALIZE unsupported below this ffmpeg-skill release: its `color --lut` converts to RGB with
+# BT.709 and back with BT.601 before it (capability ffmpeg-skill/color:lut-bt709-legs, read from the version; color-grading-skill ADR-23 / ADR-24)
+LUT_LEGS_FIXED_IN = (3, 1, 6)
+
+
+def engine_version(engine_dir: str) -> Tuple[int, ...]:
+    """The located ffmpeg-skill's release, from its own static contract (as the CI log line prints it)."""
+    out = subprocess.run([sys.executable, str(Path(engine_dir) / "scripts" / "_contract.py"), "--json", "--static"], capture_output=True, text=True, check=True).stdout
+    return tuple(int(p) for p in json.loads(out)["skill"]["version"].split(".")[:3])
+
+
+def expected_unavailable(engine_dir: str) -> List[str]:
+    """What color-grading-skill 0.5.0's doctor must report unavailable here, worked out independently of the doctor: OCIO_TRANSFORM when
+    the optional PyOpenColorIO extra is not importable by the Python the Skill runs on, MATCH_CAMERA / LEGALIZE when ffmpeg-skill is older
+    than 3.1.6. Nothing else."""
+    out = [] if importlib.util.find_spec("PyOpenColorIO") else ["OCIO_TRANSFORM"]
+    if engine_version(engine_dir) < LUT_LEGS_FIXED_IN:
+        out += ["LEGALIZE", "MATCH_CAMERA"]
+    return sorted(out)
+
+
+def assert_doctor_healthy(tc: unittest.TestCase, doc: dict, engine_dir: str) -> None:
+    """The doctor is "ok" when nothing is expected unavailable, else "degraded" with exactly the expected operations unavailable and every
+    other operation supported (ADR-097 addendum 6: none of the three is planned by the agent). No problems either way; a doctor degraded for any
+    other reason, or not degraded when it should be, fails."""
     tc.assertEqual(doc.get("problems") or [], [], doc.get("problems"))
-    if doc["status"] == "ok":
-        tc.assertEqual(doc.get("unavailable_operations") or [], [])
-        return
-    tc.assertEqual(doc["status"], "degraded", doc)
-    tc.assertEqual(doc.get("unavailable_operations"), ["OCIO_TRANSFORM"], "degraded for a reason other than the optional OCIO extra")
-    ocio = doc["checks"]["ocio"]
-    tc.assertEqual((ocio["status"], ocio["optional"], ocio["needed_by"]), ("missing", True, ["OCIO_TRANSFORM"]))
+    want = expected_unavailable(engine_dir)
+    tc.assertEqual((doc["status"], sorted(doc.get("unavailable_operations") or [])), ("degraded" if want else "ok", want), doc.get("warnings"))
     statuses = ColorGradingAdapter.operation_status(doc)
-    tc.assertEqual(sorted(t for t, s in statuses.items() if s != "supported"), ["OCIO_TRANSFORM"], statuses)
+    tc.assertEqual(sorted(t for t, s in statuses.items() if s != "supported"), want, statuses)
+    caps = doc["checks"]["capabilities"]
+    tc.assertEqual(caps["ffmpeg-skill/color:lut-bt709-legs"], "unsupported" if "LEGALIZE" in want else "supported")
+    ocio = doc["checks"]["ocio"]
+    tc.assertEqual((ocio["status"], ocio["optional"], ocio["needed_by"]), ("missing" if "OCIO_TRANSFORM" in want else "ok", True, ["OCIO_TRANSFORM"]))
 
 
 class ColorGradingRealSkillTests(unittest.TestCase):
@@ -274,7 +296,7 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
         self.assertEqual(ad.drift(), [], "the installed color-grading-skill contract drifted from the pinned one: re-verify the adapter")
         doc = ad.doctor()
-        assert_doctor_healthy(self, doc)
+        assert_doctor_healthy(self, doc, self.engine)
         self.assertEqual(ad.operation_status(doc)["RETAG"], "supported")
         paths = {"a": self.src, "a_retag": str(Path(ws) / "ops" / "01_retag" / "bars_retag.mp4")}
         r = ad.run(Operation(tool="color-grading/run", args={"operation": "RETAG", "input": "a", "output": "a_retag", "target": "bt709"}, inputs=["a"], outputs=["a_retag"], id="op_real"), paths, timeout=120)
