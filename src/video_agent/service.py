@@ -39,7 +39,7 @@ from .jobs import Job, JobStore
 from .media import MediaAnalyzer
 from .temporal import session_for_asset
 from .media.analysis import ANALYSIS_KINDS, CORE_KINDS, SYNC_MIN_CONFIDENCE_DEFAULT, AnalysisBudget, AnalysisRequest, normalize_strategy, targeted_kinds
-from .models import Artifact, Inference, Request, new_id, now_iso
+from .models import Artifact, Inference, Observation, Request, new_id, now_iso
 from .policy.rules import SYSTEM_CONSTRAINTS, Rule, resolve_rules
 from .profiles import load_profile
 from .providers import AIProvider, AIProviderError, get_provider
@@ -819,15 +819,24 @@ class Service:
                 "hint": "run `video-agent revise <project>` to produce the next plan version without the rejected operations"}
 
     def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None,
-               ai_recommendations: Optional[List[Dict[str, Any]]] = None, ai_model: str = "host-chat") -> Dict[str, Any]:
+               ai_recommendations: Optional[List[Dict[str, Any]]] = None, ai_model: str = "host-chat", editor_timeline: Optional[str] = None,
+               editor_subject: Optional[str] = None) -> Dict[str, Any]:
         """Plan v(n) → v(n+1): re-plan from the recorded analysis with the rejections and feedback applied. v(n) is snapshotted
         first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations).
         ai_recommendations (ADR-050): the answer of the chat model the agent runs in to the brief `plan --ai-brief` returned.
         It replaces the recorded AI inferences and goes through the same validation as any provider's; the recorded analysis
-        keeps every asset / observation / event id the brief named, which is why this is a revision and not a new plan."""
+        keeps every asset / observation / event id the brief named, which is why this is a revision and not a new plan.
+        editor_timeline (ADR-098): the OTIO / FCP7 XML / EDL an NLE gave back for the subject's timeline; nle-bridge diff measures it against this
+        plan, the reading is recorded as an `nle.diff` observation, and the changed cuts become CONFIRM `timeline.editor_cut` decisions."""
         if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:
             raise ValueError("an offload plan is not revised: reject it, then plan the card again with the destinations you want (ADR-066)")
         who = who or _default_who()
+        editor_obs = self._read_editor_timeline(ir, ir_path, editor_timeline, editor_subject) if editor_timeline else None
+        if editor_obs is not None and not (feedback or user_requirements or ai_recommendations is not None):
+            from .agent.editor_timeline import is_noop
+            if is_noop(editor_obs.data):   # nothing recorded: the plan already has the editor's cuts
+                return {"version": ir.version, "created": False, "diff": plan_diff(ir.doc, ir.doc), "dropped_proposals": [], "feedback_ids": [],
+                        "reason": "the editor's timeline has the plan's cuts (nothing to revise)", "editor": self._editor_report(editor_obs)}
         old = json.loads(json.dumps(ir.doc))
         _check_requirement_keys(user_requirements or {})
         self._check_provider_requirements(user_requirements or {})
@@ -855,6 +864,8 @@ class Service:
         profile = load_profile(old["project"]["profile"]["name"])
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**brief_task.values_of(brief_record), **prev_req}))
         analysis = AnalysisResult.from_ir(old)
+        if editor_obs is not None:
+            analysis.observations.append(editor_obs)
         rejected = [d for d in old["decisions"] if d["status"] == "REJECTED"]
         suppressed = [{"subject": d["subject"], "asset_id": (d.get("params") or {}).get("asset_id")} for d in rejected]
         request = Request(raw=raw, received_at=old["request"]["received_at"], channel=old["request"]["channel"],
@@ -893,6 +904,8 @@ class Service:
         nd["provenance"]["runs"] = list(old["provenance"].get("runs") or [])
         nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
         nd["analysis"] = {**old["analysis"], "inferences": nd["analysis"]["inferences"], "contexts": nd["analysis"].get("contexts") or []}   # same observations / analyses; the re-plan's inferences (AI ones reused) and contexts
+        if editor_obs is not None:   # ADR-098: the read-back is evidence of v(n+1) (v(n) and its snapshot stay as they were)
+            nd["analysis"]["observations"] = list(old["analysis"]["observations"]) + [editor_obs.to_dict()]
         fresh.finalize_hash()
         diff = plan_diff(old, nd)
         applied_before = set(old["revision"]["history"][-1]["rejected_decision_ids"]) if old["revision"]["history"] else set()
@@ -904,6 +917,9 @@ class Service:
         if diff["empty"] and not new_rejections and ai_recommendations is None:   # an AI answer is always recorded as a version (ADR-050)
             if fb_ids and not duplicate_feedback:
                 save_ir(ir, ir_path)   # persist the recorded feedback without a version bump
+            if editor_obs is not None:
+                return {"version": ir.version, "created": False, "diff": diff, "dropped_proposals": dropped, "feedback_ids": fb_ids,
+                        "reason": "the editor's timeline has the plan's cuts (nothing to revise)", "editor": self._editor_report(editor_obs)}
             reason = ("feedback recorded but it changed nothing in the plan" + ("; the proposal it would re-enable was rejected earlier" if dropped else "")) if fb_ids else "no new feedback or rejections since the last revision"
             return {"version": ir.version, "created": False, "diff": diff, "reason": reason, "dropped_proposals": dropped, "feedback_ids": fb_ids,
                     **({"ai": ai_report} if ai_report is not None else {})}
@@ -913,11 +929,51 @@ class Service:
         nd["revision"]["history"].append({"version": new_version, "from_version": ir.version, "created_at": now_iso(), "by": who, "feedback_ids": fb_ids,
                                           "rejected_decision_ids": [d["id"] for d in rejected], "rejection_reasons": {d["id"]: (old["execution"].get("reviews") or {}).get(d["id"], {}).get("reason", "") for d in rejected},
                                           "dropped_proposals": dropped, "diff": diff, "plan_hash": fresh.plan_hash(), "ir_hash_before": old["provenance"].get("ir_hash"), "snapshot": snap,
-                                          "reviews": json.loads(json.dumps(old["execution"].get("reviews") or {}))})   # v(n)'s review records, verbatim (history, not approval)
+                                          "reviews": json.loads(json.dumps(old["execution"].get("reviews") or {})),   # v(n)'s review records, verbatim (history, not approval)
+                                          **({"editor_timeline": {"observation_id": editor_obs.id, "file": editor_obs.data["returned"]["file"],
+                                                                  "sha256": editor_obs.data["returned"]["sha256"], "subject": editor_obs.asset_id}}
+                                             if editor_obs is not None else {})})
         ir.doc = nd
         save_ir(ir, ir_path)
         return {"version": new_version, "created": True, "snapshot": snap, "diff": diff, "dropped_proposals": dropped, "pending": [d["id"] for d in ir.pending_confirmations()],
-                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering", **({"ai": ai_report} if ai_report is not None else {})}
+                "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering", **({"ai": ai_report} if ai_report is not None else {}),
+                **({"editor": self._editor_report(editor_obs)} if editor_obs is not None else {})}
+
+    def _read_editor_timeline(self, ir: ProjectIR, ir_path: str, returned: str, subject: Optional[str]) -> Observation:
+        """ADR-098: `nle-bridge diff --timeline-out` of the returned timeline against this plan (the IR file as it is), read back into kept ranges
+        (agent/editor_timeline.read_back) and recorded as one `nle.diff` observation of the subject. Refused (ValueError) before anything is written
+        to the IR when nle-bridge-skill is missing, the plan has no timeline, nle-bridge fails, or the timeline cannot be read as kept ranges."""
+        from .agent import editor_timeline as et
+        from .tools.nle_bridge import TOOL_DIFF
+        rec = et.timeline_record(ir.doc, subject)
+        subject = str(rec["asset"])
+        router = self.adapter(None)
+        if not router.supports(TOOL_DIFF):
+            raise ValueError("reading an editor's timeline back needs nle-bridge-skill (pip install -e . in a checkout of kajisho5/nle-bridge-skill, or "
+                             "VIDEO_AGENT_NLE_BRIDGE_DIR); nothing was revised")
+        returned = str(Path(returned).resolve())
+        if not os.path.isfile(returned):
+            raise ValueError(f"no such file: {returned}")
+        out_dir = Path(self.workspace) / "editor" / str(ir.doc["project"]["id"]) / f"v{ir.version}_{new_id('rb').split('_', 1)[-1]}"
+        res = router.measure(TOOL_DIFF, {"project": str(Path(ir_path).resolve()), "returned": returned, "subject": subject, "output_dir": str(out_dir)})
+        if not res.ok:
+            err = (res.data or {}).get("error") or {}
+            raise ValueError(f"nle-bridge diff refused the returned timeline [{err.get('code')}]: {err.get('message') or res.stderr_tail}")
+        try:
+            rb = et.read_back(ir.doc, subject, res.data["diff"], res.data["timeline"])
+        except et.EditorTimelineError as exc:
+            raise ValueError(f"the editor's timeline is not read back: {exc}") from None
+        data = dict(rb, returned=res.data["returned"], project={**res.data["project"], "plan_version": ir.version, "plan_hash": ir.plan_hash()},
+                    files=res.data["files"], not_compared=list((res.data["diff"] or {}).get("not_compared") or []))
+        sk = res.data["skill"]
+        return Observation(kind=et.OBS_KIND, asset_id=subject, source=f"{TOOL_DIFF}@{sk['version']}", data=data, analyzer=f"{sk['id']}@{sk['version']}",
+                           provenance="OBSERVED", skill=sk["id"], skill_version=str(sk["version"]), tool=TOOL_DIFF, fingerprint=str(res.data["returned"]["sha256"]),
+                           parameters={"subject": subject, "returned": res.data["returned"]["file"], "commands": list(res.data.get("commands") or [])})
+
+    @staticmethod
+    def _editor_report(o: Observation) -> Dict[str, Any]:
+        return {"observation_id": o.id, "subject": o.asset_id, "returned": o.data["returned"], "changed_sources": sorted(o.data["editor_keep"]),
+                "summary": o.data["summary"], "warnings": o.data["warnings"], "markers": {k: len(v) for k, v in o.data["markers"].items()}}
 
     def validate(self, ir: ProjectIR, check_paths: bool = True):
         return validate_ir(ir, self.caps.resolve(), check_paths=check_paths, registry=self.registry, supports=self.adapter([]).supports)

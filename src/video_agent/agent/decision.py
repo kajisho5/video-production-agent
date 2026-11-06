@@ -35,6 +35,7 @@ from .timeline import TIMELINE_SUBJECT, decide_timeline
 from .brief import decide_brief
 from .handoffs import decide_jobs, decide_measurement_handoffs
 from .nle import decide_nle
+from .editor_timeline import SUBJECT as EDITOR_CUT_SUBJECT, decide_editor_cut
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
 from .dubbing import decide_dub
@@ -619,6 +620,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                 approval_for, probe_ids_of, cap_block)
     # ---- blur faces (ADR-090): detection-skill's face tracks → a CONFIRM video.redact_faces on each video input (or a handoff / BLOCK)
     decide_faces(eng, m, analysis, approval_for, probe_ids_of, cap_missing, cap_block)
+    # ---- the editor's timeline read back (ADR-098): a CONFIRM cut per source whose kept ranges the editor changed (nle-bridge diff observation)
+    decide_editor_cut(eng, analysis, subjects, bool(audio["production"]), approval_for, probe_ids_of)
     for op in SINGLE_SOURCE_ORDER:
         if op not in edits:
             continue
@@ -650,7 +653,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     def has_edit(subject: str) -> bool:
         srcs = [a.id for a in video_assets] if subject == PROGRAMME else [subject]
         return concat_ok or any(d.type in ("TRANSFORM", "REMOVE") and d.status != "REJECTED" and (d.subject in OPERATIONS or d.subject == TRIM_OP) and d.params.get("asset_id") == subject for d in decs) \
-            or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs)
+            or any(d.type == "REMOVE" and d.status != "REJECTED" and d.subject.startswith("silence.") and d.params.get("asset_id") in srcs for d in decs) \
+            or any(d.type == "TRANSFORM" and d.status != "REJECTED" and d.subject == EDITOR_CUT_SUBJECT and d.params.get("asset_id") in srcs for d in decs)
     # ---- dubbing (ADR-085): the user's translated cues spoken over the subject's picture after its edits (dubbing-skill DUB), always CONFIRM
     decide_dub(eng, m, analysis, subjects, caps, approval_for, probe_ids_of, cap_block)
     decide_finishing(eng, m, analysis, rules, caps, cap_block, approval_for, probe_ids_of, subjects, bool(audio["production"]), has_edit)

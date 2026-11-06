@@ -24,6 +24,7 @@ from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
 from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_transcripts, ir_captions_burn, ir_captions_generate, kept_ranges_of
+from .editor_timeline import SUBJECT as EDITOR_CUT_SUBJECT
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 from .nle import MODES as NLE_MODES, SUBJECT as NLE_SUBJECT, ir_nle
@@ -675,13 +676,21 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 removed += [r for r in ([0.0, round(start, 3)], [round(end, 3), round(dur, 3)]) if r[1] > r[0]]
         internal = sorted(([round(d.params["start"], 3), round(d.params["end"], 3)], d.id) for d in decisions
                           if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
+        # ADR-098: the editor's timeline read back -- this source is cut to exactly the editor's kept ranges, frame-accurate, instead of the
+        # ranges the decisions above give (they stay in the plan, superseded for this source; rejecting the editor's cut restores them)
+        editor_dec = next((d for d in decisions if d.subject == EDITOR_CUT_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"
+                           and d.params.get("asset_id") == asset.id), None) if asset.id not in audio_subjects else None
+        if editor_dec is not None:
+            ek = [[round(float(s_), 3), round(float(e_), 3)] for s_, e_ in editor_dec.params["keep"]]
+            start, end, dec_ids, internal = ek[0][0], ek[-1][1], [editor_dec.id], []
+            removed = [r for r in ([[0.0, ek[0][0]]] + [[ek[i][1], ek[i + 1][0]] for i in range(len(ek) - 1)] + [[ek[-1][1], round(dur, 3)]]) if r[1] > r[0]]
         current = asset.id
         last_step: Optional[str] = None
         if asset.id not in audio_subjects:   # ADR-090: faces are blurred on the source timeline, before anything re-times it
             current, last_step = face_steps(asset, current)
         audio_remove: List[List[float]] = []   # ADR-072: what this plan cuts out of the input's audio (the filler words' times follow it)
         if (dec_ids or internal) and end > start:
-            keep = [[round(start, 3), round(end, 3)]]
+            keep = [[round(start, 3), round(end, 3)]] if editor_dec is None else [list(r) for r in ek]
             for (rs, re_), did in internal:   # cut each removal out of the kept ranges; the decision carries the range, the planner only subtracts
                 nxt: List[List[float]] = []
                 for ks, ke in keep:
@@ -712,8 +721,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 # a beat-snapped join must land on its frame, not a keyframe; a crossfaded pick's picture must start where its audio is cut
                 # ADR-062: the user's in / out points are cut where they were given (frame-accurate); one kept range is video-editing TRIM,
                 # several (internal pauses removed inside it) stay the multi-range cut of silence_cleanup
-                accurate = bool(frame_accurate or explicit_trim or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
-                trim_skill = TRIM_SKILL if explicit_trim and len(keep) == 1 else "silence_cleanup"
+                accurate = bool(frame_accurate or explicit_trim or editor_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                trim_skill = TRIM_SKILL if (explicit_trim or editor_dec is not None) and len(keep) == 1 else "silence_cleanup"
                 video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids})
                 st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill=trim_skill, tool=tool_for(trim_skill), inputs=[current],
                                     params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate}, outputs=[f"{asset.id}_trim"],
@@ -722,7 +731,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 scope_of[asset.id] = {"start": 0.0, "end": round(kept_total, 3)}
             steps.append(st)
             current, last_step = st.outputs[0], st.id
-            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" outside the requested in / out range" if explicit_trim else " of silence")
+            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" as the editor's timeline" if editor_dec is not None else " outside the requested in / out range" if explicit_trim else " of silence")
                            + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
         fr_dec = next((d for d in decisions if d.subject == "audio.filler_remove" and d.type == "TRANSFORM" and d.status != "REJECTED" and d.params.get("asset_id") == asset.id), None) \
             if asset.id in audio_subjects else None

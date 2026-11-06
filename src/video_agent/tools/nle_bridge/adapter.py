@@ -12,7 +12,13 @@ Protocol (nle-bridge-skill's own contract, `nle-bridge contract --json`, pinned 
 `>=2.0.0 <4.0.0` and start timecodes in relink.json; no release tag, so the pin follows main):
     export   → {ok, files[{format, path, sha256, verification}], warnings[{code, message}], timeline, plan}
     conform  → {ok, package, zip {path, sha256} | null, files, relink (nle-bridge/relink@1), manifest, warnings, timeline, plan}
+    diff     → {ok, schema nle-bridge/diff@1, summary, clips, added, removed, cuts, markers, not_imported, ..., diff_file, timeline_file}
     failure  → {ok: false, error {code, message, detail}}, the code fixing the exit code (its errors table)
+
+Reading the editor's timeline back (ADR-098, nle-bridge-skill step 7 second half): `measure("nle-bridge/diff", {project, returned, subject,
+output_dir})` runs `nle-bridge diff --json --overwrite --subject=<s> --output=<dir>/diff.json --timeline-out=<dir>/timeline.json -- <project.json>
+<returned>` (a measurement: it reads both files and writes only the two JSON files into a directory of the workspace) and admits the result only
+when both files are inside that directory, parse, carry the contract's schemas and the diff on stdout is the one in the file.
 
 Every value is checked before the process starts (formats from the contract's `formats`, the output directory inside the workspace, the IR
 file an artifact of this job), every option is one `--flag=value` word and the IR comes after `--` (ADR-069). The result is admitted only when
@@ -37,7 +43,12 @@ from .locate import PACKAGE_ID, locate_nle_bridge  # noqa: F401  (re-exported)
 SKILL_ID = PACKAGE_ID
 TOOL_EXPORT = "nle-bridge/export"
 TOOL_CONFORM = "nle-bridge/conform"
+TOOL_DIFF = "nle-bridge/diff"
 TOOLS = (TOOL_EXPORT, TOOL_CONFORM)
+MEASURE_TOOLS = (TOOL_DIFF,)
+RETURNED_EXTENSIONS = (".otio", ".xml", ".edl")   # what `diff` reads back (OTIO, FCP7 XML, CMX 3600 EDL)
+DIFF_SCHEMA = "nle-bridge/diff@1"
+TIMELINE_SCHEMA = "nle-bridge/timeline@1"
 COMMAND = {TOOL_EXPORT: "export", TOOL_CONFORM: "conform"}
 SUPPORTED_SKILL_VERSIONS = ("0.1.",)
 PROJECT_IR_INPUT = "video-production-agent project IR"
@@ -98,6 +109,13 @@ def check_contract(contract: Any) -> List[str]:
             errs.append(f"tool {tid} must be an execution tool that writes no media, never touches its input, and takes -o <dir> and --subject")
     if "[--zip]" not in [str(a) for a in _tool(contract, TOOL_CONFORM).get("argv") or []]:
         errs.append(f"tool {TOOL_CONFORM} must take [--zip]")
+    d = _tool(contract, TOOL_DIFF)
+    dargv = [str(a) for a in d.get("argv") or []]
+    if not d or d.get("role") != "measurement" or d.get("writes_media") is not False or d.get("mutates_input") is not False \
+            or not {"[-o <diff.json>]", "[--timeline-out <plan.json>]", "[--subject <asset>]"} <= set(dargv):
+        errs.append(f"tool {TOOL_DIFF} must be a measurement that writes no media, never touches its input, and takes -o, --timeline-out and --subject")
+    if as_dict(contract.get("diff")).get("schema") != DIFF_SCHEMA:
+        errs.append(f"diff.schema must be {DIFF_SCHEMA}")
     if not any(PROJECT_IR_INPUT in str(i) for i in contract.get("inputs") or []):
         errs.append(f"inputs must include the {PROJECT_IR_INPUT}")
     ex = as_dict(contract.get("execution"))
@@ -113,7 +131,7 @@ def check_contract(contract: Any) -> List[str]:
 
 
 def _op_tools(c: Dict[str, Any]) -> Dict[str, Any]:
-    return dict(c, tools=[t for t in c.get("tools") or [] if isinstance(t, dict) and t.get("tool_id") in TOOLS])
+    return dict(c, tools=[t for t in c.get("tools") or [] if isinstance(t, dict) and t.get("tool_id") in TOOLS + MEASURE_TOOLS])
 
 
 def drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -138,7 +156,10 @@ PACKAGE = SkillPackage(
     tools=[ToolSpec(TOOL_EXPORT, SKILL_ID, description="The subject's timeline from the project IR as OTIO / FCP7 XML / EDL (+ SRT)", inputs=["project"],
                     produces_output=True, deterministic=True, result_keys=["files", "warnings", "timeline"]),
            ToolSpec(TOOL_CONFORM, SKILL_ID, description="A conform package: the timelines, the plan, a relink manifest (sha256, start timecode, ranges used) and a zip",
-                    inputs=["project"], produces_output=True, deterministic=True, result_keys=["package", "zip", "files", "relink", "manifest", "warnings"])],
+                    inputs=["project"], produces_output=True, deterministic=True, result_keys=["package", "zip", "files", "relink", "manifest", "warnings"]),
+           ToolSpec(TOOL_DIFF, SKILL_ID, description="The timeline an NLE gave back (OTIO / FCP7 XML / EDL) against the project IR's timeline: clips, cuts, "
+                                                     "markers, and the returned timeline as a new plan (ADR-098)", inputs=["project", "returned"],
+                    produces_output=False, deterministic=True, result_keys=["diff", "timeline"])],
     repository="kajisho5/nle-bridge-skill", role="NLE interchange (timeline hand-off to Premiere Pro / DaVinci Resolve)")
 
 
@@ -161,7 +182,7 @@ class NleBridgeAdapter(ToolAdapter):
         if errs:
             raise ContractError("incompatible nle-bridge-skill contract: " + "; ".join(errs))
         self.version = str(self.contract.get("version"))
-        self.tools = {t: True for t in TOOLS}
+        self.tools = {t: True for t in TOOLS + MEASURE_TOOLS}
         self.formats = formats(self.contract)
         self.retryable = {c: bool(as_dict(v).get("retryable")) for c, v in as_dict(self.contract.get("errors")).items()}
         self._doctor: Optional[Dict[str, Any]] = None
@@ -185,7 +206,8 @@ class NleBridgeAdapter(ToolAdapter):
         return breaking_drift(self.contract)
 
     def describe(self) -> Dict[str, Any]:
-        return {"name": self.name, "version": self.version, "skill": self.skill.describe(), "tools": list(TOOLS), "formats": list(self.formats), "drift": self.drift()}
+        return {"name": self.name, "version": self.version, "skill": self.skill.describe(), "tools": list(TOOLS + MEASURE_TOOLS), "formats": list(self.formats),
+                "drift": self.drift()}
 
     def package(self) -> SkillPackage:
         return SkillPackage(PACKAGE.skill_id, PACKAGE.name, self.version, PACKAGE.description, list(PACKAGE.capabilities),
@@ -195,7 +217,94 @@ class NleBridgeAdapter(ToolAdapter):
         return tool in self.tools
 
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
-        raise ToolError("nle-bridge: no measurement tools are used by the agent")
+        """`nle-bridge/diff` (ADR-098): the editor's returned timeline against the project IR's timeline of the subject. args: project (the IR
+        file), returned (.otio / .xml / .edl), subject, output_dir (a new directory inside the workspace for diff.json and timeline.json)."""
+        t0 = time.time()
+        op = Operation(tool=tool, args=dict(args), inputs=[], outputs=[], kind="measure", id="nle_diff")
+        if tool != TOOL_DIFF:
+            raise ToolError(f"{SKILL_ID} adapter measures only {TOOL_DIFF}, not {tool}")
+        try:
+            b = self._build_diff(args, timeout)
+        except ToolError as e:
+            return self._fail(op, 1, False, t0, 2, "INVALID_REQUEST", str(e))
+        command = " ".join(["nle-bridge"] + b["argv"])
+        code, out, err = invoke(self.skill, b["argv"], timeout=b["timeout"])
+        if code == 124:
+            return self._fail(op, 1, False, t0, 124, "TIMEOUT", f"nle-bridge diff exceeded {b['timeout']:g}s", retryable=True, details={"reason": "timeout"})
+        try:
+            doc = one_json_document(out, "nle-bridge diff")
+        except ToolError as e:
+            return self._fail(op, 1, False, t0, code or 9, "INVALID_OUTPUT", f"{e} (exit {code}) {err.strip()[-300:]}")
+        if doc.get("ok") is not True:
+            e = as_dict(doc.get("error"))
+            c = str(e.get("code") or "INVALID_OUTPUT")
+            return self._fail(op, 1, False, t0, code or 1, c, str(e.get("message") or ""), retryable=self.retryable.get(c, False) if c in ERROR_CLASSES else False,
+                              details=scrub({"detail": e.get("detail")}, FORBIDDEN_ARG_KEYS))
+        files, why = self._admit_diff(doc, b)
+        if why:
+            return self._fail(op, 1, False, t0, code or 9, "INVALID_OUTPUT", "nle-bridge diff result not admitted: " + "; ".join(why))
+        data = {"skill": {"id": SKILL_ID, "version": self.version}, "status": "ok", "op": "diff", "diff": files["diff"], "timeline": files["timeline"],
+                "files": {k: {"file": b[k], "sha256": sha256_file(b[k])} for k in ("diff_file", "timeline_file")},
+                "returned": {"file": b["returned"], "sha256": sha256_file(b["returned"]), "format": os.path.splitext(b["returned"])[1].lower().lstrip(".")},
+                "project": {"file": b["project"], "sha256": sha256_file(b["project"])}, "subject": b["subject"], "commands": [command]}
+        return ToolResult(op.id, tool, True, 0, b["timeline_file"], data, [command], err.strip()[-300:], round(time.time() - t0, 3), 1, False)
+
+    def _build_diff(self, args: Dict[str, Any], timeout: Optional[float]) -> Dict[str, Any]:
+        hit = scan_forbidden(dict(args), FORBIDDEN_ARG_KEYS)
+        if hit:
+            raise ToolError(f"forbidden key {hit}")
+        unknown = sorted(k for k in args if k not in ("project", "returned", "subject", "output_dir"))
+        if unknown:
+            raise ToolError(f"unknown {TOOL_DIFF} argument(s): {', '.join(unknown)}")
+        project, returned, out = (args.get(k) for k in ("project", "returned", "output_dir"))
+        if not isinstance(project, str) or not os.path.isfile(project):
+            raise ToolError("project must be the project IR file")
+        if not isinstance(returned, str) or not os.path.isfile(returned) or os.path.splitext(returned)[1].lower() not in RETURNED_EXTENSIONS:
+            raise ToolError(f"returned must be an existing {' / '.join(RETURNED_EXTENSIONS)} file (OTIO, FCP7 XML or CMX 3600 EDL)")
+        subject = args.get("subject")
+        if not isinstance(subject, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", subject):
+            raise ToolError(f"subject {subject!r} is not an id")
+        if not isinstance(out, str) or not out:
+            raise ToolError("output_dir must be a directory of the workspace")
+        out_dir = os.path.realpath(os.path.abspath(out))
+        if self.workspace and not (self._within(self.workspace, out_dir) and out_dir != self.workspace):
+            raise ToolError(f"output directory is outside the workspace: {os.path.basename(out_dir)}")
+        project, returned = os.path.realpath(project), os.path.realpath(returned)
+        if self._within(out_dir, project) or self._within(out_dir, returned):
+            raise ToolError("the output directory holds an input")
+        if self.policy is not None:
+            self.policy.check_input(project)
+            self.policy.check_input(returned)
+        os.makedirs(out_dir, exist_ok=True)
+        diff_file, timeline_file = os.path.join(out_dir, "diff.json"), os.path.join(out_dir, "timeline.json")
+        t = max(1.0, min(86400.0, float(timeout or self.default_timeout)))
+        argv = ["diff", "--json", "--overwrite", f"--subject={subject}", f"--output={diff_file}", f"--timeline-out={timeline_file}", "--", project, returned]
+        return {"argv": argv, "out_dir": out_dir, "project": project, "returned": returned, "subject": subject, "diff_file": diff_file,
+                "timeline_file": timeline_file, "timeout": t}
+
+    def _admit_diff(self, doc: Dict[str, Any], b: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+        errs: List[str] = []
+        files: Dict[str, Any] = {}
+        for key, want, name in (("diff_file", DIFF_SCHEMA, "diff"), ("timeline_file", TIMELINE_SCHEMA, "timeline")):
+            reported = os.path.realpath(str(doc.get(key) or ""))
+            if reported != b[key] or not os.path.isfile(b[key]):
+                errs.append(f"{name}: not written where it was asked ({os.path.basename(b[key])})")
+                continue
+            try:
+                files[name] = json.loads(Path(b[key]).read_text(encoding="utf-8"))
+            except ValueError as e:
+                errs.append(f"{name}: not JSON ({e})")
+                continue
+            if as_dict(files[name]).get("schema") != want:
+                errs.append(f"{name}: schema {as_dict(files[name]).get('schema')!r} is not {want}")
+        if not errs:
+            stdout = {k: v for k, v in doc.items() if k not in ("ok", "diff_file", "timeline_file")}
+            if stdout != files["diff"]:
+                errs.append("the diff on stdout is not the one written to diff.json")
+            tracks = as_dict(files["timeline"]).get("tracks")
+            if not isinstance(tracks, list) or not isinstance(as_dict(files["timeline"]).get("assets"), dict):
+                errs.append("timeline: no tracks / assets")
+        return files, errs
 
     def _within(self, root: str, p: str) -> bool:
         r, q = os.path.normcase(root), os.path.normcase(p)

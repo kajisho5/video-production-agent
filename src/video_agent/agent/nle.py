@@ -7,8 +7,8 @@ and a zip). nle-bridge reads the IR's `delivery.timelines[]` record of the subje
 - **Decision** `timeline.nle` (DELIVER, AUTO by default like the timeline export: files next to the deliverables, no media written, the
   sources referenced where they are; policy key `timeline.nle.approval`). BLOCK without a planned timeline of the subject. Without
   nle-bridge-skill the step has no tool and the plan's handoff names the package (ADR-051).
-- **What is not done here**: reading the editor's changes back (`nle-bridge diff --timeline-out` as a new plan version) and live NLE
-  control -- follow-ups."""
+- **Reading the editor's changes back** (`nle-bridge diff --timeline-out` as a new plan version) is agent/editor_timeline.py (ADR-098,
+  `revise --editor-timeline`). Live NLE control is not done here."""
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple

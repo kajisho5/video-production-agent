@@ -55,7 +55,7 @@ Publishing through publish-skill (ADR-087) needs the QC gate: `--set qc=true pub
 
 A thumbnail can carry more than one text and a logo (ADR-088): `thumbnail.color`, `thumbnail.text2` .. `thumbnail.text4` (each with `.position` / `.font_size` / `.color`) and `thumbnail.logo=<png|jpg>` (+ `.logo.position` top-left | top-right | bottom-left | bottom-right, `.logo.width`, `.logo.margin`, `.logo.opacity`); they are rendered as one thumbnail-skill ThumbnailDocument.
 
-Files for Premiere / Resolve (ADR-089): `--set delivery.timeline=otio delivery.nle=export` (or `conform`; `delivery.nle.formats=otio,fcp7,edl,srt`) hands the executed project IR to nle-bridge-skill; pass on every warning it reports (what a format does not carry).
+Files for Premiere / Resolve (ADR-089): `--set delivery.timeline=otio delivery.nle=export` (or `conform`; `delivery.nle.formats=otio,fcp7,edl,srt`) hands the executed project IR to nle-bridge-skill; pass on every warning it reports (what a format does not carry). When the editor sends the timeline back (OTIO / FCP7 XML / EDL), `video-agent revise <project> --editor-timeline <file>` (ADR-098) turns its changed cuts into CONFIRM `timeline.editor_cut` decisions of the next version: show the user the diff and the warnings (gaps closed, audio-only edits and effects not read back) before approving.
 
 ## Offloading a camera card (ingest-skill)
 
