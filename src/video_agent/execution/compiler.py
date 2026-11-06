@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, TOOL as AUDIO_TOOL
-from ..agent.editing import IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL, delivery_subjects
+from ..agent.editing import (CONDENSE_KEEP_LABEL, CONDENSE_SKILL, IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL,
+                             TRIM_SKILLS, delivery_subjects)
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
@@ -90,12 +91,26 @@ def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -
     the contract's CUT parameters `keep` [{start, end}] and `precision` frame | keyframe. The tool itself comes from the
     plan (registry-selected); the compiler never chooses an engine and never falls back to another one."""
     keep = [[round(float(s), 3), round(float(e), 3)] for s, e in op["keep"]]
+    precision = op.get("precision") or ("frame" if op.get("accurate") else "keyframe")   # ADR-099: the plan's auto, when it asked for it
+    if op.get("condense") is not None:   # ADR-099: approved proposals -- CONDENSE keeps the kept ranges (rule keep) and cuts the rest (default cut)
+        if tool != "video-editing/condense":
+            raise CompileError(f"a video.trim with approved proposals runs on video-editing/condense, not {tool}")
+        segs = sorted([{"start": s, "end": e, "label": CONDENSE_KEEP_LABEL} for s, e in keep]
+                      + [{"start": round(float(r["start"]), 3), "end": round(float(r["end"]), 3), "label": r["label"]} for r in op["condense"]], key=lambda x: x["start"])
+        rules: Dict[str, Any] = {CONDENSE_KEEP_LABEL: "keep"}
+        rules.update({r["label"]: "cut" for r in op["condense"] if r["label"] != CONDENSE_KEEP_LABEL})
+        return {"input": current, "segments": segs, "rules": rules, "default": "cut", "output": out_id}
     if tool == "video-editing/trim":   # ADR-062: the contract's TRIM takes one range as start / end
         if len(keep) != 1:
             raise CompileError(f"video-editing/trim keeps exactly one range; this video.trim keeps {len(keep)}")
-        return {"input": current, "start": keep[0][0], "end": keep[0][1], "precision": "frame" if op.get("accurate") else "keyframe", "output": out_id}
+        return {"input": current, "start": keep[0][0], "end": keep[0][1], "precision": precision, "output": out_id}
     if tool == "video-editing/cut":
-        return {"input": current, "keep": keep, "precision": "frame" if op.get("accurate") else "keyframe", "output": out_id}
+        args0: Dict[str, Any] = {"input": current, "keep": keep, "precision": precision, "output": out_id}
+        if op.get("segment_cache"):   # ADR-099: options.segment_cache (frame precision only; the lowering refuses anything else)
+            args0["segment_cache"] = True
+        return args0
+    if op.get("precision") == "auto" or op.get("segment_cache"):
+        raise CompileError(f"precision auto and the segment cache are video-editing-skill's; {tool} cannot run this video.trim")
     # the reference catalog shape (any adapter implementing the typed `cut` catalog): unchanged since Phase 1
     args: Dict[str, Any] = {"input": current, "segments": ",".join(f"{s:.3f}-{e:.3f}" for s, e in keep), "output": out_id}
     if op.get("accurate"):
@@ -375,7 +390,18 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
     keys: Dict[str, str] = {}      # artifact id -> idempotency key of the op that produces it ("" for sources)
     job = Path(job_dir)
 
+    # ADR-099: the inputs the user declared AI-generated, carried through every operation to whatever is made from them; a video-editing request
+    # names the declaration of each of its inputs (sources[].ai_generated), so its result is marked AI_GENERATED
+    ai: Dict[str, Dict[str, str]] = {aid: {"generator": v["generator"], "licence": v["licence"]} for aid, v in ((d.get("video") or {}).get("ai_generated") or {}).items()}
+
     def add(tool: str, args: Dict[str, Any], inputs: List[str], outputs: List[str], decision_ids: List[str], fp: str, kind: str = "transform", skill: str = "") -> Operation:
+        decl = {i: ai[i] for i in inputs if i in ai}
+        if decl and tool.startswith("video-editing/"):
+            args = dict(args, ai_generated={i: dict(v) for i, v in decl.items()})
+        if decl:
+            merged = {k: " + ".join(dict.fromkeys(v[k] for v in decl.values()))[:200] for k in ("generator", "licence")}
+            for out in outputs:
+                ai[out] = merged
         o = Operation(tool=tool, args=args, inputs=inputs, outputs=outputs, decision_ids=decision_ids, kind=kind, skill=skill, id=_op_id(tool, args, inputs))
         if outputs:
             o.idempotency_key = stable_hash([fp, tool, args, tool_version_of(versions, tool), [keys.get(i, "") for i in inputs]])
@@ -750,7 +776,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             st["gen"] += 1
             out_id = f"{asset_id}_trim"
             paths[out_id] = str(job / "ops" / f"{stem}_{st['gen']:02d}_trim" / f"{stem}_trim.mp4")
-            trim_skill = TRIM_SKILL if (TRIM_SKILL, asset_id) in step_tools else "silence_cleanup"   # ADR-062: the plan's step names which skill runs it
+            trim_skill = next((sk for sk in TRIM_SKILLS if (sk, asset_id) in step_tools), "silence_cleanup")   # ADR-062 / ADR-099: the plan's step names which skill runs it
             tool = tool_for(trim_skill, asset_id)
             args = lower_video_trim(tool, op, st["current"], out_id)
             add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill=trim_skill)
@@ -837,8 +863,12 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         state[subject] = {"current": subject, "gen": 1, "stem": subject, "fp": fp}
         paths[subject] = str(job / "ops" / f"{subject}_01_concat" / f"{subject}.mp4")
         tool = tool_for("video_concat", subject)
-        args = lower_video_edit(tool, concat, inputs, subject)
-        add(tool, args, inputs, [subject], list(concat.get("decision_ids") or []), fp, skill="video_concat")
+        refs: Dict[str, str] = {}
+        if concat.get("stinger"):   # ADR-099: the stinger file, by artifact id like an overlay image (the adapter makes it a video source)
+            refs["stinger"] = f"{subject}_stinger"
+            paths[refs["stinger"]], keys[refs["stinger"]] = concat["stinger"], ""
+        args = lower_video_edit(tool, concat, inputs, subject, refs)
+        add(tool, args, inputs + list(refs.values()), [subject], list(concat.get("decision_ids") or []), fp, skill="video_concat")
         xf = (d["audio"].get("take_crossfade") or None)
         if xf is not None:
             # ADR-054: the programme audio with crossfaded joins, built beside the picture and muxed under it; the chain continues on the mux

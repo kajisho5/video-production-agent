@@ -383,6 +383,32 @@
      "items": {
       "$ref": "#/$defs/video_op"
      }
+    },
+    "ai_generated": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "required": [
+       "generator",
+       "licence"
+      ],
+      "properties": {
+       "generator": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+       },
+       "licence": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+       },
+       "decision_ids": {
+        "type": "array"
+       }
+      },
+      "additionalProperties": false
+     }
     }
    }
   },
@@ -1400,6 +1426,7 @@
       "video.crop",
       "video.redact",
       "video.rotate",
+      "video.punch_in",
       "video.speed",
       "video.resize",
       "video.fit",
@@ -1513,22 +1540,62 @@
      "minimum": 0
     },
     "transition": {
-     "type": "object",
-     "required": [
-      "type",
-      "duration"
-     ],
-     "properties": {
-      "type": {
-       "type": "string",
-       "pattern": "^[a-z]{1,16}$"
+     "oneOf": [
+      {
+       "type": "object",
+       "required": [
+        "type",
+        "duration"
+       ],
+       "properties": {
+        "type": {
+         "type": "string",
+         "pattern": "^[a-z]{1,16}$"
+        },
+        "duration": {
+         "type": "number",
+         "minimum": 0
+        }
+       },
+       "additionalProperties": false
       },
-      "duration": {
-       "type": "number",
-       "minimum": 0
+      {
+       "type": "object",
+       "required": [
+        "type",
+        "cut_point",
+        "cover"
+       ],
+       "properties": {
+        "type": {
+         "const": "stinger"
+        },
+        "cut_point": {
+         "type": "number",
+         "minimum": 0
+        },
+        "cover": {
+         "type": "object",
+         "required": [
+          "start",
+          "end"
+         ],
+         "properties": {
+          "start": {
+           "type": "number",
+           "minimum": 0
+          },
+          "end": {
+           "type": "number",
+           "minimum": 0
+          }
+         },
+         "additionalProperties": false
+        }
+       },
+       "additionalProperties": false
       }
-     },
-     "additionalProperties": false
+     ]
     },
     "width": {
      "type": "integer",
@@ -1874,6 +1941,73 @@
     },
     "fast": {
      "type": "boolean"
+    },
+    "precision": {
+     "enum": [
+      "frame",
+      "keyframe",
+      "auto"
+     ]
+    },
+    "segment_cache": {
+     "type": "boolean"
+    },
+    "condense": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "start",
+       "end",
+       "label"
+      ],
+      "properties": {
+       "start": {
+        "type": "number",
+        "minimum": 0
+       },
+       "end": {
+        "type": "number",
+        "minimum": 0
+       },
+       "label": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_+.-]{0,39}$"
+       }
+      },
+      "additionalProperties": false
+     }
+    },
+    "subject": {
+     "type": "object",
+     "required": [
+      "x",
+      "y",
+      "width",
+      "height"
+     ],
+     "properties": {
+      "x": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "y": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "width": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "height": {
+       "type": "integer",
+       "minimum": 0
+      }
+     },
+     "additionalProperties": false
+    },
+    "stinger": {
+     "type": "string"
     }
    },
    "additionalProperties": false

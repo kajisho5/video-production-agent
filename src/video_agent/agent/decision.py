@@ -8,6 +8,7 @@ BLOCKED, no executable material) and records the basis on the decision (policy /
 provenance, approval resolution, intent, requirements) for `explain --decision`."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +28,8 @@ from .documents import APPROVAL_KEY as DOCUMENT_APPROVAL_KEY, SUBJECT as DOCUMEN
 from .remotion import APPROVAL_KEY as REMOTION_APPROVAL_KEY, SUBJECT as REMOTION_SUBJECT, decide_remotion
 from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUBJECT, decide_bgm, parse_bgm_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
-from .editing import IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams
+from .editing import (AI_KEY, AI_OP, CONDENSE_APPROVE_KEY, CONDENSE_KEY, CONDENSE_OP, CONDENSE_SKILL, IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, PUNCH_IN_OP,
+                      SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams)
 from .image_insert import decide_image_insert
 from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
@@ -92,6 +94,9 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  TRIM_OP: ("video.trim.approval", "CONFIRM"), "video.rotate": ("video.rotate.approval", "CONFIRM"),
                  # ADR-070: a still joined before / after the picture changes what is delivered, so CONFIRM; its explicit requirement waives it
                  IMAGE_INSERT_OP: ("video.image_insert.approval", "CONFIRM"),
+                 # ADR-099: a zoom on the user's box (CONFIRM like every edit.* op; its explicit requirement waives it) and the approved cut proposals: the
+                 # user named each id, which is the approval of what is cut, so its explicit requirement waives CONFIRM too
+                 PUNCH_IN_OP: ("video.punch_in.approval", "CONFIRM"), CONDENSE_OP: ("video.condense.approval", "CONFIRM"),
                  # ADR-052: an editor timeline changes no media (it references the sources and is written next to the deliverables), so AUTO
                  TIMELINE_SUBJECT: ("timeline.export.approval", "AUTO"),
                  # ADR-053: choosing which take of a line is used is editorial (the others are left out), so CONFIRM; the beat snap
@@ -99,6 +104,67 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  PICK_SUBJECT: ("takes.pick.approval", "CONFIRM"), SNAP_SUBJECT: ("takes.beat_snap.approval", "CONFIRM"),
                  # the join crossfades replace a sample discontinuity with a short ramp and move no cut (what is seen and said is unchanged), so AUTO
                  CROSSFADE_SUBJECT: ("takes.crossfade.approval", "AUTO")}
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except (OSError, ValueError):
+        return False
+
+
+def decide_condense(eng: Any, edit: Dict[str, Any], analysis: AnalysisResult, approval_for: Any, probe_ids_of: Any, cap_block: Any) -> None:
+    """ADR-099: approved cut proposals → one `video.condense` TRANSFORM on the source they were measured on (or a BLOCK naming why not). The
+    proposals file names its source (path and sha256) when silence / static were measured; a transcript-only file names none, and then the
+    plan must have exactly one video input. Spans past the source's end are refused, never clamped."""
+    req = edit["requirements"]
+    p = edit["params"]
+    ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
+    videos = [a for a in analysis.assets if a.technical.get("video")]
+    src = p.get("source")
+    target = None
+    why = None
+    if src:
+        target = next((a for a in videos if (src.get("sha256") and a.hash == src["sha256"]) or (src.get("path") and _same_file(a.path, src["path"]))), None)
+        if target is None:
+            why = f"the proposals were measured on {os.path.basename(src.get('path') or '?')}, which is not a video input of this plan (matched by sha256 / path)"
+    elif len(videos) != 1:
+        why = f"the proposals name no source (transcript only) and this plan has {len(videos)} video inputs: which one they are for is not guessed"
+    else:
+        target = videos[0]
+    if target is not None and why is None:
+        dur = float(target.technical.get("duration") or 0.0)
+        late = [sp["id"] for sp in p["spans"] if dur and sp["end"] > dur + 0.001]
+        if late:
+            why = f"proposal(s) {', '.join(late)} end after {target.id} ({dur:.3f}s): a span is never clamped"
+    words = ", ".join(f"{sp['id']} {sp['label']} {sp['start']:.2f}-{sp['end']:.2f}s" for sp in p["spans"])
+    if why is not None:
+        eng.decide(subject=CONDENSE_OP, type="BLOCK", decision=f"BLOCK: {CONDENSE_KEY} ({words})", reason=why, confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK",
+                   provenance="USER", params={"asset_id": target.id if target is not None else None, **p}, requirements=req)
+        return
+    total = sum(sp["end"] - sp["start"] for sp in p["spans"])
+    eng.decide(subject=CONDENSE_OP, type="TRANSFORM", decision=f"cut {len(p['spans'])} approved proposal(s) from {target.id}: {words}",
+               reason=f"the user approved these proposal ids ({CONDENSE_APPROVE_KEY}, {req[0].source}) from {os.path.basename(p['proposals'])}; only they are cut "
+                      f"(up to {total:.2f}s), by video-editing-skill CONDENSE on the source before every other edit; every other proposal is left in",
+               confidence=1.0, evidence=ev, risk="MEDIUM", approval=approval_for(CONDENSE_OP, explicit=req[0]), provenance="USER",
+               params={"asset_id": target.id, **p}, requirements=req, serves_intent=None)
+    cap_block(CONDENSE_SKILL, f"capability.{CONDENSE_SKILL}")
+
+
+def decide_ai_generated(eng: Any, edit: Dict[str, Any], analysis: AnalysisResult) -> None:
+    """ADR-099: one KEEP record per input the user declares AI-generated (params: asset_id, generator, licence; provenance USER). The plan
+    carries it to every video-editing request that reads the input or what was made from it; nothing about the media changes. An
+    entry that names no input of this plan is refused (ValueError), never dropped."""
+    req = edit["requirements"]
+    for it in edit["params"]["sources"]:
+        a = next((x for x in analysis.assets if _same_file(x.path, it["input"])), None)
+        if a is None:
+            raise ValueError(f"{AI_KEY}: {it['input']} is not an input of this plan")
+        eng.decide(subject=AI_OP, type="KEEP", decision=f"{a.id} is declared AI-generated ({it['generator']}; licence {it['licence']})",
+                   reason=f"the user declared it ({AI_KEY}, {req[0].source}); passed to video-editing-skill as sources[].ai_generated so every result that contains it "
+                          "is marked AI_GENERATED (provenance DECLARED); never inferred from the media",
+                   confidence=1.0, evidence=[r.id for r in req], risk="LOW", approval="AUTO", provenance="USER",
+                   params={"asset_id": a.id, "generator": it["generator"], "licence": it["licence"]}, requirements=req, serves_intent=None)
 
 
 def _serves(intent: Intent, subject: str) -> Optional[str]:
@@ -268,7 +334,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         else:
             p = edits["video.concat"]["params"]
             concat_ok = True
-            eng.decide(subject="video.concat", type="TRANSFORM", decision="concat " + " + ".join(a.id for a in video_assets) + f" → {PROGRAMME}" + (f" ({p['transition']['type']} {p['transition']['duration']:g}s)" if p.get("transition") else ""),
+            eng.decide(subject="video.concat", type="TRANSFORM", decision="concat " + " + ".join(a.id for a in video_assets) + f" → {PROGRAMME}" + (f" ({p['transition']['type']} {p['transition']['duration']:g}s)" if (p.get("transition") or {}).get("duration") is not None
+                                                                                                                    else f" (stinger {Path(p['stinger']).name}, cut at {p['transition']['cut_point']:g}s of it)" if p.get("stinger") else ""),
                        reason=f"user asked to join the inputs in the given order ({req[0].source}); the trimmed inputs become one programme timeline",
                        confidence=1.0, evidence=ev, risk=OPERATIONS["video.concat"]["risk"], approval=approval_for("video.concat", explicit=req[0]), provenance="USER",
                        params={"asset_id": PROGRAMME, "inputs": [a.id for a in video_assets], **p}, requirements=req, serves_intent=None)
@@ -357,6 +424,12 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                        confidence=1.0, evidence=ev, risk="MEDIUM", approval=approval_for(TRIM_OP, explicit=req[0]), provenance="USER",
                        params={"asset_id": a0.id, **p}, requirements=req, serves_intent=None)
             cap_block(TRIM_SKILL, f"capability.{TRIM_SKILL}")
+    # ---- approved cut proposals (ADR-099): the spans of `edit.condense` the user approved by id, cut out of the one source they were measured on
+    if CONDENSE_OP in edits:
+        decide_condense(eng, edits[CONDENSE_OP], analysis, approval_for, probe_ids_of, cap_block)
+    # ---- AI-generated inputs (ADR-099): the user's declaration per input, carried to video-editing-skill as sources[].ai_generated
+    if AI_OP in edits:
+        decide_ai_generated(eng, edits[AI_OP], analysis)
     for asset in analysis.assets:
         if asset.id in excluded:
             continue   # ADR-053: a take that was not picked, or the music bed: not part of the programme, nothing is decided for it

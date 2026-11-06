@@ -24,6 +24,9 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Requirement
+from ..tools.base import ToolError
+from ..tools.video_editing.adapter import check_proposals, proposal_seconds
+from ..tools.video_editing.lowering import ai_declaration
 from . import image_prepare as _prep
 
 PROGRAMME = "programme"      # logical id of the concat (or switch / grid) output (the multi-source timeline)
@@ -39,16 +42,20 @@ PROGRAMME = "programme"      # logical id of the concat (or switch / grid) outpu
 # video.image_insert (ADR-070) is last: the still is joined to the finished picture -- after colour, graphics and burnt-in subtitles too,
 # so it is not graded or captioned and every finishing time stays on the picture's own timeline (planner / compiler run it after
 # finishing, before loudness); it is not part of SINGLE_SOURCE_ORDER's chain.
+# video.punch_in (ADR-099) runs after video.rotate (its subject box is on the upright picture, after crop) and before video.speed (its times
+# are on the picture the trims / concat produced, before any retime); it keeps the frame size and the duration.
 IMAGE_INSERT_OP = "video.image_insert"
+PUNCH_IN_OP = "video.punch_in"
 EDIT_ORDER = ("video.concat", "video.switch", "video.grid", "video.deinterlace", "video.stabilize", "video.crop", "video.redact",
-              "video.rotate", "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay", IMAGE_INSERT_OP)
+              "video.rotate", PUNCH_IN_OP, "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay", IMAGE_INSERT_OP)
 # the multi-source entry ops (build PROGRAMME from 2+ inputs; mutually exclusive, handled specially by the planner /
 # compiler) vs. the single-source ops that apply to whatever PROGRAMME (or the untouched asset) already is
 MULTI_SOURCE_OPS = ("video.concat", "video.switch", "video.grid")
 SINGLE_SOURCE_ORDER = tuple(op for op in EDIT_ORDER[len(MULTI_SOURCE_OPS):] if op != IMAGE_INSERT_OP)
 # op type → production skill / video-editing tool / IR parameter allowlist (the only keys copied into an IR op besides the references)
 OPERATIONS: Dict[str, Dict[str, Any]] = {
-    "video.concat":  {"skill": "video_concat",  "tool": "video-editing/concat",  "params": ("transition", "width", "height", "fps", "mode", "pad_color"), "risk": "MEDIUM"},
+    # ADR-099: `stinger` is the stinger file's path (transition.type stinger: the graphic with alpha laid over each join)
+    "video.concat":  {"skill": "video_concat",  "tool": "video-editing/concat",  "params": ("transition", "width", "height", "fps", "mode", "pad_color", "stinger"), "risk": "MEDIUM"},
     # no "tool" here (unlike the other entries): camera_switch's sole candidate is ffmpeg-skill/multicam, and this codebase's
     # own boundary test (test_no_tool_id_literals_outside_tool_layer) refuses an "ffmpeg-skill/..." literal anywhere outside
     # tools/ or skills/ -- the registry (skills/registry.py) is the only place that names it; lower_video_edit() skips the
@@ -65,6 +72,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "video.stabilize":   {"skill": "video_stabilize",    "params": ("shakiness", "smoothing", "zoom", "crop_mode", "tripod"), "risk": "MEDIUM"},
     # ADR-062: video-editing-skill ROTATE (0.3.0): a clockwise turn of 90 / 180 / 270 and / or a mirror; nothing scaled or cut
     "video.rotate":  {"skill": "video_rotate",  "tool": "video-editing/rotate",  "params": ("degrees", "flip"), "risk": "LOW"},
+    # ADR-099: video-editing-skill 0.5.0 PUNCH_IN: a hard cut in to a zoom (scale) on the user's subject box for [start, end], the frame kept
+    PUNCH_IN_OP:     {"skill": "video_punch_in", "tool": "video-editing/punch_in", "params": ("start", "end", "scale", "subject"), "risk": "MEDIUM"},
     "video.speed":   {"skill": "video_speed",   "tool": "video-editing/speed",   "params": ("factor",), "risk": "MEDIUM"},
     "video.resize":  {"skill": "video_resize",  "tool": "video-editing/resize",  "params": ("width", "fps"), "risk": "LOW"},
     "video.fit":     {"skill": "video_fit",     "tool": "video-editing/fit",     "params": ("aspect", "width", "pad_color", "fps"), "risk": "LOW"},
@@ -80,9 +89,24 @@ OP_OF_SKILL = {v["skill"]: k for k, v in OPERATIONS.items()}
 TRIM_OP = "video.trim"
 TRIM_KEY = "edit.trim"
 TRIM_SKILL = "video_trim"
+# ADR-099: the other two ways the asset's one video.trim runs on video-editing-skill: CUT with a requested precision (auto) or the segment cache
+# (`video_cut`), and CONDENSE when the user approved cut proposals on that source (`video_condense`). The IR record stays video.trim (its keep
+# ranges are what every later stage reads); the plan step names which skill runs it.
+CUT_SKILL = "video_cut"
+CONDENSE_SKILL = "video_condense"
+TRIM_SKILLS = (TRIM_SKILL, CUT_SKILL, CONDENSE_SKILL, "silence_cleanup")
+CONDENSE_OP = "video.condense"            # decision subject: the approved proposals on one source
+CONDENSE_KEY = "edit.condense"            # the proposals file `video-agent propose` wrote
+CONDENSE_APPROVE_KEY = "edit.condense.approve"   # the proposal ids the user approved ("p1,p3" or a list); nothing else is cut
+CONDENSE_KEEP_LABEL = "keep"              # CONDENSE label of the kept ranges (rule keep); every other labelled span is cut, the rest by default cut
+SEGMENT_CACHE_OP = "video.segment_cache"  # ADR-099: options.segment_cache on every frame-precision CUT of the plan
+SEGMENT_CACHE_KEY = "edit.segment_cache"
+AI_OP = "media.ai_generated"              # ADR-099: the user's declaration that an input is AI-generated (sources[].ai_generated)
+AI_KEY = "edit.ai_generated"
 # requirement keys: edit.<op> switches the operation on (its value is the main parameter), edit.<op>.<param> refines it
 REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
-    "video.concat": ("edit.concat", "edit.concat.transition", "edit.concat.transition_duration", "edit.concat.width", "edit.concat.height", "edit.concat.fps", "edit.concat.mode", "edit.concat.pad_color"),
+    "video.concat": ("edit.concat", "edit.concat.transition", "edit.concat.transition_duration", "edit.concat.width", "edit.concat.height", "edit.concat.fps", "edit.concat.mode", "edit.concat.pad_color",
+                     "edit.concat.stinger", "edit.concat.stinger.cut_point", "edit.concat.stinger.cover"),   # ADR-099: the stinger file and its maker's times
     "video.switch": ("edit.switch", "edit.switch.audio", "edit.switch.fix_drift"),
     "video.grid": ("edit.grid", "edit.grid.cols", "edit.grid.rows", "edit.grid.cell_width", "edit.grid.cell_height", "edit.grid.fps", "edit.grid.label",
                    "edit.grid.font", "edit.grid.font_size", "edit.grid.font_color", "edit.grid.pad", "edit.grid.audio_from", "edit.grid.gap", "edit.grid.background"),
@@ -93,6 +117,12 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     "video.crop": ("edit.crop",),   # ADR-079: no edit.crop.fps (video-editing CROP keeps the input's frame rate; edit.resize.fps / edit.fit.fps set one)
     "video.stabilize": ("edit.stabilize", "edit.stabilize.shakiness", "edit.stabilize.smoothing", "edit.stabilize.zoom", "edit.stabilize.crop_mode", "edit.stabilize.tripod"),
     "video.rotate": ("edit.rotate", "edit.rotate.flip"),
+    # ADR-099: the range (main key, "START-END" like edit.trim, on the picture the trims / concat produced), the zoom and the subject box (both required)
+    PUNCH_IN_OP: ("edit.punch_in", "edit.punch_in.scale", "edit.punch_in.subject"),
+    # ADR-099: approved cut proposals (the proposals file and the approved ids), the segment cache, AI-generated inputs
+    CONDENSE_OP: (CONDENSE_KEY, CONDENSE_APPROVE_KEY),
+    SEGMENT_CACHE_OP: (SEGMENT_CACHE_KEY,),
+    AI_OP: (AI_KEY,),
     "video.speed": ("edit.speed",),
     "video.resize": ("edit.resize", "edit.resize.fps"),
     "video.fit": ("edit.fit", "edit.fit.width", "edit.fit.pad_color", "edit.fit.fps"),
@@ -113,6 +143,7 @@ IMAGE_JOIN_SKILL = "video_concat"            # the join of the still's clip and 
 ROTATIONS = (90, 180, 270)   # video-editing-skill ROTATE.degrees, clockwise
 FLIPS = ("h", "v")           # ROTATE.flip: mirror horizontally / vertically
 SPEED_RANGE = (0.25, 4.0)
+PUNCH_SCALE = (1.0, 4.0)   # video-editing-skill PUNCH_IN.scale: above 1, at most 4
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 NAMED_POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center", "top", "bottom", "left", "right")
 _ASPECT_RE = re.compile(r"^[1-9][0-9]{0,3}:[1-9][0-9]{0,3}$")
@@ -257,7 +288,20 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
         if op == "video.concat":
             if not _bool(vals["edit.concat"], "edit.concat"):
                 continue
-            if "edit.concat.transition" in vals:
+            if "edit.concat.stinger" in vals:   # ADR-099: contract.stinger -- the file and the two times its maker states; nothing is assumed
+                if "edit.concat.transition" in vals or "edit.concat.transition_duration" in vals:
+                    raise EditRequirementError("edit.concat.stinger is the transition: leave edit.concat.transition / .transition_duration unset")
+                if "edit.concat.stinger.cut_point" not in vals or "edit.concat.stinger.cover" not in vals:
+                    raise EditRequirementError("edit.concat.stinger needs edit.concat.stinger.cut_point and edit.concat.stinger.cover (the stinger's maker states them; nothing is assumed)")
+                p["stinger"] = video_path(vals["edit.concat.stinger"], "edit.concat.stinger")
+                cp = float(_number(vals["edit.concat.stinger.cut_point"], "edit.concat.stinger.cut_point", 0, 60))
+                cov = parse_range(vals["edit.concat.stinger.cover"], "edit.concat.stinger.cover")
+                if not cov["start"] <= cp < cov["end"]:
+                    raise EditRequirementError(f"edit.concat.stinger.cut_point {cp:g}s must lie inside edit.concat.stinger.cover [{cov['start']:g}, {cov['end']:g})s: the clips switch under full cover")
+                p["transition"] = {"type": "stinger", "cut_point": round(cp, 3), "cover": cov}
+            elif "edit.concat.stinger.cut_point" in vals or "edit.concat.stinger.cover" in vals:
+                raise EditRequirementError("edit.concat.stinger.cut_point / .cover need edit.concat.stinger (the stinger file)")
+            elif "edit.concat.transition" in vals:
                 p["transition"] = {"type": _token(vals["edit.concat.transition"], "edit.concat.transition", _TRANSITION_RE, "one of " + ", ".join(_TRANSITIONS)),
                                    "duration": _number(vals.get("edit.concat.transition_duration", 0.5), "edit.concat.transition_duration", 0.05, 5.0)}
             elif "edit.concat.transition_duration" in vals:
@@ -380,6 +424,32 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
                 raise EditRequirementError("edit.rotate=0 without edit.rotate.flip changes nothing; leave it unset")
         elif op == TRIM_OP:
             p.update(parse_trim(vals[TRIM_KEY]))
+        elif op == PUNCH_IN_OP:   # ADR-099
+            p.update(parse_range(vals["edit.punch_in"], "edit.punch_in"))
+            if "edit.punch_in.scale" not in vals or "edit.punch_in.subject" not in vals:
+                raise EditRequirementError("edit.punch_in needs edit.punch_in.scale and edit.punch_in.subject (the zoom and the box to keep in view; nothing is assumed)")
+            sc = float(_number(vals["edit.punch_in.scale"], "edit.punch_in.scale", PUNCH_SCALE[0], PUNCH_SCALE[1]))
+            if sc <= PUNCH_SCALE[0]:
+                raise EditRequirementError("edit.punch_in.scale must be above 1 (1 is no zoom)")
+            p["scale"] = sc
+            box = vals["edit.punch_in.subject"]
+            if not isinstance(box, dict) or set(box) != {"x", "y", "width", "height"}:
+                raise EditRequirementError("edit.punch_in.subject must be a box {x, y, width, height} in pixels of the picture it zooms")
+            sub: Dict[str, int] = {}
+            for k, lo in (("x", 0), ("y", 0), ("width", 1), ("height", 1)):
+                v = _number(box[k], f"edit.punch_in.subject.{k}", lo, 16384)
+                if float(v) != int(v):
+                    raise EditRequirementError(f"edit.punch_in.subject.{k} must be a whole number of pixels")
+                sub[k] = int(v)
+            p["subject"] = sub
+        elif op == CONDENSE_OP:   # ADR-099
+            p.update(parse_condense(vals[CONDENSE_KEY], vals.get(CONDENSE_APPROVE_KEY)))
+        elif op == SEGMENT_CACHE_OP:   # ADR-099
+            if not _bool(vals[SEGMENT_CACHE_KEY], SEGMENT_CACHE_KEY):
+                continue
+            p["segment_cache"] = True
+        elif op == AI_OP:   # ADR-099
+            p["sources"] = parse_ai_generated(vals[AI_KEY])
         elif op == "video.speed":
             f = _number(vals["edit.speed"], "edit.speed", SPEED_RANGE[0], SPEED_RANGE[1])
             if float(f) == 1.0:
@@ -440,6 +510,125 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
                                    re.compile("^(" + "|".join(IMAGE_INSERT_POSITIONS) + ")$"), "before or after")
         out[op] = {"params": p, "requirements": reqs}
     return out
+
+
+def parse_range(v: Any, key: str) -> Dict[str, float]:
+    """"START-END" (seconds or mm:ss) or {start, end} in seconds → {start, end}, start before end (ADR-099: edit.punch_in, the stinger's cover)."""
+    if isinstance(v, dict):
+        if set(v) != {"start", "end"}:
+            raise EditRequirementError(f"{key} must be \"START-END\" or {{start, end}} in seconds")
+        s_, e_ = float(_number(v["start"], key + ".start", 0, 86400)), float(_number(v["end"], key + ".end", 0, 86400))
+    else:
+        mobj = re.match(r"^\s*(?P<s>" + _TIME_RE + r")\s*-\s*(?P<e>" + _TIME_RE + r")\s*$", v) if isinstance(v, str) else None
+        if not mobj:
+            raise EditRequirementError(f"{key} must be \"START-END\" (seconds or mm:ss, e.g. 2.5-14 or 0:05-1:30), got {v!r}")
+        s_, e_ = _switch_seconds(mobj.group("s")), _switch_seconds(mobj.group("e"))
+    if not s_ < e_:
+        raise EditRequirementError(f"{key}: start {s_:g}s must be before end {e_:g}s")
+    return {"start": round(s_, 3), "end": round(e_, 3)}
+
+
+VIDEO_EXTENSIONS = (".mov", ".mp4", ".mkv", ".webm", ".m4v")
+
+
+def video_path(v: Any, key: str) -> str:
+    """ADR-099: a video file the user names (the stinger): an existing file with a video extension, no traversal."""
+    if not isinstance(v, str) or not v.strip() or "\n" in v or "\x00" in v:
+        raise EditRequirementError(f"{key} must be the path of a video file")
+    if any(part == ".." for part in v.replace("\\", "/").split("/")):
+        raise EditRequirementError(f"{key} path contains '..' (traversal)")
+    if os.path.splitext(v)[1].lower() not in VIDEO_EXTENSIONS:
+        raise EditRequirementError(f"{key} must be one of {VIDEO_EXTENSIONS}, got {os.path.basename(v)!r}")
+    if not os.path.isfile(v):
+        raise EditRequirementError(f"{key} file not found: {v}")
+    return os.path.abspath(v)
+
+
+def parse_condense(path: Any, approve: Any) -> Dict[str, Any]:
+    """ADR-099: `edit.condense` (the proposals file `video-agent propose` wrote: video-editing-skill's proposals document, applied false) and
+    `edit.condense.approve` (the ids the user approved). Only the approved proposals are read; an unknown id, a file that is not a proposals
+    document and a missing approval are refused. Returns {proposals, sha256, approve, spans: [{id, start, end, label}], source: {path, sha256} | None}."""
+    import hashlib
+    import json
+    if not isinstance(path, str) or not path.strip() or "\n" in path or "\x00" in path or any(x == ".." for x in path.replace("\\", "/").split("/")):
+        raise EditRequirementError(f"{CONDENSE_KEY} must be the path of the proposals file video-agent propose wrote")
+    if approve is None:
+        raise EditRequirementError(f"{CONDENSE_KEY} needs {CONDENSE_APPROVE_KEY}: the proposal ids you approved (nothing is cut without them)")
+    ids = [x.strip() for x in approve.split(",")] if isinstance(approve, str) else list(approve) if isinstance(approve, list) else None
+    if not ids or not all(isinstance(x, str) and re.match(r"^[A-Za-z0-9_.-]{1,32}$", x) for x in ids) or len(set(ids)) != len(ids):
+        raise EditRequirementError(f"{CONDENSE_APPROVE_KEY} must list distinct proposal ids (\"p1,p3\" or a list), got {approve!r}")
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        doc = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError) as e:
+        raise EditRequirementError(f"{CONDENSE_KEY}: cannot read the proposals file: {e}")
+    errs = check_proposals(doc)
+    if errs:
+        raise EditRequirementError(f"{CONDENSE_KEY} is not a proposals document: " + "; ".join(errs[:3]))
+    by_id = {pr["id"]: pr for pr in doc["proposals"]}
+    unknown = [x for x in ids if x not in by_id]
+    if unknown:
+        raise EditRequirementError(f"{CONDENSE_APPROVE_KEY}: {', '.join(unknown)} not in {os.path.basename(path)} (ids: {', '.join(sorted(by_id)) or 'none'})")
+    try:
+        spans = [{"id": x, "start": round(proposal_seconds(by_id[x]["start"]), 3), "end": round(proposal_seconds(by_id[x]["end"]), 3), "label": by_id[x]["label"]} for x in ids]
+    except ToolError as e:
+        raise EditRequirementError(f"{CONDENSE_KEY}: {e}")
+    src = next((i for i in doc.get("inputs") or [] if isinstance(i, dict) and i.get("role") == "source"), None)
+    if src is None and isinstance((doc.get("video_agent") or {}).get("source"), str):   # a transcript-only file: the video `video-agent propose` was given
+        src = {"path": doc["video_agent"]["source"], "sha256": ""}
+    return {"proposals": os.path.abspath(path), "sha256": hashlib.sha256(raw).hexdigest(), "approve": ids, "spans": sorted(spans, key=lambda r: r["start"]),
+            "source": {"path": str(src.get("path") or ""), "sha256": str(src.get("sha256") or "")} if src else None}
+
+
+def parse_ai_generated(v: Any) -> List[Dict[str, str]]:
+    """ADR-099: `edit.ai_generated` -- [{input, generator, licence}]: the inputs the user declares AI-generated (input = the file as given to plan).
+    The declaration is the user's (provenance DECLARED), never inferred from the media."""
+    items = v if isinstance(v, list) else [v] if isinstance(v, dict) else None
+    if not items:
+        raise EditRequirementError(f"{AI_KEY} must be a list of {{input, generator, licence}}")
+    out: List[Dict[str, str]] = []
+    for i, it in enumerate(items):
+        if not isinstance(it, dict) or set(it) != {"input", "generator", "licence"} or not isinstance(it["input"], str) or not it["input"].strip():
+            raise EditRequirementError(f"{AI_KEY}[{i}] must be {{input, generator, licence}} (input: the file as given to plan)")
+        try:
+            d = ai_declaration({"generator": it["generator"], "licence": it["licence"]}, f"{AI_KEY}[{i}]")
+        except ToolError as e:
+            raise EditRequirementError(str(e).replace("video-editing: ", ""))
+        out.append({"input": it["input"], **d})
+    if len({os.path.realpath(x["input"]) for x in out}) != len(out):
+        raise EditRequirementError(f"{AI_KEY} declares one input twice")
+    return out
+
+
+def subtract_spans(keep: List[List[float]], spans: List[Dict[str, Any]]) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
+    """ADR-099: the kept ranges minus approved CONDENSE spans → (new kept ranges, the labelled spans actually removed: each approved span clipped to
+    the ranges that were still kept, overlaps of two approved spans merged under the earlier one's label). Pure arithmetic on the IR's seconds."""
+    removed: List[Dict[str, Any]] = []
+    for sp in sorted(spans, key=lambda r: (r["start"], r["end"])):
+        for ks, ke in keep:
+            s_, e_ = max(ks, sp["start"]), min(ke, sp["end"])
+            if e_ > s_:
+                if removed and s_ <= removed[-1]["end"]:
+                    removed[-1]["end"] = max(removed[-1]["end"], round(e_, 3))
+                else:
+                    removed.append({"start": round(s_, 3), "end": round(e_, 3), "label": sp["label"]})
+    out: List[List[float]] = []
+    for ks, ke in keep:
+        cur = [[ks, ke]]
+        for r in removed:
+            nxt = []
+            for a, b in cur:
+                if r["end"] <= a or r["start"] >= b:
+                    nxt.append([a, b])
+                    continue
+                if r["start"] > a:
+                    nxt.append([a, r["start"]])
+                if r["end"] < b:
+                    nxt.append([r["end"], b])
+            cur = nxt
+        out += [[round(a, 3), round(b, 3)] for a, b in cur if b - a > 0.0005]
+    return out, removed
 
 
 _IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", (".png",)), (b"\xff\xd8\xff", (".jpg", ".jpeg")))

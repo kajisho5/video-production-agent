@@ -4147,10 +4147,11 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.5.0 contract")
         # ADR-062: ROTATE / FREEZE / REVERSE are lowered now: nothing the contract declares is contract-only; a type a later contract adds
         # without a lowering here would be listed here and never executable (supports() is False)
-        # ADR-097 addendum 6: 0.5.0's PUNCH_IN / CONDENSE are pinned but not lowered: contract-only, never offered
+        # ADR-097 addendum 6 pinned 0.5.0's PUNCH_IN / CONDENSE without a lowering; ADR-099 lowered both, so nothing is contract-only again
         from video_agent.tools.video_editing.lowering import NOT_LOWERED
+        self.assertEqual(NOT_LOWERED, ())
         self.assertEqual(ad.lowering.contract_only(), list(NOT_LOWERED))
-        self.assertFalse(ad.supports("video-editing/punch_in")); self.assertFalse(ad.supports("video-editing/condense"))
+        self.assertTrue(ad.supports("video-editing/punch_in")); self.assertTrue(ad.supports("video-editing/condense"))
         self.assertTrue(ad.supports("video-editing/freeze")); self.assertTrue(ad.supports("video-editing/reverse")); self.assertTrue(ad.supports("video-editing/rotate"))
         grown = dict(ad.contract, operations=dict(ad.contract["operations"], MIRROR={}))
         from video_agent.tools.video_editing.lowering import Lowering
@@ -4390,7 +4391,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         # ADR-062: ROTATE (0.3.0) and FREEZE / REVERSE (0.4.0, video-editing-skill #20) are lowered now, and IMAGE_INSERT (ADR-070), so every tool the contract
         # declares is usable (a type a later contract adds without a lowering here stays out: adapter.supports())
         self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.5.0")
-        self.assertEqual(sorted(pk["usable_tools"]), sorted(t for t in ad.tools if t not in ("video-editing/condense", "video-editing/punch_in")))   # not lowered (ADR-097 addendum 6)
+        self.assertEqual(sorted(pk["usable_tools"]), sorted(ad.tools))   # PUNCH_IN / CONDENSE lowered since ADR-099
         # a tool-level capability the resolver knows and reports missing blocks the tool; names it does not resolve are the Skill's doctor's business
         svc3 = make_service(self.tmp, caps=FakeCaps(missing=["encoder:libx264"], extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
         svc3.registry.get("silence_cleanup").tools = ["video-editing/cut"]

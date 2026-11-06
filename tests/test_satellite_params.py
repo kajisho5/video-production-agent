@@ -278,8 +278,8 @@ class LoweringTests(unittest.TestCase):
     def test_every_declared_type_is_lowered(self):
         from video_agent.tools.video_editing.lowering import NOT_LOWERED
         lw = Lowering(editing_contract())
-        self.assertEqual(lw.contract_only(), list(NOT_LOWERED))   # ADR-097 addendum 6: PUNCH_IN / CONDENSE pinned, not lowered yet
-        self.assertEqual(NOT_LOWERED, ("CONDENSE", "PUNCH_IN"))
+        self.assertEqual(lw.contract_only(), list(NOT_LOWERED))   # ADR-099: PUNCH_IN / CONDENSE (pinned in ADR-097 addendum 6) are lowered now
+        self.assertEqual(NOT_LOWERED, ())
         self.assertTrue({"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"} <= set(lw.supported_types()))
         for t in ("ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"):   # the agent-side keys stay inside what the contract declares
             self.assertTrue(set(ARGS[t]) - {"input", "output"} <= set(editing_contract()["operations"][t]["parameters"]), t)

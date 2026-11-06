@@ -19,10 +19,14 @@ PLAN_STATUSES = ("DRAFT", "REVIEW", "APPROVED", "REJECTED", "BLOCKED")
 STEP_STATUSES = ("PROPOSED", "APPROVED", "REJECTED", "BLOCKED")
 PLANNER_ID = "production_planner@1.0"
 # parameters a step may carry (domain vocabulary): anything else is dropped by the planner and refused by the validator
-STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), "loudness_normalization": ("asset", "target_lufs", "true_peak"),
+STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
+                   # ADR-099: the trim on video-editing-skill with the requested precision / segment cache, or CONDENSE of the approved proposals
+                   "video_cut": ("asset", "keep", "removed", "accurate", "precision", "segment_cache"),
+                   "video_condense": ("asset", "keep", "removed", "accurate", "condense"),
+                   "video_punch_in": ("asset", "start", "end", "scale", "subject"), "loudness_normalization": ("asset", "target_lufs", "true_peak"),
                    "delivery_export": ("preset", "target"), "delivery_check": ("platform", "target"),
                    # editing operations (ADR-029): the IR parameter allowlist of each operation plus the subject / references
-                   "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color"),
+                   "video_concat": ("asset", "inputs", "transition", "width", "height", "fps", "mode", "pad_color", "stinger"),
                    "camera_switch": ("asset", "inputs", "switch", "audio", "fix_drift"),
                    # ADR-046 Priority A batch
                    "video_grid": ("asset", "inputs", "cols", "rows", "cell_width", "cell_height", "fps", "label", "font", "font_size", "font_color", "pad", "audio_from", "gap", "background"),
@@ -30,7 +34,7 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"), 
                    "video_deinterlace": ("asset", "mode", "parity", "only_interlaced", "audio_stream"),
                    "video_crop": ("asset", "x", "y", "width", "height"),
                    "video_stabilize": ("asset", "shakiness", "smoothing", "zoom", "crop_mode", "tripod"),
-                   "video_trim": ("asset", "keep", "removed", "accurate"),   # ADR-062: the same domain parameters as silence_cleanup (one kept range)
+                   "video_trim": ("asset", "keep", "removed", "accurate", "precision"),   # ADR-062: the same domain parameters as silence_cleanup (one kept range)
                    "video_rotate": ("asset", "degrees", "flip"),
                    "video_speed": ("asset", "factor"),
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),

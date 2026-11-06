@@ -87,6 +87,34 @@ def main() -> int:
         emit({"schema": "video-editing/doctor@1", "ok": ok, "skill": {"id": "video-editing", "version": CONTRACT["version"]}, "checks": checks,
               "problems": [] if ok else ["ffmpeg-skill not found"], "summary": "ready to edit" if ok else "not ready: ffmpeg-skill not found", "secrets_shown": False})
         return 0 if ok else 1
+    if cmd == "propose":   # ADR-099: cut proposals with reasons; applies and writes nothing
+        req = json.loads(sys.stdin.read() or "{}")
+        if req.get("schema") != CONTRACT["proposals"]["request_schema"]:
+            return err("INVALID_REQUEST", "request.schema")
+        roots = [os.path.realpath(r) for r in flag_values(argv, "--allowed-input")]
+        inputs, props = [], []
+        if "retakes" in req:
+            tp = os.path.realpath(req["retakes"]["transcript"])
+            if not any(within(r, tp) for r in roots):
+                return err("PATH_NOT_ALLOWED", "transcript outside the allowed roots")
+            words = json.loads(Path(tp).read_text(encoding="utf-8"))["words"]
+            inputs.append({"role": "transcript", "path": tp, "sha256": hashlib.sha256(Path(tp).read_bytes()).hexdigest()})
+            for i in range(1, len(words)):   # a word said twice in a row: the first saying is proposed
+                if words[i]["word"].lower() == words[i - 1]["word"].lower():
+                    props.append({"kind": "repeat", "rule": "repeat_word", "label": "retake", "action": "cut", "start": {"seconds": f"{words[i - 1]['start']:.6f}"},
+                                  "end": {"seconds": f"{words[i]['start']:.6f}"}, "word_range": [i - 1, i - 1], "text": words[i - 1]["word"], "reason": "said twice", "confidence": 0.7})
+        if "silence" in req or "static" in req:
+            sp = os.path.realpath(req["source"])
+            if not any(within(r, sp) for r in roots):
+                return err("PATH_NOT_ALLOWED", "source outside the allowed roots")
+            inputs.append({"role": "source", "path": sp, "sha256": hashlib.sha256(Path(sp).read_bytes()).hexdigest()})
+            props.append({"kind": "span", "labels": ["silence"], "label": "silence", "action": "cut", "start": {"seconds": "4.000000"}, "end": {"seconds": "6.000000"},
+                          "reason": "silent for 2.0 s", "confidence": 1.0})
+        for n, pr in enumerate(props, 1):
+            pr["id"] = f"p{n}"
+        emit({"ok": True, "schema": CONTRACT["proposals"]["response_schema"], "skill": {"id": "video-editing", "version": CONTRACT["version"]}, "command": "propose",
+              "status": "proposed", "applied": False, "inputs": inputs, "proposals": props, "summary": {}, "next": "approve by id"})
+        return 0
     if cmd not in ("run", "plan", "validate"):
         sys.stderr.write("unknown command\n")
         return 2
@@ -157,6 +185,8 @@ def main() -> int:
             return err("UNSUPPORTED_FORMAT", f"image extension {ext} is not supported")
         sources[s["id"]] = resolved
         kinds[s["id"]] = s.get("kind", "video")
+        if s.get("ai_generated") is not None and (not isinstance(s["ai_generated"], dict) or set(s["ai_generated"]) != {"generator", "licence"}):
+            return err("INVALID_REQUEST", "ai_generated: {generator, licence}")
     ops = proj.get("operations") or []
     if len(ops) != 1:
         return err("INVALID_REQUEST", "the fake handles one operation")
@@ -166,8 +196,23 @@ def main() -> int:
     params = op.get("params") or {}
     if set(params) - set(OPS[op["type"]]["parameters"]):
         return err("INVALID_REQUEST", f"unknown parameters {sorted(set(params) - set(OPS[op['type']]['parameters']))}")
-    if op["type"] in ("CUT", "TRIM") and params.get("precision", "frame") not in ("frame", "keyframe"):
-        return err("INVALID_REQUEST", "precision: must be one of ['frame', 'keyframe']")
+    if op["type"] in ("CUT", "TRIM") and params.get("precision", "frame") not in ("frame", "keyframe", "auto"):
+        return err("INVALID_REQUEST", "precision: must be one of ['frame', 'keyframe', 'auto']")
+    if (req.get("options") or {}).get("segment_cache") and not (op["type"] == "CUT" and params.get("precision", "frame") == "frame"):
+        return err("INVALID_REQUEST", "options.segment_cache: a CUT with precision frame only")
+    stinger = (params.get("transition") or {}).get("stinger") if (params.get("transition") or {}).get("type") == "stinger" else None
+    if stinger is not None and kinds.get(stinger) != "video":
+        return err("DEPENDENCY_ERROR", "transition.stinger must reference a video source", {"reason": "kind_mismatch"})
+    if op["type"] == "CONDENSE":
+        segs = sorted(params.get("segments") or [], key=lambda x: x["start"])
+        if any(b["start"] < a["end"] for a, b in zip(segs, segs[1:])):
+            return err("INVALID_TIME_RANGE", "segments overlap", {"reason": "overlap"})
+        if any(x["label"] not in (params.get("rules") or {}) for x in segs):
+            return err("INVALID_REQUEST", "no rule for a label", {"reason": "missing_rule"})
+        if any(x["end"] > 16.0 + 0.1 for x in segs):
+            return err("INVALID_TIME_RANGE", "segment beyond the input duration")
+    if op["type"] == "PUNCH_IN" and not (1 < float(params.get("scale", 0)) <= 4 and params["end"] <= 16.0 + 0.1):
+        return err("INVALID_REQUEST", "PUNCH_IN scale / range")
     if op["type"] in ("CUT", "TRIM"):
         ranges = params.get("keep") if op["type"] == "CUT" else [{"start": params.get("start"), "end": params.get("end")}]
         for r in ranges or []:
@@ -246,6 +291,21 @@ def main() -> int:
         dur = round(sum(in_dur(i) for i in inputs) - tr * (len(inputs) - 1), 3)
     elif op["type"] == "IMAGE_INSERT":
         dur = round(float(params["duration"]), 3)
+    elif op["type"] == "CONDENSE":   # ADR-099: what the rules keep (speed rules shorten their span); default for the gaps
+        def rule_of(r):
+            return r if isinstance(r, str) else "speed"
+        segs = sorted(params["segments"], key=lambda x: x["start"])
+        total, t = 0.0, 0.0
+        default = params.get("default", "keep")
+        for sg in segs:
+            if sg["start"] > t and default != "cut":
+                total += sg["start"] - t
+            r = params["rules"][sg["label"]]
+            total += 0.0 if r == "cut" else (sg["end"] - sg["start"]) / (float(r["speed"]) if isinstance(r, dict) else 1.0)
+            t = sg["end"]
+        if default != "cut":
+            total += max(0.0, in_dur(inputs[0]) - t)
+        dur = round(total, 3)
     elif op["type"] == "SPEED":
         f = params["factor"]
         f = (float(f.split("/")[0]) / float(f.split("/")[1])) if isinstance(f, str) else float(f)
@@ -262,6 +322,7 @@ def main() -> int:
     if MODE == "hash_mismatch":
         digest = "0" * 64
     probe = {"file": out_path, "duration": dur, "size_bytes": len(payload), "video": {"codec": "h264", "width": 640, "height": 360, "fps": 30.0}, "audio": {"codec": "aac"}}
+    marks = [{"source": sid, **s_["ai_generated"], "provenance": "DECLARED"} for s_ in proj.get("sources") or [] for sid in [s_["id"]] if s_.get("ai_generated")]
     observation = None if MODE == "no_observation" else {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.9.0-fake", "data": probe}
     timeline = {"duration_known": True, "duration": {"seconds": f"{dur:.6f}", "rational": f"{int(round(dur * 1000))}/1000"},
                 "tracks": [{"id": "V1", "kind": "video", "segments": [{"source": inputs[0], "source_range": {"start": {"seconds": "0.000000"}, "end": {"seconds": f"{dur:.6f}"}}, "speed": "1/1"}]}]}
@@ -274,6 +335,12 @@ def main() -> int:
     out_doc = {"id": outs[0]["id"], "operation": op["id"], "path": out_path, "delivered": delivered}
     if delivered:
         out_doc.update({"sha256": digest, "size": len(payload), "timeline": timeline, "observation": observation})
+        if marks:   # ADR-099: contract.ai_generated.mark
+            out_doc.update({"marks": [dict(m, mark="AI_GENERATED") for m in marks], "ai_generated": marks})
+        if outs[0].get("max_size"):
+            out_doc["size_limit"] = {"limit_bytes": 25_000_000, "bytes": len(payload), "ratio": 0.95, "attempts": [], "two_pass": True}
+    if (req.get("options") or {}).get("segment_cache"):
+        record["segments"] = {"mode": "segments", "join": "stream_copy", "parts": [], "encoded": len(params["keep"]), "reused": 0}
     doc = {"ok": True, **base, "status": "reused" if reused else "completed", "command": "run", "engine": {"ffmpeg-skill": "0.9.0-fake", "ffmpeg": "fake", "ffprobe": "fake"},
            "execution": {"status": "completed", "started_at": "2026-09-05T00:00:00Z", "finished_at": "2026-09-05T00:00:01Z", "work_dir": os.path.join(ws, ".video-editing", "work"),
                          "operations": [record], "outputs": [out_doc]}}
