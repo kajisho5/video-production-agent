@@ -48,7 +48,9 @@ FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tone
            "acompressor": ["acompressor"], "alimiter": ["alimiter"], "agate": ["agate"], "highpass": ["highpass"], "deesser": ["deesser"],   # highpass / deesser: VOICE_CLEANUP (ADR-068)
            # filters the Phase 3 finishing Skills' operations need (ADR-031): motion-graphics elements, LUTs, subtitle burn-in, qc measurements
            "subtitles": ["subtitles"], "drawtext": ["drawtext"], "drawbox": ["drawbox"], "overlay": ["overlay"], "color": ["color"], "scale": ["scale"],
-           "colorchannelmixer": ["colorchannelmixer"], "chromakey": ["chromakey"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"]}
+           "colorchannelmixer": ["colorchannelmixer"], "chromakey": ["chromakey"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"],
+           # media-analysis 0.1.10+ (edit_style, tool media-analysis/style) declares it; probed so the pinned contract's names all resolve (ADR-097 addendum 6)
+           "edgedetect": ["edgedetect"]}
 AI_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 

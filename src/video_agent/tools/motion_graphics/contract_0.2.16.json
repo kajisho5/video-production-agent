@@ -4,7 +4,7 @@
   "id": "motion-graphics",
   "name": "motion-graphics-skill",
   "package": "motion-graphics-skill",
-  "version": "0.2.10",
+  "version": "0.2.16",
   "contract_version": 1,
   "kind": "execution",
   "role": "motion graphics rendering (execution); not design, not decision",
@@ -28,7 +28,7 @@
     {
       "tool_id": "motion-graphics/run",
       "skill_id": "motion-graphics",
-      "version": "0.2.10",
+      "version": "0.2.16",
       "role": "execution",
       "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, video-on-video picture-in-picture/chroma-key overlays, solid-colour rectangles, with fade animation) onto a video and write a validated artifact with provenance",
       "inputs": [
@@ -45,9 +45,11 @@
         "countdown",
         "hook",
         "image_overlay",
+        "logo",
         "lower_third",
         "meme",
         "progress",
+        "rendered_layer",
         "shape",
         "sticker",
         "text_overlay",
@@ -103,6 +105,12 @@
       "element_type": "image_overlay"
     },
     {
+      "id": "motion_graphics.logo",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "motion-graphics/run",
+      "element_type": "logo"
+    },
+    {
       "id": "motion_graphics.lower_third",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "motion-graphics/run",
@@ -119,6 +127,12 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "motion-graphics/run",
       "element_type": "progress"
+    },
+    {
+      "id": "motion_graphics.rendered_layer",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "motion-graphics/run",
+      "element_type": "rendered_layer"
     },
     {
       "id": "motion_graphics.shape",
@@ -746,6 +760,128 @@
       ],
       "deterministic": "content_equivalent",
       "generator": "ffmpeg-skill/background"
+    },
+    {
+      "type": "logo",
+      "description": "The active theme's logo (options.themes / options.theme) composited at a position over the element's window (ffmpeg-skill/overlay --image). Position, margin, width and opacity default to the theme's logo settings.",
+      "tool": "ffmpeg-skill/overlay",
+      "animation": "none",
+      "parameters": {
+        "position": {
+          "type": "position",
+          "required": false,
+          "default": "top-right"
+        },
+        "margin": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 2000,
+          "default": 24
+        },
+        "scale_width": {
+          "type": "integer",
+          "required": false,
+          "min": 1,
+          "max": 8192
+        },
+        "scale_percent": {
+          "type": "number",
+          "required": false,
+          "min": 0.1,
+          "max": 100.0
+        },
+        "opacity": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0
+        }
+      },
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:overlay",
+        "filter:scale",
+        "filter:colorchannelmixer",
+        "encoder:libx264"
+      ],
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "rendered_layer",
+      "description": "Place a pre-rendered clip with an alpha channel (e.g. an animated lower third exported as ProRes 4444) at a position over the element's window (ffmpeg-skill/overlay --video --place). in_duration seconds from the clip's start play at the element's start, out_duration seconds from its end finish at the element's end, and the part between them (the loop) is repeated to fill the rest when loop is true, or played once and cut when false. The layer must decode with alpha (a yuva/rgba pixel format: ProRes 4444, QuickTime Animation, PNG in MOV); a VP9 alpha WebM is refused because overlay decodes it without its alpha. No fade or other motion of its own: the animation is the clip's.",
+      "tool": "ffmpeg-skill/overlay",
+      "animation": "none",
+      "parameters": {
+        "video_path": {
+          "type": "path",
+          "required": true
+        },
+        "position": {
+          "type": "position",
+          "required": false,
+          "default": "center"
+        },
+        "margin": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 2000,
+          "default": 24
+        },
+        "scale_width": {
+          "type": "integer",
+          "required": false,
+          "min": 1,
+          "max": 8192
+        },
+        "scale_percent": {
+          "type": "number",
+          "required": false,
+          "min": 0.1,
+          "max": 100.0
+        },
+        "opacity": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0
+        },
+        "in_duration": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 60.0,
+          "default": 0.0
+        },
+        "out_duration": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 60.0,
+          "default": 0.0
+        },
+        "loop": {
+          "type": "boolean",
+          "required": false,
+          "default": true
+        }
+      },
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:overlay",
+        "filter:scale",
+        "filter:colorchannelmixer",
+        "encoder:libx264",
+        "ffmpeg-skill-flag:overlay.place"
+      ],
+      "deterministic": "content_equivalent"
     }
   ],
   "unsupported_element_types": [],
@@ -960,6 +1096,425 @@
       "ffmpeg-skill/background": "shape.color as 0xRRGGBB (a name is converted first); no @alpha: the shape's transparency is its opacity parameter (ADR-22)"
     }
   },
+  "style_presets": {
+    "names": [
+      "corporate",
+      "minimal",
+      "neon",
+      "news",
+      "swiss",
+      "wafu"
+    ],
+    "roles": [
+      "primary",
+      "secondary",
+      "background",
+      "text"
+    ],
+    "presets": [
+      {
+        "name": "corporate",
+        "description": "Corporate: white text on a navy plate, blue primary, a short fade.",
+        "roles": {
+          "primary": "0B5FFF",
+          "secondary": "00A3E0",
+          "background": "0F1C2E",
+          "text": "FFFFFF"
+        },
+        "font_id": "system:dejavu-sans",
+        "box": true,
+        "box_opacity": 0.8,
+        "border_width": 0,
+        "margin": 48,
+        "fade": 0.3
+      },
+      {
+        "name": "minimal",
+        "description": "Minimal: white text with no plate and no outline, a wide margin, a slow fade.",
+        "roles": {
+          "primary": "FFFFFF",
+          "secondary": "BBBBBB",
+          "background": "000000",
+          "text": "FFFFFF"
+        },
+        "font_id": "system:dejavu-sans",
+        "box": false,
+        "box_opacity": 0.0,
+        "border_width": 0,
+        "margin": 64,
+        "fade": 0.4
+      },
+      {
+        "name": "neon",
+        "description": "Neon: near-white text on a dark violet plate, cyan primary, magenta secondary, a quick fade.",
+        "roles": {
+          "primary": "00E5FF",
+          "secondary": "FF2BD6",
+          "background": "0B0221",
+          "text": "F5F5F5"
+        },
+        "font_id": "system:dejavu-sans",
+        "box": true,
+        "box_opacity": 0.6,
+        "border_width": 2,
+        "margin": 40,
+        "fade": 0.25
+      },
+      {
+        "name": "news",
+        "description": "News: white text on a dark plate, red primary, yellow secondary, a tight margin, no fade.",
+        "roles": {
+          "primary": "C8102E",
+          "secondary": "FFD200",
+          "background": "101820",
+          "text": "FFFFFF"
+        },
+        "font_id": "system:dejavu-sans",
+        "box": true,
+        "box_opacity": 0.85,
+        "border_width": 0,
+        "margin": 32,
+        "fade": null
+      },
+      {
+        "name": "swiss",
+        "description": "Swiss / international style: black text on a solid white plate, one red accent, no fade.",
+        "roles": {
+          "primary": "E30613",
+          "secondary": "000000",
+          "background": "FFFFFF",
+          "text": "111111"
+        },
+        "font_id": "system:dejavu-sans",
+        "box": true,
+        "box_opacity": 0.95,
+        "border_width": 0,
+        "margin": 48,
+        "fade": null
+      },
+      {
+        "name": "wafu",
+        "description": "Wafu (Japanese-inspired): off-white text on an ink-black plate, crimson primary, gold secondary, a serif face, a slow fade. A colour and type bundle only: it changes no line breaking or other regional behaviour.",
+        "roles": {
+          "primary": "B7282E",
+          "secondary": "C9A063",
+          "background": "1E1E1E",
+          "text": "F7F3E8"
+        },
+        "font_id": "system:dejavu-serif",
+        "box": true,
+        "box_opacity": 0.7,
+        "border_width": 0,
+        "margin": 56,
+        "fade": 0.5
+      }
+    ],
+    "targets": {
+      "bug": {
+        "text_color": "role:text"
+      },
+      "chapter": {
+        "primary_color": "role:primary"
+      },
+      "countdown": {
+        "primary_color": "role:primary"
+      },
+      "hook": {
+        "text_color": "role:text",
+        "primary_color": "role:primary"
+      },
+      "image_overlay": {
+        "margin": "margin",
+        "animation": "fade"
+      },
+      "logo": {
+        "margin": "margin"
+      },
+      "lower_third": {
+        "text_color": "role:text",
+        "primary_color": "role:primary"
+      },
+      "meme": {},
+      "progress": {
+        "primary_color": "role:primary"
+      },
+      "rendered_layer": {
+        "margin": "margin"
+      },
+      "shape": {
+        "margin": "margin"
+      },
+      "sticker": {
+        "primary_color": "role:primary"
+      },
+      "text_overlay": {
+        "font_color": "role:text",
+        "border_color": "role:background",
+        "box": "box",
+        "box_color": "box_color",
+        "font": "font_id",
+        "border_width": "border_width",
+        "margin": "margin",
+        "animation": "fade"
+      },
+      "title": {
+        "text_color": "role:text",
+        "primary_color": "role:primary"
+      },
+      "video_overlay": {
+        "margin": "margin"
+      }
+    },
+    "request_fields": {
+      "element": "style (a preset name; overrides options.style for that element)",
+      "document": "options.style (the preset for every element without its own style)",
+      "brand_kit": "options.brand_kit {primary?, secondary?, background?, text?}: opaque RRGGBB or a colour name"
+    },
+    "precedence": "an explicit parameter > a brand_kit role > the preset's role; a preset fills only optional parameters the request left out",
+    "notes": [
+      "box_color is the background role at the preset's box_opacity (ffmpeg-skill/overlay takes @alpha)",
+      "a preset supplies no margin when options.platform is set (the destination's safe zone applies)",
+      "a preset fade is applied to text_overlay / image_overlay only, and only when the element has no animation; a preset fade longer than half the element's window is left out and listed in style.skipped",
+      "meme takes nothing from a preset: its colours, position and size are fixed by the template",
+      "no new animation: a preset never adds one an element type does not already offer"
+    ],
+    "response": "each styled element carries style {preset, brand_kit, applied: {parameter: preset|brand_kit}, skipped?: [...]} in validate/plan output and in the run response's timeline"
+  },
+  "text_fit": {
+    "applies_to": [
+      "lower_third",
+      "title"
+    ],
+    "request_field": "elements[].fit",
+    "fields": {
+      "width": {
+        "type": "integer",
+        "required": true,
+        "min": 16,
+        "max": 7680,
+        "description": "the box width in px the template's text (with its inner padding) must stay within"
+      },
+      "max_lines": {
+        "type": "integer",
+        "required": false,
+        "min": 1,
+        "max": 6,
+        "default": 2,
+        "description": "lines per text before it counts as overflow"
+      },
+      "min_scale": {
+        "type": "number",
+        "required": false,
+        "min": 0.3,
+        "max": 1.0,
+        "default": 0.6,
+        "description": "the smallest size multiplier tried"
+      },
+      "profile": {
+        "type": "string",
+        "required": false,
+        "enum": [
+          "ja-kinsoku"
+        ],
+        "description": "an opt-in regional line-breaking profile"
+      },
+      "lang": {
+        "type": "string",
+        "required": false,
+        "description": "language tag of the text (BCP 47, e.g. en, ar, ja), passed to ffmpeg-skill/graphics --lang"
+      }
+    },
+    "profiles": {
+      "ja-kinsoku": "Japanese line-start rules: small kana, the prolonged sound mark and the middle dot do not start a line (on top of the default rules, which never start a line with closing punctuation or end one with opening punctuation)"
+    },
+    "method": [
+      "sizes tried: 1.0 down to min_scale in steps of 0.05 (ffmpeg-skill/graphics --scale); first one line per text, then up to max_lines",
+      "width: a per-character advance table in em, rounded up (a drawn line can be narrower than the estimate, not wider)",
+      "breaks: after spaces, hyphens and slashes; before and after ideographs, kana and Hangul; never before closing punctuation or after opening punctuation; never inside a run of an alphabetic script (UAX #14, simplified)",
+      "a run with no break that is wider than the box at the smallest size is broken between characters (forced_break), never cut",
+      "direction: from the first strong character (rtl for Arabic, Hebrew); the lines are given in logical order and laid out by ffmpeg-skill"
+    ],
+    "layout": {
+      "lower_third": {
+        "font_size_of_short_side": {
+          "name": 0.055,
+          "title": 0.038
+        },
+        "inner_padding_of_short_side": 0.035
+      },
+      "title": {
+        "font_size_of_short_side": {
+          "title": 0.11,
+          "subtitle": 0.045
+        },
+        "inner_padding_of_short_side": 0.0
+      }
+    },
+    "result": "operations[].parameters.fit (and plan timeline[].fit_result): scale, texts {lines, font_size, direction, widest_px}, pad, fits, overflow, forced_break, box_width, profile, lang; a warning when it does not fit max_lines or was broken between characters",
+    "requires": "ffmpeg-skill/graphics --scale and --wrap (and --lang when fit.lang is given); otherwise refused before rendering (TOOL_ERROR)",
+    "csv": "motion-graphics lower-thirds <file.csv> --video V --output O --fit-width N prints a request with one fitted lower third per row (columns: name, title, start, end, id, lang, profile)",
+    "not_provided": [
+      "phrase-level breaks from a dictionary or model (e.g. for Japanese, Thai): only the rules above",
+      "right-to-left reordering by this skill: ffmpeg-skill's text renderer lays out each line by its direction"
+    ]
+  },
+  "reserved_regions": {
+    "request_field": "options.reserved_regions",
+    "shape": {
+      "end_screen?": {
+        "duration?": "5..20 s, default 20 (the last seconds of the video)",
+        "elements?": "[{id?, x, y, width, height}] px, 1 to 4: the positions the editor sets in YouTube Studio",
+        "layout?": "default: the stated layout below for the frame's aspect (used when elements is not given)"
+      },
+      "cards?": [
+        {
+          "time": "s",
+          "duration?": "teaser length, default 5 s",
+          "region?": "{x, y, width, height} px; default the top-right area",
+          "id?": "str"
+        }
+      ],
+      "on_overlap?": "report (default: a warning per overlap) | refuse (INVALID_REQUEST, details.reason reserved_region_overlap, before rendering)"
+    },
+    "default_end_screens": {
+      "16:9": [
+        {
+          "id": "video_1",
+          "x": 0.08,
+          "y": 0.3,
+          "w": 0.3,
+          "shape": "16:9"
+        },
+        {
+          "id": "video_2",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 0.3,
+          "shape": "16:9"
+        },
+        {
+          "id": "subscribe",
+          "x": 0.44,
+          "y": 0.66,
+          "w": 0.12,
+          "shape": "1:1"
+        }
+      ],
+      "9:16": [
+        {
+          "id": "video_1",
+          "x": 0.1,
+          "y": 0.34,
+          "w": 0.8,
+          "shape": "16:9"
+        },
+        {
+          "id": "subscribe",
+          "x": 0.4,
+          "y": 0.62,
+          "w": 0.2,
+          "shape": "1:1"
+        }
+      ],
+      "1:1": [
+        {
+          "id": "video_1",
+          "x": 0.15,
+          "y": 0.22,
+          "w": 0.7,
+          "shape": "16:9"
+        },
+        {
+          "id": "subscribe",
+          "x": 0.42,
+          "y": 0.7,
+          "w": 0.16,
+          "shape": "1:1"
+        }
+      ]
+    },
+    "default_end_screen_units": "x and w are fractions of the frame width, y of its height; a 16:9 element's height is w x 9/16, a 1:1 element's is w; aspect class: width/height >= 1.2 is 16:9, <= 0.83 is 9:16, otherwise 1:1",
+    "default_card_area": {
+      "x": 0.68,
+      "y": 0.02,
+      "w": 0.3,
+      "h": 0.1
+    },
+    "element_boxes": "exact for a shape, and for an image / video / rendered layer of probed size with an explicit margin (scale_percent wins over scale_width, as in the renderer); unmeasured (no box: left out of the check and of a refusal, listed in `unmeasured`) for an image / video / layer whose size could not be probed; estimated from the template layout and the text_fit width table otherwise (the result says which)",
+    "result": "response.reserved_regions {on_overlap, regions [{kind, id, box, start, end, source}], overlaps [{element_id, type, region, time, element_box, area, precision}], element_boxes, unmeasured [element id]}; one warning per overlap and one per unmeasured element",
+    "note": "this skill moves nothing: it reports (or refuses); where a graphic goes is the caller's decision"
+  },
+  "themes": {
+    "file_schema": "motion-graphics/theme@1",
+    "file_shape": {
+      "schema?": "motion-graphics/theme@1",
+      "name?": "id",
+      "colors": {
+        "primary": "RRGGBB or a colour name",
+        "secondary": "RRGGBB or a colour name",
+        "background": "RRGGBB or a colour name",
+        "text": "RRGGBB or a colour name"
+      },
+      "font?": "{font_id} | {font_file} (relative to the theme file)",
+      "logo?": {
+        "path": "PNG/JPG, relative to the theme file",
+        "position?": "a named position",
+        "margin?": "px",
+        "scale_width?": "px",
+        "opacity?": "0..1"
+      },
+      "spacing?": {
+        "margin": "px"
+      },
+      "base_style?": "a style_presets name"
+    },
+    "request_fields": {
+      "options.themes": "{name: theme file}, 1 to 16",
+      "options.theme": "the theme to use (optional when there is one)"
+    },
+    "applies": [
+      "colours: the role colours of every element (style_presets.targets), as a brand kit's would be",
+      "spacing.margin: every margin target",
+      "font: text_overlay's font and every graphics template's (--font / --font-file)",
+      "logo: the `logo` element type",
+      "base_style: the preset for the settings the theme does not give"
+    ],
+    "precedence": "an explicit parameter > the theme > its base_style preset; options.brand_kit and options.style are refused together with a theme",
+    "contrast": {
+      "method": "(L1 + 0.05) / (L2 + 0.05) of the relative luminances of the sRGB colours, lighter over darker",
+      "template_plate": "101418",
+      "pairs": [
+        {
+          "foreground": "text",
+          "background": "background",
+          "minimum": 4.5,
+          "drawn_as": "text on the theme background (text_overlay box, shape plates)"
+        },
+        {
+          "foreground": "primary",
+          "background": "background",
+          "minimum": 3.0,
+          "drawn_as": "primary accents on the theme background (graphical objects)"
+        },
+        {
+          "foreground": "text",
+          "background": "101418",
+          "minimum": 4.5,
+          "drawn_as": "lower_third name on the template's dark plate"
+        },
+        {
+          "foreground": "primary",
+          "background": "101418",
+          "minimum": 4.5,
+          "drawn_as": "lower_third second line, drawn in primary on the template's dark plate"
+        }
+      ],
+      "below_minimum": "a warning (response.warnings) and ok: false in response.theme.contrast; colours are never changed"
+    },
+    "result": "response.theme {name, label, file {sha256, size}, colors, font, logo, margin, base_style, contrast}; operations[].font_used when ffmpeg-skill reports the font it drew with",
+    "validate": "`validate` touches no files, so it checks options.themes / options.theme structurally and applies no theme",
+    "check_command": "motion-graphics theme-check <theme.json> --json prints the validated theme and its contrast report"
+  },
   "positions": {
     "named": [
       "top-left",
@@ -1067,6 +1622,9 @@
         "crf",
         "overwrite",
         "platform",
+        "scale",
+        "lang",
+        "wrap",
         "bottom",
         "duration",
         "text",
@@ -1103,7 +1661,8 @@
         "quality",
         "crf",
         "overwrite",
-        "platform"
+        "platform",
+        "place"
       ]
     },
     "required_flags": {
@@ -1174,11 +1733,15 @@
     "optional_flags": {
       "graphics": [
         "overwrite",
-        "platform"
+        "platform",
+        "scale",
+        "lang",
+        "wrap"
       ],
       "overlay": [
         "overwrite",
-        "platform"
+        "platform",
+        "place"
       ]
     },
     "template_requirements": {
@@ -1256,7 +1819,7 @@
       "elements": [
         {
           "id": "id",
-          "type": "bug|chapter|countdown|hook|image_overlay|lower_third|meme|progress|shape|sticker|text_overlay|title|video_overlay",
+          "type": "bug|chapter|countdown|hook|image_overlay|logo|lower_third|meme|progress|rendered_layer|shape|sticker|text_overlay|title|video_overlay",
           "start": 0,
           "end": 1,
           "parameters": {
@@ -1275,12 +1838,52 @@
         "crf?": 18,
         "preset?": "medium",
         "audio_stream?": 0,
-        "platform?": "tiktok"
+        "platform?": "tiktok",
+        "style?": "news",
+        "reserved_regions?": {
+          "end_screen?": {
+            "duration?": 20
+          },
+          "cards?": [
+            {
+              "time": 30
+            }
+          ],
+          "on_overlap?": "report"
+        },
+        "themes?": {
+          "brand_a": "themes/brand_a.json"
+        },
+        "theme?": "brand_a",
+        "brand_kit?": {
+          "primary?": "RRGGBB",
+          "secondary?": "RRGGBB",
+          "background?": "RRGGBB",
+          "text?": "RRGGBB"
+        }
+      },
+      "elements[].style?": "a style_presets name",
+      "elements[].fit?": {
+        "width": 600,
+        "max_lines?": 2,
+        "min_scale?": 0.6,
+        "profile?": "ja-kinsoku",
+        "lang?": "ja"
       }
     }
   },
   "response": {
     "schema": "motion-graphics/response@1",
+    "conditional": {
+      "reserved_regions": {
+        "in": [
+          "run",
+          "plan"
+        ],
+        "when": "options.reserved_regions is given",
+        "shape": "see reserved_regions.result"
+      }
+    },
     "success": {
       "run": {
         "ok": true,
@@ -1299,6 +1902,7 @@
         "status": "ok",
         "dry_run": true,
         "plan": "{document_id, video, output: {path}, timeline: [element + planned tool/asset/font]}",
+        "warnings": "[str] (e.g. one per reserved-region overlap; empty when there is nothing to report)",
         "note": "produced by `plan`, or `run --dry-run`; writes no media; has no output/operations/provenance keys"
       },
       "validate": {

@@ -10,6 +10,11 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "TOOL_MISSING":   {"action": "BLOCK", "hint": "run `video-agent doctor`; ffmpeg or ffmpeg-skill is not available"},
     "INPUT_MISSING":  {"action": "BLOCK", "hint": "input file disappeared or is outside the allowed roots"},
     "INVALID_ARGS":   {"action": "BLOCK", "hint": "compiler produced arguments the tool rejects (agent bug, not retried)"},
+    # ADR-097 addendum 6 (color-grading-skill 0.5.0): the Skill refuses the source itself, e.g. an alpha plane its re-encode would drop
+    # (UNSUPPORTED_FORMAT, alpha_not_preserved). Not an agent bug and not retryable: the same source fails the same way
+    "UNSUPPORTED_MEDIA": {"action": "BLOCK", "hint": "the Skill refuses this source for the operation (see the error's reason, e.g. alpha_not_preserved: an alpha "
+                                                     "plane a re-encode would drop); not retried -- flatten or export the source first, or use an operation that "
+                                                     "keeps it (RETAG / STRIP_DOVI)"},
     "ENCODER_FAILED": {"action": "RETRY_ALT", "hint": "retry once with frame-accurate mode", "alt_args": {"ffmpeg-skill/cut": {"accurate": True}}},
     "TIMEOUT":        {"action": "RETRY_LONGER", "hint": "retry once with a doubled timeout"},
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},

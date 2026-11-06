@@ -5,6 +5,7 @@ when VIDEO_AGENT_COLOR_GRADING_DIR names a checkout (and VIDEO_AGENT_FFMPEG_SKIL
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
@@ -24,10 +26,13 @@ from video_agent.tools.skill_process import RECOVERY_CLASS, CliSkill  # noqa: E4
 FAKE = str(Path(__file__).resolve().parent / "fake_color_grading.py")
 
 
-def fake_video(tmp: str, name: str = "clip.mp4", hdr: bool = False) -> str:
+def fake_video(tmp: str, name: str = "clip.mp4", hdr: bool = False, pix_fmt: str = "") -> str:
     p = Path(tmp) / "src" / name
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(json.dumps({"fake": True, "duration": 16.0, "video": True, "channels": 2, "hdr": hdr, "lufs": -11.0}).encode())
+    meta = {"fake": True, "duration": 16.0, "video": True, "channels": 2, "hdr": hdr, "lufs": -11.0}
+    if pix_fmt:
+        meta["pix_fmt"] = pix_fmt
+    p.write_bytes(json.dumps(meta).encode())
     return str(p)
 
 
@@ -64,14 +69,15 @@ class ColorGradingAdapterTests(unittest.TestCase):
 
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
+        # 0.5.0: OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE are in the contract; the agent does not plan them (finishing.COLOR_OPERATIONS, ADR-097 addendum 6)
         self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
-                         ("0.4.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
+                         ("0.5.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
         # color-grading-skill #23: WHITE_BALANCE is no longer an unsupported type but an `operation_aliases` entry (temperature / tint of
         # PRIMARY_CORRECTION); the agent lowers only declared operation types, so it keeps sending PRIMARY_CORRECTION itself
         self.assertEqual(ad.unsupported, []); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
         self.assertEqual([(a["type"], a["alias_of"]) for a in ad.contract["operation_aliases"]], [("WHITE_BALANCE", "PRIMARY_CORRECTION")])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.4.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.5.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
@@ -189,6 +195,35 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertEqual((r.exit_code, r.data["error"]["code"], r.data["error"]["retryable"], r.data["error"]["details"]["reason"]), (124, "CANCELLED", True, "timeout"))
         self.assertEqual(classify_error(r), "TIMEOUT")
 
+    def test_alpha_source_refusal_blocks_with_its_own_recovery_class(self):
+        """color-grading-skill 0.5.0 (its ADR-25): an alpha source is refused for every re-encoding operation with UNSUPPORTED_FORMAT /
+        alpha_not_preserved (exit 6). The agent keeps the Skill's code, exit code and details, maps it to UNSUPPORTED_MEDIA (BLOCK, not
+        INVALID_ARGS: the compiler did nothing wrong) and never retries it; RETAG, a stream copy, still runs on the same source (ADR-097 addendum 6)."""
+        from video_agent.execution.recovery import RECOVERY_TABLE
+        self.assertEqual(pinned_contract()["alpha"]["refused_for"], ["HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE"])
+        self.assertEqual(pinned_contract()["errors"]["exit_codes"]["UNSUPPORTED_FORMAT"], 6)
+        self.assertEqual(RECOVERY_TABLE["UNSUPPORTED_MEDIA"]["action"], "BLOCK")
+        src = fake_video(self.tmp, "alpha.mp4", pix_fmt="yuva444p10le")
+        ad = self._adapter()
+        out = str(Path(self.ws) / "ops" / "01_correct" / "alpha_correct.mp4")
+        op = Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_correct", "exposure": 0.5}, inputs=["a"], outputs=["a_correct"], id="op_alpha")
+        r = ad.run(op, {"a": src, "a_correct": out}, timeout=30)
+        self.assertFalse(r.ok); self.assertIsNone(r.output)
+        e = r.data["error"]
+        self.assertEqual((r.exit_code, e["code"], e["retryable"], e["recovery_class"]), (6, "UNSUPPORTED_FORMAT", False, "UNSUPPORTED_MEDIA"))
+        self.assertEqual((e["details"]["reason"], e["details"]["pix_fmt"]), ("alpha_not_preserved", "yuva444p10le"))
+        self.assertEqual(classify_error(r), "UNSUPPORTED_MEDIA")
+        nxt = next_attempt(r, 1, 3, 30)
+        self.assertEqual((nxt["action"], nxt["class"]), ("BLOCK", "UNSUPPORTED_MEDIA"))
+        self.assertIn("alpha", nxt["reason"])
+        self.assertFalse(os.path.exists(out), "a refused call leaves no output behind")
+        # any other UNSUPPORTED_FORMAT keeps the shared mapping (INVALID_ARGS)
+        other = ad._fail(op, 1, False, 0.0, 6, "UNSUPPORTED_FORMAT", "container", False, {"reason": "container"})
+        self.assertEqual(other.data["error"]["recovery_class"], RECOVERY_CLASS["UNSUPPORTED_FORMAT"])
+        # RETAG keeps the alpha (stream copy): not refused
+        ok = ad.run(self._op(), {"a": src, "a_retag": str(Path(self.ws) / "ops" / "02_retag" / "alpha_retag.mp4")}, timeout=30)
+        self.assertTrue(ok.ok, ok.data)
+
     def test_security_boundary(self):
         ad = self._adapter(); paths = self._paths()
         log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_CG_CALLS"] = log
@@ -204,6 +239,42 @@ class ColorGradingAdapterTests(unittest.TestCase):
             self.assertIn(k, ad.forbidden)
         with self.assertRaises(ToolError):
             ad.measure("color-grading/run", {})
+
+
+# color-grading-skill 0.5.0 makes MATCH_CAMERA and LEGALIZE unsupported below this ffmpeg-skill release: its `color --lut` converts to RGB with
+# BT.709 and back with BT.601 before it (capability ffmpeg-skill/color:lut-bt709-legs, read from the version; color-grading-skill ADR-23 / ADR-24)
+LUT_LEGS_FIXED_IN = (3, 1, 6)
+
+
+def engine_version(engine_dir: str) -> Tuple[int, ...]:
+    """The located ffmpeg-skill's release, from its own static contract (as the CI log line prints it)."""
+    out = subprocess.run([sys.executable, str(Path(engine_dir) / "scripts" / "_contract.py"), "--json", "--static"], capture_output=True, text=True, check=True).stdout
+    return tuple(int(p) for p in json.loads(out)["skill"]["version"].split(".")[:3])
+
+
+def expected_unavailable(engine_dir: str) -> List[str]:
+    """What color-grading-skill 0.5.0's doctor must report unavailable here, worked out independently of the doctor: OCIO_TRANSFORM when
+    the optional PyOpenColorIO extra is not importable by the Python the Skill runs on, MATCH_CAMERA / LEGALIZE when ffmpeg-skill is older
+    than 3.1.6. Nothing else."""
+    out = [] if importlib.util.find_spec("PyOpenColorIO") else ["OCIO_TRANSFORM"]
+    if engine_version(engine_dir) < LUT_LEGS_FIXED_IN:
+        out += ["LEGALIZE", "MATCH_CAMERA"]
+    return sorted(out)
+
+
+def assert_doctor_healthy(tc: unittest.TestCase, doc: dict, engine_dir: str) -> None:
+    """The doctor is "ok" when nothing is expected unavailable, else "degraded" with exactly the expected operations unavailable and every
+    other operation supported (ADR-097 addendum 6: none of the three is planned by the agent). No problems either way; a doctor degraded for any
+    other reason, or not degraded when it should be, fails."""
+    tc.assertEqual(doc.get("problems") or [], [], doc.get("problems"))
+    want = expected_unavailable(engine_dir)
+    tc.assertEqual((doc["status"], sorted(doc.get("unavailable_operations") or [])), ("degraded" if want else "ok", want), doc.get("warnings"))
+    statuses = ColorGradingAdapter.operation_status(doc)
+    tc.assertEqual(sorted(t for t, s in statuses.items() if s != "supported"), want, statuses)
+    caps = doc["checks"]["capabilities"]
+    tc.assertEqual(caps["ffmpeg-skill/color:lut-bt709-legs"], "unsupported" if "LEGALIZE" in want else "supported")
+    ocio = doc["checks"]["ocio"]
+    tc.assertEqual((ocio["status"], ocio["optional"], ocio["needed_by"]), ("missing" if "OCIO_TRANSFORM" in want else "ok", True, ["OCIO_TRANSFORM"]))
 
 
 class ColorGradingRealSkillTests(unittest.TestCase):
@@ -225,7 +296,8 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
         self.assertEqual(ad.drift(), [], "the installed color-grading-skill contract drifted from the pinned one: re-verify the adapter")
         doc = ad.doctor()
-        self.assertEqual(doc["status"], "ok", doc.get("problems")); self.assertEqual(ad.operation_status(doc)["RETAG"], "supported")
+        assert_doctor_healthy(self, doc, self.engine)
+        self.assertEqual(ad.operation_status(doc)["RETAG"], "supported")
         paths = {"a": self.src, "a_retag": str(Path(ws) / "ops" / "01_retag" / "bars_retag.mp4")}
         r = ad.run(Operation(tool="color-grading/run", args={"operation": "RETAG", "input": "a", "output": "a_retag", "target": "bt709"}, inputs=["a"], outputs=["a_retag"], id="op_real"), paths, timeout=120)
         self.assertTrue(r.ok, r.data)
@@ -250,6 +322,26 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         params = r.data["operation"]["parameters"]
         self.assertEqual((params["exposure"], params["saturation"]), (0.5, 0.0))
         self.assertIn("input", r.data["operation"]["measurements"]); self.assertIn("output", r.data["operation"]["measurements"])
+
+    def test_real_alpha_source_refused(self):
+        """color-grading-skill 0.5.0 on real media: a ProRes 4444 source with an alpha plane is refused for PRIMARY_CORRECTION (UNSUPPORTED_FORMAT,
+        alpha_not_preserved, exit 6) before anything runs, and the agent blocks it as UNSUPPORTED_MEDIA (ADR-097 addendum 6)."""
+        if not (self.skill and self.engine and shutil.which("ffmpeg")):
+            self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
+        src = str(Path(self.tmp) / "src_alpha" / "key.mov")
+        os.makedirs(os.path.dirname(src), exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red@0.5:size=320x180:rate=25,format=yuva444p10le", "-t", "1",
+                        "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", src], check=True)
+        ws = str(Path(self.tmp) / "ws_alpha"); os.makedirs(ws, exist_ok=True)
+        ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
+        out = str(Path(ws) / "ops" / "01_correct" / "key_correct.mov")
+        r = ad.run(Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_correct", "format": "mov", "exposure": 0.5},
+                             inputs=["a"], outputs=["a_correct"], id="op_real_alpha"), {"a": src, "a_correct": out}, timeout=120)
+        self.assertFalse(r.ok, r.data)
+        e = r.data["error"]
+        self.assertEqual((r.exit_code, e["code"], e["retryable"], e["details"].get("reason"), e["recovery_class"]), (6, "UNSUPPORTED_FORMAT", False, "alpha_not_preserved", "UNSUPPORTED_MEDIA"))
+        self.assertEqual(next_attempt(r, 1, 3, 120)["action"], "BLOCK")
+        self.assertFalse(os.path.exists(out))
 
     def test_real_contract_vocabulary_every_parameter(self):
         """ADR-076 on the real color-grading-skill: the live contract's PRIMARY_CORRECTION declares exactly the colour parameters the agent's

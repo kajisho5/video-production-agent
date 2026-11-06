@@ -76,7 +76,9 @@ DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "execution", "document", 
               "provenance", "deterministic")
 DRIFT_TOOL_KEYS = ("role", "produces_output", "deterministic", "writes_media", "mutates_input", "input", "output", "delegates_to")
 # 0.1.9 (Dependabot CI bump), 0.1.10 / 0.1.11 (roadmap docs PRs, thumbnail-skill #24): version-only; re-pinned from the v0.1.11 tag (ADR-097).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.11.json")
+# 0.1.12 .. 0.1.15 (thumbnail-skill #25 .. #28): new tools render_batch / choose_frame / place_text / render_variants / render_layers and their
+# blocks; validate / extract_frame / render / generate_background unchanged. Re-pinned from the v0.1.15 tag (ADR-097 addendum 6).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.15.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

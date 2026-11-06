@@ -22,7 +22,7 @@ from pipeline_harness import clear_modes, pipeline_service, plan_and_render  # n
 from pipeline_harness import fake_media as pipeline_media  # noqa: E402
 from test_unit import FakeCaps, fake_media, make_service  # noqa: E402
 from video_agent.agent.editing import EditRequirementError, parse_edit_requirements  # noqa: E402
-from video_agent.agent.finishing import (COLOR_CURVES_PRESETS, ELEMENT_TYPES, MOTION_BASE, MOTION_KEYS, parse_color_requirements, parse_motion_requirements,  # noqa: E402
+from video_agent.agent.finishing import (COLOR_CURVES_PRESETS, ELEMENT_TYPES, MOTION_BASE, MOTION_KEYS, MOTION_NOT_PLANNED, parse_color_requirements, parse_motion_requirements,  # noqa: E402
                                          picture_size, placement_problems)
 from video_agent.execution.compiler import lower_graphics_render  # noqa: E402
 from video_agent.tools.motion_graphics.adapter import pinned_contract as motion_contract  # noqa: E402
@@ -276,8 +276,10 @@ class LoweringTests(unittest.TestCase):
     """video-editing lowering of the contract's ROTATE / FREEZE / REVERSE / IMAGE_INSERT (and the compiler's TRIM lowering)."""
 
     def test_every_declared_type_is_lowered(self):
+        from video_agent.tools.video_editing.lowering import NOT_LOWERED
         lw = Lowering(editing_contract())
-        self.assertEqual(lw.contract_only(), [])
+        self.assertEqual(lw.contract_only(), list(NOT_LOWERED))   # ADR-097 addendum 6: PUNCH_IN / CONDENSE pinned, not lowered yet
+        self.assertEqual(NOT_LOWERED, ("CONDENSE", "PUNCH_IN"))
         self.assertTrue({"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"} <= set(lw.supported_types()))
         for t in ("ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"):   # the agent-side keys stay inside what the contract declares
             self.assertTrue(set(ARGS[t]) - {"input", "output"} <= set(editing_contract()["operations"][t]["parameters"]), t)
@@ -1295,10 +1297,15 @@ class MotionGraphicsElementTests(unittest.TestCase):
     def test_vocabulary_matches_the_pinned_contract(self):
         """Every element type the contract offers has a key, and every parameter of it is reachable by its contract name."""
         c = motion_contract()
-        self.assertEqual(sorted(ELEMENT_TYPES), sorted(e["type"] for e in c["element_types"]))
-        self.assertEqual(sorted(ELEMENT_TYPES), sorted(c["tools"][0]["element_types"]))
+        # ADR-097 addendum 6: every declared type is either planned or listed as not planned yet, never both
+        self.assertEqual(sorted(ELEMENT_TYPES + MOTION_NOT_PLANNED), sorted(e["type"] for e in c["element_types"]))
+        self.assertEqual(sorted(ELEMENT_TYPES + MOTION_NOT_PLANNED), sorted(c["tools"][0]["element_types"]))
+        self.assertFalse(set(ELEMENT_TYPES) & set(MOTION_NOT_PLANNED))
         self.assertEqual(len(ELEMENT_TYPES), 13)   # ADR-078: shape (motion-graphics-skill 0.2.7)
+        self.assertEqual(MOTION_NOT_PLANNED, ("logo", "rendered_layer"))
         for e in c["element_types"]:
+            if e["type"] in MOTION_NOT_PLANNED:
+                continue
             base, main = MOTION_BASE[e["type"]]
             for name in e["parameters"]:
                 self.assertIn(base if name == main else f"{base}.{name}", MOTION_KEYS[e["type"]], (e["type"], name))

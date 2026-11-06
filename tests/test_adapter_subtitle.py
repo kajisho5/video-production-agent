@@ -98,12 +98,13 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.4.3")
+        self.assertEqual(a.version, "0.8.0")
         self.assertEqual(a.contract_version, "1.0.0")
         self.assertEqual(a.tools, {TOOL_GENERATE, TOOL_RENDER})
         self.assertTrue(a.supports(TOOL_RENDER) and not a.supports("subtitle/transcribe"))
         self.assertEqual(a.drift(), [])
-        self.assertEqual(a.formats, {"generate": ["srt", "vtt"], "render": ["srt"], "translate": ["srt", "vtt"], "mux": ["srt"]})   # 0.3.0: translate / mux (not wired, ADR-078)
+        # 0.3.0: translate / mux (not wired, ADR-078); 0.6.0: ttml / ebu-tt-d for generate / translate (not planned: agent/subtitles.FORMATS stays srt / vtt, ADR-097 addendum 6)
+        self.assertEqual(a.formats, {"generate": ["srt", "vtt", "ttml", "ebu-tt-d"], "render": ["srt"], "translate": ["srt", "vtt", "ttml", "ebu-tt-d"], "mux": ["srt"]})
         self.assertEqual(a.constraint_keys, ("max_chars_per_line", "max_lines", "min_duration", "max_duration", "reading_speed_cps"))
         for k in SKILL_FORBIDDEN_KEYS:
             self.assertIn(k, a.forbidden)
@@ -342,7 +343,7 @@ class RunTests(Base):
             self.assertTrue(r.ok, r.data)
             self.assertEqual(r.output, self.paths[key])
             d = r.data
-            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.4.3"})
+            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.8.0"})
             self.assertEqual(d["status"], "completed")
             self.assertEqual(d["operation_type"], "generate")
             self.assertEqual(d["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
@@ -354,7 +355,7 @@ class RunTests(Base):
             self.assertEqual(d["warnings"], [])
             self.assertEqual(d["commands"], [])
             self.assertEqual(r.commands, [])
-            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.4.3", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
+            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.8.0", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
             self.assertNotIn("engine", d)
             self.assertNotIn("observation", d)
             text = Path(r.output).read_text(encoding="utf-8")
