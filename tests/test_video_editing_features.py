@@ -226,7 +226,9 @@ class PlanTests(unittest.TestCase):
         res = svc.propose(self.a, silence={"min_seconds": 0.6})
         doc = res["document"]
         self.assertEqual((doc["applied"], [p["id"] for p in doc["proposals"]]), (False, ["p1"]))
-        self.assertTrue(Path(res["path"]).is_file()); self.assertTrue(str(Path(res["path"]).parent).startswith(self.tmp))
+        self.assertTrue(Path(res["path"]).is_file())
+        ws = os.path.realpath(self.tmp)   # both sides resolved the same way (Windows 8.3 short names vs long names)
+        self.assertEqual(os.path.commonpath([os.path.realpath(res["path"]), ws]), ws, "written inside the workspace")
         # nothing was cut by proposing; a plan without the approval cuts nothing of it
         with self.assertRaises(ValueError) as cm:
             svc.plan([self.a], "generic", user_requirements={"edit.condense": res["path"]})
@@ -292,7 +294,7 @@ class PlanTests(unittest.TestCase):
         a_id, b_id = list(d["assets"])
         cat = next(op for op in d["video"]["operations"] if op["type"] == "video.concat")
         self.assertEqual(cat["transition"], {"type": "stinger", "cut_point": 0.5, "cover": {"start": 0.4, "end": 0.8}})
-        self.assertEqual(cat["stinger"], str(st.resolve()))
+        self.assertEqual(cat["stinger"], os.path.abspath(str(st)), "the user's path as given, made absolute (like an overlay image)")
         self.assertEqual((cat["width"], cat["height"]), (1280, 720), "the generated input is conformed to the other input's frame")
         segs = cat["segments"]
         self.assertEqual(segs[1]["timeline_range"][0], segs[0]["timeline_range"][1], "a stinger butt-joins the clips (no overlap)")
