@@ -36,8 +36,8 @@ def _contract() -> dict:
     c = json.loads(PINNED.read_text(encoding="utf-8"))
     mode = os.environ.get("FAKE_PUB_CONTRACT", "pinned")
     if mode == "drift_platform":
-        c["platforms"]["registered"]["linkedin"] = dict(c["platforms"]["registered"]["x"], id="linkedin", name="LinkedIn")
-        next(t for t in c["tools"] if t["tool_id"] == "publish/upload")["uploaders"]["linkedin"] = True
+        c["platforms"]["registered"]["bluesky"] = dict(c["platforms"]["registered"]["x"], id="bluesky", name="Bluesky")
+        next(t for t in c["tools"] if t["tool_id"] == "publish/upload")["uploaders"]["bluesky"] = True
     elif mode == "drift_confirm":
         c["confirmation"]["from_environment_or_config"] = True
     elif mode == "gone_platform":

@@ -97,7 +97,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("diarization", "0.1.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("diarization", "0.3.0", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(drift(c), [])
         self.assertEqual(breaking_drift(c), [])
@@ -106,7 +106,7 @@ class ContractTests(_Base):
 
     def test_refused_contracts(self):
         c = pinned_contract()
-        bad = json.loads(json.dumps(c)); bad["version"] = "0.2.0"
+        bad = json.loads(json.dumps(c)); bad["version"] = "0.4.0"
         self.assertTrue(any("supported range" in e for e in check_contract(bad)))
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["tool_id"] == "diarization/diarize")["writes_media"] = True
         self.assertTrue(any("writes_media false" in e for e in check_contract(bad)))
@@ -119,7 +119,7 @@ class ContractTests(_Base):
         os.environ["FAKE_DIA_CONTRACT"] = "drift_version"
         ad = dia_adapter(self.tmp)
         self.assertTrue(ad.drift())
-        self.assertEqual(ad.breaking_drift(), [], "a version within 0.1.x is not fatal")
+        self.assertEqual(ad.breaking_drift(), [], "a version within 0.3.x is not fatal")
         os.environ["FAKE_DIA_CONTRACT"] = "drift_fatal"
         self.assertTrue(dia_adapter(self.tmp).breaking_drift(), "the diarize argv changed: fatal")
         caps = dia_capabilities(lambda: dia_adapter(self.tmp))
@@ -243,8 +243,8 @@ class PlanTests(_Base):
         media = fake_media(self.tmp, duration=16.0, turns=[[0.5, 5.0, "SPEAKER_00"], [5.2, 11.0, "SPEAKER_01"], [11.1, 15.9, "SPEAKER_00"]])
         ir = svc.plan([media], "youtube", user_requirements={"speakers.diarize": True, "speakers.num_speakers": 2})
         [o] = [o for o in ir.doc["analysis"]["observations"] if o["kind"] == "speaker_turns"]
-        self.assertEqual((o["provenance"], o["skill"], o["tool"], o["skill_version"]), ("OBSERVED", "diarization", "diarization/diarize", "0.1.0"))
-        self.assertEqual(o["source"], "diarization/diarize@0.1.0")
+        self.assertEqual((o["provenance"], o["skill"], o["tool"], o["skill_version"]), ("OBSERVED", "diarization", "diarization/diarize", "0.3.0"))
+        self.assertEqual(o["source"], "diarization/diarize@0.3.0")
         self.assertEqual(o["parameters"]["num_speakers"], 2)
         self.assertEqual(o["data"]["speakers"], ["SPEAKER_00", "SPEAKER_01"])
         self.assertIn("CC-BY-4.0", o["data"]["engine"]["attribution"], "the attribution travels with the fact")

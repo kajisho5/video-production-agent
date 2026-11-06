@@ -68,6 +68,10 @@ PARAMETERS: Dict[str, Dict[str, Tuple[float, float, bool, bool]]] = {
 }
 DEFAULT_TIMEOUT = 3600.0        # the Skill's own engine time limit (its --timeout default); the process gets a margin on top
 PROCESS_MARGIN = 120.0
+# Since voice-enhance-skill's long inputs (main 9e0c150, ADR-097 addendum 5) the Skill applies --timeout to each block's engine call, not to
+# the whole run. The agent's limit stays the whole run: the process is killed at timeout + PROCESS_MARGIN however many blocks there are,
+# so a block never gets more than the run. A killed run leaves its finished blocks in the Skill's cache next to the output, and the retry
+# (doubled timeout) resumes at the first missing block.
 # voice-enhance-skill's error codes (its contract `errors`) → the agent's recovery class (execution/recovery.py). The code is kept verbatim;
 # a missing engine / model / ffmpeg-skill capability is TOOL_MISSING (blocked: the user installs it), a bad request INVALID_ARGS, the Skill's
 # own refusal of its output SKILL_ERROR. TOOL_ERROR and ENGINE_TIMEOUT keep the Skill's retryable verdict (one more attempt, the second
