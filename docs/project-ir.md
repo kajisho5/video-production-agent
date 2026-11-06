@@ -26,6 +26,7 @@ Project IR は「推論・計画」と「決定論的実行」の間の契約。
 | `speech.operations[]` | `speech.dub {asset, input, output, cues, lang, source_cues?, engine?, voice?, on_unfit?, reference?, consent?, duck?, voice_gain?, max_overrun?, temporal_scope, decision_ids}`（ADR-085。dubbing-skill の DUB。subject の edits の後・仕上げの前。計画した時だけ節があり、plan hash もその時だけ含める） | Planner |
 | `delivery.publish` | `{type: publish.upload, asset, target, artifact, platform, title?, description?, tags?, privacy, thumbnail?, captions?, caption_language?, decision_ids}`（ADR-087。承認された upload。計画した時だけ。compiler は op を作らず、render が offline の plan と dry run、`video-agent publish` が upload） | Planner |
 | `delivery.nle[]` | `{type: nle.export|nle.conform, asset, formats[], zip?, output, decision_ids}`（ADR-089。nle-bridge に実行する IR を渡す。計画した時だけ） | Planner |
+| `analysis.observations[]` kind `nle.diff` | editor が返した timeline の読み戻し（ADR-098。返ってきた file と sha256、比べた IR の版、diff の summary、source ごとの plan と editor の kept range、marker、warning）。`timeline.editor_cut` / `timeline.editor_markers` の evidence | revise --editor-timeline |
 | `delivery.targets[]` | id, preset(ffmpeg-skill export preset 名), platform(check.py platform 名), artifact_type | Profile |
 | `qa` | required layers, thresholds | Profile / defaults |
 | `execution` | workspace, allowed_inputs, budgets, recovery_policy{max_attempts}, approvals{} | plan / render |

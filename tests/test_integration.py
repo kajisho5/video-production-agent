@@ -3512,6 +3512,78 @@ class NleBridgeRealTests(unittest.TestCase):
         tl = otio.adapters.read_from_file(next(f["file"] for f in res["data"]["files"] if f["format"] == "otio"))
         self.assertEqual(len(list(tl.find_clips())) >= 1, True)
 
+    def test_editor_fcp7_read_back_revises_the_plan(self):
+        """ADR-098 (ROADMAP step 12, Done when): a returned FCP7 XML with a trim and a removed clip revises the plan, and the next render has the
+        same cuts as the editor's timeline. The editor's files are written by the real nle-bridge from timelines given in seconds (what Premiere
+        would hand back as FCP7 XML); the diff and the read-back are the real `nle-bridge diff --timeline-out`."""
+        from video_agent.tools.nle_bridge import NleBridgeAdapter, locate_nle_bridge
+        from video_agent.tools.skill_process import invoke
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_nlerb_"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = Path(tmp) / "src"; src.mkdir()
+        video = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=6", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=6", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video], check=True)
+        sk = locate_nle_bridge()
+
+        def editor_xml(name, ranges):   # the editor's timeline: these source ranges (seconds) end to end on V1 / A1, written as FCP7 XML by nle-bridge
+            items = [{"id": f"c{i + 1}", "asset": "a1", "in": s_, "out": e_} for i, (s_, e_) in enumerate(ranges)]
+            plan = {"name": name, "rate": "25", "assets": {"a1": {"path": video, "fps": 25, "width": 640, "height": 360, "duration": 6.0, "has_video": True, "has_audio": True}},
+                    "tracks": [{"kind": "video", "name": "V1", "items": items}, {"kind": "audio", "name": "A1", "items": [dict(it, id=it["id"] + "a") for it in items]}]}
+            pj = Path(tmp) / "editor" / f"{name}.json"; pj.parent.mkdir(exist_ok=True)
+            pj.write_text(json.dumps(plan), encoding="utf-8")
+            code, out, err = invoke(sk, ["export", str(pj), "-o", str(Path(tmp) / "editor" / name), "--formats", "fcp7", "--json"], timeout=120)
+            self.assertEqual(code, 0, err)
+            return next(f["path"] for f in json.loads(out)["files"] if f["format"] == "fcp7")
+
+        def cuts(ir):
+            [rec] = ir.doc["delivery"]["timelines"]
+            return [[c["in"], c["out"]] for c in rec["clips"]]
+
+        def duration(path):
+            r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], capture_output=True, text=True, check=True)
+            return float(r.stdout.strip())
+
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([video], "generic", user_requirements={"delivery.timeline": "otio", "delivery.nle": "export", "delivery.nle.formats": "otio,fcp7"})
+        path = str(Path(tmp) / "p.project.json"); save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        self.assertEqual(len(cuts(load_ir(path))), 1)
+        # round 1: the editor razor-cuts the clip into three and lifts the pieces between them out
+        three = [[0.0, 1.6], [2.0, 3.6], [4.0, 5.6]]
+        rv = svc.revise(load_ir(path), path, editor_timeline=editor_xml("back1", three))
+        self.assertTrue(rv["created"], rv)
+        self.assertEqual(rv["editor"]["returned"]["format"], "xml")
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        self.assertEqual(cuts(load_ir(path)), three)
+        # round 2 (the Done when): the first clip's out point trimmed from 1.6 to 1.2 s and the second clip removed
+        two = [[0.0, 1.2], [4.0, 5.6]]
+        back = editor_xml("back2", two)
+        rv = svc.revise(load_ir(path), path, editor_timeline=back)
+        self.assertTrue(rv["created"], rv)
+        ir3 = load_ir(path)
+        [dec] = [d for d in ir3.doc["decisions"] if d["subject"] == "timeline.editor_cut"]
+        self.assertEqual((dec["approval"], dec["status"], dec["params"]["keep"]), ("CONFIRM", "PROPOSED", two))
+        [obs] = [o for o in ir3.doc["analysis"]["observations"] if o["id"] == rv["editor"]["observation_id"]]
+        self.assertEqual((obs["data"]["summary"]["clips_removed"] >= 1, obs["data"]["summary"]["clips_changed"] >= 1), (True, True), obs["data"]["summary"])
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        ir3 = load_ir(path)
+        self.assertEqual(cuts(ir3), two)
+        [trim] = [op for op in ir3.doc["video"]["operations"] if op["type"] == "video.trim"]
+        self.assertEqual((trim["keep"], trim["accurate"]), (two, True))
+        self.assertAlmostEqual(duration(out["artifacts"][0]["path"]), 2.8, delta=0.12)
+        # the cut the agent now hands to the editor is the editor's: nle-bridge finds nothing to change against the returned file
+        ad = NleBridgeAdapter(sk, workspace=str(Path(tmp) / "ws"))
+        m = ad.measure("nle-bridge/diff", {"project": path, "returned": back, "subject": dec["params"]["subject"], "output_dir": str(Path(tmp) / "ws" / "check")})
+        self.assertTrue(m.ok, m.data)
+        s = m.data["diff"]["summary"]
+        self.assertEqual((s["clips_changed"], s["clips_added"], s["clips_removed"], s["cuts_moved"], s["cuts_removed"]), (0, 0, 0, 0, 0), s)
+        again = svc.revise(load_ir(path), path, editor_timeline=back)
+        self.assertFalse(again["created"], again)
+
 
 def _slide_png(path: str, n: int) -> str:
     """A 1280x720 slide with its own big shapes (slide n of a deck), written by Pillow."""

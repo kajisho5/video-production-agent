@@ -473,7 +473,7 @@ def cmd_revise(args, svc: Service) -> int:
             from .providers.host import load_recommendations
             recs = load_recommendations(json.loads(Path(args.ai_recommendations).read_text(encoding="utf-8")))
         out = svc.revise(ir, args.project, feedback=args.feedback or "", user_requirements=_kv(args.set), who=args.by,
-                         ai_recommendations=recs, ai_model=args.ai_model or "host-chat")
+                         ai_recommendations=recs, ai_model=args.ai_model or "host-chat", editor_timeline=args.editor_timeline, editor_subject=args.subject)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -484,6 +484,12 @@ def cmd_revise(args, svc: Service) -> int:
         print(f"AI recommendations ({out['ai']['model']}): {len(out['ai']['accepted'])} accepted, {len(out['ai']['dropped'])} dropped")
         for w in out["ai"]["dropped"]:
             print("  -", w)
+    if out.get("editor"):   # ADR-098
+        e = out["editor"]
+        print(f"editor's timeline {Path(e['returned']['file']).name} ({e['returned']['format']}) read back for {e['subject']}: "
+              f"{', '.join(e['changed_sources']) or 'no source'} changed; markers +{e['markers']['added']} -{e['markers']['removed']} ~{e['markers']['changed']}")
+        for w in e["warnings"]:
+            print(f"  - {w['code']}: {w['message']}")
     if not out["created"]:
         print(f"no new plan version: {out['reason']} (still v{out['version']})")
         return 5
@@ -921,6 +927,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="structured feedback, e.g. audio.loudness.target_lufs=-16"); p.add_argument("--by")
     p.add_argument("--ai-recommendations", metavar="FILE", help="the chat model's answer to `plan --ai-brief` (JSON); validated like any provider's (ADR-050)")
     p.add_argument("--ai-model", help="name of the chat model that answered, recorded in provenance (default host-chat)")
+    p.add_argument("--editor-timeline", metavar="FILE", help="the timeline an NLE gave back (.otio / FCP7 .xml / .edl): its changed cuts become CONFIRM decisions "
+                                                             "of the next version (nle-bridge diff, ADR-098)")
+    p.add_argument("--subject", help="which timeline of the plan the returned file is (default: the plan's only one)")
     p.set_defaults(fn=cmd_revise)
     p = sub.add_parser("diff", help="show the PlanDiff between two plan versions (default: previous → current)")
     p.add_argument("project"); p.add_argument("--from", type=int, dest="from"); p.add_argument("--to", type=int)
