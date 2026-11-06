@@ -107,7 +107,8 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.7.json")
+# 0.1.8 / 0.1.9 (media-analysis-skill #22 / #23): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.9.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

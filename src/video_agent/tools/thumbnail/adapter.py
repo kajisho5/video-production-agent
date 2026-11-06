@@ -75,7 +75,8 @@ _RANGE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)")
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "execution", "document", "output_formats", "fonts", "rendering", "ffmpeg_skill", "schema_versions", "errors",
               "provenance", "deterministic")
 DRIFT_TOOL_KEYS = ("role", "produces_output", "deterministic", "writes_media", "mutates_input", "input", "output", "delegates_to")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.8.json")
+# 0.1.9 (Dependabot CI bump), 0.1.10 / 0.1.11 (roadmap docs PRs, thumbnail-skill #24): version-only; re-pinned from the v0.1.11 tag (ADR-097).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.11.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
