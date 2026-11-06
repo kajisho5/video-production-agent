@@ -239,6 +239,22 @@ class ColorGradingAdapterTests(unittest.TestCase):
             ad.measure("color-grading/run", {})
 
 
+def assert_doctor_healthy(tc: unittest.TestCase, doc: dict) -> None:
+    """The doctor is "ok", or "degraded" for exactly one reason: the optional PyOpenColorIO extra is not installed, so OCIO_TRANSFORM (an
+    operation the agent does not plan) is unavailable and nothing else is (color-grading-skill 0.5.0, ADR-097 addendum 6). Any problem, any
+    other unavailable operation or a degraded doctor with OCIO present still fails."""
+    tc.assertEqual(doc.get("problems") or [], [], doc.get("problems"))
+    if doc["status"] == "ok":
+        tc.assertEqual(doc.get("unavailable_operations") or [], [])
+        return
+    tc.assertEqual(doc["status"], "degraded", doc)
+    tc.assertEqual(doc.get("unavailable_operations"), ["OCIO_TRANSFORM"], "degraded for a reason other than the optional OCIO extra")
+    ocio = doc["checks"]["ocio"]
+    tc.assertEqual((ocio["status"], ocio["optional"], ocio["needed_by"]), ("missing", True, ["OCIO_TRANSFORM"]))
+    statuses = ColorGradingAdapter.operation_status(doc)
+    tc.assertEqual(sorted(t for t, s in statuses.items() if s != "supported"), ["OCIO_TRANSFORM"], statuses)
+
+
 class ColorGradingRealSkillTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -258,7 +274,8 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
         self.assertEqual(ad.drift(), [], "the installed color-grading-skill contract drifted from the pinned one: re-verify the adapter")
         doc = ad.doctor()
-        self.assertEqual(doc["status"], "ok", doc.get("problems")); self.assertEqual(ad.operation_status(doc)["RETAG"], "supported")
+        assert_doctor_healthy(self, doc)
+        self.assertEqual(ad.operation_status(doc)["RETAG"], "supported")
         paths = {"a": self.src, "a_retag": str(Path(ws) / "ops" / "01_retag" / "bars_retag.mp4")}
         r = ad.run(Operation(tool="color-grading/run", args={"operation": "RETAG", "input": "a", "output": "a_retag", "target": "bt709"}, inputs=["a"], outputs=["a_retag"], id="op_real"), paths, timeout=120)
         self.assertTrue(r.ok, r.data)
