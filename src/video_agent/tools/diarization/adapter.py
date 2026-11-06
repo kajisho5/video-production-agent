@@ -5,7 +5,7 @@
          --min-speakers=N --max-speakers=N] [--audio-stream=N] --timeout=T -- <media>`
           ─(its own worker: pyannote.audio 4.x + speaker-diarization-community-1 from a local directory, offline)─→ turns JSON
 
-Protocol (diarization-skill's own contract, `diarization contract --json`, pinned from main in contract_0.1.0.json -- the repository
+Protocol (diarization-skill's own contract, `diarization contract --json`, pinned from main in contract_0.3.0.json -- the repository
 has no release tag, so the pin follows main as ingest-skill's and voice-enhance-skill's do):
     contract → `diarization contract --json`
     doctor   → `diarization doctor --json` (ok, ready.{diarize, assign, check}, checks, problems; exit 3 while not ok, never downloads)
@@ -42,7 +42,7 @@ SKILL_ID = PACKAGE_ID
 PREFIX = SKILL_ID + "/"
 TOOL_DIARIZE = "diarization/diarize"
 TURNS_SCHEMA = "diarization-skill/turns@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.")
 KIND = "speaker_turns"                          # the analysis kind (media/analysis.py) this adapter measures
 SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
 ORDER_TOLERANCE = 0.01                          # diarization-skill's OVERLAP_TOLERANCE between consecutive exclusive turns (its turns.py)
@@ -61,6 +61,9 @@ ERROR_CLASSES: Dict[str, str] = {
     "INVALID_TURNS": "INVALID_ARGS", "SOURCE_MISMATCH": "INVALID_ARGS", "SPEAKERS_ALREADY_SET": "INVALID_ARGS", "OUTPUT_IS_INPUT": "INVALID_ARGS",
     "OUTPUT_EXISTS": "INVALID_ARGS", "FFMPEG_NOT_FOUND": "TOOL_MISSING", "ENGINE_UNAVAILABLE": "TOOL_MISSING", "PIPELINE_NOT_FOUND": "TOOL_MISSING",
     "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT", "INVALID_RESULT": "SKILL_ERROR",
+    # 0.2.0 (enroll / name / check of voiceprints and proposals, ops the agent does not call): bad requests
+    "INVALID_ROSTER": "INVALID_ARGS", "INVALID_VOICEPRINT": "INVALID_ARGS", "INVALID_DETECTIONS": "INVALID_ARGS", "EMBEDDING_MISMATCH": "INVALID_ARGS",
+    "ENROLLMENT_REJECTED": "INVALID_ARGS",
 }
 AGENT_ERRORS: Dict[str, str] = {"INVALID_REQUEST": "INVALID_ARGS", "INVALID_OUTPUT": "SKILL_ERROR", "TIMEOUT": "TIMEOUT"}
 # contract drift (ADR-045 / ADR-047): every key the adapter reads is compared with the pinned contract; the fatal subset gates availability
@@ -68,7 +71,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "turns", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

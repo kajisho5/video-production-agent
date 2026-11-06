@@ -118,7 +118,7 @@ class ContractTests(_Base):
         self.assertEqual(sorted(p), sorted(k for k, v in next(t for t in c["tools"] if t["tool_id"] == "publish/upload")["uploaders"].items() if v),
                          "the platforms are the contract's uploaders, not a list in the agent")
         self.assertEqual(p["x"]["privacy"], ["public"])
-        self.assertEqual(p["youtube"]["metadata_fields"], ["title", "description", "tags", "privacy", "thumbnail", "captions"])
+        self.assertEqual(p["youtube"]["metadata_fields"], ["title", "description", "tags", "privacy", "thumbnail", "captions", "language", "localizations", "publish_at"])
         for bad, msg in ((dict(c, confirmation=dict(c["confirmation"], from_environment_or_config=True)), "never come from the environment"),
                          (dict(c, execution=dict(c["execution"], network_requires="nothing")), "network only with --confirm"),
                          (dict(c, credentials=dict(c["credentials"], from_files_or_flags=True)), "never come from files or flags"),
@@ -139,7 +139,7 @@ class ContractTests(_Base):
                 self.assertTrue(ad.drift(), mode)
                 self.assertEqual(bool(ad.breaking_drift()), fatal, (mode, ad.breaking_drift()))
         os.environ["FAKE_PUB_CONTRACT"] = "drift_platform"
-        self.assertNotIn("linkedin", platforms(), "planning reads the pin: a platform added on main waits for a re-pin")
+        self.assertNotIn("bluesky", platforms(), "planning reads the pin: a platform added on main waits for a re-pin")
         self.assertEqual((drift(pinned_contract()), breaking_drift(pinned_contract())), ([], []))
 
     def test_locate_checkout_and_env(self):

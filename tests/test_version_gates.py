@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from video_agent.tools.diarization import adapter as dia  # noqa: E402
 from video_agent.tools.motion_graphics import adapter as mg  # noqa: E402
 from video_agent.tools.qc import adapter as qc  # noqa: E402
 from video_agent.tools.subtitle import adapter as st  # noqa: E402
@@ -59,6 +60,17 @@ class VersionGateTests(unittest.TestCase):
             self.assertEqual(st.contract_breaking_drift(live), [], v)
         for v in ("0.5.0", "1.0.0"):
             self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)
+
+    def test_diarization_versions(self):
+        # ADR-097 addendum 5: diarization-skill main reports 0.3.0 (0.2.0 enroll / name, 0.3.0 --chunk-seconds; both opt-in, the diarize
+        # wire the adapter sends is unchanged), so the gate takes 0.2.x and 0.3.x besides 0.1.x
+        self.assertEqual(dia.pinned_contract()["version"], "0.3.0")
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.3.4"):
+            live = with_version(dia.pinned_contract(), v)
+            self.assertEqual(dia.check_contract(live), [], v)
+            self.assertEqual(dia.breaking_drift(live), [], v)
+        for v in ("0.4.0", "1.0.0"):
+            self.assertTrue(dia.check_contract(with_version(dia.pinned_contract(), v)), v)
 
 
 if __name__ == "__main__":

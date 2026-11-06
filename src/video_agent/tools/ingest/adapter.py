@@ -77,6 +77,11 @@ ERROR_KINDS: Dict[str, Tuple[str, str]] = {
     "VERIFY_MISMATCH": ("VERIFY_FAILED", "SKILL_ERROR"),
     "FILE_MISSING": ("INCOMPLETE", "SKILL_ERROR"),
     "MHL_INVALID": ("HISTORY_DAMAGED", "SKILL_ERROR"),
+    # ingest-skill main (ADR-097 addendum 5): refusals of options the agent does not send (offload --follow / --proxy, inventory with several
+    # folders). A missing ffmpeg-skill for --proxy is a missing component, as FETCH_UNAVAILABLE is.
+    "FOLLOW_INVALID": ("INVALID_REQUEST", "INVALID_ARGS"),
+    "DUPLICATE_SOURCE": ("INVALID_REQUEST", "INVALID_ARGS"),
+    "PROXY_UNAVAILABLE": ("ENGINE_MISSING", "TOOL_MISSING"),
 }
 # the agent's own refusals / admission failures (not ingest-skill codes)
 AGENT_ERRORS: Dict[str, Tuple[str, str]] = {"INVALID_REQUEST": ("INVALID_REQUEST", "INVALID_ARGS"), "INVALID_RESULT": ("INVALID_OUTPUT", "SKILL_ERROR"),
