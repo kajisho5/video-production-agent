@@ -1,0 +1,40 @@
+# CodeQL static analysis for Python (this repo is 100% Python: 126 .py files
+# under src/ + tests/, zero files in any other language).
+#
+# NOTE: this deliberately runs on every PR and every push to main, plus a
+# weekly schedule, despite tests.yml's minutes-conscious workflow_dispatch-
+# only policy (see that file's header comment). This is an intentional
+# exception the user explicitly asked for, not an oversight — flagging it
+# here for future maintainers who compare the two files' triggers.
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:python"
