@@ -15,6 +15,13 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "UNSUPPORTED_MEDIA": {"action": "BLOCK", "hint": "the Skill refuses this source for the operation (see the error's reason, e.g. alpha_not_preserved: an alpha "
                                                      "plane a re-encode would drop); not retried -- flatten or export the source first, or use an operation that "
                                                      "keeps it (RETAG / STRIP_DOVI)"},
+    # ADR-106 (color-grading-skill 0.6.0): ffmpeg-skill/color's own check of the written file failed (VALIDATION_ERROR, never retryable): the same
+    # source and engine fail the same way, so both BLOCK with what to change
+    "LEGAL_LEVELS_FAILED": {"action": "BLOCK", "hint": "LEGALIZE's clamp left the file outside the profile's legal levels by ffmpeg-skill's own measurement "
+                                                       "(legal_levels_failed); not retried -- check the source and the color.legalize profile / knee"},
+    "ALPHA_NOT_KEPT": {"action": "BLOCK", "hint": "the grade did not keep the source's alpha as verified by ffmpeg-skill (alpha_lost / alpha_mismatch / "
+                                                  "alpha_unverified); not retried -- export the source to ProRes 4444 / qtrle / PNG (a VP9 alpha is not "
+                                                  "seen by the probe) or use an ffmpeg-skill whose color --keep-alpha check passes (3.2.3+)"},
     "ENCODER_FAILED": {"action": "RETRY_ALT", "hint": "retry once with frame-accurate mode", "alt_args": {"ffmpeg-skill/cut": {"accurate": True}}},
     "TIMEOUT":        {"action": "RETRY_LONGER", "hint": "retry once with a doubled timeout"},
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},

@@ -87,7 +87,7 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.2.16")
+        self.assertEqual(a.version, "0.2.17")
         self.assertEqual(a.tools, {TOOL_ID})
         self.assertTrue(a.supports(TOOL_ID))
         self.assertFalse(a.supports("motion-graphics/other"))
@@ -103,7 +103,7 @@ class ContractTests(Base):
         self.assertEqual(pkg.tool_ids(), [TOOL_ID])
         self.assertEqual(pkg.repository, "kajisho5/motion-graphics-skill")
         self.assertIn("motion-graphics", pkg.capabilities)
-        self.assertEqual(PACKAGE.version, "0.2.16")
+        self.assertEqual(PACKAGE.version, "0.2.17")
         self.assertEqual(PACKAGE.tool(TOOL_ID).inputs, ["input", "output", "image", "video"])
         self.assertTrue(PACKAGE.tool(TOOL_ID).produces_output)
         self.assertTrue(a.retryable["TOOL_ERROR"]); self.assertTrue(a.retryable["CANCELLED"]); self.assertFalse(a.retryable["INVALID_REQUEST"])
@@ -286,7 +286,7 @@ class SuccessTests(Base):
         self.assertEqual(r.output, self.paths()["out"])
         self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": SKILL_ID, "version": "0.2.16"})
+        self.assertEqual(d["skill"], {"id": SKILL_ID, "version": "0.2.17"})
         self.assertEqual(d["status"], "completed")
         self.assertEqual(d["operation_type"], "GRAPHICS")
         self.assertEqual(d["artifact"]["sha256"], sha256_file(r.output))
@@ -329,6 +329,52 @@ class SuccessTests(Base):
         self.assertIn("--dry-run", self.logged()[-1]["argv"])
         self.assertIsNone(lift_observation(r))
 
+    def test_layer_export(self):
+        """ADR-106: options.layer_export (motion-graphics-skill 0.2.17, contract `layer_export`) passes through. `directory` is a plain folder
+        name sent as that folder inside the workspace (never a path from the plan); alpha_codec / alpha_mode are the contract's. The reported
+        layer files and manifest are checked (inside the folder, sha256) and carried in data.layer_export; the dry run carries the plan's."""
+        from video_agent.tools.motion_graphics.adapter import OPTION_KEYS
+        self.assertIn("layer_export", OPTION_KEYS)
+        self.assertEqual(sorted(pinned_contract()["layer_export"]["containers"]), ["png", "prores4444", "qtrle", "vp9"])
+        self.assertIn("layer_export", pinned_contract()["response"]["conditional"])
+        a = self.adapter()
+        b = a.build_request(TOOL_ID, self.op(options={"layer_export": {"directory": "layers", "alpha_codec": "qtrle", "alpha_mode": "premultiplied"}}).args, self.paths())
+        self.assertEqual(b["request"]["options"]["layer_export"], {"directory": os.path.join(self.ws, "layers"), "alpha_codec": "qtrle", "alpha_mode": "premultiplied"})
+        for bad in ({"directory": "../up"}, {"directory": "/abs/dir"}, {}, {"directory": "layers", "alpha_codec": "h264"}, {"directory": "layers", "alpha_mode": "linear"},
+                    {"directory": "layers", "path": "x"}, {"directory": "layers", "codec": "png"}, "layers"):
+            with self.assertRaises(ToolError, msg=str(bad)):
+                a.build_request(TOOL_ID, self.op(options={"layer_export": bad}).args, self.paths())
+        r = a.run(self.op(options={"layer_export": {"directory": "layers"}}), self.paths(), timeout=20)
+        self.assertTrue(r.ok, r.data)
+        le = r.data["layer_export"]
+        self.assertEqual((le["directory"], le["alpha_codec"], le["alpha_mode"], le["verified"]), (os.path.join(self.ws, "layers"), "prores4444", "straight", True))
+        self.assertEqual({x["id"] for x in le["layers"]}, {"t1", "title"})
+        for x in le["layers"]:
+            self.assertEqual((x["file"], x["sha256"]), (x["id"] + ".mov", sha256_file(x["path"])))
+        self.assertEqual(le["manifest"]["sha256"], sha256_file(le["manifest"]["path"]))
+        dr = a.run(self.op(options={"layer_export": {"directory": "layers2"}}), self.paths("out/dry.mp4"), dry_run=True)
+        self.assertTrue(dr.ok, dr.data)
+        self.assertEqual([x["file"] for x in dr.data["layer_export"]["layers"]], ["title.mov", "t1.mov"])
+        # the reported export must be the requested one: its folder, one layer per element named <id><container>, manifest.json in the folder
+        good = {"schema": "motion-graphics/response@1", "skill": {"id": SKILL_ID, "version": a.version}, "status": "ok", "dry_run": False}
+        def le_errs(**over):
+            le = json.loads(json.dumps(r.data["layer_export"])); le.update(over)
+            return [e for e in a._check_response(dict(good, layer_export=le), self.paths()["out"], False, ["t1", "title"], os.path.join(self.ws, "layers")) if "layer_export" in e]
+        self.assertEqual(le_errs(), [])
+        self.assertTrue(le_errs(directory=os.path.join(self.ws, "elsewhere")))
+        lay = r.data["layer_export"]["layers"]
+        self.assertTrue(le_errs(layers=[lay[0], lay[0]]))
+        self.assertTrue(le_errs(layers=[lay[0], dict(lay[1], file="manifest.json", path=le["manifest"]["path"], sha256=le["manifest"]["sha256"])]))
+        self.assertTrue([e for e in a._check_response(dict(good, layer_export=r.data["layer_export"]), self.paths()["out"], False, ["t1", "title"], None) if "layer_export" in e])
+        self.mode("layer_hash_mismatch")   # a layer whose reported hash is not the file's is not a success
+        r = a.run(self.op(options={"layer_export": {"directory": "layers3"}}), self.paths("out/bad.mp4"), timeout=20)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.data["error"]["code"], "INVALID_RESULT")
+        self.mode("no_layer_export")   # an ffmpeg-skill without the flags: the Skill's TOOL_ERROR, before anything renders
+        r = a.run(self.op(options={"layer_export": {"directory": "layers4"}}), self.paths("out/old.mp4"), timeout=20)
+        self.assertFalse(r.ok)
+        self.assertEqual((r.data["error"]["code"], r.data["error"]["details"]["reason"]), ("TOOL_ERROR", "ffmpeg_skill_lacks_flag"))
+
     def test_reused_and_image(self):
         a = self.adapter()
         els = self.elements([{"id": "logo", "type": "image_overlay", "start": 0.5, "end": 2.0, "parameters": {"image": "logo", "opacity": 0.8}}])
@@ -353,7 +399,7 @@ class ErrorTests(Base):
         self.assertIs(e["retryable"], retryable, mode)
         self.assertEqual(e["recovery_class"], rc, mode)
         self.assertEqual(r.data["status"], "failed")
-        self.assertEqual(r.data["skill"]["version"], "0.2.16")
+        self.assertEqual(r.data["skill"]["version"], "0.2.17")
         self.assertEqual(e["exit_code"], r.exit_code)
         if exit_code is not None:
             self.assertEqual(r.exit_code, exit_code, mode)

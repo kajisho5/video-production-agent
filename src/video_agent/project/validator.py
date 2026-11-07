@@ -330,8 +330,8 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                 if dur and k[1] > dur + 0.01:
                     errs.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
             # ADR-099: the precision the plan asked for, the segment cache (frame only) and the approved spans CONDENSE cuts (outside every kept range)
-            if op.get("precision") is not None and op["precision"] not in ("frame", "keyframe", "auto"):
-                errs.append(f"video.trim precision {op['precision']!r} is not frame / keyframe / auto")
+            if op.get("precision") is not None and op["precision"] not in ("frame", "keyframe", "auto", "smart"):   # ADR-106: smart
+                errs.append(f"video.trim precision {op['precision']!r} is not frame / keyframe / auto / smart")
             if op.get("segment_cache") and op.get("precision") != "frame":
                 errs.append("video.trim segment_cache needs precision frame")
             for r in op.get("condense") or []:

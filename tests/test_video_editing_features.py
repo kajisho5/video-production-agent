@@ -85,7 +85,17 @@ class LoweringTests(unittest.TestCase):
         with self.assertRaises(ToolError):
             self.build("video-editing/trim", {"input": self.src, "start": 1, "end": 3, "segment_cache": True})
         with self.assertRaises(ToolError):
-            self.build("video-editing/cut", {"input": self.src, "keep": [[0, 2]], "precision": "smart"})
+            self.build("video-editing/cut", {"input": self.src, "keep": [[0, 2]], "precision": "lossless"})
+
+    def test_precision_smart(self):
+        """ADR-106: 0.6.0's TRIM / CUT precision smart (contract.smart_cut) is lowered as asked; the segment cache stays frame-only."""
+        self.assertIn("smart", pinned_contract()["smart_cut"]["request_field"])
+        req = self.build("video-editing/cut", {"input": self.src, "keep": [[0, 2], [3, 5]], "precision": "smart"})
+        self.assertEqual(req["project"]["operations"][0]["params"]["precision"], "smart"); self.assertNotIn("segment_cache", req["options"])
+        req = self.build("video-editing/trim", {"input": self.src, "start": 1, "end": 3, "precision": "smart"})
+        self.assertEqual(req["project"]["operations"][0]["params"]["precision"], "smart")
+        with self.assertRaises(ToolError):   # contract.smart_cut.not_applied: options.segment_cache (frame precision only)
+            self.build("video-editing/cut", {"input": self.src, "keep": [[0, 2]], "precision": "smart", "segment_cache": True})
 
     def test_stinger(self):
         st = str(Path(self.tmp) / "stinger.mov")
@@ -130,6 +140,10 @@ class LoweringTests(unittest.TestCase):
         self.assertEqual(lower_video_trim("video-editing/trim", auto, "a", "o")["precision"], "auto")
         with self.assertRaises(CompileError):   # ffmpeg-skill's cut has no auto: never silently another precision
             lower_video_trim("ffmpeg-skill/cut", auto, "a", "o")
+        smart = dict(auto, accurate=True, precision="smart")   # ADR-106: smart is video-editing-skill's too
+        self.assertEqual(lower_video_trim("video-editing/trim", smart, "a", "o")["precision"], "smart")
+        with self.assertRaises(CompileError):
+            lower_video_trim("ffmpeg-skill/cut", smart, "a", "o")
         cached = {"type": "video.trim", "asset": "a", "keep": [[1, 5]], "accurate": True, "precision": "frame", "segment_cache": True}
         self.assertIs(lower_video_trim("video-editing/cut", cached, "a", "o")["segment_cache"], True)
 
@@ -193,8 +207,11 @@ class PlanTests(unittest.TestCase):
                 parse_edit_requirements(reqs(bad))
             self.assertIn(msg, str(cm.exception))
         _check_requirement_keys({"edit.precision": "auto", "edit.segment_cache": False})
+        _check_requirement_keys({"edit.precision": "smart"})   # ADR-106: video-editing-skill 0.6.0
         with self.assertRaises(ValueError):
-            _check_requirement_keys({"edit.precision": "smart"})
+            _check_requirement_keys({"edit.precision": "lossless"})
+        with self.assertRaises(ValueError):
+            _check_requirement_keys({"edit.precision": "smart", "edit.segment_cache": True})
         with self.assertRaises(ValueError) as cm:
             _check_requirement_keys({"edit.precision": "auto", "edit.segment_cache": True})
         self.assertIn("frame-precision", str(cm.exception))
@@ -281,6 +298,56 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
         res = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/cut")
         self.assertEqual(res["data"]["reported"]["segments"]["join"], "stream_copy")
+
+    def test_precision_smart_only_when_asked(self):
+        """ADR-106: edit.precision=smart runs the asset's trim as video-editing TRIM / CUT precision smart (frame-accurate, so the plan keeps
+        accurate true); the Skill's cut report (cuts.smart, cuts.fallbacks) and plan.steps[].smart are carried as reported. An ffmpeg-skill
+        without cut --smart: the Skill falls back to --accurate and says so (engine_without_smart, a warning); the render still completes."""
+        svc = self._svc()
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9", "edit.precision": "smart"})
+        trim = next(op for op in ir.doc["video"]["operations"] if op["type"] == "video.trim")
+        self.assertEqual((trim["precision"], trim["accurate"]), ("smart", True))
+        step = next(s for s in ir.doc["plan"]["steps"] if s["skill"] in ("video_trim", "video_cut"))
+        self.assertEqual((step["tool"], step["params"]["precision"]), ("video-editing/trim", "smart"))
+        self.assertEqual(svc.validate(ir).errors, [])
+        out, prov = self._render(svc, ir, "smart")
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        self.assertEqual(next(e for e in prov["operations"] if e["tool"].startswith("video-editing/"))["args"]["precision"], "smart")
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/trim")
+        cuts = res["data"]["reported"]["cuts"]
+        self.assertEqual((cuts["requested_precision"], cuts["mode"], cuts["smart"]["applied"], cuts["fallbacks"]), ("smart", "smart", True, []))
+        os.environ["FAKE_VE_MODE"] = "no_smart"
+        try:
+            out, _ = self._render(svc, ir, "smart_fallback")
+        finally:
+            os.environ.pop("FAKE_VE_MODE", None)
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "video-editing/trim")
+        self.assertEqual((res["data"]["reported"]["cuts"]["mode"], res["data"]["reported"]["cuts"]["smart"]["reason_code"]), ("accurate", "engine_without_smart"))
+        self.assertTrue(any("precision smart" in w for w in res["data"]["warnings"]))
+        # the dry run carries plan.steps[].smart (the engine flag the step will use)
+        from video_agent.models import Operation
+        ad = svc.adapter().adapter_for("video-editing/trim")
+        dr = ad.run(Operation(tool="video-editing/trim", args={"input": "a", "start": 1, "end": 3, "precision": "smart", "output": "o"}, inputs=["a"], outputs=["o"], id="op_dry"),
+                    {"a": self.a, "o": str(Path(self.tmp) / "dry" / "o.mp4")}, timeout=30, dry_run=True)
+        self.assertTrue(dr.ok, dr.data)
+        self.assertEqual(dr.data["plan"]["steps"][0]["smart"]["engine_flag"], "--smart")
+        # a revision cannot add smart over an earlier segment cache (the merged keys are checked, not only the new ones)
+        irc = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9", "edit.segment_cache": True})
+        pc = str(Path(self.tmp) / "cache_rev.json"); save_ir(irc, pc)
+        with self.assertRaises(ValueError) as cm:
+            svc.revise(load_ir(pc), pc, user_requirements={"edit.precision": "smart"})
+        self.assertIn("frame-precision", str(cm.exception))
+        # ... nor over a segment cache the brief contributed (the brief's accepted keys count as well as the explicit ones)
+        irb = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9"})
+        irb.doc["request"].setdefault("args", {})["brief"] = {"accepted": [{"key": "edit.segment_cache", "value": True}]}
+        pb = str(Path(self.tmp) / "brief_rev.json"); save_ir(irb, pb)
+        with self.assertRaises(ValueError) as cm:
+            svc.revise(load_ir(pb), pb, user_requirements={"edit.precision": "smart"})
+        self.assertIn("frame-precision", str(cm.exception))
+        # without an explicit precision nothing changes (the default never picks smart)
+        ir0 = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9"})
+        self.assertNotEqual(next(op for op in ir0.doc["video"]["operations"] if op["type"] == "video.trim").get("precision"), "smart")
 
     def test_stinger_and_ai_generated_concat(self):
         svc = self._svc()

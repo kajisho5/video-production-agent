@@ -46,7 +46,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     with tool=None and the plan is marked BLOCKED so the validator / decide() refuse it explicitly.
     Returns {"plan": ProductionPlan.to_dict(), "steps", "summary", "video_ops", "audio_ops", "delivery", "captions_ops", "graphics_ops", "color_ops", "qc", "timelines"}
     (ADR-031 / ADR-032: the finishing sections and the QC gate; ADR-052: the editor timeline exports).
-    ADR-099: `precision` is the user's own `edit.precision` (frame / keyframe-ok / auto; None when only the default applies) and `segment_cache`
+    ADR-099: `precision` is the user's own `edit.precision` (frame / keyframe-ok / auto / smart (ADR-106); None when only the default applies) and `segment_cache`
     their `edit.segment_cache`: auto and the segment cache run the trims on video-editing-skill (video_cut / video_trim); a cut the plan needs
     frame-accurate (beat snap, crossfade, the editor's timeline, approved proposals) stays frame-accurate whatever is asked."""
     if tools is None:
@@ -831,6 +831,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                     trim_skill, accurate, rec["accurate"], rec["precision"], rec["segment_cache"] = CUT_SKILL, True, True, "frame", True
                 elif precision == "auto" and not forced:
                     trim_skill, accurate, rec["accurate"], rec["precision"] = (TRIM_SKILL if trim_skill == TRIM_SKILL else CUT_SKILL), False, False, "auto"
+                elif precision == "smart":
+                    # ADR-106: smart is frame-accurate (the partial GOPs at each cut point re-encoded, the whole GOPs between copied, checked against
+                    # the source; else the whole cut re-encoded, reported), so a cut the plan needs frame-accurate may take it too. Only when asked.
+                    trim_skill, accurate, rec["accurate"], rec["precision"] = (TRIM_SKILL if trim_skill == TRIM_SKILL else CUT_SKILL), True, True, "smart"
                 video_ops.append(rec)
                 st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill=trim_skill, tool=tool_for(trim_skill), inputs=[current],
                                     params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate,

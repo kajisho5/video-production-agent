@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.5.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.6.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_VE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_VE_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -196,8 +196,8 @@ def main() -> int:
     params = op.get("params") or {}
     if set(params) - set(OPS[op["type"]]["parameters"]):
         return err("INVALID_REQUEST", f"unknown parameters {sorted(set(params) - set(OPS[op['type']]['parameters']))}")
-    if op["type"] in ("CUT", "TRIM") and params.get("precision", "frame") not in ("frame", "keyframe", "auto"):
-        return err("INVALID_REQUEST", "precision: must be one of ['frame', 'keyframe', 'auto']")
+    if op["type"] in ("CUT", "TRIM") and params.get("precision", "frame") not in ("frame", "keyframe", "auto", "smart"):   # 0.6.0: smart (ADR-106)
+        return err("INVALID_REQUEST", "precision: must be one of ['frame', 'keyframe', 'auto', 'smart']")
     if (req.get("options") or {}).get("segment_cache") and not (op["type"] == "CUT" and params.get("precision", "frame") == "frame"):
         return err("INVALID_REQUEST", "options.segment_cache: a CUT with precision frame only")
     stinger = (params.get("transition") or {}).get("stinger") if (params.get("transition") or {}).get("type") == "stinger" else None
@@ -254,10 +254,20 @@ def main() -> int:
     commands = [f"{tool} {op_id} (fake, provenance only)"]
     base = {"schema": CONTRACT["schemas"]["response"], "skill": {"id": "video-editing", "version": CONTRACT["version"]}, "project": {"id": proj.get("id"), "operations": [{"id": op["id"], "operation_id": op_id, "type": op["type"]}]},
             "warnings": []}
+    # 0.6.0 (contract.smart_cut): a precision smart TRIM / CUT. FAKE_VE_MODE=no_smart stands in for an ffmpeg-skill whose cut.py has no --smart:
+    # the cut runs as --accurate, a warning is added and the record says applied false / engine_without_smart
+    smart = op["type"] in ("CUT", "TRIM") and params.get("precision") == "smart"
+    smart_plan = None
+    if smart:
+        smart_plan = ({"engine_flag": "--accurate", "available": False, "reason_code": "engine_without_smart", "reason": "ffmpeg-skill's cut.py has no --smart (3.2.3+)"}
+                      if MODE == "no_smart" else {"engine_flag": "--smart", "available": True, "reason_code": None, "reason": None})
+        if MODE == "no_smart":
+            base["warnings"].append(f"operation {op['id']!r}: precision smart: {smart_plan['reason']}")
     if cmd == "plan":
         emit({"ok": True, **base, "status": "planned", "command": "plan", "schema": CONTRACT["schemas"]["plan"], "dry_run": True, "engine": {"ffmpeg-skill": "0.9.0-fake"},
               "plan": {"work_dir": os.path.join(ws, ".video-editing", "work"), "steps": [{"id": op["id"], "type": op["type"], "tool": tool, "operation_id": op_id, "idempotency_key": "k" * 64,
-                                                                                         "reusable": False, "timeline": None, "preview": {"ok": True, "commands": commands, "note": None}}]}})
+                                                                                         "reusable": False, "timeline": None, "preview": {"ok": True, "commands": commands, "note": None},
+                                                                                         **({"smart": smart_plan} if smart_plan else {})}]}})
         return 0
     if MODE == "cancelled":
         return err("CANCELLED", "interrupted", {"reason": "signal"})
@@ -339,6 +349,14 @@ def main() -> int:
             out_doc.update({"marks": [dict(m, mark="AI_GENERATED") for m in marks], "ai_generated": marks})
         if outs[0].get("max_size"):
             out_doc["size_limit"] = {"limit_bytes": 25_000_000, "bytes": len(payload), "ratio": 0.95, "attempts": [], "two_pass": True}
+    if smart:
+        if MODE == "no_smart":
+            smart_doc = {"applied": False, "reason_code": "engine_without_smart", "reason": smart_plan["reason"], "source": "video-editing@" + CONTRACT["version"]}
+        else:
+            smart_doc = {"applied": True, "parts": [{"segment": 0, "kind": "reencode", "start": 0.0, "end": 0.5, "frames": 15}, {"segment": 0, "kind": "copy", "start": 0.5, "end": dur, "frames": 30}],
+                         "reencoded_frames": 15, "copied_frames": 30, "checks": {"frames": "ok"}, "source": "ffmpeg-skill/cut@0.9.0-fake"}
+        record["cuts"] = {"requested_precision": "smart", "provenance": "OBSERVED", "source": "ffmpeg-skill/cut@0.9.0-fake", "mode": "accurate" if MODE == "no_smart" else "smart",
+                          "reencoded": True, "ranges": len(params["keep"]) if op["type"] == "CUT" else 1, "fallbacks": [], "smart": smart_doc}
     if (req.get("options") or {}).get("segment_cache"):
         record["segments"] = {"mode": "segments", "join": "stream_copy", "parts": [], "encoded": len(params["keep"]), "reused": 0}
     doc = {"ok": True, **base, "status": "reused" if reused else "completed", "command": "run", "engine": {"ffmpeg-skill": "0.9.0-fake", "ffmpeg": "fake", "ffprobe": "fake"},

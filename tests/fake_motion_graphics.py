@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "motion_graphics" / "contract_0.2.16.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "motion_graphics" / "contract_0.2.17.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_MG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_MG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -218,7 +218,7 @@ def main() -> int:
     if len(elements) > CONTRACT["limits"]["max_elements"]:
         return err("INVALID_REQUEST", "too many elements", {"field": "elements"})
     opts = req.get("options") or {}
-    if set(opts) - {"reuse_intermediates", "crf", "preset", "style", "brand_kit", "themes", "theme", "reserved_regions", "platform", "audio_stream"}:   # ADR-102: 0.2.11 .. 0.2.16
+    if set(opts) - {"reuse_intermediates", "crf", "preset", "style", "brand_kit", "themes", "theme", "reserved_regions", "platform", "audio_stream", "layer_export"}:   # ADR-102: 0.2.11 .. 0.2.16; ADR-106: 0.2.17 layer_export
         return err("INVALID_REQUEST", "unknown option")
     if opts.get("themes") and ("style" in opts or "brand_kit" in opts):
         return err("INVALID_REQUEST", "options.brand_kit / style are refused together with a theme")
@@ -226,6 +226,18 @@ def main() -> int:
         return err("INVALID_REQUEST", "unknown style preset")
     if any(el.get("type") == "logo" for el in elements if isinstance(el, dict)) and not opts.get("themes"):
         return err("INVALID_REQUEST", "a logo element needs options.themes (the active theme's logo)")
+    le = opts.get("layer_export")
+    if le is not None:   # 0.2.17 (contract layer_export): {directory, alpha_codec?, alpha_mode?}; the folder through the path policy (inside the workspace)
+        le_c = CONTRACT["layer_export"]
+        if not isinstance(le, dict) or set(le) - {"directory", "alpha_codec", "alpha_mode"} or not isinstance(le.get("directory"), str) or not le["directory"].strip():
+            return err("INVALID_REQUEST", "options.layer_export shape", {"field": "document.options.layer_export"})
+        if le.get("alpha_codec", "prores4444") not in le_c["containers"] or le.get("alpha_mode", "straight") not in ("straight", "premultiplied"):
+            return err("INVALID_REQUEST", "options.layer_export.alpha_codec / alpha_mode", {"field": "document.options.layer_export"})
+        le_dir = os.path.realpath(le["directory"] if os.path.isabs(le["directory"]) else os.path.join(ws, le["directory"]))
+        if not within(ws, le_dir):
+            return err("PATH_NOT_ALLOWED", "layer_export.directory must be inside the workspace", {"reason": "outside_workspace"})
+        if MODE == "no_layer_export":
+            return err("TOOL_ERROR", "the ffmpeg-skill lacks the layer export flags", {"reason": "ffmpeg_skill_lacks_flag", "flags": ["background --transparent"]})
     crf = opts.get("crf", 18)
     if isinstance(crf, bool) or not isinstance(crf, int) or not 0 <= crf <= 51:
         return err("INVALID_REQUEST", "crf out of range", {"field": "document.options.crf"})
@@ -350,7 +362,11 @@ def main() -> int:
     video_meta = {"path": video, "sha256": video_sha, "duration": dur, "width": width, "height": height}
     if dry_run:
         tl = [dict(p, index=i, tool=TYPES[p["type"]]["tool"], **({"font": fonts[p["id"]]} if p["id"] in fonts else {})) for i, p in enumerate(parsed)]
-        emit({**base, "ok": True, "status": "ok", "dry_run": True, "plan": {"document_id": doc_id, "video": video_meta, "output": {"path": out_path}, "timeline": tl}})
+        lep = ({"layer_export": {"directory": le_dir, "alpha_codec": le.get("alpha_codec", "prores4444"), "alpha_mode": le.get("alpha_mode", "straight"),
+                                 "manifest": os.path.join(le_dir, "manifest.json"), "canvas": {"tool": "ffmpeg-skill/background"},
+                                 "layers": [{"id": p["id"], "type": p["type"], "start": p["start"], "end": p["end"], "file": p["id"] + ".mov", "tool": TYPES[p["type"]]["tool"],
+                                             "box": None, "box_precision": None} for p in parsed]}} if le is not None else {})
+        emit({**base, "ok": True, "status": "ok", "dry_run": True, "plan": {"document_id": doc_id, "video": video_meta, "output": {"path": out_path}, "timeline": tl}, **lep})
         return 0
     if MODE == "cancelled":
         return err("CANCELLED", "interrupted", {"reason": "signal"})
@@ -386,6 +402,22 @@ def main() -> int:
            "output": {"path": out_path, "sha256": digest, "size": len(payload), "duration": dur, "width": width, "height": height},
            "timeline": timeline, "operations": ops, "reused": bool(reused), "engine": dict(ENGINE),
            "provenance": {"document_id": doc_id, "video": video_meta, "assets": assets, "fonts": fonts, "operations": ops, "output_hash": digest}}
+    if le is not None:   # 0.2.17: one alpha layer file per element + manifest.json in the export folder
+        codec, mode = le.get("alpha_codec", "prores4444"), le.get("alpha_mode", "straight")
+        ext = CONTRACT["layer_export"]["containers"][codec]
+        os.makedirs(le_dir, exist_ok=True)
+        layers = []
+        for p in parsed:
+            lp = os.path.join(le_dir, p["id"] + ext)
+            Path(lp).write_bytes(json.dumps({"fake": True, "layer": p["id"], "duration": dur, "codec": codec}).encode())
+            layers.append({"id": p["id"], "type": p["type"], "start": p["start"], "end": p["end"], "box": None, "box_precision": None, "file": p["id"] + ext, "path": lp,
+                           "sha256": "0" * 64 if MODE == "layer_hash_mismatch" else sha(lp), "size": os.path.getsize(lp), "duration": dur, "tool": TYPES[p["type"]]["tool"],
+                           "alpha_codec": codec, "alpha_mode": mode, "verified": True, "alpha": {"step": "alpha", "ok": True}, "seconds": 0.01, "tool_commands_observed": []})
+        man = os.path.join(le_dir, "manifest.json")
+        Path(man).write_text(json.dumps({"layers": [x["file"] for x in layers]}), encoding="utf-8")
+        doc["layer_export"] = {"directory": le_dir, "manifest": {"path": man, "sha256": sha(man)}, "alpha_codec": codec, "alpha_mode": mode,
+                               "canvas": {"tool": "ffmpeg-skill/background", "operation_id": "c" * 64, "status": "rendered", "output_hash": "d" * 64, "parameters": {}, "seconds": 0.01},
+                               "layers": layers, "verified": True}
     if MODE == "no_provenance":
         doc.pop("provenance")
     emit(doc)

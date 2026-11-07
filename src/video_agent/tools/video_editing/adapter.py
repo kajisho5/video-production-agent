@@ -44,7 +44,7 @@ CONTRACT_SCHEMA = "video-editing/contract@1"
 REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"
 DOCTOR_SCHEMA = "video-editing/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.")  # 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.0 (contract_version 6.0, ADR-106): TRIM / CUT precision smart, opt-in. 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
 # 0.4.2 (video-editing-skill #26): passes cut.py --no-keep-hevc where ffmpeg-skill 3.x offers it (engine.compatibility.detected gains that line); nothing else changed; re-pinned (ADR-083).
                                                # yet lowered here -- a real follow-up, not implemented by this
                                                # widening alone) and outputs[].encoding named directly in
@@ -184,7 +184,10 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # sources[].ai_generated, outputs[].max_size and `propose`, all opt-in; 0.5.0 (#41) bumps contract_version "4.0" -> "5.0" for that shape and changes
 # nothing else. The request this adapter builds and the response it verifies are unchanged, so the gate takes 0.5.x; re-pinned from the v0.5.0 tag
 # (ADR-097 addendum 6). ADR-099 lowers and plans them (max_size: lowered only).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.0.json")
+# 0.6.0 (contract_version "6.0"): TRIM / CUT precision smart (opt-in; frame stays the default and auto never picks it), contract.smart_cut,
+# execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version, so the re-pin is required;
+# re-pinned from the v0.6.0 tag (ADR-106). The agent sends smart only when the user asked for it (edit.precision=smart).
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -646,7 +649,9 @@ class VideoEditingAdapter(ToolAdapter):
                                 "engine": dict(doc.get("engine") or {}), "dry_run": dry_run}
         if dry_run:
             plan = doc["plan"]
-            data["plan"] = {"steps": [{k: s.get(k) for k in ("id", "type", "tool", "operation_id", "idempotency_key", "reusable", "timeline")} for s in plan.get("steps") or []]}
+            # ADR-106: plan.steps[].smart (0.6.0): the engine flag a precision smart step will use (--smart or the --accurate fallback) and why
+            data["plan"] = {"steps": [{k: s.get(k) for k in ("id", "type", "tool", "operation_id", "idempotency_key", "reusable", "timeline", "smart") if k != "smart" or s.get(k) is not None}
+                                      for s in plan.get("steps") or []]}
             data["commands"] = [c for s in plan.get("steps") or [] for c in ((s.get("preview") or {}).get("commands") or [])]
             return data
         ex = doc["execution"]

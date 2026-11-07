@@ -7,10 +7,13 @@ and misbehaves on request via FAKE_CG_MODE:
   ok | reused | tool_error | tool_error_final | output_missing | validation_error | cancelled | timeout (hangs ~30 s) | hang |
   malformed | empty | two_docs | text | nonzero_ok | wrong_schema | wrong_skill | wrong_version | bad_contract | contract_fail |
   contract_drift | hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance | not_hdr (HDR_TO_SDR
-  on an SDR source → TOOL_ERROR from the engine, like the real Skill without force)
+  on an SDR source → TOOL_ERROR from the engine, like the real Skill without force) | no_keep_alpha (an ffmpeg-skill without color
+  --keep-alpha) | alpha_lost | alpha_mismatch | alpha_unverified | legal_levels_failed (0.6.0's VALIDATION_ERROR reasons)
 
 A source whose fake probe says an alpha pix_fmt (e.g. "yuva444p10le") is refused for the contract's `alpha.refused_for` operations with
-UNSUPPORTED_FORMAT / alpha_not_preserved (exit 6), as color-grading-skill 0.5.0 does; RETAG / STRIP_DOVI still run on it.
+UNSUPPORTED_FORMAT / alpha_not_preserved (exit 6), as color-grading-skill 0.5.0 does; RETAG / STRIP_DOVI still run on it. As in 0.6.0
+(its ADR-30), the contract's `alpha.keep_alpha.operations` (LUT_APPLY / PRIMARY_CORRECTION) grade it with the alpha kept instead when the
+container holds the alpha line (ProRes 4444 by default: .mov / .mkv) and the mode is not no_keep_alpha; the result carries `alpha`.
 
 FAKE_CG_CALLS: a file every invocation (subcommand + argv) is appended to. Never runs ffmpeg or ffmpeg-skill, never imports
 color_grading. Test double only."""
@@ -25,7 +28,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.5.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.6.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_CG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_CG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -193,7 +196,11 @@ def main() -> int:
     # `alpha.refused_for` lists (they re-encode through ffmpeg-skill/color, which writes no alpha); RETAG / STRIP_DOVI stream-copy and keep it
     alpha = CONTRACT.get("alpha") or {}
     if alpha and re.match(alpha["pix_fmt_pattern"], str(meta.get("pix_fmt") or "")) and isinstance(pj.get("operations"), list):
-        lossy = sorted(str(o.get("op_id")) for o in pj["operations"] if isinstance(o, dict) and o.get("type") in alpha["refused_for"])
+        ka = alpha.get("keep_alpha") or {}
+        line = (ka.get("alpha_codec_by_input_codec") or {}).get(str(meta.get("codec") or ""), ka.get("alpha_codec_default"))
+        keeps = MODE != "no_keep_alpha" and Path(src).suffix.lower() in ((ka.get("containers") or {}).get(line) or [])
+        lossy = sorted(str(o.get("op_id")) for o in pj["operations"] if isinstance(o, dict) and o.get("type") in alpha["refused_for"]
+                       and not (keeps and o.get("type") in (ka.get("operations") or [])))
         if lossy:
             return err("UNSUPPORTED_FORMAT", f"source has an alpha channel ({meta['pix_fmt']}); operation(s) {lossy} would lose it",
                        {"reason": "alpha_not_preserved", "pix_fmt": meta["pix_fmt"], "op_ids": lossy})
@@ -242,7 +249,16 @@ def main() -> int:
                 return err("PATH_NOT_ALLOWED", "OCIO config outside allowed roots", {"reason": "outside_allowed_lut_roots"})
         if t == "HDR_TO_SDR" and (MODE == "not_hdr" or not meta.get("hdr")) and not params.get("force"):
             return err("TOOL_ERROR", "ffmpeg-skill/color --to-sdr failed: source is not tagged HDR (use force to tone-map anyway)", {"reason": "not_hdr"})   # like the real Skill: the engine refuses, reported as TOOL_ERROR
-        results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t,
+        extra = {}
+        if t == "HDR_TO_SDR":   # color-grading-skill 0.5.1 (its ADR-28): no tonemap -> mobius for an HLG input, hable otherwise; the choice is recorded
+            transfer = meta.get("color_transfer")
+            rule = "request" if params.get("tonemap") else ("hlg_default" if transfer == "arib-std-b67" else "default")
+            params = dict(params, tonemap=params.get("tonemap") or ("mobius" if rule == "hlg_default" else "hable"))
+            extra["tonemap_selection"] = {"tonemap": params["tonemap"], "rule": rule, "input_transfer": transfer}
+        if alpha and re.match(alpha["pix_fmt_pattern"], str(meta.get("pix_fmt") or "")) and t in ((alpha.get("keep_alpha") or {}).get("operations") or []):
+            extra["alpha"] = {"kept": True, "precision_bits": 8, "alpha_codec": line, "alpha_mode": "straight", "source_colour": "taken as straight (not un-premultiplied)",
+                              "tool": "ffmpeg-skill/color --keep-alpha", "verification": {"step": "alpha", "ok": True}}
+        results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t, **extra,
                         "tool": OPS[t]["tool"], "required_capabilities": OPS[t]["required_capabilities"], "input": op["input"], "parameters": params,
                         "status": "reused" if MODE == "reused" else "completed", "input_hash": sha(src), "seconds": 0.01, "tool_commands_observed": ["fake ffmpeg -i in -vf x out"], "measurements": {}})
     outs = pj["outputs"]
@@ -267,18 +283,22 @@ def main() -> int:
         return err("TOOL_ERROR", "ffmpeg exited 1", {"reason": "tool_failed", "argv": ["never", "forwarded"]}, retryable=MODE == "tool_error")
     if MODE == "validation_error":
         return err("VALIDATION_ERROR", "output colour tags do not match the request", {"reason": "verification"})
+    if MODE in ("alpha_lost", "alpha_mismatch", "alpha_unverified", "legal_levels_failed"):   # 0.6.0: ffmpeg-skill/color's own check of the written file failed
+        return err("VALIDATION_ERROR", f"ffmpeg-skill/color's check failed ({MODE})", {"reason": MODE, "path": out_path})
     if MODE == "cancelled":
         return err("CANCELLED", "interrupted", {"reason": "signal"})
     last = results[-1]
     payload = {"fake": True, "duration": meta["duration"], "video": True, "channels": meta.get("channels", 2), "hdr": False if last["type"] == "HDR_TO_SDR" else bool(meta.get("hdr")),
-               "color": last["type"].lower(), "lufs": meta.get("lufs", -11.0)}
+               "color": last["type"].lower(), "lufs": meta.get("lufs", -11.0),
+               **({"pix_fmt": "yuva444p12le", "codec": "prores"} if last.get("alpha") else {})}   # a kept alpha stays in the file (a later op sees it)
     if MODE != "output_missing":
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         Path(out_path).write_bytes(json.dumps(payload).encode())
     digest = sha(out_path) if os.path.exists(out_path) else "0" * 64
     if MODE == "hash_mismatch":
         digest = "1" * 64
-    art = {"path": out_path, "duration": meta["duration"], "width": meta["width"], "height": meta["height"], "pix_fmt": "yuv420p", "codec": "h264",
+    art = {"path": out_path, "duration": meta["duration"], "width": meta["width"], "height": meta["height"],
+           "pix_fmt": "yuva444p12le" if last.get("alpha") else "yuv420p", "codec": "prores" if last.get("alpha") else "h264",
            "color_space": "bt709", "color_primaries": "bt709", "color_transfer": "bt709", "color_range": "tv", "hdr": payload["hdr"], "dolby_vision": False,
            "size": os.path.getsize(out_path) if os.path.exists(out_path) else 0, "sha256": digest}
     prov = {"skill": "color-grading", "skill_version": CONTRACT["version"], "tool_versions": TOOL_VERSIONS, "output_hash": digest, "node_id": last["node_id"], "operation_id": last["operation_id"],
