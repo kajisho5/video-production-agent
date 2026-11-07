@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..agent.editing import delivery_subjects
@@ -280,7 +281,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                     rep.items.append(QAItem("visual", "contact_sheet", "PASS", sheet, "generated for human review", artifact=art))
         # finishing outputs of the subject (ADR-031): the subtitle sidecar (cue count as planned, well-formed) and the thumbnail (a non-empty image of the planned format)
         for o in (ir_doc.get("plan") or {}).get("outputs") or []:
-            if (o.get("expected") or {}).get("source") != asset_id or o.get("role") not in ("CAPTIONS", "THUMBNAIL", "TIMELINE"):
+            if (o.get("expected") or {}).get("source") != asset_id or o.get("role") not in ("CAPTIONS", "THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE"):
                 continue
             art = o["logical"]
             path = paths.get(art)
@@ -297,14 +298,48 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 qc_items(art, path, "subtitle")
             elif o["role"] == "TIMELINE":   # ADR-052: the timeline document the agent itself reads back (the clip count of an OTIO file)
                 rep.items.extend(_timeline_items(art, path, o))
+            elif o["role"] == "THUMBNAIL_LAYERS":   # ADR-104: every layer the manifest names is on disk with its sha256
+                rep.items.extend(_layers_items(art, path))
             else:
                 ok = size > 0 and _image_magic(path, o.get("format") or "")
                 rep.items.append(QAItem("delivery", "image", "PASS" if ok else "FAIL", f"{size} bytes", f"non-empty {o.get('format')}", artifact=art))
+                rep.items.extend(_variant_items(art, path, results))   # ADR-104: a variant below the phone-size check is reported, never dropped
     for args, r in (qc_packages or []) if qc_enabled else []:
         package_items(rep, args, r, paths)
     for doc in (ir_doc.get("qa") or {}).get("documents") or []:
         rep.items.extend(document_items(doc, (documents or {}).get(doc["id"]), rep))
     return rep
+
+
+def _layers_items(art: str, path: str) -> List[QAItem]:
+    """ADR-104: the layers manifest (thumbnail-skill/layers@1) read back by the agent: every layer file it names lies beside it with the sha256 it
+    states (thumbnail-skill itself verified that the layers rebuild the thumbnail pixel for pixel; the adapter admitted that verdict)."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [QAItem("delivery", "layers", "FAIL", "unreadable", "a thumbnail-skill/layers@1 manifest", artifact=art)]
+    files = [x for x in doc.get("layers") or [] if isinstance(x, dict) and x.get("file")]
+    bad = [x["file"] for x in files if not os.path.isfile(os.path.join(os.path.dirname(path), str(x["file"])))
+           or _sha256(os.path.join(os.path.dirname(path), str(x["file"]))) != str(x.get("sha256") or "").split(":")[-1]]
+    ok = doc.get("schema") == "thumbnail-skill/layers@1" and bool(files) and not bad and (doc.get("verified") or {}).get("pixel_equal") is True
+    return [QAItem("delivery", "layers", "PASS" if ok else "FAIL", f"{len(files)} layer(s)" + (f", {len(bad)} changed or missing" if bad else ""),
+                   "every layer on disk with its sha256, rebuilt pixel for pixel", artifact=art, fix_hint="" if ok else "render the thumbnail layers again")]
+
+
+def _variant_items(art: str, path: str, results: List[ToolResult]) -> List[QAItem]:
+    """ADR-104: the phone-size verdict thumbnail-skill gave this file when it is one of render_variants' variants (text height at phone width,
+    contrast through qc-skill): fail → WARN with the findings, unknown (contrast not measured) → WARN, pass → PASS. Nothing for other thumbnails."""
+    for r in results or []:
+        for v in ((r.data or {}).get("variants") or []) if r.ok and isinstance(r.data, dict) else []:
+            if os.path.realpath(str(v.get("output") or "")) != os.path.realpath(path):
+                continue
+            ss = v.get("small_size") or {}
+            status = ss.get("status")
+            finds = sorted({f.get("code") for t in ss.get("texts") or [] for f in t.get("findings") or [] if f.get("code")})
+            return [QAItem("delivery", "phone_size", "PASS" if status == "pass" else "WARN", f"variant {v.get('variant')} ({v.get('description')}): {status}"
+                           + (f" ({', '.join(finds)})" if finds else ""), f"text >= {ss.get('min_text_height_px')} px at {ss.get('phone_width')} px wide, contrast >= {ss.get('min_contrast_ratio')}",
+                           kind="judgement", artifact=art, fix_hint="" if status == "pass" else "a variant below the phone-size check: compare before using it")]
+    return []
 
 
 def document_items(doc: Dict[str, Any], r: Optional[ToolResult], rep: "QAReport") -> List[QAItem]:

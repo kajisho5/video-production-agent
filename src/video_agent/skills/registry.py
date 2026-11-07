@@ -451,6 +451,23 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM", ["thumbnail/extract_frame"]))
     r.register(SkillSpec("thumbnail_render", "1.0", "A video frame with a caption rendered as a thumbnail document", {"asset": "video", "at": "float", "text": "str"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM", ["thumbnail/render"]))
+    # ADR-104: thumbnail-skill 0.1.12 .. 0.1.15 -- the same document rendered as A/B variants, with its layers, or once per table row and platform
+    # preset; and the frame chosen from detection-skill's faces (with attributes) ranked by thumbnail-skill choose_frame (two measurements)
+    r.register(SkillSpec("thumbnail_variants", "1.0", "N documented A/B variants of the captioned thumbnail (layout, palette, frame), each checked at phone size; variant 1 is the document as given",
+                         {"asset": "video", "at": "float", "text": "str"}, {"artifact": "THUMBNAIL"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM",
+                         ["thumbnail/render_variants"]))
+    r.register(SkillSpec("thumbnail_layers", "1.0", "The thumbnail and every composited layer as a PNG with a manifest that rebuilds it pixel for pixel",
+                         {"asset": "video", "at": "float"}, {"artifact": "THUMBNAIL"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM",
+                         ["thumbnail/render_layers"]))
+    r.register(SkillSpec("thumbnail_batch", "1.0", "One thumbnail per row of the user's table and per platform preset, each laid out on the preset's canvas",
+                         {"asset": "video", "at": "float", "table": "csv"}, {"artifact": "THUMBNAIL"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "thumbnail"], "LOW", True, "CONFIRM",
+                         ["thumbnail/render_batch"]))
+    r.register(SkillSpec("face_attributes", "1.0", "Face boxes with measured attributes (size, pose, sharpness, eyes open) on frames sampled every N seconds "
+                                                   "(detection-skill faces --attributes); measurement only, never an identity",
+                         {"asset": "video"}, {"observation": "face_attributes"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", ["detection/faces"]))
+    r.register(SkillSpec("thumbnail_frame_ranking", "1.0", "Rank the sampled frames of a face_attributes file by a stated weighted formula (thumbnail-skill choose_frame); "
+                                                           "reads no pixels, the ranking suggests",
+                         {"observation": "face_attributes"}, {"observation": "frame_ranking"}, ["thumbnail"], "LOW", True, "AUTO", ["thumbnail/choose_frame"]))
     for name, typ, desc, inputs, risk in (
         ("color_strip_dovi", "STRIP_DOVI", "Strip Dolby Vision side data", {"asset": "video"}, "LOW"),
         ("color_hdr_to_sdr", "HDR_TO_SDR", "Tone-map an HDR source to SDR BT.709", {"asset": "video"}, "MEDIUM"),

@@ -23,7 +23,8 @@ JOB_STATES = ("QUEUED", "INGESTING", "ANALYZING", "PLANNING", "WAITING_FOR_APPRO
               "RECOVERY", "REVIEW", "DELIVERING", "COMPLETED", "FAILED", "BLOCKED", "CANCELLED")
 ASSET_TYPES = ("CAMERA", "AUDIO", "SLIDE", "SCREEN_CAPTURE", "MUSIC", "BGM", "LOGO", "IMAGE", "GRAPHIC", "CAPTION", "UNKNOWN")
 ARTIFACT_TYPES = ("MASTER", "WEB", "YOUTUBE", "SOCIAL", "ARCHIVE", "CAPTIONS", "THUMBNAIL", "TIMELINE", "REPORT", "INTERMEDIATE",
-                  "PRODUCTION_RECEIPT")   # docs/SPEC.md §6 (ADR-040): the once-per-completed-execution roll-up, audit/receipt.py
+                  "PRODUCTION_RECEIPT",   # docs/SPEC.md §6 (ADR-040): the once-per-completed-execution roll-up, audit/receipt.py
+                  "THUMBNAIL_LAYERS")     # ADR-104: a thumbnail's layers manifest (thumbnail-skill/layers@1) beside its layer PNGs
 ARTIFACT_STAGES = ("working", "candidate", "approved", "final", "archive")
 
 

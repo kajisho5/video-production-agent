@@ -9,7 +9,8 @@ extended by one sampling step. Nothing runs an engine.
 Controlled via:
 
   FAKE_DET_READY: all (default) | model (the YuNet file missing) | frames (ffmpeg-skill unusable)
-  FAKE_DET_MODE: ok | fail:<CODE> | bad_fingerprint | label | wrong_every | odd_rect | tracks_other_file | not_written
+  FAKE_DET_MODE: ok | fail:<CODE> | bad_fingerprint | label | wrong_every | odd_rect | tracks_other_file | not_written | no_attributes
+  `faces --attributes` (ADR-104) adds each face's attributes: the face fact's own "attributes" over an open-eyed frontal default.
   FAKE_DET_CONTRACT: pinned | drift_version (0.1.9: non-fatal) | drift_fatal (tracks argv changed) | incompatible (0.2.0)
   FAKE_DET_CALLS: a file every invocation's argv is appended to (one JSON list per line). Test double only."""
 from __future__ import annotations
@@ -117,6 +118,11 @@ def _faces(argv) -> int:
                      "label": None, "landmarks": [], "engine": eng["id"], "model": eng["model"], "model_sha256": eng["model_sha256"]}
                 if MODE == "label":
                     d["label"] = "someone"
+                if opts.get("attributes"):   # ADR-104: faces --attributes (the fact's own attributes, or an open-eyed frontal face)
+                    d["attributes"] = dict({"size": 0.3, "yaw_deg": 0.0, "roll_deg": 0.0, "frontal": 0.9, "sharpness": 150.0, "mouth_contrast": 0.2, "eyes_open": 0.8},
+                                           **(f.get("attributes") or {}))
+                    if MODE == "no_attributes":
+                        d.pop("attributes")
                 dets.append(d)
         frames.append({"index": i, "t": t, "detections": dets})
     fp = "sha256:" + (("0" * 64) if MODE == "bad_fingerprint" else hashlib.sha256(raw).hexdigest())
@@ -125,7 +131,7 @@ def _faces(argv) -> int:
            "frame_size": {"width": W, "height": H},
            "sampling": {"method": "every", "every": every + (0.5 if MODE == "wrong_every" else 0.0), "times": times, "scene_points": [], "frames_tool": "ffmpeg-skill/look",
                         "ffmpeg_skill_version": "3.1.1", "extracted_size": {"width": W, "height": H}},
-           "engine": eng, "parameters": {"min_score": min_score}, "frames": frames,
+           "engine": eng, "parameters": {"min_score": min_score, **({"attributes": True} if opts.get("attributes") else {})}, "frames": frames,
            "counts": {"frames": len(frames), "frames_with_detections": sum(1 for f in frames if f["detections"]), "detections": sum(len(f["detections"]) for f in frames)},
            "skill": "detection-skill", "skill_version": _contract()["version"], "tool": "detection/faces", "created_at": "2026-10-31T00:00:00Z", "processing_seconds": 0.1, "warnings": []}
     out = opts.get("output")

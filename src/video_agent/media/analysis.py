@@ -59,6 +59,12 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # faces to blur (ADR-090): detection-skill's face boxes on frames sampled every `every` seconds, linked over time into redact rectangles
     # (`detection tracks`, `window`); a measurement only: whether to blur is a CONFIRM decision (agent/faces.py), never this kind's
     "face_tracks": {"skill": "face_detection", "needs_audio": False, "params": ("every", "min_score", "window")},
+    # ADR-104: faces with their measured attributes (detection-skill `faces --attributes`: size, pose, sharpness, eyes open) on frames sampled
+    # every `frame_every` seconds, and thumbnail-skill choose_frame's ranking of those frames (a stated, weighted formula over the measured
+    # attributes; `detections_sha256` keys it to the very file it ranked). Measurements only: whether a ranked frame becomes the thumbnail
+    # is the thumbnail decision's (CONFIRM), never these kinds'
+    "face_attributes": {"skill": "face_attributes", "needs_audio": False, "params": ("frame_every", "frame_min_score")},
+    "frame_ranking": {"skill": "thumbnail_frame_ranking", "needs_audio": False, "params": ("detections_sha256",)},
     # who spoke when (ADR-086): diarization-skill's anonymous exclusive speaker turns (SPEAKER_nn), a measurement only; the counts are the
     # Skill's own optional hints (speakers.num_speakers / .min_speakers / .max_speakers), the stream its --audio-stream
     "speaker_turns": {"skill": "speaker_diarization", "needs_audio": True, "params": ("num_speakers", "min_speakers", "max_speakers", "audio_stream")},

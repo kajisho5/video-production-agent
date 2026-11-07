@@ -50,6 +50,12 @@ DETECTIONS_SCHEMA = "detection-skill/detections@1"
 TRACKS_SCHEMA = "detection-skill/tracks@1"
 SUPPORTED_SKILL_VERSIONS = ("0.1.",)
 KIND = "face_tracks"                            # the analysis kind (media/analysis.py) this adapter measures
+# ADR-104: faces with their measured attributes (`detection faces --attributes`, no tracks): what thumbnail-skill's choose_frame ranks.
+# Its sampling parameters carry their own names in the analysis request (`frame_every` / `frame_min_score`), so a plan that also blurs
+# faces (face_tracks, `every` / `min_score`) keeps both samplings apart.
+ATTR_KIND = "face_attributes"
+ATTR_PARAMETERS = {"frame_every": "every", "frame_min_score": "min_score"}
+ATTRIBUTE_FIELDS = ("eyes_open", "frontal", "size", "sharpness")   # what choose_frame reads (detection-skill's own attribute names)
 # the typed parameters the agent may send: faces --every / --min-score, tracks --window (the Skill's own CLI ranges)
 PARAMETERS = ("every", "min_score", "window")
 MAX_EVERY = 60.0
@@ -224,6 +230,23 @@ def check_detections(doc: Dict[str, Any], version: str, input_sha256: str, param
     return errs + _face_problems(doc)
 
 
+def check_attributes(doc: Dict[str, Any]) -> List[str]:
+    """ADR-104: a `faces --attributes` document says so (parameters.attributes) and every face carries its measured attributes, each a number
+    in [0, 1] or null (detection-skill's own ranges for what choose_frame reads)."""
+    if as_dict(doc.get("parameters")).get("attributes") is not True:
+        return ["parameters.attributes is not true: the faces were measured without attributes"]
+    for fr in doc.get("frames") or []:
+        for d in as_dict(fr).get("detections") or []:
+            a = as_dict(d).get("attributes")
+            if not isinstance(a, dict):
+                return [f"a face at t={as_dict(fr).get('t')!r} carries no attributes"]
+            for k in ATTRIBUTE_FIELDS:
+                v = a.get(k)
+                if v is not None and (not _num(v) or not 0.0 <= float(v) <= (float("inf") if k == "sharpness" else 1.0)):
+                    return [f"attribute {k}={v!r} at t={as_dict(fr).get('t')!r} is out of range"]
+    return []
+
+
 def check_tracks(doc: Dict[str, Any], version: str, detections_sha256: str, faces: Dict[str, Any], params: Dict[str, float]) -> List[str]:
     """Why a tracks document is not the linking of exactly the faces document the agent wrote (empty = admitted)."""
     if doc.get("schema") != TRACKS_SCHEMA:
@@ -352,6 +375,9 @@ class DetectionAdapter(ToolAdapter):
         return tool in self.tools
 
     def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
+        if kind == ATTR_KIND:
+            return {"input": path, "asset_id": asset_id, "attributes": True,
+                    "parameters": {ATTR_PARAMETERS[k]: v for k, v in (parameters or {}).items() if k in ATTR_PARAMETERS}}
         return {"input": path, "asset_id": asset_id, "parameters": {k: v for k, v in (parameters or {}).items() if k in PARAMETERS}}
 
     def preview(self, op: Operation, paths: Dict[str, str]) -> List[str]:
@@ -359,7 +385,7 @@ class DetectionAdapter(ToolAdapter):
             b = self.build(op.args)
         except ToolError as e:
             return [f"<refused: {e}>"]
-        return [" ".join(["detection"] + b["faces_argv"]), " ".join(["detection"] + b["tracks_argv"])]
+        return [" ".join(["detection"] + argv) for argv in (b["faces_argv"], b["tracks_argv"]) if argv]
 
     def run(self, op: Operation, paths: Dict[str, str], timeout: Optional[float] = None, dry_run: bool = False, attempt: int = 1) -> ToolResult:
         if op.kind != "measure":
@@ -382,27 +408,33 @@ class DetectionAdapter(ToolAdapter):
         hit = scan_forbidden(args, FORBIDDEN_ARG_KEYS)
         if hit:
             raise ToolError(f"forbidden key {hit}")
-        unknown = sorted(k for k in args if k not in ("input", "asset_id", "parameters"))
+        unknown = sorted(k for k in args if k not in ("input", "asset_id", "parameters", "attributes"))
         if unknown:
             raise ToolError(f"unknown detection argument(s): {', '.join(unknown)}")
+        attributes = args.get("attributes", False)
+        if attributes not in (True, False):
+            raise ToolError("attributes must be true or false")
         if not self.workspace:
             raise ToolError("detection needs the agent's workspace (the detections and tracks files are written there)")
         src = self._input(args.get("input"))
         params = check_parameters(dict(args.get("parameters") or {}))
+        if attributes and "window" in params:
+            raise ToolError("window links tracks: it does not apply to faces with attributes")
         asset = str(args.get("asset_id") or "asset")
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", asset):
             raise ToolError(f"invalid asset id {asset!r}")
         out_dir = os.path.join(self.workspace, "cache", "detection")
-        faces_out, tracks_out = os.path.join(out_dir, f"{asset}.faces.json"), os.path.join(out_dir, f"{asset}.tracks.json")
+        faces_out, tracks_out = os.path.join(out_dir, f"{asset}.{'attributes' if attributes else 'faces'}.json"), os.path.join(out_dir, f"{asset}.tracks.json")
         t = max(1.0, min(86400.0, float(timeout or self.default_timeout)))
-        faces = ["faces", "--json", "--overwrite", f"--output={faces_out}", f"--every={params['every']:g}"]
+        faces = ["faces", "--json", "--overwrite", f"--output={faces_out}", f"--every={params['every']:g}"] + (["--attributes"] if attributes else [])
         if "min_score" in params:
             faces.append(f"--min-score={params['min_score']:g}")
         if self.ffmpeg_skill_dir:
             faces.append(f"--ffmpeg-skill={self.ffmpeg_skill_dir}")
         faces += [f"--timeout={t:g}", "--", src]
         tracks = ["tracks", "--json", "--overwrite", f"--output={tracks_out}"] + ([f"--window={params['window']:g}"] if "window" in params else []) + ["--", faces_out]
-        return {"faces_argv": faces, "tracks_argv": tracks, "input": src, "faces_out": faces_out, "tracks_out": tracks_out, "out_dir": out_dir, "params": params, "timeout": t}
+        return {"faces_argv": faces, "tracks_argv": None if attributes else tracks, "input": src, "faces_out": faces_out, "tracks_out": None if attributes else tracks_out,
+                "out_dir": out_dir, "params": params, "timeout": t, "attributes": attributes}
 
     # ---- execution
     def _fail(self, op: Operation, attempt: int, dry_run: bool, t0: float, exit_code: int, code: str, message: str, retryable: bool = False,
@@ -441,23 +473,30 @@ class DetectionAdapter(ToolAdapter):
             b = self.build(op.args, timeout)
         except ToolError as e:
             return self._fail(op, attempt, dry_run, t0, 2, "INVALID_REQUEST", str(e))
-        commands = [" ".join(["detection"] + b["faces_argv"]), " ".join(["detection"] + b["tracks_argv"])]
+        commands = [" ".join(["detection"] + argv) for argv in (b["faces_argv"], b["tracks_argv"]) if argv]
         if dry_run:
             return ToolResult(op.id, op.tool, True, 0, None, {"skill": {"id": SKILL_ID, "version": self.version}, "status": "dry_run", "commands": commands},
                               commands, "", round(time.time() - t0, 3), attempt, True)
         os.makedirs(b["out_dir"], exist_ok=True)
         for stale in (b["faces_out"], b["tracks_out"]):   # an earlier run's file must never pass for this run's (the on-disk check below)
-            if os.path.exists(stale):
+            if stale and os.path.exists(stale):
                 os.remove(stale)
         doc, failed, tail = self._step(op, attempt, t0, b["faces_argv"], b["timeout"], "faces")
         if failed is not None:
             return failed
         faces = {k: v for k, v in doc.items() if k not in ("ok", "detections_file")}
         why = check_detections(faces, self.version, sha256_file(b["input"]), b["params"])
+        if b["attributes"]:
+            why += check_attributes(faces)
         if _read_json(b["faces_out"]) != faces:
             why.append("the faces file on disk is not the document the Skill printed")
         if why:
             return self._fail(op, attempt, dry_run, t0, 9, "INVALID_OUTPUT", "detection faces result not admitted: " + "; ".join(why))
+        if b["attributes"]:   # ADR-104: the measured faces themselves are the result (thumbnail-skill ranks the file); nothing is linked
+            data = {"skill": {"id": SKILL_ID, "version": self.version}, "status": "ok", "attributes": True, "detections": detection_summary(faces),
+                    "detections_file": b["faces_out"], "detections_sha256": sha256_file(b["faces_out"]), "engine": as_dict(faces.get("engine")),
+                    "warnings": [str(w)[:600] for w in faces.get("warnings") or []], "commands": commands}
+            return ToolResult(op.id, op.tool, True, 0, None, data, commands, tail, round(time.time() - t0, 3), attempt, False)
         doc, failed, tail2 = self._step(op, attempt, t0, b["tracks_argv"], 300.0, "tracks")
         if failed is not None:
             return failed

@@ -63,7 +63,10 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
                                                 "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves"),
                    "motion_graphics": ("asset", "elements"), "subtitle_generation": ("asset", "format", "language", "cues"), "subtitle_burn_in": ("asset",), "subtitle_mux": ("asset",),
-                   "thumbnail_frame": ("asset", "at", "format"), "thumbnail_render": ("asset", "at", "format", "text"), "qc_check": ("asset", "target", "kind", "artifact"),
+                   "thumbnail_frame": ("asset", "at", "format", "frame"), "thumbnail_render": ("asset", "at", "format", "text", "frame"),
+                   # ADR-104: the frame a face ranking chose (source, rank, source time), the variant count, a batch's presets / rows / files
+                   "thumbnail_variants": ("asset", "at", "format", "text", "frame", "variants"), "thumbnail_layers": ("asset", "at", "format", "text", "frame"),
+                   "thumbnail_batch": ("asset", "at", "format", "text", "frame", "presets", "rows", "files"), "qc_check": ("asset", "target", "kind", "artifact"),
                    # timeline export (ADR-052): the subject, the editor format and how many clips its cut list has
                    "timeline_export": ("asset", "format", "clips"),
                    # card offload (ADR-066): the card, the destinations the user named and the copy folder ingest-skill makes in each

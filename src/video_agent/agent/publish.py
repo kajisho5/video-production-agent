@@ -122,6 +122,8 @@ def decide_publish(eng: Any, m: Dict[str, Requirement], decs: List[Any], subject
         return block("publishing comes after QC (publish-skill's first rule): turn the QC gate on with --set qc=true")
     if p["attach"].get("thumbnail") and not any(d.subject == "thumbnail.render" and d.type == "TRANSFORM" and d.params.get("asset_id") == subject for d in live):
         return block("publish.thumbnail=true attaches this plan's thumbnail, and none is planned (--set thumbnail=true)")
+    if p["attach"].get("thumbnail") and any(d.subject == "thumbnail.render" and d.type == "TRANSFORM" and d.params.get("asset_id") == subject and d.params.get("batch") for d in live):
+        return block("publish.thumbnail=true attaches one thumbnail, and thumbnail.batch makes one per table row and preset (ADR-104): publish without it, or plan one thumbnail")
     if p["attach"].get("captions") and not any(d.subject == "subtitle.generate" and d.type == "TRANSFORM" and d.params.get("asset_id") == subject for d in live):
         return block("publish.captions=true attaches this plan's subtitle sidecar, and none is planned (--set subtitle=true)")
     ids = [t.get("id") for t in targets]

@@ -19,7 +19,7 @@ from video_agent.models import Operation  # noqa: E402
 from video_agent.tools.base import ToolError  # noqa: E402
 from video_agent.tools.ffmpeg_skill.adapter import PathPolicy  # noqa: E402
 from video_agent.tools.skill_process import CliSkill  # noqa: E402
-from video_agent.tools.thumbnail import (DRIFT_KEYS, PACKAGE, PREFIX, SKILL_ID, TOOL_EXTRACT_FRAME, TOOL_RENDER, ContractError, ThumbnailAdapter,  # noqa: E402
+from video_agent.tools.thumbnail import (DRIFT_KEYS, PACKAGE, PREFIX, SKILL_ID, TOOL_EXTRACT_FRAME, TOOL_RENDER, TOOLS, ContractError, ThumbnailAdapter,  # noqa: E402
                                          check_contract, contract_drift, lift_observation, locate_thumbnail, package_from_contract, pinned_contract)
 
 FAKE = Path(__file__).resolve().parent / "fake_thumbnail.py"
@@ -74,7 +74,9 @@ class ContractTests(FakeBase):
     def test_discovery(self):
         a = self.adapter
         self.assertEqual(a.version, "0.1.15")
-        self.assertEqual(a.tools, {TOOL_RENDER, TOOL_EXTRACT_FRAME})
+        self.assertEqual(a.tools, set(TOOLS))   # ADR-104: render / extract_frame and the 0.1.12 .. 0.1.15 tools
+        self.assertEqual(set(TOOLS), {TOOL_RENDER, TOOL_EXTRACT_FRAME, "thumbnail/render_batch", "thumbnail/render_variants", "thumbnail/render_layers",
+                                      "thumbnail/choose_frame", "thumbnail/place_text"})
         self.assertEqual(a.drift(), [])
         self.assertEqual(a.font_ids, ["cjk", "mono", "sans", "sans-bold", "serif"])
         self.assertEqual(a.canvas_range["width"], (16.0, 7680.0))
@@ -92,7 +94,7 @@ class ContractTests(FakeBase):
         pkg = self.adapter.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual(pkg.skill_id, SKILL_ID)
-        self.assertEqual(pkg.tool_ids(), [TOOL_RENDER, TOOL_EXTRACT_FRAME])
+        self.assertEqual(pkg.tool_ids(), list(TOOLS))
         self.assertEqual(pkg.repository, "kajisho5/thumbnail-skill")
         self.assertEqual(pkg.capabilities, ["thumbnail"])
         t = pkg.tool(TOOL_RENDER)
@@ -275,8 +277,10 @@ class RequestTests(FakeBase):
         self.assertEqual(r.data["request"]["tool"], TOOL_EXTRACT_FRAME)
         self.assertEqual(self.adapter.calls, calls)   # the Skill has no plan mode: never invoked for a dry run
         self.assertFalse(os.path.exists(self.paths()["out"]))
-        with self.assertRaises(ToolError):
-            self.adapter.measure(TOOL_RENDER, {})
+        r = self.adapter.measure(TOOL_RENDER, {})   # ADR-104: only thumbnail/choose_frame is a measurement
+        self.assertFalse(r.ok)
+        self.assertEqual(r.data["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.adapter.calls, calls)
 
 
 class SuccessTests(FakeBase):

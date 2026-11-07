@@ -19,8 +19,9 @@ from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJEC
 from .documents import SKILL as DOCUMENT_SKILL, SUBJECT as DOCUMENT_SUBJECT
 from .bgm import BGM_INPUT, BGM_OUTPUT, SUBJECT as BGM_SUBJECT, ir_bgm, skill_of as bgm_skill_of
 from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
-from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, ir_color_operation, ir_graphics_render,
-                        ir_thumbnail, picture_size, thumbnail_layout)
+from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_SKILLS, ir_color_operation,
+                        ir_graphics_render, ir_thumbnail, picture_size, thumbnail_layout)
+from .thumbnail_features import PRESETS, choose_ranked_frame, faces_on_picture, inside_keep
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
@@ -229,13 +230,31 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         nonlocal order
         for d in decided(subject, "thumbnail.render"):
             scope = scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)}
+            end = max(0.0, float(scope["end"]) - 0.001)
             at = d.params.get("at")
+            fc = None
+            if d.params.get("frame_choice"):   # ADR-104: the first ranked face frame that the edit keeps, on the delivered timeline
+                speed = next((float(op["factor"]) for op in video_ops if op.get("asset") == subject and op.get("type") == "video.speed"), 1.0)
+                concat = next((op for op in video_ops if op.get("type") == "video.concat" and op.get("output") == subject), None)
+
+                def timeline_of(src: str, t: float) -> Optional[float]:
+                    x = inside_keep(t, kept_ranges_of(video_ops, src, durations.get(src, 0.0)))
+                    if x is None:
+                        return None
+                    seg = next((s_ for s_ in (concat or {}).get("segments") or [] if s_.get("input") == src), None)
+                    v = round((x + (float(seg["timeline_range"][0]) if seg else 0.0)) / speed, 3)
+                    return v if v <= end else None
+                obs_ids = set(d.params["frame_choice"].get("observations") or [])
+                fc = choose_ranked_frame([(o.asset_id, o) for src in sources for o in analysis.observations if o.id in obs_ids and o.asset_id == src], timeline_of)
+                if fc is None:
+                    raise ValueError(f"thumbnail.at=faces: every ranked frame with a face of {subject} lies in material the edit removes: name the frame with thumbnail.at")
+                at = fc["timestamp"]
             if at is None:
                 at = round(float(scope["end"]) * float(d.params.get("at_ratio") or 0.0), 3)
             size = picture_size(techn.get(sources[0]) or {}, video_ops, subject) if sources else None
-            params: Dict[str, Any] = {"timestamp": min(float(at), max(0.0, float(scope["end"]) - 0.001)), "format": d.params["format"]}
+            params: Dict[str, Any] = {"timestamp": min(float(at), end), "format": d.params["format"]}
             skill = str(d.params.get("skill") or THUMBNAIL_FRAME_SKILL)
-            if skill == THUMBNAIL_RENDER_SKILL:
+            if skill != THUMBNAIL_FRAME_SKILL:   # a document: render / variants / layers / batch (ADR-088, ADR-104)
                 params.update({"width": size[0] if size else None, "height": size[1] if size else None})
                 if d.params.get("text") is not None:
                     params.update({"text": d.params["text"], "font_id": d.params.get("font_id", "sans-bold"), "font_size": int(d.params.get("font_size") or 48),
@@ -244,16 +263,57 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                     logo, texts = thumbnail_layout(size[0], size[1], d.params.get("logo"), list(d.params.get("texts") or []), int(d.params.get("font_size") or 48),
                                                    d.params.get("position") or "bottom")
                     params.update({"texts": texts, "logo": logo})
+            if fc is not None:
+                params["frame_choice"] = {k: fc[k] for k in ("source", "observation", "source_time", "rank", "score", "eyes_closed")}
+            if d.params.get("avoid_faces") is not None and fc is not None and size:
+                faces = faces_on_picture(fc, size)
+                if faces is None:
+                    raise ValueError(f"thumbnail.avoid_faces: the measured frame of {fc['source']} does not scale onto the {size[0]}x{size[1]} picture")
+                params["avoid_faces"] = {"faces": faces, "frame_size": {"width": size[0], "height": size[1]}, **dict(d.params["avoid_faces"])}
             out_id = f"{subject}_thumbnail"
+            produced: List[Dict[str, Any]] = [{"role": "THUMBNAIL", "logical": out_id, "format": params["format"], "expected": {"timestamp": params["timestamp"], "source": subject}}]
+            if d.params.get("variants"):   # ADR-104: variant 1 is the thumbnail itself; variants 2..N are further thumbnails of the same subject
+                v = dict(d.params["variants"])
+                ids = [f"{subject}_thumbnail_v{k}" for k in range(2, int(v["count"]) + 1)]
+                params["variants"] = {**{k: v[k] for k in ("count", "frames", "phone_width", "min_text_height", "min_contrast") if k in v}, "outputs": ids}
+                produced[0]["expected"]["variant"] = 1
+                produced += [{"role": "THUMBNAIL", "logical": x, "format": params["format"], "expected": {"timestamp": params["timestamp"], "source": subject, "variant": k}}
+                             for k, x in enumerate(ids, start=2)]
+            if d.params.get("layers"):
+                params["layers"] = {"output": f"{subject}_thumbnail_layers"}
+                produced.append({"role": "THUMBNAIL_LAYERS", "logical": f"{subject}_thumbnail_layers", "format": "json", "expected": {"source": subject, "thumbnail": out_id}})
+            if d.params.get("batch"):   # ADR-104: one file per table row and preset, each laid out on the preset's own canvas; no single thumbnail
+                bt = d.params["batch"]
+                targets = []
+                for preset in bt["presets"]:
+                    pw, ph = int(PRESETS[preset]["width"]), int(PRESETS[preset]["height"])
+                    logo, _t = thumbnail_layout(pw, ph, d.params.get("logo"), [], int(d.params.get("font_size") or 48), d.params.get("position") or "bottom")
+                    targets.append({"preset": preset, "width": pw, "height": ph, **({"logo": logo} if logo else {})})
+                _l, texts = thumbnail_layout(1, 1, None, list(d.params.get("texts") or []), int(d.params.get("font_size") or 48), d.params.get("position") or "bottom")
+                for k in ("logo", "width", "height", "texts"):
+                    params.pop(k, None)
+                if texts:
+                    params["texts"] = texts
+                params["batch"] = {**{k: bt[k] for k in ("csv", "csv_sha256", "encoding", "delimiter", "name", "min_font_size") if k in bt}, "rows": bt["rows"], "targets": targets,
+                                   "outputs": [{"row": f["row"], "preset": f["preset"], "name": f["name"], "output": f"{subject}_thumbnail_{f['name']}"} for f in bt["files"]]}
+                produced = [{"role": "THUMBNAIL", "logical": f"{subject}_thumbnail_{f['name']}", "format": params["format"],
+                             "expected": {"timestamp": params["timestamp"], "source": subject, "row": f["row"], "preset": f["preset"]}} for f in bt["files"]]
+                out_id = produced[0]["logical"]
             src = picture_of.get(subject) or current_of[subject]
             graphics_ops.append(ir_thumbnail(subject, params, [d.id], src, out_id))
             order += 1
             dep = next((s_.id for s_ in steps if src in s_.outputs), None)
-            st = ProductionStep(id=f"step_thumbnail_{subject}", order=order, skill=skill, tool=tool_for(skill), inputs=[src],
-                                params={"asset": subject, "at": params["timestamp"], "format": params["format"], **({"text": params["text"]} if "text" in params else {})}, outputs=[out_id],
+            sp: Dict[str, Any] = {"asset": subject, "at": params["timestamp"], "format": params["format"], **({"text": params["text"]} if "text" in params else {})}
+            if params.get("variants"):
+                sp["variants"] = int(params["variants"]["count"])
+            if params.get("batch"):
+                sp.update({"presets": list(d.params["batch"]["presets"]), "rows": int(d.params["batch"]["rows"]), "files": len(produced)})
+            if fc is not None:
+                sp["frame"] = {"source": fc["source"], "rank": fc["rank"], "source_time": fc["source_time"]}
+            st = ProductionStep(id=f"step_thumbnail_{subject}", order=order, skill=skill, tool=tool_for(skill), inputs=[src], params=sp, outputs=[o["logical"] for o in produced],
                                 depends_on=[dep] if dep else [], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id)
             steps.append(st)
-            outputs.append({"role": "THUMBNAIL", "logical": out_id, "format": params["format"], "expected": {"timestamp": params["timestamp"], "source": subject}})
+            outputs.extend(produced)
             summary.append(d.decision)
 
     def timeline_steps(subject: str, sources: List[str]) -> None:
@@ -348,7 +408,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             # ADR-065: the deliverable set of each target checked together (qc-skill kind delivery_package) when the deliverable has
             # company — its subtitle sidecar and / or thumbnail; a lone deliverable is already covered by its own report
             sc_id = sidecar_of.get(subject) if qc_reads else None
-            th_id = next((o for s_ in steps if s_.skill in (THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL) and (s_.params or {}).get("asset") == subject for o in s_.outputs), None)
+            # the subject's one thumbnail (variant 1 of variants; a batch has several files and none of them is "the" thumbnail: ADR-104)
+            th_id = next((o for s_ in steps if s_.skill in THUMBNAIL_SKILLS and (s_.params or {}).get("asset") == subject for o in s_.outputs if o == f"{subject}_thumbnail"), None)
             extra = [x for x in (sc_id, th_id) if x]
             for target, art, qc_step in gated if extra else []:
                 order += 1
