@@ -25,7 +25,7 @@ MODE = os.environ.get("FAKE_SUBTITLE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_SUBTITLE_CALLS")
 NON_RETRYABLE = set(CONTRACT["errors"]["non_retryable"])
 FORBIDDEN = {"command", "argv", "shell", "executable", "filter", "filter_complex", "vf", "af", "env", "api_key"}
-CUE_FIELDS = {"id", "start", "end", "text", "speaker", "style", "metadata"}
+CUE_FIELDS = {"id", "start", "end", "text", "speaker", "style", "metadata", "ruby", "words"}   # ADR-101: ruby / words (0.6.0+)
 CONSTRAINT_FIELDS = set(CONTRACT["parameters"]["constraints"])
 ENGINE_DIR_ENV = "SUBTITLE_SKILL_FFMPEG_SKILL_DIR"
 
@@ -220,6 +220,30 @@ def main() -> int:
     vd = req.get("video_duration")
     if vd is not None and (not isinstance(vd, (int, float)) or vd <= 0):
         return err("INVALID_INPUT", "video_duration must be a positive number")
+    # ADR-101: the opt-in inputs of 0.5.0 .. 0.8.0, checked like the real Skill
+    rp = req.get("regional_profile")
+    if rp is not None:
+        prof = (CONTRACT["parameters"].get("regional_profiles") or {}).get(rp)
+        if prof is None:
+            return err("INVALID_INPUT", f"unknown regional_profile {rp!r}")
+        if str(doc["language"]).split("-")[0] not in prof["languages"]:
+            return err("INVALID_INPUT", f"regional_profile {rp!r} is for {prof['languages']} documents, not {doc['language']!r}")
+    for c in cues:
+        if (c.get("style") or {}).get("vertical") and (op == "render" or fmt not in ("ttml", "vtt")):
+            return err("UNSUPPORTED_FORMAT", "style.vertical is written in TTML / WebVTT only and never burned")
+        at = 0
+        for r in c.get("ruby") or []:
+            at = c["text"].find(r["base"], at)
+            if at < 0:
+                return err("INVALID_INPUT", f"cue {c['id']}: ruby base not in the text")
+            at += len(r["base"])
+    if req.get("caption_profile") is not None:
+        if op != "render" or req.get("mode", "burn") != "burn":
+            return err("INVALID_INPUT", "caption_profile 'shorts' is for burned captions (mode 'burn')")
+        if any(not c.get("words") for c in cues):
+            return err("MISSING_INPUT", "caption_profile 'shorts' needs word timings (cue.words) on every cue")
+    if req.get("placement") is not None and (op != "render" or not (req["placement"].get("avoid") or req["placement"].get("faces"))):
+        return err("MISSING_INPUT", "request.placement needs placement.faces or placement.avoid")
     if MODE == "validation_error" or any(c["text"].strip() == "" for c in cues):
         return err("VALIDATION_ERROR", "subtitle document has fatal validation issues", {"issues": [{"severity": "error", "code": "EMPTY_TEXT", "cue_id": cues[0]["id"]}]})
     issues = [{"severity": "warning", "code": "TOO_MANY_LINES", "message": "3 lines exceeds max_lines=2", "cue_id": cues[0]["id"]}] if MODE == "warning_observation" else []
@@ -258,7 +282,12 @@ def main() -> int:
     else:
         if MODE == "tool_error":
             return err("OUTPUT_ERROR", "output file is missing or empty after execution")
-        payload = render_text(cues, fmt).encode("utf-8")
+        if fmt in ("ttml", "ebu-tt-d"):   # a minimal TTML document, one <p> per cue (the real Skill writes IMSC 1.1 / EBU-TT-D, checked against the profile)
+            from xml.sax.saxutils import escape
+            ps = "".join(f'<p begin="{c["start"]:.3f}s" end="{c["end"]:.3f}s">{escape(c["text"])}</p>' for c in sorted(cues, key=lambda c: (c["start"], c["id"])))
+            payload = (f'<?xml version="1.0" encoding="UTF-8"?>\n<tt xmlns="http://www.w3.org/ns/ttml" xml:lang="{doc["language"]}"><body><div>{ps}</div></body></tt>\n').encode("utf-8")
+        else:
+            payload = render_text(cues, fmt).encode("utf-8")
     if MODE == "cancelled":
         return err("CANCELLED", "interrupted")
     reused = MODE == "reused" and os.path.isfile(out_path)
@@ -272,6 +301,14 @@ def main() -> int:
             "contract_version": CONTRACT["contract_version"], "operation": ("generate" if op == "render" else "render") if MODE == "wrong_operation" else op,
             "output": out_path, "sha256": digest, "size": len(payload), "reused": reused, "observation": issues,
             "timeline": {"cue_count": len(cues) + 1 if MODE == "cue_count_mismatch" else len(cues)}, "duration_ms": 1.0}
+    if op == "generate" and fmt in ("ttml", "ebu-tt-d"):
+        resp["conformance"] = {"profile": CONTRACT["operations"]["generate"]["ttml_profiles"][fmt], "valid": MODE != "nonconformant", "checked": "fake"}
+    if rp is not None:
+        resp["regional_profile"] = {"name": rp}
+    if op == "render" and req.get("placement") is not None:
+        resp["placement"] = {"moves": [], "top_cues": []}
+    if op == "render" and req.get("caption_profile") is not None:
+        resp["caption_profile"] = {"name": req["caption_profile"]}
     if engine and MODE != "no_engine":
         resp["engine"], resp["engine_version"] = engine
         resp["mode"] = ("burn" if req.get("mode") == "mux" else "mux") if MODE == "wrong_mode" else req.get("mode", "burn")

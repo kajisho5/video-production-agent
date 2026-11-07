@@ -134,6 +134,9 @@ def decide_publish(eng: Any, m: Dict[str, Requirement], decs: List[Any], subject
         target = same[0] if len(same) == 1 else (ids[0] if len(ids) == 1 else None)
         if target is None:
             return block(f"{len(ids)} delivery targets and none for {p['platform']}: name the one to publish with publish.target")
+    cap_fmt = next((d.params.get("format") for d in live if d.subject == "subtitle.generate" and d.params.get("asset_id") == subject), None) if p["attach"].get("captions") else None
+    if cap_fmt is not None and cap_fmt not in ("srt", "vtt"):   # ADR-101: the platforms take SRT / WebVTT caption files
+        return block(f"publish.captions=true attaches the subtitle sidecar, which is {cap_fmt}; the upload takes srt or vtt (--set subtitle.format=srt or vtt)")
     caption_lang = next((d.params.get("language") for d in live if d.subject == "subtitle.generate" and d.params.get("asset_id") == subject), None) if p["attach"].get("captions") else None
     if p["attach"].get("captions") and not LANG_RE.match(str(caption_lang or "")):
         return block(f"the subtitle sidecar's language {caption_lang!r} is not a BCP-47 tag the platform's captions need")

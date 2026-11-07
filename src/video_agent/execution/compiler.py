@@ -17,7 +17,7 @@ from ..agent.editing import (CONDENSE_KEEP_LABEL, CONDENSE_SKILL, IMAGE_INSERT_O
                              TRIM_SKILLS, delivery_subjects)
 from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
-from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL
+from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL, SIDECAR_EXTENSIONS
 from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.nle import MODES as NLE_MODES
@@ -310,12 +310,17 @@ def lower_captions(tool: str, op: Dict[str, Any], current: Optional[str], out_id
             args["constraints"] = dict(op["constraints"])
         if op.get("temporal_scope"):
             args["video_duration"] = float(op["temporal_scope"]["end"])
+        if op.get("regional_profile"):   # ADR-101: opt-in regional conventions
+            args["regional_profile"] = op["regional_profile"]
         return args
     if tool != RENDER_TOOL:
         raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {RENDER_TOOL}")
     args = {"operation": "render", "input": current, "sidecar": sidecar_id, "format": "srt", "document_id": f"{op['asset']}_captions", "language": op["_language"], "cues": list(op["_cues"]), "output": out_id}
     if op["type"] == "captions.mux":   # ADR-063: subtitle-skill render's own `mode` parameter (a soft track; nothing re-encoded)
         args["mode"] = "mux"
+    for k in ("placement", "regional_profile", "caption_profile"):   # ADR-101: the render options the user asked for
+        if op.get(k):
+            args[k] = op[k]
     return args
 
 
@@ -579,7 +584,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         gen = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.generate"), None)
         if gen is not None:
             sc_id = gen.get("output") or f"{subject}_captions"
-            paths[sc_id] = str(job / "artifacts" / f"{st['stem']}_captions.{gen['format']}")
+            paths[sc_id] = str(job / "artifacts" / f"{st['stem']}_captions.{SIDECAR_EXTENSIONS.get(gen['format'], gen['format'])}")   # ADR-101: TTML / EBU-TT-D → .ttml
             tool = tool_for(GENERATE_SKILL, subject)
             add(tool, lower_captions(tool, gen, None, sc_id), [], [sc_id], list(gen.get("decision_ids") or []), st["fp"], skill=GENERATE_SKILL)
             burn = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.burn"), None)

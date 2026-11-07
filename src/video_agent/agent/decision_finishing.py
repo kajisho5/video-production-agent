@@ -27,7 +27,7 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION,
                         element_label, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, placement_problems,
                         planned_picture_size, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
-from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, parse_subtitle_requirements, valid_language
+from .subtitles import BURN_SKILL, CAPTION_PROFILES, GENERATE_SKILL, MUX_SKILL, REGIONAL_PROFILES, parse_subtitle_requirements, valid_language
 
 # ADR-071: the engine's export keeps subtitle streams from release 2.22.4 (engine #380) for every preset but gif; older engines (measured
 # in SubtitleMuxRealTests) and an engine whose version cannot be read keep the ADR-063 BLOCK of a soft track with an export preset.
@@ -183,12 +183,32 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                            confidence=1.0, evidence=ev, risk="LOW", approval="AUTO", provenance="OBSERVED", params={"asset_id": subject}, requirements=req)
                 continue
             lang = valid_language((transcripts[0].data or {}).get("language"))
+            opts = dict(sub.get("cues") or {})
+            rp = opts.get("regional_profile")
+            if rp and lang.split("-")[0].lower() not in [str(x).lower() for x in REGIONAL_PROFILES[rp].get("languages") or []]:
+                # ADR-101: a regional profile is for its own languages; it is never applied to another one (and never chosen from the language)
+                eng.decide(subject="subtitle.generate", type="BLOCK", decision=f"BLOCK: subtitle.regional_profile={rp} on {lang} subtitles",
+                           reason=f"{rp} is for {REGIONAL_PROFILES[rp].get('languages')} documents; the recognised language of {subject} is {lang}",
+                           confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK", provenance="USER", params={"asset_id": subject, "language": lang}, requirements=req)
+                continue
+            if opts.get("words"):
+                # ADR-101: the shorts caption profile splits cues by their word timings; it needs them on every recognised segment, and a vertical picture
+                untimed = [o.id for o in transcripts if any(seg.get("words") is None for seg in (o.data or {}).get("segments") or [])]
+                size = planned_picture_size((assets[sources[0]].technical or {}) if sources and sources[0] in assets else {}, eng.decisions, subject)
+                why = (f"subtitle.caption_profile={(sub.get('render') or {}).get('caption_profile')} splits cues by their words, and transcript(s) {', '.join(untimed)} have no word "
+                       "timestamps (measure with word timestamps)" if untimed else
+                       f"subtitle.caption_profile={(sub.get('render') or {}).get('caption_profile')} is for a vertical picture; {subject} is {size[0]}x{size[1]}" if size and not size[1] > size[0]
+                       else None)
+                if why is not None:
+                    eng.decide(subject="subtitle.burn_in", type="BLOCK", decision=f"BLOCK: shorts captions on {subject}", reason=why, confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK",
+                               provenance="USER", params={"asset_id": subject}, requirements=req)
+                    continue
             eng.decide(subject="subtitle.generate", type="TRANSFORM", decision=f"subtitles ({fmt}) for {subject}: {segs} recognised segment(s) → cues on the delivered timeline",
                        reason=f"user asked for subtitles ({req[0].source}); cues are the recognised text of the transcript(s), re-timed through the trims / concat / speed of the plan; who speaks is unknown",
                        confidence=1.0, evidence=ev, risk="LOW",
                        approval=approval_for("subtitle.generate", explicit=req[0], keys=APPROVAL_KEYS), provenance="USER",
                        params={"asset_id": subject, "format": fmt, "language": lang, "sources": list(sources), "transcript_ids": sorted(o.id for o in transcripts), "segments": segs,
-                               **({"constraints": sub["constraints"]} if sub["constraints"] else {})},
+                               **({"constraints": sub["constraints"]} if sub["constraints"] else {}), **opts},
                        settings=[fmt_setting] if fmt_setting else [], requirements=req, serves_intent=None)
             if sub["burn_in"]:
                 br = m["subtitle.burn_in"] if "subtitle.burn_in" in m else m["subtitle.mode"]   # ADR-063: subtitle.mode=burn asks for the same
@@ -199,7 +219,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                 else:
                     eng.decide(subject="subtitle.burn_in", type="TRANSFORM", decision=f"burn the subtitles into the picture of {subject}", reason=f"user asked for a burn-in ({br.source}); the sidecar is still produced",
                                confidence=1.0, evidence=ev + [br.id], risk="MEDIUM", approval=approval_for("subtitle.burn_in", explicit=br, keys=APPROVAL_KEYS), provenance="USER",
-                               params={"asset_id": subject, "format": "srt"}, requirements=req + [br], serves_intent=None)
+                               params={"asset_id": subject, "format": "srt", **dict(sub.get("render") or {})}, requirements=req + [br], serves_intent=None)
             if sub["mux"]:   # ADR-063: subtitle-skill render mode "mux" — the cues as a soft track; picture and audio stream-copied
                 mr = m["subtitle.mode"]
                 targets_req = m.get("delivery.targets")
@@ -224,7 +244,8 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                     eng.decide(subject="subtitle.mux", type="TRANSFORM", decision=f"mux the subtitles into {subject} as a soft (player-toggleable) track",
                                reason=f"user asked for a soft subtitle track ({mr.source}); the picture and the audio are stream-copied, the sidecar is still produced",
                                confidence=1.0, evidence=ev + [mr.id], risk="LOW", approval=approval_for("subtitle.mux", explicit=mr, keys=APPROVAL_KEYS), provenance="USER",
-                               params={"asset_id": subject, "format": "srt", "mode": "mux"}, requirements=req + [mr], serves_intent=None)
+                               params={"asset_id": subject, "format": "srt", "mode": "mux", **{k: v for k, v in (sub.get("render") or {}).items() if k != "caption_profile"}},
+                               requirements=req + [mr], serves_intent=None)
         cap_block(GENERATE_SKILL, f"capability.{GENERATE_SKILL}")
         if sub["burn_in"]:
             cap_block(BURN_SKILL, f"capability.{BURN_SKILL}")

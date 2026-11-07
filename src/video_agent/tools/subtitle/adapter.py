@@ -61,7 +61,8 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.", "0.7
 # 0.5.0 .. 0.8.0 (subtitle-skill #29 .. #32): render placement away from faces, TTML / EBU-TT-D output, regional profiles / ruby / vertical
 # text, shorts captions. All opt-in inputs (`placement?`, `regional_profile?`, `caption_profile?`, cue `ruby` / `words`, style `vertical`)
 # and two more generate / translate formats; render stays SRT through ffmpeg-skill/caption, and a request the adapter builds is unchanged.
-# Re-pinned from the v0.8.0 tag and the gate widened to 0.8.x (ADR-097 addendum 6). None of the new inputs is sent by the agent yet.
+# Re-pinned from the v0.8.0 tag and the gate widened to 0.8.x (ADR-097 addendum 6). ADR-101 sends them when a plan asks for them (placement: the
+# caller-named regions only), and the TTML / EBU-TT-D sidecar formats.
 ENGINE_ID = "ffmpeg-skill"
 ENGINE_DIR_ENV = "SUBTITLE_SKILL_FFMPEG_SKILL_DIR"   # the only way the Skill learns where ffmpeg-skill is (a location, not a credential)
 OPERATIONS = ("generate", "render")
@@ -70,9 +71,14 @@ SKILL_FORBIDDEN_KEYS = ("command", "argv", "shell", "executable", "filter", "fil
 REQUIRED_ERROR_CODES = ("CANCELLED", "DEPENDENCY_ERROR", "INTERNAL_ERROR", "INVALID_INPUT", "INVALID_REQUEST", "INVALID_TIME_RANGE", "MISSING_INPUT", "OUTPUT_ERROR",
                         "PATH_NOT_ALLOWED", "TOOL_ERROR", "UNSUPPORTED_FORMAT", "UNSUPPORTED_OPERATION", "VALIDATION_ERROR")
 REQUIRED_OUT_OF_SCOPE = ("speech_recognition", "transcription", "speaker_diarization", "ai_editing_decisions", "arbitrary_ffmpeg_execution")
-COMMON_ARGS = ("operation", "format", "document_id", "language", "cues", "constraints", "video_duration", "output")
-RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode")   # mode: the contract's render parameter (burn | mux, ADR-063); absent = the Skill's default (burn)
-CUE_KEYS = ("id", "start", "end", "text", "speaker")   # speaker (ADR-096): only diarization-skill's anonymous SPEAKER_nn of a diarized transcript
+COMMON_ARGS = ("operation", "format", "document_id", "language", "cues", "constraints", "video_duration", "output", "regional_profile")   # ADR-101: regional_profile
+RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode", "placement", "caption_profile")   # mode: the contract's render parameter (burn | mux, ADR-063); ADR-101: placement / caption_profile
+# speaker (ADR-096): only diarization-skill's anonymous SPEAKER_nn of a diarized transcript; ADR-101: ruby [{base, text}], words [{text, start, end}],
+# style {vertical} -- the only style field the agent sends
+CUE_KEYS = ("id", "start", "end", "text", "speaker", "ruby", "words", "style")
+FORMAT_EXTENSIONS = {"srt": ("srt",), "vtt": ("vtt",), "ttml": ("ttml", "xml"), "ebu-tt-d": ("ttml", "xml")}   # ADR-101: the sidecar file per generate format
+TTML_FORMATS = ("ttml", "ebu-tt-d")   # ADR-101: written only when the Skill's own profile check passed (response `conformance.valid`)
+PLACEMENT_KEYS = ("avoid", "min_hold", "max_lines", "min_score")   # ADR-101: the caller-named regions; faces / reframe documents are not sent
 SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
 INTEGER_CONSTRAINTS = ("max_chars_per_line", "max_lines")
 MAX_CUE_TEXT = 2000
@@ -311,6 +317,36 @@ class SubtitleAdapter(ToolAdapter):
                 if not isinstance(c["speaker"], str) or not SPEAKER_RE.match(c["speaker"]):
                     raise ToolError(f"subtitle-skill: cue {cid} speaker must be an anonymous SPEAKER_nn id, got {c['speaker']!r}")
                 cue["speaker"] = c["speaker"]
+            if c.get("ruby") is not None:   # ADR-101: the user's readings, each base in the text in order
+                rb = c["ruby"]
+                if not isinstance(rb, list) or not rb or not all(isinstance(r, dict) and set(r) == {"base", "text"} and all(isinstance(r[k], str) and r[k].strip() and "\n" not in r[k]
+                                                                                                                             for k in ("base", "text")) for r in rb):
+                    raise ToolError(f"subtitle-skill: cue {cid} ruby must be [{{base, text}}] of single-line strings")
+                at = 0
+                for r in rb:
+                    at = text.find(r["base"], at)
+                    if at < 0:
+                        raise ToolError(f"subtitle-skill: cue {cid} ruby base {r['base']!r} is not in the text (in order)")
+                    at += len(r["base"])
+                cue["ruby"] = [{"base": r["base"], "text": r["text"]} for r in rb]
+            if c.get("words") is not None:   # ADR-101: word timings inside the cue, in order, not overlapping
+                ws, prev = c["words"], start
+                if not isinstance(ws, list) or not ws:
+                    raise ToolError(f"subtitle-skill: cue {cid} words must be a non-empty list")
+                outw = []
+                for w in ws:
+                    if not isinstance(w, dict) or set(w) != {"text", "start", "end"} or not isinstance(w["text"], str) or not w["text"].strip() or "\n" in w["text"]:
+                        raise ToolError(f"subtitle-skill: cue {cid} words must be [{{text, start, end}}]")
+                    ws_, we_ = self._finite(f"cue {cid} word start", w["start"]), self._finite(f"cue {cid} word end", w["end"])
+                    if not (start - 1e-6 <= ws_ < we_ <= end + 1e-6) or ws_ < prev - 1e-6:
+                        raise ToolError(f"subtitle-skill: cue {cid} word {w['text']!r} is outside the cue or out of order")
+                    outw.append({"text": w["text"], "start": ws_, "end": we_})
+                    prev = we_
+                cue["words"] = outw
+            if c.get("style") is not None:   # ADR-101: vertical writing only
+                if c["style"] != {"vertical": True}:
+                    raise ToolError(f"subtitle-skill: cue {cid} style may only be {{vertical: true}}")
+                cue["style"] = {"vertical": True}
             out.append(cue)
         return out
 
@@ -356,8 +392,8 @@ class SubtitleAdapter(ToolAdapter):
         if not out_id:
             raise ToolError("subtitle-skill: an output reference is required")
         out = str(Path(paths.get(out_id, out_id)).resolve())
-        if op_type == "generate" and Path(out).suffix.lower().lstrip(".") != fmt:
-            raise ToolError(f"subtitle-skill: the output extension must match the format ({fmt}): {out}")
+        if op_type == "generate" and Path(out).suffix.lower().lstrip(".") not in FORMAT_EXTENSIONS.get(fmt, (fmt,)):
+            raise ToolError(f"subtitle-skill: the output extension must match the format ({fmt}: {', '.join(FORMAT_EXTENSIONS.get(fmt, (fmt,)))}): {out}")
         src: Optional[str] = None
         mode: Optional[str] = None
         if "mode" in args:   # ADR-063: only what the contract declares, and only for render (ALLOWED above)
@@ -418,10 +454,25 @@ class SubtitleAdapter(ToolAdapter):
             req["constraints"] = constraints
         if video_duration is not None:
             req["video_duration"] = video_duration
+        params = as_dict(self.contract.get("parameters"))
+        if args.get("regional_profile") is not None:   # ADR-101: one the contract declares, never chosen here
+            if args["regional_profile"] not in as_dict(params.get("regional_profiles")):
+                raise ToolError(f"subtitle-skill: regional_profile {args['regional_profile']!r} is not one the contract declares")
+            req["regional_profile"] = args["regional_profile"]
+        if args.get("caption_profile") is not None:
+            if args["caption_profile"] not in as_dict(params.get("caption_profiles")) or mode == "mux":
+                raise ToolError(f"subtitle-skill: caption_profile {args['caption_profile']!r} is not a declared burn profile")
+            req["caption_profile"] = args["caption_profile"]
+        if args.get("placement") is not None:
+            pl = args["placement"]
+            if not isinstance(pl, dict) or not pl.get("avoid") or set(pl) - set(PLACEMENT_KEYS):
+                raise ToolError(f"subtitle-skill: placement must be {{avoid: [regions], {', '.join(PLACEMENT_KEYS[1:])}?}}")
+            req["placement"] = json.loads(json.dumps(pl))
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("workspace",)), "request")
         if hit:
             raise ToolError(f"subtitle-skill: refusing to send a request carrying {hit}")
-        return {"request": req, "output": out, "input": src, "type": op_type, "format": fmt, "workspace": self.workspace, "cue_count": len(cues), "mode": mode}
+        return {"request": req, "output": out, "input": src, "type": op_type, "format": fmt, "workspace": self.workspace, "cue_count": len(cues), "mode": mode,
+                "placement": req.get("placement")}
 
     @staticmethod
     def _under(path: str, root: str) -> bool:
@@ -504,8 +555,12 @@ class SubtitleAdapter(ToolAdapter):
         if b["type"] == "render":
             if doc.get("engine") != ENGINE_ID or not isinstance(doc.get("engine_version"), str) or not doc.get("engine_version"):
                 errs.append(f"render must report engine {ENGINE_ID} with a version, got {doc.get('engine')!r} / {doc.get('engine_version')!r}")
+            if b.get("placement") and not isinstance(doc.get("placement"), dict):   # ADR-101: every move is reported with the box that caused it
+                errs.append("render with placement must report its placement record")
             if b.get("mode") is not None and doc.get("mode") != b["mode"]:   # ADR-063: a burn reported for a requested mux (or the reverse) is not admitted
                 errs.append(f"render mode {doc.get('mode')!r} != requested {b['mode']!r}")
+        if b["type"] == "generate" and b["format"] in TTML_FORMATS and as_dict(doc.get("conformance")).get("valid") is not True:
+            errs.append(f"a {b['format']} document must report conformance.valid true (the Skill's profile check)")   # ADR-101
         return errs
 
     def _success_data(self, doc: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
@@ -516,6 +571,9 @@ class SubtitleAdapter(ToolAdapter):
                                 "warnings": [dict(w) for w in doc.get("observation") or [] if isinstance(w, dict)],
                                 "provenance": {"skill": doc.get("skill"), "skill_version": doc.get("skill_version"), "contract_version": doc.get("contract_version"), "output_hash": sha},
                                 "commands": []}
+        for k in ("conformance", "placement", "regional_profile", "caption_profile"):   # ADR-101: what the Skill reports about the new inputs, as provenance
+            if doc.get(k) is not None:
+                data[k] = doc[k]
         if b["type"] == "render":
             data["engine"] = {"id": str(doc.get("engine")), "version": str(doc.get("engine_version"))}
             data["mode"] = str(doc.get("mode") or "burn")

@@ -222,7 +222,7 @@ def targeted_kinds(requirements: Iterable[Any]) -> List[str]:
     if on("audio.normalize"):
         kinds.append("loudness")
     sub = rm.get("subtitle")
-    if on("subtitle") or (isinstance(sub, str) and sub.strip().lower() in ("srt", "vtt")):
+    if on("subtitle") or (isinstance(sub, str) and sub.strip().lower() in ("srt", "vtt", "ttml", "ebu-tt-d")):   # ADR-101: TTML / EBU-TT-D too
         kinds.append("transcript")   # subtitles are cues of a recognised transcript (ADR-031): the recognition is the observation they need
     return kinds
 
