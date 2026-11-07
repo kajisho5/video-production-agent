@@ -111,6 +111,29 @@ class PlanTests(unittest.TestCase):
         blk = next(x for x in ir2.doc["decisions"] if x["subject"] == "capability.color_legalize")
         self.assertIn("3.1.6", blk["reason"]); self.assertEqual(ir2.doc["plan"]["status"], "BLOCKED")
 
+    def test_doctor_unsupported_operation_is_a_missing_capability(self):
+        """The real doctor reports an operation it cannot run here `unsupported` (PyOpenColorIO missing; ffmpeg-skill before 3.1.6 for the LUT
+        legs); the resolver makes that capability MISSING, so the plan BLOCKs it (the fake doctor reports the same status)."""
+        import os
+        from video_agent.capabilities.resolver import Capability, CapabilityResolver
+        from video_agent.tools.color_grading.adapter import ColorGradingAdapter
+        from video_agent.tools.skill_process import CliSkill
+        fake = CliSkill("color-grading", [sys.executable, str(Path(__file__).resolve().parent / "fake_color_grading.py")], None, {})
+        for mode, gone in (("doctor_old_engine", ("LEGALIZE", "MATCH_CAMERA")), ("doctor_no_ocio", ("OCIO_TRANSFORM",))):
+            os.environ["FAKE_CG_MODE"] = mode
+            try:
+                caps = {c: Capability(c, "AVAILABLE") for c in ("ffmpeg", "ffprobe", "ffmpeg-skill")}
+                CapabilityResolver()._finishing_skill(caps, "color-grading", fake, lambda sk: ColorGradingAdapter(sk, timeout=60.0), "VIDEO_AGENT_COLOR_GRADING_DIR",
+                                                      "color-grading-skill", "color-grading",
+                                                      per_item=lambda ad, doc: (ad.operation_status(doc), {o["type"]: o for o in ad.contract.get("operations") or []}))
+            finally:
+                os.environ.pop("FAKE_CG_MODE", None)
+            self.assertEqual(caps["color-grading"].status, "AVAILABLE", mode)   # degraded is usable, per operation
+            for typ in ("OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE", "RETAG"):
+                self.assertEqual(caps[f"color-grading:{typ}"].status, "MISSING" if typ in gone else "AVAILABLE", (mode, typ))
+                if typ in gone:
+                    self.assertEqual(caps[f"color-grading:{typ}"].evidence["doctor"], "unsupported")
+
     def test_hdr_tone_map_keeps_the_skills_default(self):
         hdr = fake_media(self.tmp, "hlg.mp4", hdr=True)
         svc = pipeline_service(self.tmp, caps=PipelineCaps(extra=NEW), hdr=True)   # the fake engine probes it as HLG

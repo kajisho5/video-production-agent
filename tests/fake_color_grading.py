@@ -129,7 +129,7 @@ def main() -> int:
             if MODE == "doctor_degraded" and t == "LUT_APPLY":
                 st = "unavailable"
             if (MODE == "doctor_no_ocio" and t == "OCIO_TRANSFORM") or (MODE == "doctor_old_engine" and t in ("MATCH_CAMERA", "LEGALIZE")):   # ADR-100
-                st = "unavailable"
+                st = "unsupported"   # what the real doctor reports for an operation whose capability (PyOpenColorIO / the LUT legs) is missing
             ops[t] = {"status": st, "tool": spec["tool"], "required_capabilities": spec["required_capabilities"], "missing": [] if st != "unavailable" else ["filter:lut3d"], "unknown": []}
         emit({"schema": "color-grading/doctor@1", "skill": {"id": "color-grading", "version": CONTRACT["version"]}, "status": status,
               "checks": {"python": {"status": "ok"}, "ffmpeg_skill": {"status": "ok" if ok else "missing", "directory": (flag_values(argv, "--ffmpeg-skill") or [None])[0], "version": "0.9.1-fake", "contract_version": "1.0"},

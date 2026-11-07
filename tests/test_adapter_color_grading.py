@@ -331,8 +331,12 @@ class ColorGradingRealSkillTests(unittest.TestCase):
             self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
         ws = str(Path(self.tmp) / "ws_new"); os.makedirs(ws, exist_ok=True)
         ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=180)
-        statuses = ad.operation_status(ad.doctor())
+        doc = ad.doctor()
+        statuses = ad.operation_status(doc)
         unavailable = expected_unavailable(self.engine)
+        # the capability each one is missing when it is not usable here (the doctor reports such an operation `unsupported`, with what it misses)
+        needs = {"OCIO_TRANSFORM": "python:PyOpenColorIO", "MATCH_CAMERA": "ffmpeg-skill/color:lut-bt709-legs", "LEGALIZE": "ffmpeg-skill/color:lut-bt709-legs"}
+        ops = doc["checks"]["operations"]
         cases = {"LEGALIZE": {"profile": "bt709", "knee": 0.9},
                  "MATCH_CAMERA": {"reference_path": "a", "at": 1.0, "reference_at": 1.0, "model": "curves", "lut_size": 17},
                  "OCIO_TRANSFORM": {"config": "ocio://studio-config-latest", "source_space": "sRGB Encoded Rec.709 (sRGB)", "display": "Rec.1886 Rec.709 - Display",
@@ -343,8 +347,9 @@ class ColorGradingRealSkillTests(unittest.TestCase):
             r = ad.run(Operation(tool="color-grading/run", args={"operation": typ, "input": "a", "output": out_id, **params}, inputs=["a"], outputs=[out_id], id=f"op_new{n}"),
                        paths, timeout=180)
             if typ in unavailable:
-                self.assertEqual(statuses[typ], "unavailable")
-                self.assertFalse(r.ok, f"{typ} ran although the doctor reports it unavailable")
+                self.assertEqual(statuses[typ], "unsupported", ops[typ])
+                self.assertIn(needs[typ], ops[typ]["missing"], ops[typ])
+                self.assertFalse(r.ok, f"{typ} ran although the doctor reports it unsupported")
                 continue
             self.assertEqual(statuses[typ], "supported")
             self.assertTrue(r.ok, (typ, r.data))
