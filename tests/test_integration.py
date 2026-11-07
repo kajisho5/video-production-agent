@@ -2865,7 +2865,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         self.assertEqual(size, (1280, 720)); self.assertTrue(audio); self.assertGreater(dur, 5.0)
 
     def test_every_motion_graphics_element(self):
-        """ADR-064: every element type of the real motion-graphics-skill 0.2.x (thirteen since 0.2.7's shape, ADR-078) in one render, each with parameters beyond its text
+        """ADR-064: every element type of the real motion-graphics-skill 0.2.x (thirteen since 0.2.7's shape, ADR-078; fifteen with ADR-102's logo / rendered_layer) in one render, each with parameters beyond its text
         (a chroma-keyed picture-in-picture clip, a registry font, a meme's two lines, a countdown's start number): the Skill renders every
         element and reports the parameters it used; the picture keeps its size and duration."""
         self._need("motion-graphics")
@@ -2873,7 +2873,17 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         off = {t: self.caps[f"motion-graphics:{t}"].status for t in ELEMENT_TYPES if getattr(self.caps.get(f"motion-graphics:{t}"), "status", "MISSING") != "AVAILABLE"}
         self.assertEqual(off, {}, "every element type the pinned contract offers resolves AVAILABLE on this machine")
         svc = self._svc("mg12")
-        reqs = {"motion.title": "Opening", "motion.title.primary_color": "1F2A44", "motion.text.font_color": "yellow", "motion.lower_third": "Ada", "motion.lower_third.title": "Engineer",
+        # ADR-102: logo draws the active theme's logo (a theme file beside the PNG it names), rendered_layer places an alpha clip (QuickTime Animation)
+        assets = Path(self.png).parent
+        theme = assets / "mg12_brand.json"
+        theme.write_text(json.dumps({"schema": "motion-graphics/theme@1", "colors": {"primary": "0B5FFF", "secondary": "00A3E0", "background": "0F1C2E", "text": "FFFFFF"},
+                                     "logo": {"path": Path(self.png).name, "position": "top-right", "scale_width": 120}}), encoding="utf-8")
+        layer = assets / "mg12_layer.mov"
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=navy:s=640x120:r=30:d=2",
+                        "-vf", "format=rgba,fade=t=in:st=0:d=0.3:alpha=1", "-c:v", "qtrle", str(layer)], check=True)
+        reqs = {"motion.logo": True, "motion.themes": {"brand": str(theme)}, "motion.layer": str(layer), "motion.layer.position": "bottom-left", "motion.layer.start": 1,
+                "motion.layer.end": 4,
+                "motion.title": "Opening", "motion.title.primary_color": "1F2A44", "motion.text.font_color": "yellow", "motion.lower_third": "Ada", "motion.lower_third.title": "Engineer",
                 "motion.text": "LIVE", "motion.text.font": "system:dejavu-serif", "motion.text.font_size": 40, "motion.text.box": True, "motion.text.fade": 0.3,
                 "motion.image": self.png, "motion.image.opacity": 0.8, "motion.video": self.b, "motion.video.scale_width": 320, "motion.video.chromakey": "00FF00",
                 "motion.bug": "@studio", "motion.chapter": "Part 2", "motion.chapter.start": 6, "motion.progress": True, "motion.countdown": True,
