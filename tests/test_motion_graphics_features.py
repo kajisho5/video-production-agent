@@ -4,6 +4,7 @@ active theme's logo) and `rendered_layer` (a pre-rendered alpha clip), per-eleme
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -64,7 +65,7 @@ class VocabularyTests(unittest.TestCase):
         self.assertEqual(o["options"], {"style": "swiss", "brand_kit": {"primary": "E30613", "text": "black"},
                                         "reserved_regions": {"end_screen": {}, "cards": [{"time": 30.0, "region": {"x": 10, "y": 10, "width": 300, "height": 80}}], "on_overlap": "refuse"}})
         t = parse_motion_options(reqs({"motion.themes": {"brand": str(self.theme)}}))["options"]
-        self.assertEqual(t["themes"], {"brand": str(self.theme.resolve())})
+        self.assertEqual(t["themes"], {"brand": os.path.abspath(str(self.theme))})
         for bad, msg in (({"motion.style": "retro"}, "one of"), ({"motion.brand_kit": {"accent": "FFFFFF"}}, "primary?"), ({"motion.brand_kit": {"primary": "FFFFFF@0.5"}}, "opaque"),
                          ({"motion.themes": {"brand": str(self.theme)}, "motion.style": "news"}, "replaces"), ({"motion.theme": "brand"}, "ambiguous"),
                          ({"motion.themes": {"a": str(self.theme), "b": str(self.theme)}}, "which one"), ({"motion.themes": {"a": "/nope.json"}}, "not found"),
@@ -101,7 +102,7 @@ class PlanTests(unittest.TestCase):
         d = r["ir"].doc
         self.assertEqual((d["plan"]["status"], r["validation"].errors), ("APPROVED", []), d["plan"]["summary"])
         op = d["graphics"]["operations"][0]
-        self.assertEqual(op["options"], {"themes": {"brand": str(self.theme.resolve())}, "reserved_regions": {"end_screen": {"duration": 5.0}}})
+        self.assertEqual(op["options"], {"themes": {"brand": os.path.abspath(str(self.theme))}, "reserved_regions": {"end_screen": {"duration": 5.0}}})
         self.assertEqual(op["layer"], self.layer)
         els = {e["type"]: e for e in op["elements"]}
         self.assertEqual(els["title"]["fit"], {"width": 600})
