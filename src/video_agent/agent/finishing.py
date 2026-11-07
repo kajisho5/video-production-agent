@@ -132,17 +132,34 @@ MOTION_BASE: Dict[str, Tuple[str, Optional[str]]] = {
     "chapter": ("motion.chapter", "title"), "progress": ("motion.progress", None), "countdown": ("motion.countdown", None),
     "sticker": ("motion.sticker", "text"), "hook": ("motion.hook", "title"), "meme": ("motion.meme", None),
     # ADR-078: motion-graphics-skill 0.2.7 (its ADR-22) implements shape, a solid rectangle; a switch whose width / height / color are required
-    "shape": ("motion.shape", None)}
+    "shape": ("motion.shape", None),
+    # ADR-102: motion-graphics-skill 0.2.12 / 0.2.16: the active theme's logo (a switch; the theme gives the file) and a pre-rendered alpha clip
+    "logo": ("motion.logo", None), "rendered_layer": ("motion.layer", "video_path")}
 ELEMENT_TYPES = tuple(MOTION_BASE)
-# element types the pinned contract declares that the agent does not plan yet (no `--set` key, no lowering): logo and rendered_layer came with the
-# 0.2.16 re-pin (ADR-097 addendum 6). Listed so that a re-pin adding another type still fails tests/test_satellite_params.py until it is decided.
-MOTION_NOT_PLANNED = ("logo", "rendered_layer")
-# path parameters travel in the IR under a short name (the adapter turns the artifact id back into the contract's path parameter)
+# element types the pinned contract declares that the agent does not plan (no `--set` key, no lowering). ADR-102 planned logo and rendered_layer
+# (pinned in ADR-097 addendum 6), so it is empty; a re-pin adding another type still fails tests/test_satellite_params.py until it is decided.
+MOTION_NOT_PLANNED: Tuple[str, ...] = ()
+# path parameters travel in the IR under a short name (the adapter turns the artifact id back into the contract's path parameter). ADR-102: the
+# rendered layer's clip is `layer` (a video_overlay's is `video`), so both can be in one render
 MOTION_PATH_PARAMS = {"image_path": "image", "video_path": "video"}
+MOTION_TYPE_PATH_PARAMS = {("rendered_layer", "video_path"): "layer"}
+
+
+def motion_path_name(typ: str, name: str) -> str:
+    return MOTION_TYPE_PATH_PARAMS.get((typ, name), MOTION_PATH_PARAMS.get(name, name))
+
+
+# ADR-102: the request-level styling motion-graphics-skill 0.2.11 .. 0.2.16 offers, read from the pinned contract: style presets (per element and
+# for the document), a brand kit, theme files (a named set; one active), text fit for the template text, reserved regions (end screen / cards)
+STYLE_PRESETS = tuple(str(n) for n in (_MOTION_CONTRACT.get("style_presets") or {}).get("names") or ())
+STYLE_ROLES = tuple(str(n) for n in (_MOTION_CONTRACT.get("style_presets") or {}).get("roles") or ())
+TEXT_FIT: Dict[str, Any] = dict(_MOTION_CONTRACT.get("text_fit") or {})
+FIT_TYPES = tuple(str(t) for t in TEXT_FIT.get("applies_to") or ())
+MOTION_OPTION_KEYS = ("motion.style", "motion.brand_kit", "motion.themes", "motion.theme", "motion.reserved_regions")
 FADE_TYPES = tuple(t for a in _MOTION_CONTRACT.get("animations") or [] if a.get("kind") == "fade" for t in a.get("applies_to") or [])
 MOTION_KEYS: Dict[str, Tuple[str, ...]] = {
     typ: (base,) + tuple(f"{base}.{p}" for p in MOTION_ELEMENT_SPECS[typ]["parameters"] if p != main) + (f"{base}.start", f"{base}.end")
-    + ((f"{base}.fade",) if typ in FADE_TYPES else ())
+    + ((f"{base}.fade",) if typ in FADE_TYPES else ()) + (f"{base}.style",) + ((f"{base}.fit",) if typ in FIT_TYPES else ())   # ADR-102: style / fit
     for typ, (base, main) in MOTION_BASE.items()}
 # explicit DEFAULTs of the policy keys `motion.<type>.duration` (recorded on the decision); an element without one runs to the end of the
 # subject (a persistent bug / progress bar / overlay / meme). chapter / sticker / hook / countdown are moments, not whole-programme layers.
@@ -405,8 +422,8 @@ def parse_motion_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, 
             key = base if name == main_param else f"{base}.{name}"
             if key not in vals:
                 continue
-            p[MOTION_PATH_PARAMS.get(name, name)] = _motion_param(vals[key], key, name, pspec)
-        missing = [f"{base}.{n}" for n, ps in spec["parameters"].items() if ps.get("required") and n != main_param and MOTION_PATH_PARAMS.get(n, n) not in p]
+            p[motion_path_name(typ, name)] = _motion_param(vals[key], key, name, pspec)
+        missing = [f"{base}.{n}" for n, ps in spec["parameters"].items() if ps.get("required") and n != main_param and motion_path_name(typ, n) not in p]
         if missing:   # ADR-078: a parameter the contract requires (shape's width / height / color) is asked for, never defaulted here
             raise EditRequirementError(f"{base} needs " + " / ".join(missing) + " (required by the contract)")
         for group in (c.get("at_least_one_of") for c in spec.get("constraints") or [] if c.get("at_least_one_of")):
@@ -419,7 +436,133 @@ def parse_motion_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, 
             raise EditRequirementError(f"{base}.start must be before {base}.end")
         if f"{base}.fade" in vals:
             el["fade"] = float(_number(vals[f"{base}.fade"], f"{base}.fade", 0.01, 30.0))
+        if f"{base}.style" in vals:   # ADR-102: a style preset for this element (overrides motion.style)
+            el["style"] = _token(vals[f"{base}.style"], f"{base}.style", re.compile("^(" + "|".join(map(re.escape, STYLE_PRESETS)) + ")$"), "one of " + ", ".join(STYLE_PRESETS))
+        if f"{base}.fit" in vals:   # ADR-102: fit the template's text into a box width (lower_third / title)
+            el["fit"] = parse_text_fit(vals[f"{base}.fit"], f"{base}.fit")
         out[typ] = el
+    return out
+
+
+def parse_text_fit(v: Any, key: str) -> Dict[str, Any]:
+    """ADR-102: elements[].fit as the pinned contract's text_fit.fields declare it (width required; ja-kinsoku is an opt-in profile)."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        v = {"width": v}
+    fields = TEXT_FIT.get("fields") or {}
+    if not isinstance(v, dict) or "width" not in v or set(v) - set(fields):
+        raise EditRequirementError(f"{key} must be {{width, " + ", ".join(f"{n}?" for n in fields if n != "width") + "}} (or the width alone)")
+    out: Dict[str, Any] = {}
+    for n, spec in fields.items():
+        if n not in v:
+            continue
+        if spec.get("type") in ("integer", "number"):
+            x = _number(v[n], f"{key}.{n}", spec.get("min"), spec.get("max"))
+            if spec["type"] == "integer" and float(x) != int(x):
+                raise EditRequirementError(f"{key}.{n} must be an integer")
+            out[n] = int(x) if spec["type"] == "integer" else float(x)
+        elif "enum" in spec:
+            out[n] = _token(v[n], f"{key}.{n}", re.compile("^(" + "|".join(map(re.escape, spec["enum"])) + ")$"), "one of " + ", ".join(spec["enum"]))
+        else:
+            out[n] = _token(v[n], f"{key}.{n}", re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$"), "a language tag")
+    return out
+
+
+def parse_motion_options(m: Dict[str, Requirement]) -> Dict[str, Any]:
+    """ADR-102: `motion.style` (a preset for every element), `motion.brand_kit` ({primary?, secondary?, background?, text?} opaque colours),
+    `motion.themes` ({name: theme file}, 1..16) + `motion.theme` (the active one; optional with one theme), `motion.reserved_regions`
+    ({end_screen?, cards?, on_overlap?}). A theme replaces the style and the brand kit (the Skill refuses them together, so the request is refused
+    here first). → {"options": {...}, "requirements": [...]} (empty options when nothing was asked)."""
+    given = {k: m[k] for k in MOTION_OPTION_KEYS if k in m and m[k].provenance != "DEFAULT"}
+    opts: Dict[str, Any] = {}
+    if "motion.style" in given:
+        opts["style"] = _token(given["motion.style"].value, "motion.style", re.compile("^(" + "|".join(map(re.escape, STYLE_PRESETS)) + ")$"), "one of " + ", ".join(STYLE_PRESETS))
+    if "motion.brand_kit" in given:
+        bk = given["motion.brand_kit"].value
+        if not isinstance(bk, dict) or not bk or set(bk) - set(STYLE_ROLES):
+            raise EditRequirementError(f"motion.brand_kit must be {{{', '.join(f'{r}?' for r in STYLE_ROLES)}}} (opaque RRGGBB or a colour name)")
+        out = {}
+        for r, c in bk.items():
+            c = _token(c, f"motion.brand_kit.{r}", MOTION_COLOR_RE, "an opaque colour name or RRGGBB")
+            if "@" in c or (not re.fullmatch(r"[0-9A-Fa-f]{6}", c) and c.lower() not in MOTION_COLOR_NAMES):
+                raise EditRequirementError(f"motion.brand_kit.{r} must be an opaque colour name or RRGGBB, got {c!r}")
+            out[r] = c
+        opts["brand_kit"] = out
+    if "motion.themes" in given:
+        th = given["motion.themes"].value
+        if not isinstance(th, dict) or not 1 <= len(th) <= 16:
+            raise EditRequirementError("motion.themes must be {name: theme file} (1 to 16 themes)")
+        files = {}
+        for name, f in th.items():
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+                raise EditRequirementError(f"motion.themes name {name!r} must be an id")
+            files[name] = _file(f, f"motion.themes.{name}", (".json",))
+        opts["themes"] = files
+        if "motion.theme" in given:
+            if given["motion.theme"].value not in files:
+                raise EditRequirementError(f"motion.theme {given['motion.theme'].value!r} is not one of motion.themes ({', '.join(files)})")
+            opts["theme"] = given["motion.theme"].value
+        elif len(files) > 1:
+            raise EditRequirementError("motion.themes names several themes: say which one is active with motion.theme")
+        if "style" in opts or "brand_kit" in opts:
+            raise EditRequirementError("a theme replaces motion.style / motion.brand_kit (motion-graphics-skill refuses them together): give one or the other")
+    elif "motion.theme" in given:
+        raise EditRequirementError("motion.theme is set but motion.themes is not: refusing an ambiguous request")
+    if "motion.reserved_regions" in given:
+        rr = given["motion.reserved_regions"].value
+        if not isinstance(rr, dict) or not rr or set(rr) - {"end_screen", "cards", "on_overlap"}:
+            raise EditRequirementError("motion.reserved_regions must be {end_screen?, cards?, on_overlap?}")
+        out_rr: Dict[str, Any] = {}
+        if "end_screen" in rr:
+            es = rr["end_screen"]
+            if es is True:
+                es = {}
+            if not isinstance(es, dict) or set(es) - {"duration", "elements"}:
+                raise EditRequirementError("motion.reserved_regions.end_screen must be {duration?, elements?} (or true for the stated layout)")
+            e_out: Dict[str, Any] = {}
+            if "duration" in es:
+                e_out["duration"] = float(_number(es["duration"], "motion.reserved_regions.end_screen.duration", 5.0, 20.0))
+            if "elements" in es:
+                els = es["elements"]
+                if not isinstance(els, list) or not 1 <= len(els) <= 4:
+                    raise EditRequirementError("motion.reserved_regions.end_screen.elements must list 1 to 4 boxes {id?, x, y, width, height} in px")
+                e_out["elements"] = [_px_box(b, f"motion.reserved_regions.end_screen.elements[{i}]", with_id=True) for i, b in enumerate(els)]
+            out_rr["end_screen"] = e_out
+        if "cards" in rr:
+            cards = rr["cards"]
+            if not isinstance(cards, list) or not cards or len(cards) > 5:
+                raise EditRequirementError("motion.reserved_regions.cards must list 1 to 5 cards {time, duration?, region?, id?}")
+            c_out = []
+            for i, c in enumerate(cards):
+                k = f"motion.reserved_regions.cards[{i}]"
+                if not isinstance(c, dict) or "time" not in c or set(c) - {"time", "duration", "region", "id"}:
+                    raise EditRequirementError(f"{k} must be {{time, duration?, region?, id?}}")
+                rec: Dict[str, Any] = {"time": float(_number(c["time"], f"{k}.time", 0.0, 86400.0))}
+                if "duration" in c:
+                    rec["duration"] = float(_number(c["duration"], f"{k}.duration", 0.1, 60.0))
+                if "region" in c:
+                    rec["region"] = _px_box(c["region"], f"{k}.region")
+                if "id" in c:
+                    rec["id"] = _token(c["id"], f"{k}.id", re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"), "an id")
+                c_out.append(rec)
+            out_rr["cards"] = c_out
+        if "on_overlap" in rr:
+            out_rr["on_overlap"] = _token(rr["on_overlap"], "motion.reserved_regions.on_overlap", re.compile("^(report|refuse)$"), "report or refuse")
+        opts["reserved_regions"] = out_rr
+    return {"options": opts, "requirements": list(given.values())}
+
+
+def _px_box(b: Any, key: str, with_id: bool = False) -> Dict[str, Any]:
+    allowed = {"x", "y", "width", "height"} | ({"id"} if with_id else set())
+    if not isinstance(b, dict) or not {"x", "y", "width", "height"} <= set(b) or set(b) - allowed:
+        raise EditRequirementError(f"{key} must be {{{'id?, ' if with_id else ''}x, y, width, height}} in pixels")
+    out: Dict[str, Any] = {}
+    for n in ("x", "y", "width", "height"):
+        v = _number(b[n], f"{key}.{n}", 0 if n in ("x", "y") else 1, 16384)
+        if float(v) != int(v):
+            raise EditRequirementError(f"{key}.{n} must be a whole number of pixels")
+        out[n] = int(v)
+    if with_id and "id" in b:
+        out["id"] = _token(b["id"], f"{key}.id", re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"), "an id")
     return out
 
 
@@ -730,14 +873,17 @@ def ir_color_operation(op_type: str, subject: str, params: Dict[str, Any], decis
     return rec
 
 
-def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_ids: List[str], input_id: str, output: str, scope: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_ids: List[str], input_id: str, output: str, scope: Optional[Dict[str, float]] = None,
+                       options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One render of every element of the subject. The files an element composites (an image overlay's picture, ADR-064: a video
     overlay's clip) are also named on the operation (`image` / `video`), the way the compiler finds the inputs it registers."""
     rec: Dict[str, Any] = {"type": "graphics.render", "asset": subject, "input": input_id, "output": output, "elements": list(elements)}
-    for typ, ref in (("image_overlay", "image"), ("video_overlay", "video")):
+    for typ, ref in (("image_overlay", "image"), ("video_overlay", "video"), ("rendered_layer", "layer")):   # ADR-102: the rendered layer's clip
         files = [e["parameters"][ref] for e in elements if e.get("type") == typ and e.get("parameters", {}).get(ref)]
         if files:
             rec[ref] = files[0]
+    if options:   # ADR-102: style / brand kit / themes (the user's theme files) / reserved regions of the whole render
+        rec["options"] = json.loads(json.dumps(options))
     if scope is not None:
         rec["temporal_scope"] = {"start": round(float(scope["start"]), 3), "end": round(float(scope["end"]), 3)}
     rec["decision_ids"] = list(decision_ids)

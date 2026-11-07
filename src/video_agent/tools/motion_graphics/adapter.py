@@ -66,8 +66,9 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.x: the same contract, now rep
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["motion-graphics", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
-COMMON_ARGS = ("input", "output", "elements", "crf", "preset")
-ELEMENT_KEYS = ("id", "type", "start", "end", "parameters", "animation")
+COMMON_ARGS = ("input", "output", "elements", "crf", "preset", "options")   # ADR-102: options (style / brand_kit / themes / theme / reserved_regions)
+ELEMENT_KEYS = ("id", "type", "start", "end", "parameters", "animation", "style", "fit")   # ADR-102: style / fit
+OPTION_KEYS = ("style", "brand_kit", "themes", "theme", "reserved_regions")
 PARAMETER_TYPES = ("string", "integer", "number", "boolean", "color", "position", "font", "path")
 PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow")
 OUTPUT_EXTENSION = ".mp4"
@@ -338,6 +339,17 @@ class MotionGraphicsAdapter(ToolAdapter):
         out: Dict[str, Any] = {"id": el_id, "type": et, "start": start, "end": end, "parameters": params}
         if "animation" in raw and raw["animation"] is not None:
             out["animation"] = self.animation_for(et, raw["animation"], where)
+        sp = as_dict(self.contract.get("style_presets"))
+        if raw.get("style") is not None:   # ADR-102: one of the contract's presets
+            if raw["style"] not in (sp.get("names") or []):
+                raise ToolError(f"motion-graphics: {where}.style {raw['style']!r} is not one of {sp.get('names')}")
+            out["style"] = raw["style"]
+        if raw.get("fit") is not None:   # ADR-102: text fit, for the types the contract applies it to, its declared fields only
+            tf = as_dict(self.contract.get("text_fit"))
+            fields = as_dict(tf.get("fields"))
+            if et not in (tf.get("applies_to") or []) or not isinstance(raw["fit"], dict) or "width" not in raw["fit"] or set(raw["fit"]) - set(fields):
+                raise ToolError(f"motion-graphics: {where}.fit must be {{width, ...}} ({sorted(fields)}) on {tf.get('applies_to')}")
+            out["fit"] = {k: self._typed(f"{where}.fit.{k}", v, fields[k]) for k, v in raw["fit"].items()}
         return out
 
     def params_for(self, et: str, params: Any, paths: Dict[str, str], where: str) -> Dict[str, Any]:
@@ -356,6 +368,13 @@ class MotionGraphicsAdapter(ToolAdapter):
                 self._check_input(image, what=f"{where} image")
                 out["image_path"] = str(Path(image).resolve())
                 continue
+            if k == "layer" and "video_path" in schema and et == "rendered_layer":   # ADR-102: the pre-rendered alpha clip, an artifact id like the image
+                clip = paths.get(str(v), str(v))
+                if not os.path.isfile(clip):
+                    raise ToolError(f"motion-graphics: {where}: layer must be an existing file: {clip}")
+                self._check_input(clip, what=f"{where} layer")
+                out["video_path"] = str(Path(clip).resolve())
+                continue
             if k == "video" and "video_path" in schema:   # ADR-064: video_overlay's clip, an artifact id like the image (the Skill probes it)
                 clip = paths.get(str(v), str(v))
                 if not os.path.isfile(clip):
@@ -369,6 +388,51 @@ class MotionGraphicsAdapter(ToolAdapter):
         for k, ps in schema.items():
             if ps.get("required") and k not in out:
                 raise ToolError(f"motion-graphics: {where}: {et} requires parameter {({'image_path': 'image', 'video_path': 'video'}).get(k, k)!r}")
+        return out
+
+    def options_for(self, raw: Any, paths: Dict[str, str]) -> Dict[str, Any]:
+        """ADR-102: the request options the agent may send: a style preset, a brand kit (role -> opaque colour), theme files (artifact ids -> existing
+        .json files inside the allowed roots) with the active theme, reserved regions. A theme with a style or a brand kit is refused (the Skill would)."""
+        if not isinstance(raw, dict) or set(raw) - set(OPTION_KEYS):
+            raise ToolError(f"motion-graphics: options may carry {list(OPTION_KEYS)} only")
+        sp = as_dict(self.contract.get("style_presets"))
+        out: Dict[str, Any] = {}
+        if "style" in raw:
+            if raw["style"] not in (sp.get("names") or []):
+                raise ToolError(f"motion-graphics: options.style {raw['style']!r} is not one of {sp.get('names')}")
+            out["style"] = raw["style"]
+        if "brand_kit" in raw:
+            bk = raw["brand_kit"]
+            if not isinstance(bk, dict) or not bk or set(bk) - set(sp.get("roles") or []):
+                raise ToolError(f"motion-graphics: options.brand_kit must map roles {sp.get('roles')} to colours")
+            out["brand_kit"] = {r: self._typed(f"options.brand_kit.{r}", c, {"type": "color", "alpha": False}) for r, c in bk.items()}
+        if "themes" in raw:
+            th = raw["themes"]
+            if not isinstance(th, dict) or not 1 <= len(th) <= 16:
+                raise ToolError("motion-graphics: options.themes must name 1 to 16 theme files")
+            files = {}
+            for name, ref in th.items():
+                if not isinstance(name, str) or not self.id_re.match(name):
+                    raise ToolError(f"motion-graphics: options.themes name {name!r} is not an id")
+                f = paths.get(str(ref), str(ref))
+                if Path(f).suffix.lower() != ".json":
+                    raise ToolError(f"motion-graphics: theme {name} must be a .json theme file")
+                self._check_input(f, what=f"theme {name}")
+                files[name] = str(Path(f).resolve())
+            out["themes"] = files
+            if "theme" in raw:
+                if raw["theme"] not in files:
+                    raise ToolError(f"motion-graphics: options.theme {raw['theme']!r} is not one of options.themes")
+                out["theme"] = raw["theme"]
+            if "style" in out or "brand_kit" in out:
+                raise ToolError("motion-graphics: options.style / brand_kit are refused together with a theme")
+        elif "theme" in raw:
+            raise ToolError("motion-graphics: options.theme needs options.themes")
+        if "reserved_regions" in raw:
+            rr = raw["reserved_regions"]
+            if not isinstance(rr, dict) or set(rr) - {"end_screen", "cards", "on_overlap"}:
+                raise ToolError("motion-graphics: options.reserved_regions must be {end_screen?, cards?, on_overlap?}")
+            out["reserved_regions"] = json.loads(json.dumps(rr))
         return out
 
     def animation_for(self, et: str, raw: Any, where: str) -> Dict[str, Any]:
@@ -490,6 +554,8 @@ class MotionGraphicsAdapter(ToolAdapter):
             if args["preset"] not in PRESETS:
                 raise ToolError(f"motion-graphics: preset must be one of {PRESETS}")
             options["preset"] = str(args["preset"])
+        if args.get("options") is not None:   # ADR-102
+            options.update(self.options_for(args["options"], paths))
         req: Dict[str, Any] = {"schema": REQUEST_SCHEMA, "video": {"path": str(Path(src).resolve())}, "output": {"path": str(Path(out).resolve()), "overwrite": True}, "elements": elements}
         if options:
             req["options"] = options

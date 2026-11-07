@@ -152,13 +152,19 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                       "end": round(float(end), 3) if end is not None else round(scope["end"], 3), "parameters": dict(d.params.get("parameters") or {})}
                 if d.params.get("fade") is not None:
                     el["animation"] = {"kind": "fade", "parameters": {"duration": float(d.params["fade"])}}
+                for k in ("style", "fit"):   # ADR-102
+                    if d.params.get(k) is not None:
+                        el[k] = d.params[k]
                 elements.append(el)
             out_id = f"{subject}_graphics"
-            graphics_ops.append(ir_graphics_render(subject, elements, [d.id for d in g_decs], current_of[subject], out_id, scope=scope))
+            o_dec = next((x for x in decisions if x.subject == "graphics.options" and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == subject), None)
+            graphics_ops.append(ir_graphics_render(subject, elements, [d.id for d in g_decs] + ([o_dec.id] if o_dec is not None else []), current_of[subject], out_id, scope=scope,
+                                                   options=dict(o_dec.params["options"]) if o_dec is not None else None))
             order += 1
             st = ProductionStep(id=f"step_graphics_{subject}", order=order, skill=GRAPHICS_SKILL, tool=tool_for(GRAPHICS_SKILL), inputs=[current_of[subject]],
                                 params={"asset": subject, "elements": [e["id"] for e in elements]}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [],
-                                evidence=evidence_of([d.id for d in g_decs]), decision_ids=[d.id for d in g_decs], decision_id=g_decs[0].id, temporal_scope=scope)
+                                evidence=evidence_of([d.id for d in g_decs] + ([o_dec.id] if o_dec is not None else [])),
+                                decision_ids=[d.id for d in g_decs] + ([o_dec.id] if o_dec is not None else []), decision_id=g_decs[0].id, temporal_scope=scope)
             steps.append(st)
             current_of[subject], last_of[subject] = out_id, st.id
             summary.append(f"Render {len(elements)} graphics element(s) on {subject}")
