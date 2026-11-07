@@ -83,7 +83,8 @@ from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as IN
 from .agent import offload as offload_task
 from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, MOTION_OPTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
 from .agent.finishing import QC_REFERENCE_KEYS, parse_qc_reference
-from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
+from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS, THUMBNAIL_SKILLS
+from .agent.thumbnail_features import PATH_KEYS as _THUMBNAIL_PATH_KEYS, thumbnail_faces_kinds   # ADR-104
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
@@ -186,7 +187,9 @@ class Service:
             (locate_audio_production(self.audio_production_dir),
              lambda sk: AudioProductionAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             (locate_subtitle(self.subtitle_dir), lambda sk: SubtitleAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
-            (locate_thumbnail(self.thumbnail_dir), lambda sk: ThumbnailAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
+            # ADR-104: render_variants measures each variant's text contrast through qc-skill: the agent's own qc-skill checkout when there is one
+            (locate_thumbnail(self.thumbnail_dir), lambda sk: ThumbnailAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy,
+                                                                             qc_skill_dir=_checkout_root(locate_qc(self.qc_dir)))),
             (locate_color_grading(self.color_grading_dir), lambda sk: ColorGradingAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             (locate_motion_graphics(self.motion_graphics_dir), lambda sk: MotionGraphicsAdapter(sk, workspace=self.workspace, allowed_inputs=roots, ffmpeg_skill_dir=engine, path_policy=policy)),
             (locate_qc(self.qc_dir), lambda sk: QcAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
@@ -400,6 +403,12 @@ class Service:
             # ADR-072: filler words are removed at recognised word timings: a transcript with word timestamps, chosen by the system for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
             params = dict(params or {}, word_timestamps=True)
+        tk = thumbnail_faces_kinds(user_requirements or {})
+        if tk is not None and "face_attributes" in self.tools_for(None, user_requirements):
+            # ADR-104: the thumbnail frame by faces -- detection-skill's faces with attributes, then thumbnail-skill's ranking of them; without a runnable
+            # tool the thumbnail decision BLOCKs on the missing capability
+            kinds = list(kinds or []) + [k for k in tk[0] if k not in (kinds or [])]
+            params = dict(params or {}, **tk[1])
         fk = face_kind(user_requirements or {})
         if fk is not None and "face_detection" in self.tools_for(None, user_requirements):
             # ADR-090: the faces to blur, measured for the requirement (edit.redact_faces); without a runnable tool the plan hands the measurement off
@@ -822,6 +831,8 @@ class Service:
         images += [op["config"] for op in plan.get("color_ops") or [] if op.get("config") and not str(op["config"]).startswith("ocio://")]   # ADR-100: a .ocio file
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)] \
             + [op["logo"]["image"] for op in plan.get("graphics_ops") or [] if isinstance(op.get("logo"), dict) and op["logo"].get("image")]   # ADR-088: a thumbnail's logo
+        images += [op["batch"]["csv"] for op in plan.get("graphics_ops") or [] if isinstance(op.get("batch"), dict)]   # ADR-104: the batch table
+        images += [t["logo"]["image"] for op in plan.get("graphics_ops") or [] if isinstance(op.get("batch"), dict) for t in op["batch"]["targets"] if t.get("logo")]
         images += [f for op in plan.get("speech_ops") or [] for f in dub_user_files(op)]   # ADR-085: the user's cues / reference voice / consent record
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         images += [op[k] for op in plan["video_ops"] if op.get("type") == "video.measured_motion" for k in ("captions", "options", "font_file") if op.get(k)]   # ADR-093
@@ -1367,7 +1378,7 @@ class Service:
                     continue
                 rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"], "target_decision_ids": list(t.get("decision_ids") or [])})
             for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail; the editor timeline (ADR-052)
-                if o.get("role") in ("CAPTIONS", "THUMBNAIL", "TIMELINE") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
+                if o.get("role") in ("CAPTIONS", "THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
                     rows.append({"logical": o["logical"], "type": o["role"], "sources": list(subject["sources"]), "format": o.get("format") or "", "target": o["role"].lower()})
         for row in rows:
             logical, t = row["logical"], {"id": row["target"], "preset": row["format"], "artifact_type": row["type"]}
@@ -1381,8 +1392,8 @@ class Service:
                 art_qa = "FAIL" if "FAIL" in statuses else ("WARN" if "WARN" in statuses else ("PASS" if items else "UNKNOWN"))
                 # the gate covers deliverables and sidecars by their own reports (no admitted report → FAIL, never promoted on silence); a thumbnail is
                 # covered only as a member of its deliverable set (ADR-065), a timeline not at all
-                qc_verdict: Optional[str] = qc_verdict_of(items, gated=row["type"] not in ("THUMBNAIL", "TIMELINE")) if qc_enabled else None
-                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "thumbnail_frame", "thumbnail_render", "timeline_export") and logical in o.outputs), None)
+                qc_verdict: Optional[str] = qc_verdict_of(items, gated=row["type"] not in ("THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE")) if qc_enabled else None
+                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "timeline_export") + THUMBNAIL_SKILLS and logical in o.outputs), None)
                 # a no-preset deliverable is an alias (compiler.delivery(): "the last processed intermediate
                 # is the deliverable") — no op names `logical` itself, so also credit whichever real op's
                 # output resolved to this same on-disk path, or a processed deliverable would misreport as
@@ -1747,9 +1758,14 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
 # surface (approval policies, qc.warn.promotion, tolerance / ratio defaults: a brief never sets how much review a decision gets) -- minus (2) keys whose value
 # is a file path (overlay / joined still (ADR-070) / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
-_PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
+_PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
                                     "edit.concat.stinger", "edit.condense", "edit.ai_generated", "motion.layer", "motion.themes"})   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
+
+
+def _checkout_root(skill: Any) -> Optional[str]:
+    """The checkout directory of a located Skill (None for a console script): what thumbnail-skill's variants take as their qc-skill (ADR-104)."""
+    return str(skill.root) if skill is not None and getattr(skill, "root", None) else None
 
 
 def _check_requirement_keys(user_requirements: Dict[str, Any]) -> None:

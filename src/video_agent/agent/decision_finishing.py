@@ -14,6 +14,7 @@ Boundaries kept on purpose:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -24,10 +25,18 @@ from ..policy.rules import RuleSet
 from .decision_engine import DecisionEngine, resolve_setting
 from ..tools.color_grading.adapter import OPERATION_NEEDS as COLOR_REMEDY
 from .editing import EditRequirementError
-from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, parse_motion_options, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
+from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, parse_motion_options, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL,
                         element_label, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, placement_problems,
                         planned_picture_size, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
+from .finishing import thumbnail_skill_of
+from .thumbnail_features import FRAME_SKILLS, GEOMETRY_SUBJECTS
+
+
+def same_aspect(frame: Dict[str, Any], size: Tuple[int, int]) -> bool:
+    """ADR-104: the measured frame and the picture have the same aspect ratio (within half a percent): its face boxes scale onto the picture."""
+    fw, fh = frame.get("width"), frame.get("height")
+    return bool(fw and fh and size[0] and size[1]) and abs(fw / float(fh) - size[0] / float(size[1])) <= 0.005 * (size[0] / float(size[1]))
 from .subtitles import BURN_SKILL, CAPTION_PROFILES, GENERATE_SKILL, MUX_SKILL, REGIONAL_PROFILES, parse_subtitle_requirements, valid_language
 
 # ADR-071: the engine's export keeps subtitle streams from release 2.22.4 (engine #380) for every preset but gif; older engines (measured
@@ -280,7 +289,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             s_ = resolve_setting(rules, "thumbnail.format", "png")
             fmt, tsettings = (str(s_["value"]).lower() if str(s_["value"]).lower() in ("png", "jpeg") else "png"), tsettings + [s_]
         ratio = None
-        if th["at"] is None:
+        if th["at"] is None and not th.get("at_faces"):   # ADR-104: thumbnail.at=faces takes the frame from the face ranking instead
             r_ = resolve_setting(rules, "thumbnail.at_ratio", 0.5)
             ratio, tsettings = max(0.0, min(1.0, float(r_["value"]))), tsettings + [r_]
         font_size = th["font_size"]
@@ -293,11 +302,47 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                 p_ = resolve_setting(rules, "thumbnail.position", "bottom")
                 position, tsettings = (str(p_["value"]) if str(p_["value"]) in ("center", "top", "bottom") else "bottom"), tsettings + [p_]
         full = bool(th.get("texts") or th.get("logo"))   # ADR-088: more texts and / or a logo → the full ThumbnailDocument
-        skill = THUMBNAIL_RENDER_SKILL if (th["text"] is not None or full) else THUMBNAIL_FRAME_SKILL
+        # ADR-104: variants / layers / batch name their own thumbnail-skill tool (thumbnail_skill_of reads the same keys the IR operation carries)
+        skill = thumbnail_skill_of({"text": th["text"], "texts": th.get("texts"), "logo": th.get("logo"), "variants": th.get("variants"), "layers": th.get("layers"),
+                                    "batch": th.get("batch")})
+        # ADR-104: without detection-skill's faces (or the ranking tool) the frame cannot be chosen: the capability BLOCKs say what is missing
+        frame_blocked = bool(th.get("at_faces")) and any([cap_block(sk, f"capability.{sk}") is not None for sk in FRAME_SKILLS])
         for subject, sources in subjects:
-            if not video_ok(subject, sources, "thumbnail.render", req):
+            if not video_ok(subject, sources, "thumbnail.render", req) or frame_blocked:
                 continue
             params: Dict[str, Any] = {"asset_id": subject, "format": fmt, "at": th["at"], "at_ratio": ratio, "skill": skill}
+            fc_ev: List[str] = []
+            if th.get("at_faces"):   # ADR-104: the frame from thumbnail-skill's ranking of each source's measured faces
+                ranks = {o.asset_id: o for o in analysis.observations if o.kind == "frame_ranking" and o.asset_id in sources}
+                attrs = [o.id for o in analysis.observations if o.kind == "face_attributes" and o.asset_id in sources]
+                pictured = [a for a in sources if a in assets and (assets[a].technical or {}).get("video")]
+                why = None
+                if any(a not in ranks for a in pictured):
+                    why = f"the faces of {', '.join(a for a in pictured if a not in ranks)} were not measured and ranked (see the analysis rows)"
+                elif not any(e.get("rank") is not None and e.get("faces") for o in ranks.values() for e in (o.data or {}).get("ranking") or []):
+                    why = "no sampled frame of the picture shows a face: name the frame with thumbnail.at"
+                if why is not None:
+                    eng.decide(subject="thumbnail.render", type="BLOCK", decision=f"BLOCK: no frame of {subject} to rank for the thumbnail", reason=why, confidence=1.0,
+                               evidence=[r.id for r in req] + attrs + [o.id for o in ranks.values()], risk="MEDIUM", approval="BLOCK", provenance="OBSERVED", requirements=req)
+                    continue
+                params["frame_choice"] = {"observations": [ranks[a].id for a in pictured if a in ranks], "every": th["faces"]["every"]}
+                fc_ev = attrs + [ranks[a].id for a in pictured if a in ranks]
+                if th.get("avoid_faces") is not None:
+                    bent = sorted({d.subject for d in eng.decisions if d.type == "TRANSFORM" and d.status != "REJECTED" and d.subject in GEOMETRY_SUBJECTS
+                                   and d.params.get("asset_id") in [subject] + list(sources)})
+                    size = planned_picture_size((assets[pictured[0]].technical if pictured else {}) or {}, eng.decisions, subject)
+                    off = [a for a in pictured if size and not same_aspect((ranks[a].data or {}).get("frame_size") or {}, size)]
+                    if bent or off or not size:
+                        eng.decide(subject="thumbnail.render", type="BLOCK", decision=f"BLOCK: the caption of {subject} cannot be placed clear of measured faces",
+                                   reason=("the faces were measured on the source frame and " + (f"{', '.join(bent)} changes the picture's geometry" if bent else
+                                           f"the picture's aspect ratio is not that of {', '.join(off)}" if off else "the picture size is unknown")
+                                           + ": the boxes would not be where the picture shows them (set thumbnail.position instead of thumbnail.avoid_faces)"),
+                                   confidence=1.0, evidence=[r.id for r in req] + fc_ev, risk="MEDIUM", approval="BLOCK", provenance="OBSERVED", requirements=req)
+                        continue
+                    params["avoid_faces"] = dict(th["avoid_faces"])
+            for k in ("variants", "layers", "batch"):   # ADR-104
+                if th.get(k):
+                    params[k] = json.loads(json.dumps(th[k]))
             if th["text"] is not None:
                 params.update({"text": th["text"], "font_size": font_size, "position": position, "font_id": "sans-bold", "color": th.get("color") or "#FFFFFF"})
             elif full:
@@ -306,12 +351,18 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                 params["texts"] = [dict(t) for t in th["texts"]]
             if th.get("logo"):
                 params["logo"] = dict(th["logo"])
-            where = f"at {th['at']:g}s" if th["at"] is not None else f"at {ratio:g} of the delivered timeline"
-            extras = ([f"{1 + len(th['texts'])} text element(s)"] if th.get("texts") else []) + ([f"logo {Path(th['logo']['image']).name}"] if th.get("logo") else [])
+            where = (f"at {th['at']:g}s" if th["at"] is not None else "at the best-ranked face frame (thumbnail-skill choose_frame) that the edit keeps" if th.get("at_faces")
+                     else f"at {ratio:g} of the delivered timeline")
+            extras = ([f"{1 + len(th['texts'])} text element(s)"] if th.get("texts") else []) + ([f"logo {Path(th['logo']['image']).name}"] if th.get("logo") else []) \
+                + (["caption placed clear of the faces (place_text)"] if params.get("avoid_faces") is not None else []) \
+                + ([f"{th['variants']['count']} A/B variants"] if th.get("variants") else []) + (["layered PNGs + manifest"] if th.get("layers") else []) \
+                + ([f"batch of {len(th['batch']['files'])} file(s): {th['batch']['rows']} row(s) of {Path(th['batch']['csv']).name} x {', '.join(th['batch']['presets'])}"]
+                   if th.get("batch") else [])
             eng.decide(subject="thumbnail.render", type="TRANSFORM", decision=f"thumbnail ({fmt}) of {subject} {where}" + (" with a caption" if th["text"] is not None else "")
                        + (f" ({', '.join(extras)})" if extras else ""),
                        reason=f"user asked for a thumbnail ({req[0].source}); the frame is taken from the finished picture" + (" (position from policy defaults)" if ratio is not None else ""),
-                       confidence=1.0, evidence=[r.id for r in req] + probe_ids_of(sources), risk="LOW", approval=approval_for("thumbnail.render", explicit=req[0], keys=APPROVAL_KEYS),
+                       confidence=1.0, evidence=[r.id for r in req] + probe_ids_of(sources) + fc_ev, risk="LOW",
+                       approval=approval_for("thumbnail.render", explicit=req[0], keys=APPROVAL_KEYS) if not fc_ev else "CONFIRM",   # a ranking suggests; the user decides
                        provenance="USER", params=params, settings=tsettings, requirements=req, serves_intent=None)
         cap_block(skill, f"capability.{skill}")
     # ---- QC gate (a measurement: AUTO; the WARN promotion policy is recorded on the decision)

@@ -3713,6 +3713,104 @@ class ThumbnailDocumentRealTests(unittest.TestCase):
         self.assertNotEqual(img.getpixel((640 - 60, 360 - 35)), (255, 0, 0))
 
 
+class ThumbnailFeaturesRealTests(unittest.TestCase):
+    """ADR-104 on the real thumbnail-skill (0.1.15, Pillow) and the real ffmpeg-skill: the live contract equals the pin and carries every tool the
+    agent now uses; render_variants writes N variants with a phone-size verdict each (contrast through the CI's qc-skill when it runs), render_layers
+    writes layers the agent reads back, render_batch writes one file per table row and preset at each preset's canvas; with the real detection-skill
+    and its YuNet file, the thumbnail frame is the ranked face frame and place_text keeps the caption off the measured face."""
+
+    def setUp(self):
+        from video_agent.tools.thumbnail import locate_thumbnail
+        if not locate_thumbnail() or not locate_ffmpeg_skill() or not shutil.which("ffmpeg"):
+            self.skipTest("needs thumbnail-skill (VIDEO_AGENT_THUMBNAIL_DIR), ffmpeg and ffmpeg-skill; CI clones both")
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("needs Pillow (thumbnail-skill renders with it; CI installs it)")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_thumbf_"))
+        self.src = Path(self.tmp) / "src"
+        self.src.mkdir()
+
+    def video(self, name: str = "talk.mp4", size: str = "640x360") -> str:
+        v = str(self.src / name)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=25:duration=4", "-f", "lavfi",
+                        "-i", "sine=frequency=440:duration=4", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", v], check=True)
+        return v
+
+    def render(self, svc, ir, name):
+        path = str(Path(self.tmp) / f"{name}.project.json"); save_ir(ir, path)
+        self.assertEqual(svc.validate(ir).errors, [])
+        return svc.render(load_ir(path), path, approve=["all"])
+
+    def test_live_contract_has_every_tool(self):
+        from video_agent.tools.thumbnail import TOOLS, ThumbnailAdapter, locate_thumbnail
+        ad = ThumbnailAdapter(locate_thumbnail(), workspace=str(Path(self.tmp) / "ws"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
+        self.assertEqual(ad.drift(), [], "the installed thumbnail-skill contract drifted from the pin: re-verify the adapter (and re-pin)")
+        self.assertEqual(sorted(t for t in TOOLS if ad.supports(t)), sorted(TOOLS))
+
+    def test_variants_layers_and_batch(self):
+        from PIL import Image
+        video = self.video()
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        out = self.render(svc, svc.plan([video], "generic", user_requirements={"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "Episode one", "thumbnail.variants": 3,
+                                                                              "thumbnail.variants.frames": [2.5]}), "variants")
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "thumbnail/render_variants")
+        self.assertEqual([v["variant"] for v in res["data"]["variants"]], [1, 2, 3])
+        self.assertTrue(all(v["small_size"]["status"] in ("pass", "fail", "unknown") for v in res["data"]["variants"]))
+        self.assertEqual(res["data"]["variants"][0]["choices"], {"layout": "as-given", "palette": "as-given", "frame": "as-given"}, "variant 1 is the document as given")
+        thumbs = [a for a in out["artifacts"] if a["type"] == "THUMBNAIL"]
+        self.assertEqual(len(thumbs), 3)
+        for a in thumbs:
+            with Image.open(a["path"]) as im:
+                self.assertEqual(im.size, (640, 360))
+        out = self.render(svc, svc.plan([video], "generic", user_requirements={"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "Layers", "thumbnail.layers": True}), "layers")
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        lay = next(a for a in out["artifacts"] if a["type"] == "THUMBNAIL_LAYERS")
+        man = json.loads(Path(lay["path"]).read_text(encoding="utf-8"))
+        self.assertEqual((man["schema"], man["verified"]["pixel_equal"], man["layers"][0]["role"]), ("thumbnail-skill/layers@1", True, "background"))
+        self.assertTrue(any(x["role"] == "text" and x["element_id"] == "caption" for x in man["layers"]))
+        self.assertEqual(lay["qa_status"], "PASS")
+        table = self.src / "titles.csv"
+        table.write_text("title,slug\nFirst episode,ep1\nA much longer second episode title,ep2\n", encoding="utf-8")
+        out = self.render(svc, svc.plan([video], "generic", user_requirements={"thumbnail": True, "thumbnail.at": 1.0, "thumbnail.text": "{{title}}", "thumbnail.font_size": 72,
+                                                                              "thumbnail.batch": str(table), "thumbnail.batch.presets": "youtube,instagram-feed",
+                                                                              "thumbnail.batch.name": "{{slug}}-{{preset}}", "thumbnail.batch.min_font_size": 12}), "batch")
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        files = {}
+        for a in out["artifacts"]:
+            if a["type"] == "THUMBNAIL":
+                with Image.open(a["path"]) as im:
+                    files[Path(a["path"]).name] = im.size
+        self.assertEqual(files, {"ep1-youtube.png": (1280, 720), "ep1-instagram-feed.png": (1080, 1080), "ep2-youtube.png": (1280, 720), "ep2-instagram-feed.png": (1080, 1080)})
+
+    def test_frame_by_faces_and_caption_clear_of_them(self):
+        from video_agent.tools.detection import locate_detection
+        det = locate_detection()
+        if not det or not os.environ.get("DETECTION_MODELS_DIR"):
+            self.skipTest("needs detection-skill and the YuNet model file in DETECTION_MODELS_DIR")
+        face = Path(det.root) / "tests" / "fixtures" / "astronaut.jpg"   # detection-skill's own public-domain fixture (one face)
+        src = str(self.src / "faces.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x202020:s=1280x720:r=30:d=8", "-loop", "1", "-i", str(face),
+                        "-f", "lavfi", "-i", "sine=f=440:r=48000:d=8", "-filter_complex", "[0][1]overlay=384:104:enable='between(t,2,5)':shortest=1[v]",
+                        "-map", "[v]", "-map", "2:a", "-t", "8", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", src], check=True)
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan([src], "generic", user_requirements={"thumbnail": True, "thumbnail.text": "Hello", "thumbnail.at": "faces", "thumbnail.faces.every": 0.5,
+                                                          "thumbnail.avoid_faces": True})
+        d = ir.doc
+        ranking = next(o for o in d["analysis"]["observations"] if o["kind"] == "frame_ranking")
+        self.assertEqual(ranking["tool"], "thumbnail/choose_frame")
+        [op] = d["graphics"]["operations"]
+        self.assertTrue(2.0 <= op["frame_choice"]["source_time"] <= 5.0, op["frame_choice"])
+        self.assertTrue(op["avoid_faces"]["faces"], "the chosen frame's face boxes travel to place_text")
+        out = self.render(svc, ir, "faces")
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        pl = next(r for r in out["execution"]["results"] if r["tool"] == "thumbnail/render")["data"]["placement"]
+        x0, y0, x1, y1 = pl["text_box"]
+        for fx0, fy0, fx1, fy1 in pl["face_boxes"]:
+            self.assertFalse(x0 < fx1 and fx0 < x1 and y0 < fy1 and fy0 < y1, f"the caption box {pl['text_box']} overlaps a face {pl['face_boxes']}")
+
+
 class NleBridgeRealTests(unittest.TestCase):
     """ADR-089 on the real nle-bridge-skill (main) with the real ffmpeg-skill: the agent hands it the project IR it executes; nle-bridge reads the
     subject's timeline record itself and writes the conform package (OTIO / FCP7 XML / EDL, relink manifest with the media's sha256, zip)."""

@@ -9,8 +9,9 @@ from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STA
                            FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
                            PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
 from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, PUNCH_IN_OP, SKILL_OF, TRIM_SKILLS, switch_cams
-from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
-                               VIDEO_EXTENSIONS, picture_size, placement_problems)
+from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL,
+                               VIDEO_EXTENSIONS, picture_size, placement_problems, thumbnail_skill_of)
+from ..agent.thumbnail_features import PRESETS as THUMBNAIL_PRESETS
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
@@ -590,7 +591,8 @@ def check_publish(d: Dict[str, Any]) -> List[str]:
     if not qc.get("enabled") or target not in ((qc.get("subjects") or {}).get(subj) or {}).get("targets", []):
         errs.append(f"delivery.publish of {subj}/{target} needs the QC gate on that deliverable (publishing comes after QC)")
     outputs = {(o.get("role"), (o.get("expected") or {}).get("source")) for o in d["plan"].get("outputs") or []}
-    if pub.get("thumbnail") and ("THUMBNAIL", subj) not in outputs:
+    thumbs = {o.get("logical") for o in d["plan"].get("outputs") or [] if o.get("role") == "THUMBNAIL"}
+    if pub.get("thumbnail") and f"{subj}_thumbnail" not in thumbs:   # the subject's one thumbnail (ADR-104: a batch's files are not)
         errs.append(f"delivery.publish attaches a thumbnail, and the plan makes none for {subj}")
     if pub.get("captions") and (("CAPTIONS", subj) not in outputs or not PUBLISH_LANG_RE.match(str(pub.get("caption_language") or ""))):
         errs.append(f"delivery.publish attaches captions: the plan must make a sidecar for {subj} with a BCP-47 caption_language")
@@ -626,6 +628,50 @@ def check_nle(d: Dict[str, Any]) -> List[str]:
 
 def finishing_operations(d: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for sec in ("color", "graphics", "captions") for op in (d.get(sec) or {}).get("operations") or []]
+
+
+def thumbnail_feature_problems(op: Dict[str, Any], d: Dict[str, Any], allowed_roots: List[str], scope: Optional[Dict[str, float]]) -> List[str]:
+    """ADR-104: the frame chosen from a ranking that is an observation of one of the subject's sources, face boxes on the thumbnail's own canvas
+    under a caption, variants of a captioned thumbnail with their own outputs and frames inside the picture, a layers manifest output, and a
+    batch whose table lies inside the allowed roots and whose files are one per (row, preset) of the contract's presets."""
+    errs: List[str] = []
+    obs = {o.get("id"): o for o in (d.get("analysis") or {}).get("observations") or []}
+    fc = op.get("frame_choice")
+    if fc is not None:
+        o = obs.get(fc.get("observation"))
+        if o is None or o.get("kind") != "frame_ranking" or o.get("asset_id") != fc.get("source"):
+            errs.append("frame_choice names no frame_ranking observation of its source")
+    af = op.get("avoid_faces")
+    if af is not None:
+        if op.get("text") is None or fc is None:
+            errs.append("avoid_faces moves the caption over a ranked frame: it needs text and frame_choice")
+        if af.get("frame_size") != {"width": op.get("width"), "height": op.get("height")}:
+            errs.append("avoid_faces boxes are not on the thumbnail's canvas (frame_size != width x height)")
+    v = op.get("variants")
+    if v is not None:
+        if op.get("text") is None:
+            errs.append("variants vary the caption: they need text")
+        if len(v.get("outputs") or []) != int(v.get("count") or 0) - 1 or len(set(v.get("outputs") or [])) != len(v.get("outputs") or []):
+            errs.append("variants must name one output for each of variants 2..count")
+        if scope and any(float(t) > float(scope["end"]) + 0.01 for t in v.get("frames") or []):
+            errs.append("a variants frame lies after the picture ends")
+    b = op.get("batch")
+    if b is not None:
+        f = str(b.get("csv") or "")
+        if any(part == ".." for part in f.replace("\\", "/").split("/")) or (allowed_roots and not any(_under(f, r) for r in allowed_roots)):
+            errs.append(f"the batch table is outside the allowed input roots: {Path(f).name}")
+        presets = [t.get("preset") for t in b.get("targets") or []]
+        if not presets or len(set(presets)) != len(presets) or any(p not in THUMBNAIL_PRESETS for p in presets):
+            errs.append(f"batch targets {presets!r} are not distinct presets of the thumbnail contract")
+        want = {(r, p) for r in range(1, int(b.get("rows") or 0) + 1) for p in presets}
+        got = [(o.get("row"), o.get("preset")) for o in b.get("outputs") or []]
+        if set(got) != want or len(got) != len(want) or len({o.get("name") for o in b.get("outputs") or []}) != len(got):
+            errs.append("batch outputs are not one named file per (row, preset)")
+        if op.get("avoid_faces") is not None or op.get("variants") or op.get("layers"):
+            errs.append("a batch is one thumbnail-skill tool: no avoid_faces / variants / layers with it")
+    if v is not None and op.get("layers"):
+        errs.append("variants and layers are different thumbnail-skill tools")
+    return errs
 
 
 def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
@@ -741,8 +787,10 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
             sc = scope_of(subj)
             if sc and float(op.get("timestamp", 0)) > float(sc["end"]) + 0.01:
                 errs.append(f"graphics.thumbnail on {subj}: timestamp {op.get('timestamp')} is after the picture ends ({sc['end']:.3f})")
-            if (op.get("text") is not None or op.get("texts") or op.get("logo")) and not (op.get("width") and op.get("height")):
+            if (op.get("text") is not None or op.get("texts") or op.get("logo") or op.get("variants") or op.get("layers")) and not op.get("batch") \
+                    and not (op.get("width") and op.get("height")):
                 errs.append(f"graphics.thumbnail on {subj}: a caption / text / logo needs the canvas size (width / height)")
+            errs += [f"graphics.thumbnail on {subj}: {e}" for e in thumbnail_feature_problems(op, d, allowed_roots, sc)]   # ADR-104
             lg = op.get("logo")
             if isinstance(lg, dict):   # ADR-088: the logo image is the user's file, inside the allowed input roots, and its box touches the canvas
                 img = str(lg.get("image") or "")
@@ -1172,7 +1220,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if (COLOR_SKILL_OF.get(op["type"], "?"), op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in (d.get("graphics") or {}).get("operations") or []:
-        want = GRAPHICS_SKILL if op["type"] == "graphics.render" else (THUMBNAIL_RENDER_SKILL if op.get("text") is not None else THUMBNAIL_FRAME_SKILL)
+        want = GRAPHICS_SKILL if op["type"] == "graphics.render" else thumbnail_skill_of(op)
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in (d.get("captions") or {}).get("operations") or []:

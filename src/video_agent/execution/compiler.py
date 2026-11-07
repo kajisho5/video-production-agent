@@ -15,7 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, TOOL as AUDIO_TOOL
 from ..agent.editing import (CONDENSE_KEEP_LABEL, CONDENSE_SKILL, IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL,
                              TRIM_SKILLS, delivery_subjects)
-from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_RENDER_TOOL
+from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_TOOL
+from ..agent.finishing import THUMBNAIL_BATCH_TOOL, THUMBNAIL_TOOL_OF, thumbnail_skill_of
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL, SIDECAR_EXTENSIONS
 from ..agent.takes import AUDIO_MUX_SKILL
@@ -299,15 +300,24 @@ def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: s
 
 
 def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
-    """IR graphics.thumbnail → thumbnail/extract_frame (a plain frame) or thumbnail/render (frame + caption) arguments."""
-    want = THUMBNAIL_RENDER_TOOL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_TOOL   # ADR-088: texts / logo
+    """IR graphics.thumbnail → the arguments of its one thumbnail-skill tool: extract_frame (a plain frame), render (frame + caption / texts / logo,
+    ADR-088), and (ADR-104) render_variants / render_layers / render_batch with the same document; `avoid_faces` makes the adapter call place_text
+    first. Names are copied, never invented."""
+    want = THUMBNAIL_TOOL_OF[thumbnail_skill_of(op)]
     if tool != want:
         raise CompileError(f"graphics.thumbnail cannot be executed by {tool}; this operation needs {want}")
-    args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"], "output": out_id}
-    if want == THUMBNAIL_RENDER_TOOL:
-        for k in ("width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):
+    args: Dict[str, Any] = {"input": current, "timestamp": float(op["timestamp"]), "format": op["format"]}
+    if want != THUMBNAIL_BATCH_TOOL:
+        args["output"] = out_id
+    if want != THUMBNAIL_FRAME_TOOL:
+        for k in ("width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo", "avoid_faces", "variants", "layers"):
             if op.get(k) is not None:
                 args[k] = op[k]
+    if want == THUMBNAIL_BATCH_TOOL:
+        args["batch"] = {k: v for k, v in op["batch"].items() if k != "rows"}
+        args["batch"]["outputs"] = [{k: o[k] for k in ("row", "preset", "output")} for o in op["batch"]["outputs"]]
+        for k in ("width", "height", "logo", "avoid_faces"):
+            args.pop(k, None)
     return args
 
 
@@ -632,11 +642,26 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 continue
             out_id = op.get("output") or f"{subject}_thumbnail"
             ext = "png" if op["format"] == "png" else "jpg"
-            paths[out_id] = str(job / "artifacts" / f"{st['stem']}_thumbnail.{ext}")
-            skill = THUMBNAIL_RENDER_SKILL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_SKILL
+            art = job / "artifacts"
+            outs = [out_id]
+            if op.get("batch"):   # ADR-104: one directory of <name>.<ext>, the names the plan read from the table
+                outs = [o["output"] for o in op["batch"]["outputs"]]
+                for o in op["batch"]["outputs"]:
+                    paths[o["output"]] = str(art / f"{st['stem']}_thumbnails" / f"{o['name']}.{ext}")
+            elif op.get("variants"):   # thumbnail-skill names variant k <stem>-v<k>; variant 1 is the plan's thumbnail
+                paths[out_id] = str(art / f"{st['stem']}_thumbnail-v1.{ext}")
+                for k, vid in enumerate(op["variants"]["outputs"], start=2):
+                    paths[vid] = str(art / f"{st['stem']}_thumbnail-v{k}.{ext}")
+                outs += list(op["variants"]["outputs"])
+            else:
+                paths[out_id] = str(art / f"{st['stem']}_thumbnail.{ext}")
+            if op.get("layers"):
+                paths[op["layers"]["output"]] = str(art / f"{st['stem']}_thumbnail_layers" / "layers.json")
+                outs.append(op["layers"]["output"])
+            skill = thumbnail_skill_of(op)
             tool = tool_for(skill, subject)
             src = st.get("picture") or st["current"]
-            add(tool, lower_thumbnail(tool, op, src, out_id), [src], [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            add(tool, lower_thumbnail(tool, op, src, out_id), [src], outs, list(op.get("decision_ids") or []), st["fp"], skill=skill)
 
     def timeline(subject: str) -> None:
         """The subject's cut list as an editor timeline (ADR-052): reads the sources only, never an intermediate, so it depends on

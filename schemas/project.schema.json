@@ -3209,6 +3209,262 @@
        "type": "object"
       }
      }
+    },
+    "frame_choice": {
+     "description": "ADR-104: the thumbnail frame chosen from thumbnail-skill choose_frame's ranking (a frame_ranking observation of one source)",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "source",
+      "observation",
+      "source_time",
+      "rank"
+     ],
+     "properties": {
+      "source": {
+       "type": "string"
+      },
+      "observation": {
+       "type": "string"
+      },
+      "source_time": {
+       "type": "number",
+       "minimum": 0
+      },
+      "rank": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "score": {
+       "type": [
+        "number",
+        "null"
+       ]
+      },
+      "eyes_closed": {
+       "type": "boolean"
+      }
+     }
+    },
+    "avoid_faces": {
+     "description": "ADR-104: thumbnail-skill place_text moves the caption clear of these face boxes (canvas pixels)",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "faces",
+      "frame_size"
+     ],
+     "properties": {
+      "faces": {
+       "type": "array",
+       "maxItems": 64,
+       "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+         "type": "number"
+        }
+       }
+      },
+      "frame_size": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "width",
+        "height"
+       ],
+       "properties": {
+        "width": {
+         "type": "integer",
+         "minimum": 1
+        },
+        "height": {
+         "type": "integer",
+         "minimum": 1
+        }
+       }
+      },
+      "margin": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 1000
+      }
+     }
+    },
+    "variants": {
+     "description": "ADR-104: thumbnail-skill render_variants; variant 1 is the thumbnail, outputs name variants 2..count",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "count",
+      "outputs"
+     ],
+     "properties": {
+      "count": {
+       "type": "integer",
+       "minimum": 2,
+       "maximum": 12
+      },
+      "outputs": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 11,
+       "items": {
+        "type": "string"
+       }
+      },
+      "frames": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 11,
+       "items": {
+        "type": "number",
+        "minimum": 0
+       }
+      },
+      "phone_width": {
+       "type": "integer",
+       "minimum": 100,
+       "maximum": 4000
+      },
+      "min_text_height": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 400
+      },
+      "min_contrast": {
+       "type": "number",
+       "minimum": 1,
+       "maximum": 21
+      }
+     }
+    },
+    "layers": {
+     "description": "ADR-104: thumbnail-skill render_layers; output is the layers.json manifest",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "output"
+     ],
+     "properties": {
+      "output": {
+       "type": "string"
+      }
+     }
+    },
+    "batch": {
+     "description": "ADR-104: thumbnail-skill render_batch: one file per table row and platform preset",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "csv",
+      "csv_sha256",
+      "encoding",
+      "delimiter",
+      "name",
+      "rows",
+      "targets",
+      "outputs"
+     ],
+     "properties": {
+      "csv": {
+       "type": "string"
+      },
+      "csv_sha256": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "encoding": {
+       "enum": [
+        "utf-8",
+        "cp932"
+       ]
+      },
+      "delimiter": {
+       "enum": [
+        ",",
+        ";",
+        "tab"
+       ]
+      },
+      "name": {
+       "type": "string",
+       "minLength": 1
+      },
+      "min_font_size": {
+       "type": "integer",
+       "minimum": 6,
+       "maximum": 400
+      },
+      "rows": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 1000
+      },
+      "targets": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 4,
+       "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "preset",
+         "width",
+         "height"
+        ],
+        "properties": {
+         "preset": {
+          "type": "string"
+         },
+         "width": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 7680
+         },
+         "height": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 7680
+         },
+         "logo": {
+          "$ref": "#/$defs/graphics_op/properties/logo"
+         }
+        }
+       }
+      },
+      "outputs": {
+       "type": "array",
+       "minItems": 1,
+       "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "row",
+         "preset",
+         "name",
+         "output"
+        ],
+        "properties": {
+         "row": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "preset": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+         },
+         "output": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
     }
    }
   },

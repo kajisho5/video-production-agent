@@ -235,15 +235,207 @@ def parse_document(value, ws, roots):
     return d["document_id"], int(w), int(h), assets, fonts
 
 
+# ---- ADR-104: the 0.1.12 .. 0.1.15 tools, with the real Skill's request shapes and response fields (tiny constant images, a simple text box)
+def write_image(out: str, fmt: str) -> tuple:
+    payload = PNG_1x1 if fmt == "png" else JPEG_1x1
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    Path(out).write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    return len(payload), "0" * 64 if MODE == "hash_mismatch" else digest
+
+
+def base_prov(tool: str) -> dict:
+    return {"skill": SKILL["id"], "skill_version": SKILL["version"], "operation": tool, "engine": "Pillow", "engine_version": "12.3.0-fake"}
+
+
+def text_box(t: dict) -> list:
+    """A stand-in for renderer.text_box: about 0.6 em per character, one line, anchored by the element's alignment."""
+    w, h = 0.6 * t["font_size"] * len(t["text"]), float(t["font_size"])
+    al = t.get("align") or {}
+    x = t["position"]["x"] - {"left": 0, "center": w / 2, "right": w}[al.get("horizontal", "left")]
+    y = t["position"]["y"] - {"top": 0, "middle": h / 2, "bottom": h}[al.get("vertical", "top")]
+    return [x, y, x + w, y + h]
+
+
+def choose_frame(params, ws, roots) -> dict:
+    p = obj(params, "params", ("detections", "detections_path", "video", "measures", "weights", "eyes_closed_below", "options"), ())
+    path = resolve_input(p["detections_path"], ws, roots, "detections_path")
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    if doc.get("schema") != "detection-skill/detections@1" or doc.get("kind") != "face":
+        raise Fail("INVALID_REQUEST", "detections must be face detections")
+    faces_any = [d for fr in doc["frames"] for d in fr["detections"]]
+    if faces_any and not any(isinstance(d.get("attributes"), dict) for d in faces_any):
+        raise Fail("INVALID_REQUEST", "the faces carry no attributes: run detection faces --attributes", {"reason": "no_attributes"})
+    video = None
+    if "video" in p:
+        v = resolve_input(p["video"], ws, roots, "video")
+        fp = "sha256:" + hashlib.sha256(Path(v).read_bytes()).hexdigest()
+        if doc["source"].get("fingerprint") != fp:
+            raise Fail("INVALID_INPUT", "video is not the file these detections were made from", {"reason": "detections_source_mismatch"})
+        video = {"path": v, "fingerprint": "sha256:" + ("1" * 64 if MODE == "rank_other_video" else fp[7:])}
+    ranked, empty = [], []
+    for pos, fr in enumerate(doc["frames"]):
+        boxes = [list(d["box"]) for d in fr["detections"]]
+        e = {"index": fr.get("index", pos), "t": fr["t"], "faces": boxes}
+        if not boxes:
+            empty.append(dict(e, rank=None, score=None, parts=None, missing=[], eyes_closed=None, main_face=None))
+            continue
+        main = max(range(len(boxes)), key=lambda j: (boxes[j][2] * boxes[j][3], -j))
+        a = fr["detections"][main].get("attributes") or {}
+        parts = {"eyes_open": a.get("eyes_open"), "sharpness": a["sharpness"] / (a["sharpness"] + 100) if a.get("sharpness") is not None else None, "exposure": None,
+                 "frontal": a.get("frontal"), "size": min(1.0, a["size"] / 0.4) if a.get("size") is not None else None}
+        w = {"eyes_open": 0.3, "sharpness": 0.25, "exposure": 0.15, "frontal": 0.15, "size": 0.15}
+        ranked.append(dict(e, score=round(sum(w[k] * (v or 0.0) for k, v in parts.items()), 4), parts=parts, missing=[k for k, v in parts.items() if v is None],
+                           sources={}, eyes_closed=a.get("eyes_open") is not None and a["eyes_open"] < 0.5, main_face=main, main_face_box=boxes[main], _o=pos))
+    ranked.sort(key=lambda e: (e["eyes_closed"], -e["score"], e["_o"]))
+    for n, e in enumerate(ranked, start=1):
+        e["rank"] = n
+        del e["_o"]
+    body = {"ranking": ranked + empty, "chosen": ranked[0] if ranked else None, "frame_size": dict(doc["frame_size"]),
+            "method": {"weights": {}, "heuristic": True, "order": "eyes open first, then score"},
+            "source": {"detections": "detection-skill/detections@1", "fingerprint": doc["source"].get("fingerprint"), "frames": len(doc["frames"])},
+            "operations": ["thumbnail/choose_frame"], "provenance": {"skill": SKILL["id"], "skill_version": SKILL["version"], "operation": "thumbnail/choose_frame"}}
+    if video:
+        body["video"] = video
+    return body
+
+
+def place_text(params, ws, roots) -> dict:
+    p = obj(params, "params", ("document", "text_element", "image_element", "faces", "frame_size", "candidates", "margin", "options"), ("document", "text_element", "image_element", "faces"))
+    doc_id, w, h, assets, fonts = parse_document(p["document"], ws, roots)
+    els = {e["element_id"]: e for e in p["document"]["elements"]}
+    t = (els.get(p["text_element"]) or {}).get("text")
+    im = (els.get(p["image_element"]) or {}).get("image")
+    if t is None or im is None:
+        raise Fail("INVALID_REQUEST", "text_element / image_element")
+    if assets[im["asset_id"]]["kind"] == "video_frame" and "frame_size" not in p:
+        raise Fail("INVALID_REQUEST", "frame_size is required", {"field": "frame_size"})
+    fs = p.get("frame_size") or {"width": w, "height": h}
+    sx, sy = im["size"]["width"] / fs["width"], im["size"]["height"] / fs["height"]
+    m = int(p.get("margin", 16))
+    faces = [[f[0] * sx - m, f[1] * sy - m, (f[0] + f[2]) * sx + m, (f[1] + f[3]) * sy + m] for f in p["faces"]]
+    mm = round(0.05 * min(w, h))
+    cands = [("bottom-center", w / 2, h - mm, "center", "bottom"), ("top-center", w / 2, mm, "center", "top"), ("bottom-left", mm, h - mm, "left", "bottom"),
+             ("top-left", mm, mm, "left", "top")]
+    tried, chosen = [], None
+    for name, x, y, ha, va in cands:
+        t2 = dict(t, position={"x": x, "y": y}, align={"horizontal": ha, "vertical": va})
+        b = text_box(t2)
+        inside = b[0] >= 0 and b[1] >= 0 and b[2] <= w and b[3] <= h
+        hits = [i for i, f in enumerate(faces) if b[0] < f[2] and f[0] < b[2] and b[1] < f[3] and f[1] < b[3]]
+        ok = inside and not hits and MODE != "no_clear"
+        tried.append({"name": name, "text_box": b, "inside_canvas": inside, "overlaps_faces": hits, "clear": ok})
+        if ok:
+            chosen = (name, {"x": x, "y": y}, {"horizontal": ha, "vertical": va})
+            break
+    if chosen is None:
+        raise Fail("VALIDATION_ERROR", "no candidate position keeps the text clear of every face", {"reason": "no_position_clear_of_faces", "tried": tried})
+    t.update(position=chosen[1], align=chosen[2])
+    return {"document": p["document"], "placement": {"text_element": p["text_element"], "image_element": p["image_element"], "chosen": chosen[0], "position": chosen[1],
+                                                     "align": chosen[2], "text_box": tried[-1]["text_box"], "face_boxes": faces, "margin": m, "tried": tried},
+            "operations": ["thumbnail/place_text"], "provenance": {"skill": SKILL["id"], "skill_version": SKILL["version"], "operation": "thumbnail/place_text"}}
+
+
+def render_layers(params, ws, roots) -> dict:
+    p = obj(params, "params", ("schema", "document", "output", "options", "layers"), ("document", "output", "layers"))
+    lv = obj(p["layers"], "layers", ("directory", "overwrite"), ("directory",))
+    d = os.path.realpath(lv["directory"] if os.path.isabs(lv["directory"]) else os.path.join(ws, lv["directory"]))
+    if not within(ws, d):
+        raise Fail("PATH_NOT_ALLOWED", "layers.directory outside the workspace", {"reason": "outside_workspace"})
+    res = render_one("thumbnail/render", {k: v for k, v in p.items() if k != "layers"}, ws, roots)
+    os.makedirs(d, exist_ok=True)
+    layers = []
+    for order, (role, eid) in enumerate([("background", None)] + [("image" if e["type"] == "image" else "text", e["element_id"]) for e in p["document"]["elements"]]):
+        name = f"{order:02d}-{'background' if eid is None else eid}.png"
+        Path(d, name).write_bytes(PNG_1x1)
+        layers.append({"order": order, "role": role, "element_id": eid, "type": None, "z_index": None, "file": name, "position": {"x": 0, "y": 0}, "size": {"width": 1, "height": 1},
+                       "mode": "RGBA", "sha256": "sha256:" + hashlib.sha256(PNG_1x1).hexdigest()})
+    if MODE == "layers_tampered":
+        Path(d, layers[-1]["file"]).write_bytes(PNG_1x1 + b"x")
+    manifest = {"schema": "thumbnail-skill/layers@1", "canvas": {"width": res["width"], "height": res["height"]}, "layers": layers, "verified": {"pixel_equal": True}}
+    Path(d, "layers.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    res["layers"] = {"directory": d, "manifest": os.path.join(d, "layers.json"), "count": len(layers), "layers": layers, "verified": {"pixel_equal": True}}
+    res["operations"] = ["thumbnail/render", "thumbnail/render_layers"]
+    res["provenance"]["layers_manifest_sha256"] = "sha256:" + hashlib.sha256(Path(d, "layers.json").read_bytes()).hexdigest()
+    return res
+
+
+def render_variants(params, ws, roots) -> dict:
+    p = obj(params, "params", ("schema", "document", "output", "options", "variants"), ("document", "output", "variants"))
+    v = obj(p["variants"], "variants", ("count", "text_element", "layouts", "palettes", "frame_element", "frames", "phone_width", "min_text_height_px", "min_contrast_ratio", "qc_skill"), ())
+    n = num(v.get("count"), "variants.count", 1, 12, True)
+    if not any(e["type"] == "text" for e in p["document"]["elements"]):
+        raise Fail("INVALID_REQUEST", "the document has no text element to vary")
+    if "frames" in v and "frame_element" not in v:
+        raise Fail("INVALID_REQUEST", "variants.frames needs variants.frame_element")
+    for f in v.get("frames") or []:
+        a = obj(f, "frame", ("name", "asset"), ("name", "asset"))
+        resolve_input(a["asset"]["path"], ws, roots, "variant frame")
+    base = Path(p["output"]["path"])
+    out = []
+    for k in range(1, n + 1):
+        body = dict(p, output=dict(p["output"], path=str(base.with_name(f"{base.stem}-v{k}{base.suffix}"))))
+        body.pop("variants")
+        r = render_one("thumbnail/render", body, ws, roots)
+        fail = MODE == "variants_flag" and k == 2
+        out.append({"variant": k, "output": r["output"], "format": r["format"], "width": r["width"], "height": r["height"], "size": r["size"], "sha256": r["sha256"], "reused": False,
+                    "preset_check": None, "choices": {"layout": "as-given" if k == 1 else f"layout-{k}", "palette": "as-given" if k == 1 else f"palette-{k}", "frame": "as-given"},
+                    "description": f"variant {k}", "small_size": {"status": "fail" if fail else "pass", "ok": not fail, "phone_width": v.get("phone_width", 320), "min_text_height_px": 12,
+                                                                 "min_contrast_ratio": 4.5, "texts": [{"element_id": "caption", "findings": [{"code": "text_too_small"}] if fail else []}],
+                                                                 "qc_skill": v.get("qc_skill")}, "identity": r["provenance"]["identity"]})
+    return {"variants": out, "count": n, "flagged": [x["variant"] for x in out if x["small_size"]["status"] == "fail"], "text_element": "caption", "axes": {},
+            "operations": ["thumbnail/render_variants"], "provenance": dict(base_prov("thumbnail/render_variants"), outputs=[{"variant": x["variant"], "output_hash": x["sha256"]} for x in out],
+                                                                              qc_skill=v.get("qc_skill"))}
+
+
+def render_batch(params, ws, roots) -> dict:
+    import csv as _csv
+    import io as _io
+    p = obj(params, "params", ("csv", "rows", "targets", "output", "options"), ("targets", "output"))
+    c = obj(p["csv"], "csv", ("path", "encoding", "delimiter"), ("path",))
+    path = resolve_input(c["path"], ws, roots, "csv.path")
+    raw = Path(path).read_bytes()
+    table = [r for r in _csv.reader(_io.StringIO(raw.decode("utf-8-sig" if c.get("encoding", "utf-8") == "utf-8" else c["encoding"]), newline=""), delimiter=c.get("delimiter", ",")) if r]
+    rows = [dict(zip(table[0], r)) for r in table[1:]]
+    o = obj(p["output"], "output", ("directory", "name", "format", "overwrite", "jpeg_quality"), ("directory", "format"))
+    items = []
+    for n_, row in enumerate(rows, start=1):
+        for t in p["targets"]:
+            obj(t, "target", ("preset", "document", "text_fit"), ("preset", "document"))
+            pr = CONTRACT["platform_presets"]["presets"][t["preset"]]
+            vals = dict(row, row=str(n_), preset=t["preset"])
+            doc = json.loads(json.dumps(t["document"]))
+            for e in doc["elements"]:
+                if e["type"] == "text":
+                    e["text"]["text"] = re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", lambda m: vals[m.group(1)], e["text"]["text"])
+            name = re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", lambda m: vals[m.group(1)], o.get("name", "{{row}}-{{preset}}"))
+            ext = FORMATS[o["format"]][0]
+            r = render_one("thumbnail/render", {"document": doc, "output": {"path": os.path.join(o["directory"], name + ext), "format": o["format"], "overwrite": True}}, ws, roots)
+            items.append({"row": n_, "preset": t["preset"], "output": r["output"], "format": r["format"], "width": pr["width"], "height": pr["height"], "size": r["size"],
+                          "sha256": r["sha256"], "reused": False, "preset_check": {"name": t["preset"], "ok": True}, "fitted": {k: {"font_size": 40} for k in t.get("text_fit") or {}},
+                          "identity": r["provenance"]["identity"]})
+    return {"items": items, "count": len(items), "rows": len(rows), "targets": [t["preset"] for t in p["targets"]], "operations": ["thumbnail/render_batch"],
+            "provenance": dict(base_prov("thumbnail/render_batch"), source={"path": path, "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}, rows=len(rows))}
+
+
 def render(tool: str, params, ws: str, roots) -> dict:
     """The tool's own response document (never the transport envelope)."""
     if MODE == "internal_error":
         raise Fail("INTERNAL_ERROR", "TypeError: bug")
     if not isinstance(params, dict):
         raise Fail("INVALID_REQUEST", "params must be a JSON object")
-    hit = scan(params, "params")
+    hit = scan({k: v for k, v in params.items() if k != "detections"}, "params")
     if hit:
         raise Fail("INVALID_REQUEST", f"field {hit} is not accepted", {"field": hit, "reason": "forbidden_field"})
+    extra = {"thumbnail/choose_frame": choose_frame, "thumbnail/place_text": place_text, "thumbnail/render_layers": render_layers,
+             "thumbnail/render_variants": render_variants, "thumbnail/render_batch": render_batch}
+    if tool in extra:
+        doc = {"schema": RESPONSE, "skill": dict(SKILL), "ok": True, "status": "ok", **extra[tool](params, ws, roots), "warnings": []}
+        return doc
+    return render_one(tool, params, ws, roots)
+
+
+def render_one(tool: str, params, ws: str, roots) -> dict:
     if tool == "thumbnail/render":
         p = obj(params, "params", ("schema", "document", "output", "options"), ("document", "output"))
         if "schema" in p and p["schema"] != CONTRACT["document"]["schema"]:

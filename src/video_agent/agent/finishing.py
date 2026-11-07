@@ -191,6 +191,27 @@ THUMBNAIL_KEYS = ("thumbnail", "thumbnail.at", "thumbnail.text", "thumbnail.form
     + tuple(k for t in THUMBNAIL_TEXT_KEYS for k in (t,) + tuple(f"{t}.{f}" for f in THUMBNAIL_TEXT_FIELDS)) \
     + ("thumbnail.logo",) + tuple(f"thumbnail.logo.{f}" for f in THUMBNAIL_LOGO_FIELDS)
 THUMBNAIL_FONT_SIZE_RANGE = (6, 400)
+# ADR-104: thumbnail-skill 0.1.12 .. 0.1.15 (agent/thumbnail_features.py): the frame by a face ranking, the caption clear of faces, variants,
+# layers, a batch per platform preset -- each thumbnail is rendered by exactly one of these tools
+from .thumbnail_features import FEATURE_KEYS as _THUMBNAIL_FEATURE_KEYS, parse_thumbnail_features  # noqa: E402
+THUMBNAIL_KEYS = THUMBNAIL_KEYS + _THUMBNAIL_FEATURE_KEYS
+THUMBNAIL_VARIANTS_TOOL, THUMBNAIL_LAYERS_TOOL, THUMBNAIL_BATCH_TOOL = "thumbnail/render_variants", "thumbnail/render_layers", "thumbnail/render_batch"
+THUMBNAIL_VARIANTS_SKILL, THUMBNAIL_LAYERS_SKILL, THUMBNAIL_BATCH_SKILL = "thumbnail_variants", "thumbnail_layers", "thumbnail_batch"
+THUMBNAIL_SKILLS = (THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL, THUMBNAIL_VARIANTS_SKILL, THUMBNAIL_LAYERS_SKILL, THUMBNAIL_BATCH_SKILL)
+THUMBNAIL_TOOL_OF = {THUMBNAIL_FRAME_SKILL: THUMBNAIL_FRAME_TOOL, THUMBNAIL_RENDER_SKILL: THUMBNAIL_RENDER_TOOL, THUMBNAIL_VARIANTS_SKILL: THUMBNAIL_VARIANTS_TOOL,
+                     THUMBNAIL_LAYERS_SKILL: THUMBNAIL_LAYERS_TOOL, THUMBNAIL_BATCH_SKILL: THUMBNAIL_BATCH_TOOL}
+
+
+def thumbnail_skill_of(op: Dict[str, Any]) -> str:
+    """The production skill of an IR graphics.thumbnail (and of the decision params that become one): batch / variants / layers name their tool;
+    otherwise a document (caption, texts, logo) renders, a bare frame is extracted."""
+    if op.get("batch"):
+        return THUMBNAIL_BATCH_SKILL
+    if op.get("variants"):
+        return THUMBNAIL_VARIANTS_SKILL
+    if op.get("layers"):
+        return THUMBNAIL_LAYERS_SKILL
+    return THUMBNAIL_RENDER_SKILL if (op.get("text") is not None or op.get("texts") or op.get("logo")) else THUMBNAIL_FRAME_SKILL
 _TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -646,7 +667,7 @@ def parse_thumbnail_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
             raise EditRequirementError("thumbnail names one format and thumbnail.format another: refusing an ambiguous request")
         fmt = f
     out.update({"enabled": True, "format": fmt, "requirements": reqs})
-    if "thumbnail.at" in vals:
+    if "thumbnail.at" in vals and not (isinstance(vals["thumbnail.at"], str) and vals["thumbnail.at"].strip().lower() == "faces"):   # ADR-104: or "faces"
         out["at"] = float(_number(vals["thumbnail.at"], "thumbnail.at", 0.0, 86400.0))
     if "thumbnail.text" in vals:
         out["text"] = _text(vals["thumbnail.text"], "thumbnail.text", 2000)
@@ -700,6 +721,7 @@ def parse_thumbnail_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
         if "opacity" in lg:
             logo["opacity"] = float(_number(vals["thumbnail.logo.opacity"], "thumbnail.logo.opacity", 0.0, 1.0))
         out["logo"] = logo
+    parse_thumbnail_features(vals, out, fmt)   # ADR-104
     return out
 
 
@@ -892,7 +914,8 @@ def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_id
 
 def ir_thumbnail(subject: str, params: Dict[str, Any], decision_ids: List[str], input_id: str, output: str) -> Dict[str, Any]:
     rec: Dict[str, Any] = {"type": "graphics.thumbnail", "asset": subject, "input": input_id, "output": output}
-    for k in ("timestamp", "format", "width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo"):   # ADR-088: texts / logo
+    for k in ("timestamp", "format", "width", "height", "text", "font_id", "font_size", "color", "position", "texts", "logo",   # ADR-088: texts / logo
+              "frame_choice", "avoid_faces", "variants", "layers", "batch"):   # ADR-104
         if params.get(k) not in (None, []):
             rec[k] = params[k]
     rec["decision_ids"] = list(decision_ids)
