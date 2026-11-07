@@ -242,6 +242,32 @@ class Service:
         explicit, default = self._providers(user_requirements)
         return self.registry.resolve_tools(self.caps.resolve(), router.supports, explicit=explicit, default=default)
 
+    def propose(self, source: str, transcript: Optional[str] = None, profile: Optional[str] = None, min_confidence: Optional[float] = None,
+                silence: Optional[Dict[str, Any]] = None, static: bool = False, combine: Optional[Dict[str, Any]] = None, output: Optional[str] = None) -> Dict[str, Any]:
+        """ADR-099: cut proposals for one video through video-editing-skill `propose` (retakes from a {words: [...]} transcript; silent / static spans
+        measured on the video). Nothing is cut or applied: the proposals document is written to `output` (default <workspace>/proposals/<stem>.proposals.json)
+        and returned; the user approves ids, and only those are cut by a later plan (`edit.condense` + `edit.condense.approve`)."""
+        if not os.path.isfile(source):
+            raise ValueError(f"propose: source not found: {source}")
+        roots = sorted({str(Path(p_).resolve().parent) for p_ in [source] + ([transcript] if transcript else [])})
+        router = self.adapter(roots)
+        ad = router.adapter_for(VIDEO_EDITING_PACKAGE.tools[0].tool_id)
+        if ad is None or not hasattr(ad, "propose"):
+            raise ValueError("propose needs video-editing-skill (set VIDEO_AGENT_VIDEO_EDITING_DIR or install the `video-editing` command)")
+        try:
+            doc = ad.propose(source=source if (silence is not None or static) else None, transcript=transcript, profile=profile, min_confidence=min_confidence,
+                             silence=silence, static=static, combine=combine)
+        except ToolError as e:
+            raise ValueError(str(e))
+        if not any(i.get("role") == "source" for i in doc.get("inputs") or []):   # a transcript-only document: record which video the user proposed for
+            doc["video_agent"] = {"source": str(Path(source).resolve())}
+        out = Path(output) if output else Path(self.workspace) / "proposals" / f"{Path(source).stem}.proposals.json"
+        if out.resolve().parent == Path(source).resolve().parent and not output:
+            raise ValueError("propose: refusing to write next to the source (give --output)")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return {"path": str(out), "document": doc}
+
     def skills(self) -> List[Dict[str, Any]]:
         return self.registry.availability(self.caps.resolve(), self.adapter([]).supports, default=default_providers(self.workspace))
 
@@ -704,7 +730,10 @@ class Service:
                     keep.append(dcs)
             decisions = keep
         precision = rm.get("edit.precision")
+        cache_req = rm.get("edit.segment_cache")   # ADR-099
         plan = build_plan(decisions, analysis, tools=tools, version=plan_version, frame_accurate=bool(precision and precision.value == "frame"), project_id=project_id,
+                          precision=precision.value if precision is not None and precision.provenance != "DEFAULT" else None,
+                          segment_cache=bool(cache_req is not None and cache_req.provenance != "DEFAULT" and cache_req.value in (True, "true", "yes", "on", "1")),
                           constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences,
                           audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
@@ -753,6 +782,8 @@ class Service:
                 analysis.timeline.add_session(ses)
         d["timeline"] = analysis.timeline.to_dict()
         d["video"] = {"operations": plan["video_ops"]}
+        if plan.get("ai_generated"):   # ADR-099: the inputs declared AI-generated; written only when declared, so an unchanged request keeps its plan hash
+            d["video"]["ai_generated"] = plan["ai_generated"]
         d["audio"] = {"operations": plan["audio_ops"]}
         if plan.get("take_crossfade"):   # ADR-054: the join crossfades of a take assembly; written only when planned
             d["audio"]["take_crossfade"] = plan["take_crossfade"]
@@ -782,6 +813,7 @@ class Service:
             d["qa"].pop("documents", None)
         # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
+        images += [op["stinger"] for op in plan["video_ops"] if op.get("type") == "video.concat" and op.get("stinger")]   # ADR-099: the stinger file
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)] \
             + [op["logo"]["image"] for op in plan.get("graphics_ops") or [] if isinstance(op.get("logo"), dict) and op["logo"].get("image")]   # ADR-088: a thumbnail's logo
         images += [f for op in plan.get("speech_ops") or [] for f in dub_user_files(op)]   # ADR-085: the user's cues / reference voice / consent record
@@ -1708,7 +1740,8 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
 # surface (approval policies, qc.warn.promotion, tolerance / ratio defaults: a brief never sets how much review a decision gets) -- minus (2) keys whose value
 # is a file path (overlay / joined still (ADR-070) / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
-_PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video"})
+_PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
+                                    "edit.concat.stinger", "edit.condense", "edit.ai_generated"})   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 
 
@@ -1726,12 +1759,12 @@ def _check_requirement_keys(user_requirements: Dict[str, Any]) -> None:
 _SWITCH_OR_AUTO = (True, False, "auto")
 _CORE_VALUE_CHECKS = {   # the six keys older than ADR-029's REQUIREMENT_KEYS constants, read directly by decision.py / intent.py
     "edit.trim_leading_silence": lambda v: v in _SWITCH_OR_AUTO, "edit.trim_trailing_silence": lambda v: v in _SWITCH_OR_AUTO,
-    "audio.normalize": lambda v: v in _SWITCH_OR_AUTO, "edit.precision": lambda v: v in ("frame", "keyframe-ok"),
+    "audio.normalize": lambda v: v in _SWITCH_OR_AUTO, "edit.precision": lambda v: v in ("frame", "keyframe-ok", "auto"),   # ADR-099: auto
     "audio.loudness.target_lufs": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -70.0 <= float(v) <= -5.0,
     "audio.loudness.true_peak": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -9.0 <= float(v) <= 0.0,
 }
 _CORE_VALUE_HINTS = {"edit.trim_leading_silence": "true / false / auto", "edit.trim_trailing_silence": "true / false / auto", "audio.normalize": "true / false / auto",
-                     "edit.precision": "frame / keyframe-ok", "audio.loudness.target_lufs": "a number of LUFS from -70 to -5", "audio.loudness.true_peak": "a number of dBTP from -9 to 0"}
+                     "edit.precision": "frame / keyframe-ok / auto", "audio.loudness.target_lufs": "a number of LUFS from -70 to -5", "audio.loudness.true_peak": "a number of dBTP from -9 to 0"}
 
 
 def _check_core_values(user_requirements: Dict[str, Any]) -> None:
@@ -1753,6 +1786,8 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     if unknown:
         raise ValueError(f"unknown requirement key(s): {', '.join(unknown)} (matches a recognised namespace but is not a real key there)")
     _check_core_values(user_requirements)
+    if user_requirements.get("edit.segment_cache") in (True, "true", "yes", "on", "1") and user_requirements.get("edit.precision") in ("auto", "keyframe-ok"):
+        raise ValueError(f"edit.segment_cache renders frame-precision cuts; edit.precision={user_requirements['edit.precision']} asks for another precision (give one of them)")   # ADR-099
     reqs = [Requirement(key=k, value=user_requirements[k], provenance="USER", source="cli") for k in keys]
     rm = requirement_map(reqs)
     parse_edit_requirements(rm)

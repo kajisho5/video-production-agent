@@ -8,7 +8,7 @@ from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STAGES, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH,
                            FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
                            PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
-from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, SKILL_OF, switch_cams
+from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, PUNCH_IN_OP, SKILL_OF, TRIM_SKILLS, switch_cams
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
                                VIDEO_EXTENSIONS, picture_size, placement_problems)
 from ..agent.production_plan import validate_plan
@@ -328,6 +328,16 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"video.trim keep range {k} is empty")
                 if dur and k[1] > dur + 0.01:
                     errs.append(f"video.trim keep range {k} exceeds asset duration {dur:.3f}")
+            # ADR-099: the precision the plan asked for, the segment cache (frame only) and the approved spans CONDENSE cuts (outside every kept range)
+            if op.get("precision") is not None and op["precision"] not in ("frame", "keyframe", "auto"):
+                errs.append(f"video.trim precision {op['precision']!r} is not frame / keyframe / auto")
+            if op.get("segment_cache") and op.get("precision") != "frame":
+                errs.append("video.trim segment_cache needs precision frame")
+            for r in op.get("condense") or []:
+                if not isinstance(r, dict) or not float(r.get("start", 0)) < float(r.get("end", 0)):
+                    errs.append(f"video.trim condense span {r!r} is not a forward range")
+                elif any(float(r["start"]) < float(k[1]) and float(r["end"]) > float(k[0]) for k in op.get("keep") or []):
+                    errs.append(f"video.trim condense span {r['start']}-{r['end']} overlaps a kept range (an approved span is cut, never kept)")
             continue
         if t == REMOTION_SUBJECT:   # ADR-093: after the edits, before the finishing; keeps the clock and the frame
             errs.extend(remotion_problems(op))
@@ -408,6 +418,18 @@ def check_video_operations(d: Dict[str, Any]) -> List[str]:
             errs.append(f"{t}: height {op['height']} must be an even integer ≥ 16")
         if t in ("video.crop", "video.redact") and (op.get("x") is None or op.get("y") is None or op.get("width") is None or op.get("height") is None):
             errs.append(f"{t} needs x, y, width and height (an explicit rectangle in source pixels; neither op locates anything itself)")
+        if t == PUNCH_IN_OP:   # ADR-099: a forward range inside the picture it zooms, a zoom above 1 and at most 4, the user's box
+            sc_ = op.get("scale")
+            if not isinstance(sc_, (int, float)) or isinstance(sc_, bool) or not 1.0 < float(sc_) <= 4.0:
+                errs.append(f"video.punch_in scale {sc_!r} must be above 1 and at most 4")
+            box = op.get("subject")
+            if not isinstance(box, dict) or set(box) != {"x", "y", "width", "height"} or not all(isinstance(box[k], int) and not isinstance(box[k], bool) for k in box):
+                errs.append("video.punch_in subject must be {x, y, width, height} in whole pixels")
+            st_, en_ = op.get("start"), op.get("end")
+            if not isinstance(st_, (int, float)) or not isinstance(en_, (int, float)) or not 0 <= float(st_) < float(en_):
+                errs.append(f"video.punch_in range {st_!r}-{en_!r} must be a forward range")
+            elif op.get("temporal_scope") and float(en_) > float(op["temporal_scope"]["end"]) + 0.001:
+                errs.append(f"video.punch_in ends at {float(en_):g}s, after the end of the picture it zooms ({float(op['temporal_scope']['end']):g}s): never clamped")
         if t == "video.rotate":   # ADR-062: video-editing ROTATE takes a clockwise turn and / or a mirror, at least one
             if op.get("degrees") is not None and op["degrees"] not in (90, 180, 270):
                 errs.append(f"video.rotate degrees {op['degrees']!r} must be 90, 180 or 270")
@@ -1104,7 +1126,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     # every executable operation must have a step (otherwise the compiler cannot know its tool)
     step_keys = {(s["skill"], (s.get("params") or {}).get("asset") or (s.get("params") or {}).get("target")) for s in d["plan"]["steps"]}
     for op in d["video"]["operations"]:
-        if op["type"] == "video.trim" and ("silence_cleanup", op["asset"]) not in step_keys and ("video_trim", op["asset"]) not in step_keys:   # ADR-062: either skill runs it
+        if op["type"] == "video.trim" and not any((sk, op["asset"]) in step_keys for sk in TRIM_SKILLS):   # ADR-062 / ADR-099: any of these skills runs it
             rep.errors.append(f"video.trim on {op['asset']} has no plan step")
         if op["type"] == "video.overlay" and isinstance(op.get("prepare"), dict):   # ADR-077: every preparation of the image has its step
             for sk, _tool, _params in prepare_chain(op["prepare"]):

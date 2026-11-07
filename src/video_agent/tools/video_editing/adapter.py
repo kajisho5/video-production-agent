@@ -183,7 +183,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # 0.4.8 .. 0.4.18 (video-editing-skill #30 .. #40) added PUNCH_IN / CONDENSE, TRIM / CUT precision auto, CONCAT stinger, options.segment_cache,
 # sources[].ai_generated, outputs[].max_size and `propose`, all opt-in; 0.5.0 (#41) bumps contract_version "4.0" -> "5.0" for that shape and changes
 # nothing else. The request this adapter builds and the response it verifies are unchanged, so the gate takes 0.5.x; re-pinned from the v0.5.0 tag
-# (ADR-097 addendum 6). None of the new operations / fields is lowered yet.
+# (ADR-097 addendum 6). ADR-099 lowers and plans them (max_size: lowered only).
 PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.0.json")
 
 
@@ -453,7 +453,7 @@ class VideoEditingAdapter(ToolAdapter):
         out_ref = args.get("output")
         if not isinstance(out_ref, str) or not out_ref:
             raise ToolError("video-editing: an output reference is required (this Skill's tools always write media)")
-        for key in ("input", "image"):
+        for key in ("input", "image", "stinger"):
             if isinstance(args.get(key), str):
                 self._check_raw(paths.get(args[key], args[key]), key)
         for ref in (args.get("inputs") if isinstance(args.get("inputs"), list) else []):
@@ -524,6 +524,67 @@ class VideoEditingAdapter(ToolAdapter):
         data = self._success_data(doc, out_path, dry_run)
         commands = list(data.get("commands") or [])
         return ToolResult(op.id, op.tool, True, 0, None if dry_run else out_path, data, commands, tail, secs, attempt, dry_run)
+
+    # ---- cut proposals (ADR-099): `video-editing propose` returns proposals with reasons and applies nothing; the agent shows them and cuts only
+    # what the user approves (by id, as CONDENSE segments in a later plan)
+    def propose(self, source: Optional[str] = None, transcript: Optional[str] = None, profile: Optional[str] = None, min_confidence: Optional[float] = None,
+                silence: Optional[Dict[str, Any]] = None, static: bool = False, combine: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """One `video-editing propose - --json` call. `transcript` (a {words: [...]} JSON file) asks for retakes; `silence` ({threshold_db?, min_seconds?})
+        and / or `static` measure `source`. Returns the Skill's proposals document after checking it (schema, applied false, every proposal
+        complete, ids unique); raises ToolError otherwise. Nothing is written but the Skill's own response."""
+        prop = self.contract.get("proposals") or {}
+        if prop.get("request_schema") != PROPOSE_SCHEMA or prop.get("response_schema") != PROPOSALS_SCHEMA:
+            raise ToolError("video-editing: the installed contract has no `propose` (contract.proposals)")
+        req: Dict[str, Any] = {"schema": PROPOSE_SCHEMA}
+        roots: List[str] = []
+        if transcript is not None:
+            path = self._check_input(transcript, "transcript")
+            r: Dict[str, Any] = {"transcript": path}
+            if profile is not None:
+                if not isinstance(profile, str) or not re.match(r"^[a-z]{2}(-[A-Za-z0-9]{1,8})?$", profile):
+                    raise ToolError("video-editing: propose profile must be a language tag such as en or ja")
+                r["profile"] = profile
+            if min_confidence is not None:
+                if isinstance(min_confidence, bool) or not isinstance(min_confidence, (int, float)) or not 0 <= min_confidence <= 1:
+                    raise ToolError("video-editing: propose min_confidence must be within 0..1")
+                r["min_confidence"] = float(min_confidence)
+            req["retakes"] = r
+            roots.append(os.path.dirname(path))
+        if silence is not None or static:
+            if source is None:
+                raise ToolError("video-editing: silence / static proposals measure a video: give the source")
+            path = self._check_input(source, "source")
+            req["source"] = path
+            roots.append(os.path.dirname(path))
+            if silence is not None:
+                if not isinstance(silence, dict) or set(silence) - {"threshold_db", "min_seconds"}:
+                    raise ToolError("video-editing: propose silence must be {threshold_db?, min_seconds?}")
+                for k, lo, hi in (("threshold_db", -90.0, -5.0), ("min_seconds", 0.05, 3600.0)):
+                    v = silence.get(k)
+                    if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi):
+                        raise ToolError(f"video-editing: propose silence.{k} must be within {lo:g}..{hi:g}")
+                req["silence"] = {k: float(v) for k, v in silence.items()}
+            if static:
+                req["static"] = {}
+            if combine is not None:
+                if not isinstance(combine, dict) or set(combine) - {"mode", "min_seconds"} or combine.get("mode", "or") not in ("and", "or"):
+                    raise ToolError("video-editing: propose combine must be {mode: and | or, min_seconds?}")
+                req["combine"] = dict(combine)
+        if "retakes" not in req and "source" not in req:
+            raise ToolError("video-editing: propose needs a transcript (retakes) and / or silence / static on a source")
+        ws = self.workspace or os.path.dirname(roots[0])
+        os.makedirs(ws, exist_ok=True)
+        allowed = sorted({r for r in list(self.allowed_inputs) + roots if os.path.isdir(r)})
+        argv = ["propose", "-", "--json", "--workspace", ws] + [x for r in allowed for x in ("--allowed-input", r)] + self._engine_argv()
+        code, out, err = self._invoke(argv, stdin=json.dumps(req, ensure_ascii=False), timeout=(timeout or self.default_timeout) + 5.0)
+        doc = _one_json_document(out) if out.strip() else {}
+        if doc.get("ok") is not True:
+            e = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+            raise ToolError(f"video-editing propose [{e.get('code') or code}] {e.get('message') or err.strip()[-300:]}")
+        errs = check_proposals(doc, self.version)
+        if errs:
+            raise ToolError("video-editing propose: " + "; ".join(errs))
+        return doc
 
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         raise ToolError("video-editing: an editing Skill has no measurement tools")
@@ -597,6 +658,14 @@ class VideoEditingAdapter(ToolAdapter):
         data["artifact"] = {"path": out_path, "sha256": o.get("sha256"), "size": o.get("size"), "operation_id": rec.get("operation_id"), "reused": rec.get("status") == "reused"}
         data["timeline"] = o.get("timeline")
         data["observation"] = o.get("observation")
+        # ADR-099: what the 0.5.0 features report, carried as the Skill wrote it (provenance; nothing here acts on it): the AI-generated marks of the
+        # declared sources the output contains, the size limit's attempts, the segment cache's parts, the stinger's joins, CONDENSE's pieces
+        for k in ("marks", "ai_generated", "size_limit"):
+            if o.get(k) is not None:
+                data[k] = o[k]
+        for k in ("segments", "stinger", "condense", "punch_in", "cuts"):
+            if rec.get(k) is not None:
+                data.setdefault("reported", {})[k] = rec[k]
         data["commands"] = [str(c) for r in ex["operations"] if isinstance(r, dict) for c in (r.get("commands") or [])]   # provenance only, never re-run
         data["execution"] = {k: ex.get(k) for k in ("status", "started_at", "finished_at", "work_dir")}
         data["output"] = out_path
@@ -621,6 +690,58 @@ class VideoEditingAdapter(ToolAdapter):
                 os.remove(path)
         except OSError:
             pass
+
+
+PROPOSE_SCHEMA = "video-editing/propose@1"
+PROPOSALS_SCHEMA = "video-editing/proposals@1"
+PROPOSAL_KEYS = ("id", "kind", "label", "action", "start", "end", "reason", "confidence")
+
+
+def proposal_seconds(v: Any) -> float:
+    """A proposal time ({seconds, rational} as the Skill writes it, or a plain number) as seconds."""
+    if isinstance(v, dict) and isinstance(v.get("seconds"), (str, int, float)) and not isinstance(v.get("seconds"), bool):
+        v = v["seconds"]
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise ToolError(f"video-editing: proposal time {v!r} is not a number of seconds")
+    if x != x or x < 0 or x == float("inf"):
+        raise ToolError(f"video-editing: proposal time {v!r} is not a finite non-negative number")
+    return x
+
+
+def check_proposals(doc: Any, version: Optional[str] = None) -> List[str]:
+    """ADR-099: a `video-editing/proposals@1` document as the agent accepts it: applied false, each proposal complete with a unique id,
+    forward times, a CONDENSE label and the action cut. The agent never reads a proposal as applied."""
+    errs: List[str] = []
+    if not isinstance(doc, dict) or doc.get("schema") != PROPOSALS_SCHEMA:
+        return [f"not a {PROPOSALS_SCHEMA} document"]
+    if doc.get("applied") is not False:
+        errs.append("applied is not false (a proposals document never applies anything)")
+    sk = doc.get("skill") if isinstance(doc.get("skill"), dict) else {}
+    if sk.get("id") != SKILL_ID or (version is not None and str(sk.get("version")) != version):
+        errs.append(f"skill {sk!r} is not {SKILL_ID}" + (f"@{version}" if version else ""))
+    props = doc.get("proposals")
+    if not isinstance(props, list):
+        return errs + ["proposals is not a list"]
+    seen = set()
+    for i, pr in enumerate(props):
+        if not isinstance(pr, dict) or any(k not in pr for k in PROPOSAL_KEYS):
+            errs.append(f"proposals[{i}] lacks one of {PROPOSAL_KEYS}")
+            continue
+        if not isinstance(pr["id"], str) or pr["id"] in seen:
+            errs.append(f"proposals[{i}].id {pr['id']!r} is missing or repeated")
+        seen.add(pr["id"])
+        if pr["action"] != "cut":
+            errs.append(f"proposal {pr['id']}: action {pr['action']!r} is not cut")
+        if not isinstance(pr["label"], str) or not re.match(r"^[a-z0-9][a-z0-9_+.-]{0,39}$", pr["label"]):
+            errs.append(f"proposal {pr['id']}: label {pr['label']!r} is not a CONDENSE label")
+        try:
+            if not proposal_seconds(pr["start"]) < proposal_seconds(pr["end"]):
+                errs.append(f"proposal {pr['id']}: start is not before end")
+        except ToolError as e:
+            errs.append(f"proposal {pr['id']}: {e}")
+    return errs
 
 
 def _scrub(details: Any) -> Dict[str, Any]:

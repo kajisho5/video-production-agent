@@ -11,7 +11,8 @@ from ..media.analyzer import AnalysisResult
 from ..models import Decision, Inference, now_iso
 from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, concat_segments as audio_concat_segments, cut_ranges, has_video,
                     ir_audio_operation, is_audio_capable, kept_after_cut, mix_segments, transcript_words, words_after_cut)
-from .editing import (IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
+from .editing import (AI_OP, CONDENSE_KEEP_LABEL, CONDENSE_OP, CONDENSE_SKILL, CUT_SKILL, subtract_spans,
+                      IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, ir_operation,
                       kept_duration)
 from .image_insert import still_frame
 from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
@@ -36,13 +37,16 @@ from .publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
                project_id: str = "", constraints: Optional[List[Dict[str, Any]]] = None, objective: str = "", inferences: Optional[List[Inference]] = None,
-               audio_production: bool = False, qc_tolerance_lu: float = 2.0) -> Dict[str, Any]:
+               audio_production: bool = False, qc_tolerance_lu: float = 2.0, precision: Optional[str] = None, segment_cache: bool = False) -> Dict[str, Any]:
     """Decisions (+ the events / observations they rest on) → ProductionPlan + IR sections.
     `tools` is the skill → tool map produced by SkillRegistry.resolve_tools for this environment; it is the only
     source of tool ids here (the planner has no default engine). A step whose skill is absent from the map is emitted
     with tool=None and the plan is marked BLOCKED so the validator / decide() refuse it explicitly.
     Returns {"plan": ProductionPlan.to_dict(), "steps", "summary", "video_ops", "audio_ops", "delivery", "captions_ops", "graphics_ops", "color_ops", "qc", "timelines"}
-    (ADR-031 / ADR-032: the finishing sections and the QC gate; ADR-052: the editor timeline exports)."""
+    (ADR-031 / ADR-032: the finishing sections and the QC gate; ADR-052: the editor timeline exports).
+    ADR-099: `precision` is the user's own `edit.precision` (frame / keyframe-ok / auto; None when only the default applies) and `segment_cache`
+    their `edit.segment_cache`: auto and the segment cache run the trims on video-editing-skill (video_cut / video_trim); a cut the plan needs
+    frame-accurate (beat snap, crossfade, the editor's timeline, approved proposals) stays frame-accurate whatever is asked."""
     if tools is None:
         raise TypeError("build_plan needs the skill → tool map resolved by SkillRegistry (tools=None is not allowed)")
     no_tool: List[str] = []
@@ -111,6 +115,9 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     sidecar_of: Dict[str, str] = {}      # subject → logical id of its subtitle sidecar (captions.generate output)
     picture_of: Dict[str, str] = {}      # subject → the logical output the thumbnail is taken from (the finished picture before loudness / export)
     techn = {a.id: a.technical for a in analysis.assets}
+    # ADR-099: the inputs the user declared AI-generated (KEEP decisions): written to the IR's video section for the compiler's requests
+    ai_sources = {d.params["asset_id"]: {"generator": d.params["generator"], "licence": d.params["licence"], "decision_ids": [d.id]}
+                  for d in decisions if d.subject == AI_OP and d.type == "KEEP" and d.status != "REJECTED" and d.params.get("asset_id") in techn}
     raw_asset_ids = set(techn)   # subject ids that name a raw source asset (as opposed to a produced intermediate/programme)
 
     def decided(subject: str, subj: str) -> List[Decision]:
@@ -684,12 +691,16 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             ek = [[round(float(s_), 3), round(float(e_), 3)] for s_, e_ in editor_dec.params["keep"]]
             start, end, dec_ids, internal = ek[0][0], ek[-1][1], [editor_dec.id], []
             removed = [r for r in ([[0.0, ek[0][0]]] + [[ek[i][1], ek[i + 1][0]] for i in range(len(ek) - 1)] + [[ek[-1][1], round(dur, 3)]]) if r[1] > r[0]]
+        # ADR-099: the cut proposals the user approved on this source: subtracted from the kept ranges like the internal pauses, executed by
+        # video-editing-skill CONDENSE (frame-accurate; the labelled spans are cut, everything outside the kept ranges by default)
+        cond_dec = next((d for d in decisions if d.subject == CONDENSE_OP and d.type == "TRANSFORM" and d.status != "REJECTED"
+                         and d.params.get("asset_id") == asset.id), None) if asset.id not in audio_subjects else None
         current = asset.id
         last_step: Optional[str] = None
         if asset.id not in audio_subjects:   # ADR-090: faces are blurred on the source timeline, before anything re-times it
             current, last_step = face_steps(asset, current)
         audio_remove: List[List[float]] = []   # ADR-072: what this plan cuts out of the input's audio (the filler words' times follow it)
-        if (dec_ids or internal) and end > start:
+        if (dec_ids or internal or cond_dec is not None) and end > start:
             keep = [[round(start, 3), round(end, 3)]] if editor_dec is None else [list(r) for r in ek]
             for (rs, re_), did in internal:   # cut each removal out of the kept ranges; the decision carries the range, the planner only subtracts
                 nxt: List[List[float]] = []
@@ -705,6 +716,13 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 removed.append([rs, re_])
                 dec_ids.append(did)
             keep = [k for k in keep if k[1] > k[0]]
+            condensed: List[Dict[str, Any]] = []
+            if cond_dec is not None:
+                keep, condensed = subtract_spans(keep, cond_dec.params["spans"])
+                removed += [[r["start"], r["end"]] for r in condensed]
+                dec_ids.append(cond_dec.id)
+            if not keep:
+                raise ValueError(f"{asset.id}: the approved proposals and the other cuts remove the whole source; nothing would be left to deliver")
             order += 1
             kept_total = sum(e - s for s, e in keep)
             if asset.id in audio_subjects:
@@ -721,16 +739,30 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 # a beat-snapped join must land on its frame, not a keyframe; a crossfaded pick's picture must start where its audio is cut
                 # ADR-062: the user's in / out points are cut where they were given (frame-accurate); one kept range is video-editing TRIM,
                 # several (internal pauses removed inside it) stay the multi-range cut of silence_cleanup
-                accurate = bool(frame_accurate or explicit_trim or editor_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                forced = bool(editor_dec is not None or cond_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                accurate = bool(frame_accurate or explicit_trim or forced)
                 trim_skill = TRIM_SKILL if (explicit_trim or editor_dec is not None) and len(keep) == 1 else "silence_cleanup"
-                video_ops.append({"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids})
+                rec: Dict[str, Any] = {"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids}
+                # ADR-099: how this trim runs on video-editing-skill. CONDENSE when proposals were approved; the segment cache (frame-precision CUT,
+                # one range included); the user's precision auto (stream copy where the copy lands within 0.2 s) unless the cut must be frame-accurate
+                if cond_dec is not None:
+                    trim_skill, rec["condense"] = CONDENSE_SKILL, condensed
+                elif segment_cache:
+                    trim_skill, accurate, rec["accurate"], rec["precision"], rec["segment_cache"] = CUT_SKILL, True, True, "frame", True
+                elif precision == "auto" and not forced:
+                    trim_skill, accurate, rec["accurate"], rec["precision"] = (TRIM_SKILL if trim_skill == TRIM_SKILL else CUT_SKILL), False, False, "auto"
+                video_ops.append(rec)
                 st = ProductionStep(id=f"step_trim_{asset.id}", order=order, skill=trim_skill, tool=tool_for(trim_skill), inputs=[current],
-                                    params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate}, outputs=[f"{asset.id}_trim"],
+                                    params={"asset": asset.id, "keep": keep, "removed": removed, "accurate": accurate,
+                                            **{k: rec[k] for k in ("precision", "segment_cache", "condense") if k in rec}}, outputs=[f"{asset.id}_trim"],
                                     depends_on=[last_step] if last_step else [], evidence=evidence_of(dec_ids), decision_ids=dec_ids, decision_id=dec_ids[0],
                                     temporal_scope={"start": keep[0][0], "end": keep[-1][1]})
                 scope_of[asset.id] = {"start": 0.0, "end": round(kept_total, 3)}
             steps.append(st)
             current, last_step = st.outputs[0], st.id
+            if cond_dec is not None:
+                summary.append(f"Cut the {len(cond_dec.params['spans'])} approved proposal(s) out of {asset.path.split('/')[-1]} ({sum(r['end'] - r['start'] for r in condensed):.2f}s, "
+                               "video-editing CONDENSE; every other proposal is left in)")
             summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" as the editor's timeline" if editor_dec is not None else " outside the requested in / out range" if explicit_trim else " of silence")
                            + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
         fr_dec = next((d for d in decisions if d.subject == "audio.filler_remove" and d.type == "TRANSFORM" and d.status != "REJECTED" and d.params.get("asset_id") == asset.id), None) \
@@ -894,6 +926,17 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         # ---- multi-source timeline: the trimmed inputs, in the decided order, become one programme; later operations apply to it
         inputs = list(concat_dec.params["inputs"])
         params = {k: v for k, v in concat_dec.params.items() if k in OPERATIONS["video.concat"]["params"]}
+        made = [a for a in inputs if a in ai_sources]
+        if made and not any(params.get(k) for k in ("width", "height", "fps")):
+            # ADR-099 (contract.ai_generated.normalisation): a generated clip is conformed to the edit's format, not the other way round -- the frame
+            # and rate of the first input that is not declared AI-generated are named on the CONCAT, so a generated first clip does not decide them
+            ref = next((a for a in inputs if a not in ai_sources), None)
+            v_ = ((techn.get(ref) or {}).get("video") or {}) if ref else {}
+            if v_.get("width") and v_.get("height"):
+                params["width"], params["height"] = int(v_["width"]) // 2 * 2, int(v_["height"]) // 2 * 2
+                if v_.get("fps"):
+                    params["fps"] = round(float(v_["fps"]), 3)
+                summary.append(f"Conform the AI-generated input(s) {', '.join(made)} to {ref}'s {params['width']}x{params['height']}" + (f" @ {params['fps']:g} fps" if params.get("fps") else ""))
         segments, total = concat_segments(inputs, video_ops, durations, params.get("transition"))
         scope = {"start": 0.0, "end": total}
         # a concat assembled from take picks (ADR-053) cites them too: a rejected pick makes the assembly rejected-cited, a pending one keeps it PROPOSED
@@ -1011,6 +1054,6 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
+    return {"ai_generated": {a: dict(v) for a, v in sorted(ai_sources.items())}, "plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade,
             "documents": documents}

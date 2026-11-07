@@ -2159,6 +2159,109 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class VideoEditingFeaturesRealTests(unittest.TestCase):
+    """ADR-099 on the real video-editing-skill 0.5.0 and ffmpeg-skill: PUNCH_IN (frame and duration kept), `propose` (silent spans measured
+    by the Skill) applied only by the approved ids through CONDENSE, TRIM precision auto, CUT with the segment cache, and a CONCAT with a
+    real alpha stinger of an input declared AI-generated (the result marked AI_GENERATED); ffprobe on the outputs."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.video_editing import locate_video_editing
+        cls.ve = locate_video_editing()
+        cls.tmp = tempfile.mkdtemp(prefix="va_vf_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.a, cls.b, cls.stinger = str(src / "a.mp4"), str(src / "b.mp4"), str(src / "stinger.mov")
+        if cls.ve:
+            make_media(cls.a); make_media(cls.b)
+            # a 1 s stinger with an alpha plane: transparent, fully covering from 0.3 s to 0.7 s, transparent again (QuickTime Animation keeps alpha)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=1280x720:r=30:d=1",
+                            "-vf", "format=rgba,fade=t=in:st=0.2:d=0.1:alpha=1,fade=t=out:st=0.7:d=0.2:alpha=1", "-c:v", "qtrle", cls.stinger], check=True)
+
+    def setUp(self):
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+
+    def _probe(self, path):
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", path], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        v = next((s for s in doc["streams"] if s.get("codec_type") == "video"), {})
+        return float(doc["format"]["duration"]), (v.get("width"), v.get("height"))
+
+    def _render(self, name, inputs, reqs):
+        ws = str(Path(self.tmp) / name)
+        svc = Service(workspace=ws)
+        ir = svc.plan(inputs, "generic", user_requirements=reqs)
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        p = str(Path(self.tmp) / f"{name}.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        self.assertEqual(qa_status(out), "PASS", out["qa"])
+        return svc, d, out
+
+    def test_punch_in_keeps_frame_and_duration(self):
+        box = {"x": 560, "y": 280, "width": 160, "height": 160}
+        _, d, out = self._render("punch", [self.a], {"edit.trim": "2-10", "edit.punch_in": "1-3", "edit.punch_in.scale": 2, "edit.punch_in.subject": box})
+        res = {r["tool"]: r for r in out["execution"]["results"] if r["tool"].startswith("video-editing/")}
+        self.assertEqual(res["video-editing/punch_in"]["data"]["operation"]["type"], "PUNCH_IN")
+        dur_t, size_t = self._probe(res["video-editing/trim"]["output"])
+        dur_p, size_p = self._probe(res["video-editing/punch_in"]["output"])
+        self.assertEqual(size_p, size_t, "PUNCH_IN keeps the input frame")
+        self.assertAlmostEqual(dur_p, dur_t, delta=0.1)
+
+    def test_propose_then_condense_the_approved_spans(self):
+        ws = str(Path(self.tmp) / "propose")
+        svc = Service(workspace=ws)
+        res = svc.propose(self.a, silence={"min_seconds": 0.3, "threshold_db": -35})
+        doc = res["document"]
+        self.assertIs(doc["applied"], False)
+        props = doc["proposals"]
+        self.assertTrue(props, "the test tone has silent spans")
+        inner = [p for p in props if 3.5 < float(p["start"]["seconds"]) and float(p["end"]["seconds"]) < 13.5]
+        self.assertTrue(inner, props)
+        ids = [p["id"] for p in inner]
+        ir = svc.plan([self.a], "generic", user_requirements={"edit.condense": res["path"], "edit.condense.approve": ",".join(ids)})
+        trim = next(op for op in ir.doc["video"]["operations"] if op["type"] == "video.trim")
+        self.assertTrue(trim["condense"], trim)
+        p = str(Path(self.tmp) / "condense.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        r = next(x for x in out["execution"]["results"] if x["tool"] == "video-editing/condense")
+        self.assertEqual(r["data"]["operation"]["type"], "CONDENSE")
+        dur, _ = self._probe(r["output"])
+        kept = sum(e - s for s, e in trim["keep"])
+        self.assertAlmostEqual(dur, kept, delta=0.15, msg="only the kept ranges remain; the approved spans are cut")
+
+    def test_precision_auto_and_segment_cache(self):
+        _, d, out = self._render("auto", [self.a], {"edit.trim": "2-10", "edit.precision": "auto"})
+        keep = next(op["keep"] for op in d["video"]["operations"] if op["type"] == "video.trim")
+        r = next(x for x in out["execution"]["results"] if x["tool"] == "video-editing/trim")
+        self.assertEqual(r["data"]["reported"]["cuts"]["requested_precision"], "auto")   # the engine's choice per cut is reported (copy or re-encode)
+        dur, _ = self._probe(r["output"])
+        self.assertAlmostEqual(dur, sum(e - s for s, e in keep), delta=0.25, msg="auto: a copy within 0.2 s of the range, else a frame-accurate re-encode")
+        _, d, out = self._render("cache", [self.a], {"edit.trim": "2-10", "edit.segment_cache": True})
+        keep = next(op["keep"] for op in d["video"]["operations"] if op["type"] == "video.trim")
+        r = next(x for x in out["execution"]["results"] if x["tool"] == "video-editing/cut")
+        self.assertIn(r["data"]["reported"]["segments"]["join"], ("single", "stream_copy", "single_pass_fallback"))
+        dur, _ = self._probe(r["output"])
+        self.assertAlmostEqual(dur, sum(e - s for s, e in keep), delta=0.1)
+
+    def test_stinger_concat_of_an_ai_generated_input(self):
+        _, d, out = self._render("stinger", [self.a, self.b], {
+            "edit.precision": "frame", "edit.concat": True, "edit.concat.stinger": self.stinger, "edit.concat.stinger.cut_point": 0.5, "edit.concat.stinger.cover": "0.3-0.7",
+            "edit.ai_generated": [{"input": self.b, "generator": "test generator", "licence": "test licence"}]})
+        cat = next(op for op in d["video"]["operations"] if op["type"] == "video.concat")
+        r = next(x for x in out["execution"]["results"] if x["tool"] == "video-editing/concat")
+        self.assertTrue(r["ok"], r)
+        dur, size = self._probe(r["output"])
+        self.assertEqual(size, (1280, 720))
+        self.assertAlmostEqual(dur, cat["timeline_duration"], delta=0.15, msg="a stinger butt-joins the clips")
+        self.assertEqual({m.get("generator") for m in r["data"].get("ai_generated") or []}, {"test generator"}, r["data"])
+
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class AudioProductionRealTests(unittest.TestCase):
     """ADR-030 on the real audio-production-skill (main, 0.1.0) and ffmpeg-skill 0.9.x: contract / doctor / drift against the pinned
     contract, the capability verdicts, and the vertical slice on real media — analysis (probe / silence / loudness) → decisions →

@@ -133,6 +133,33 @@ def cmd_transcribe(args, svc: Service) -> int:
     return _print_analysis(analysis)
 
 
+def cmd_propose(args, svc: Service) -> int:
+    """ADR-099: cut proposals with reasons through video-editing-skill `propose`. Nothing is cut: the proposals file is written and listed; the
+    user approves ids and plans them with --set edit.condense=<file> --set edit.condense.approve=p1,p3."""
+    silence = None
+    if args.silence or args.silence_threshold is not None or args.silence_min is not None:
+        silence = {k: v for k, v in (("threshold_db", args.silence_threshold), ("min_seconds", args.silence_min)) if v is not None}
+    combine = {"mode": args.combine} if args.combine else None
+    if not (args.transcript or silence is not None or args.static):
+        raise ValueError("propose: ask for at least one of --transcript (retakes), --silence, --static")
+    res = svc.propose(args.input, transcript=args.transcript, profile=args.language, min_confidence=args.min_confidence, silence=silence, static=args.static,
+                      combine=combine, output=args.output)
+    doc = res["document"]
+    if args.json:
+        _print({"path": res["path"], **doc}, True)
+        return 0
+    props = doc.get("proposals") or []
+    print(f"{len(props)} proposal(s) for {args.input} (nothing is cut; written to {res['path']}):")
+    for pr in props:
+        s_, e_ = pr["start"], pr["end"]
+        s_ = s_.get("seconds") if isinstance(s_, dict) else s_
+        e_ = e_.get("seconds") if isinstance(e_, dict) else e_
+        print(f"  {pr['id']:5s} {pr['label']:16s} {float(s_):8.2f}-{float(e_):8.2f}s  conf {float(pr['confidence']):.2f}  {pr.get('text') or ''}  -- {pr['reason']}")
+    if props:
+        print(f"Approve what to cut: video-agent plan {args.input} --set edit.condense={res['path']} --set edit.condense.approve={','.join(p['id'] for p in props[:2])}")
+    return 0
+
+
 def cmd_analyze(args, svc: Service) -> int:
     ingest, blocked = _url_inputs_or_handoff(args, svc)
     if blocked is not None:
@@ -885,6 +912,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strategy", choices=["FULL", "TARGETED", "CACHED_ONLY"]); p.add_argument("--no-cache", action="store_true", help="do not read or write caches (the Skill's included)")
     p.add_argument("--kind", action="append", dest="kinds", help="additional analysis kind(s)")
     p.set_defaults(fn=cmd_transcribe)
+    p = sub.add_parser("propose", help="cut proposals with reasons (retakes, silent / static spans) through video-editing-skill; nothing is cut (ADR-099)")
+    p.add_argument("input"); p.add_argument("--transcript", help="JSON {words: [{word, start, end}]} of the input: propose retakes (repeats, restarts, fragments, fillers)")
+    p.add_argument("--language", help="the transcript's language profile (en default, ja)"); p.add_argument("--min-confidence", type=float)
+    p.add_argument("--silence", action="store_true", help="propose silent spans"); p.add_argument("--silence-threshold", type=float, help="dB (-90..-5)")
+    p.add_argument("--silence-min", type=float, help="seconds (>= 0.05)"); p.add_argument("--static", action="store_true", help="propose spans without motion")
+    p.add_argument("--combine", choices=["and", "or"], help="silence and static together: both (and) or either (or)")
+    p.add_argument("-o", "--output", help="where to write the proposals (default <workspace>/proposals/<stem>.proposals.json)")
+    p.set_defaults(fn=cmd_propose)
     p = sub.add_parser("plan", help="analyze, decide and write a Project IR")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--request", help="free-text request (only unambiguous phrases are used)")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="explicit USER requirement, e.g. audio.loudness.target_lufs=-16 or edit.trim_leading_silence=true")
