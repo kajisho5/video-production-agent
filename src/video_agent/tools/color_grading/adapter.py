@@ -57,6 +57,10 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # (UNSUPPORTED_FORMAT, details.reason alpha_not_preserved, exit 6). That is the source media, not arguments the compiler got wrong, so it gets
 # its own recovery class (UNSUPPORTED_MEDIA: BLOCK, never retried) instead of the generic INVALID_ARGS (ADR-097 addendum 6).
 ALPHA_REFUSAL_REASON = "alpha_not_preserved"
+# ADR-100: what each 0.5.0 operation needs when the Skill's doctor reports it unavailable (said in the plan's BLOCK; the engine's name stays in tools/)
+OPERATION_NEEDS = {"OCIO_TRANSFORM": "install color-grading-skill's optional `ocio` extra (PyOpenColorIO)",
+                   "MATCH_CAMERA": "use ffmpeg-skill 3.1.6 or later (its BT.709 LUT legs)", "LEGALIZE": "use ffmpeg-skill 3.1.6 or later (its BT.709 LUT legs)"}
+OCIO_BUILTIN_PREFIX = "ocio://"   # ADR-100: contract.ocio.builtin_prefix: a built-in OpenColorIO config, not a file
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "execution", "ffmpeg_skill", "request", "response", "provenance",
               "schema_versions", "errors", "lut", "color_space", "hdr_sdr")
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "changes_duration", "changes_resolution", "deterministic")
@@ -292,6 +296,20 @@ class ColorGradingAdapter(ToolAdapter):
             if Path(lut).suffix.lower() != ".cube" or not os.path.isfile(lut):
                 raise ToolError(f"color-grading: LUT must be an existing .cube file: {lut}")
             out["lut_path"] = str(Path(lut).resolve())
+        if "reference_path" in out:   # ADR-100: MATCH_CAMERA's reference video, by artifact id or path; read through the input path policy
+            ref = paths.get(out["reference_path"], out["reference_path"])
+            if not os.path.isfile(ref):
+                raise ToolError(f"color-grading: reference video not found: {os.path.basename(ref)}")
+            if self.path_policy is not None:
+                self.path_policy.check_input(ref)
+            elif self.allowed_inputs and not any(self._under(ref, r) for r in self.allowed_inputs + ([self.workspace] if self.workspace else [])):
+                raise ToolError(f"color-grading: reference video outside the allowed roots: {os.path.basename(ref)}")
+            out["reference_path"] = str(Path(ref).resolve())
+        if op_type == "OCIO_TRANSFORM" and isinstance(out.get("config"), str) and not out["config"].startswith(OCIO_BUILTIN_PREFIX):
+            cfg = paths.get(out["config"], out["config"])   # ADR-100: a user's .ocio file, read through the LUT path policy (its folder is a LUT root)
+            if Path(cfg).suffix.lower() != ".ocio" or not os.path.isfile(cfg):
+                raise ToolError(f"color-grading: an OCIO config must be an ocio:// built-in or an existing .ocio file: {os.path.basename(cfg)}")
+            out["config"] = str(Path(cfg).resolve())
         for k, ps in schema.items():
             if ps.get("required") and k not in out:
                 raise ToolError(f"color-grading: {op_type} requires parameter {k!r}")
@@ -364,6 +382,8 @@ class ColorGradingAdapter(ToolAdapter):
         if hit:
             raise ToolError(f"color-grading: refusing to send a request carrying {hit}")
         lut_root = str(Path(params["lut_path"]).parent) if "lut_path" in params else None
+        if op_type == "OCIO_TRANSFORM" and isinstance(params.get("config"), str) and not params["config"].startswith(OCIO_BUILTIN_PREFIX):
+            lut_root = str(Path(params["config"]).parent)   # ADR-100: the Skill resolves a .ocio file through its LUT roots
         return {"request": req, "output": out, "input": src, "type": op_type, "workspace": self.workspace or str(Path(out).parent), "lut_root": lut_root}
 
     @staticmethod

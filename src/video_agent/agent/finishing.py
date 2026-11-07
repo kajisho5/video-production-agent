@@ -70,7 +70,20 @@ def _grading_param(spec: Dict[str, Any]) -> bool:
 
 COLOR_CORRECTION_PARAMS: Dict[str, Dict[str, Any]] = {
     n: s for n, s in PRIMARY_CORRECTION_SPEC.items() if n not in PRIMARY_CORRECTION_NOT_GRADING and _grading_param(s)}
-COLOR_ORDER = ("color.strip_dovi", "color.hdr_to_sdr", "color.primary_correction", "color.lut", "color.retag")
+# ADR-100: color-grading-skill 0.5.0's OCIO_TRANSFORM (a colour-space conversion named by an OpenColorIO config), MATCH_CAMERA (this camera
+# matched to a reference camera's video) and LEGALIZE (a soft clip into broadcast-legal levels). Order: the technical conversions first
+# (Dolby Vision stripped, HDR tone-mapped, the OCIO space conversion), then the camera match (on the converted picture, before any grade),
+# the primary correction and the LUT (the look), legalize last among the pixel operations (it keeps the finished picture legal), retag last.
+def _color_spec(op_type: str) -> Dict[str, Dict[str, Any]]:
+    return next(o for o in _COLOR_CONTRACT["operations"] if o.get("type") == op_type)["parameters"]
+
+
+OCIO_SPEC = _color_spec("OCIO_TRANSFORM")
+MATCH_CAMERA_SPEC = _color_spec("MATCH_CAMERA")
+LEGALIZE_SPEC = _color_spec("LEGALIZE")
+OCIO_INFO: Dict[str, Any] = dict(_COLOR_CONTRACT.get("ocio") or {})
+COLOR_ENCODE_PARAMS = PRIMARY_CORRECTION_NOT_GRADING   # crf / preset / audio_stream: never `color.*` keys on any colour operation
+COLOR_ORDER = ("color.strip_dovi", "color.hdr_to_sdr", "color.ocio", "color.match_camera", "color.primary_correction", "color.lut", "color.legalize", "color.retag")
 COLOR_OPERATIONS: Dict[str, Dict[str, Any]] = {
     "color.strip_dovi": {"skill": "color_strip_dovi", "type": "STRIP_DOVI", "params": (), "risk": "LOW"},
     "color.hdr_to_sdr": {"skill": "color_hdr_to_sdr", "type": "HDR_TO_SDR", "params": (), "risk": "MEDIUM"},
@@ -78,10 +91,21 @@ COLOR_OPERATIONS: Dict[str, Dict[str, Any]] = {
                                   "params": tuple(COLOR_CORRECTION_PARAMS), "risk": "MEDIUM"},
     "color.lut":        {"skill": "color_lut",        "type": "LUT_APPLY",  "params": ("lut_strength",), "risk": "MEDIUM"},
     "color.retag":      {"skill": "color_retag",      "type": "RETAG",      "params": ("target",), "risk": "LOW"},
+    # ADR-100: the parameters by the contract's names, the encode settings left out
+    "color.ocio":         {"skill": "color_ocio", "type": "OCIO_TRANSFORM", "params": tuple(n for n in OCIO_SPEC if n not in COLOR_ENCODE_PARAMS), "risk": "MEDIUM"},
+    "color.match_camera": {"skill": "color_match_camera", "type": "MATCH_CAMERA", "params": tuple(n for n in MATCH_CAMERA_SPEC if n not in COLOR_ENCODE_PARAMS), "risk": "MEDIUM"},
+    "color.legalize":     {"skill": "color_legalize", "type": "LEGALIZE", "params": tuple(n for n in LEGALIZE_SPEC if n not in COLOR_ENCODE_PARAMS), "risk": "LOW"},
 }
 COLOR_SKILL_OF = {k: v["skill"] for k, v in COLOR_OPERATIONS.items()}
 COLOR_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
-COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi") + tuple(f"color.{n}" for n in COLOR_CORRECTION_PARAMS)
+# ADR-100: color.ocio (the source space) + .config / .destination_space / .display / .view / .look / .lut_size / .output_tags;
+# color.match_camera (the reference camera's video) + .reference_at / .at / .model / .patches / .lut_size; color.legalize (true or a profile) + .knee / .lut_size
+OCIO_KEYS = ("color.ocio",) + tuple(f"color.ocio.{n}" for n in ("config", "destination_space", "display", "view", "look", "lut_size", "output_tags"))
+MATCH_CAMERA_KEYS = ("color.match_camera",) + tuple(f"color.match_camera.{n}" for n in ("reference_at", "at", "model", "patches", "lut_size"))
+LEGALIZE_KEYS = ("color.legalize", "color.legalize.knee", "color.legalize.lut_size")
+COLOR_KEYS = ("color.target", "color.sdr", "color.lut", "color.lut.strength", "color.strip_dovi") + tuple(f"color.{n}" for n in COLOR_CORRECTION_PARAMS) \
+    + OCIO_KEYS + MATCH_CAMERA_KEYS + LEGALIZE_KEYS
+
 # key -> (lo, hi) for the numeric parameters, the contract's own min / max (exposure / contrast / saturation / temperature / tint since
 # ADR-031, gamma / lift / gain / levels_* since ADR-062; hand-copied until ADR-076, the same numbers)
 COLOR_CORRECTION_RANGES: Dict[str, Tuple[float, float]] = {
@@ -179,9 +203,90 @@ def _position(v: Any, key: str) -> Any:
     return _token(v, key, re.compile("^(" + "|".join(NAMED_POSITIONS) + ")$"), "one of " + ", ".join(NAMED_POSITIONS))
 
 
+def _contract_value(v: Any, key: str, spec: Dict[str, Any]) -> Any:
+    """ADR-100: one value checked against the pinned contract's parameter spec (number / integer range, string enum or a short single line)."""
+    t = spec.get("type")
+    if t in ("number", "integer"):
+        if "enum" in spec:
+            x = _number(v, key)
+            if x not in spec["enum"]:
+                raise EditRequirementError(f"{key} must be one of {', '.join(str(e) for e in spec['enum'])}, got {v!r}")
+            return int(x) if t == "integer" else float(x)
+        x = _number(v, key, spec.get("min"), spec.get("max"))
+        if t == "integer":
+            if float(x) != int(x):
+                raise EditRequirementError(f"{key} must be an integer, got {v!r}")
+            return int(x)
+        return float(x)
+    if t == "boolean":
+        return _bool(v, key)
+    if "enum" in spec:
+        return _token(v, key, re.compile("^(" + "|".join(re.escape(str(e)) for e in spec["enum"]) + ")$"), "one of " + ", ".join(str(e) for e in spec["enum"]))
+    if not isinstance(v, str) or not v.strip() or len(v) > 200 or any(c in v for c in "\n\r\x00"):
+        raise EditRequirementError(f"{key} must be a short single-line text, got {v!r}")
+    return v
+
+
+def _parse_new_color_ops(m: Dict[str, Requirement]) -> Dict[str, Dict[str, Any]]:
+    """ADR-100: OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE from their `color.*` keys, each value checked against the pinned contract. A refinement
+    key without its main key is refused (ambiguous). Nothing is defaulted here: an unset parameter is the Skill's own default."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for main, keys, op, spec in (("color.ocio", OCIO_KEYS, "color.ocio", OCIO_SPEC), ("color.match_camera", MATCH_CAMERA_KEYS, "color.match_camera", MATCH_CAMERA_SPEC),
+                                 ("color.legalize", LEGALIZE_KEYS, "color.legalize", LEGALIZE_SPEC)):
+        r = m.get(main)
+        refs = [m[k] for k in keys[1:] if k in m and m[k].provenance != "DEFAULT"]
+        if r is None or r.provenance == "DEFAULT":
+            if refs:
+                raise EditRequirementError(f"{refs[0].key} is set but {main} is not: refusing an ambiguous request")
+            continue
+        p: Dict[str, Any] = {}
+        if op == "color.match_camera":   # the main key first: its file is what the refinements refine
+            p["reference_path"] = _file(r.value, main, (".mp4", ".mov", ".mkv", ".m4v", ".mxf"))
+        for rq in refs:
+            name = rq.key[len(main) + 1:]
+            if op == "color.ocio" and name == "config":
+                p[name] = ocio_config(rq.value, rq.key)
+            elif op == "color.match_camera" and name == "patches":
+                if not isinstance(rq.value, str) or not re.fullmatch(r"[0-9.,/;]{1,4000}", rq.value) or len(rq.value.split(";")) > 64:
+                    raise EditRequirementError(f"{rq.key} must be up to 64 ';'-separated patches 'x,y,w,h' or 'x,y,w,h/x,y,w,h' (fractions of the frame)")
+                p[name] = rq.value
+            else:
+                p[name] = _contract_value(rq.value, rq.key, spec[name])
+        if op == "color.ocio":
+            p["source_space"] = _contract_value(r.value, main, {"type": "string"})
+            has_dest, has_view = "destination_space" in p, "display" in p or "view" in p
+            if has_dest == has_view or (has_view and not ("display" in p and "view" in p)):
+                raise EditRequirementError("color.ocio needs color.ocio.destination_space, or color.ocio.display with color.ocio.view (one of the two, not both)")
+            known = OCIO_INFO.get("known_destination_tags") or {}
+            if "output_tags" not in p and p.get("display") not in known and p.get("destination_space") not in known:
+                raise EditRequirementError("color.ocio.output_tags is required for this destination (the colour tags the output must carry: "
+                                           + ", ".join(spec["output_tags"]["enum"]) + "); only " + ", ".join(sorted(known)) + " imply them")
+        elif op == "color.match_camera":
+            pass
+        else:
+            if isinstance(r.value, str) and r.value not in ("true", "yes", "on", "1"):
+                p["profile"] = _contract_value(r.value, main, spec["profile"])
+            elif not _bool(r.value, main):
+                continue
+        out[op] = {"params": p, "requirements": [r] + refs}
+    if "color.ocio" in out and m.get("color.sdr") is not None and m["color.sdr"].provenance != "DEFAULT" and m["color.sdr"].value in (True, "true", "yes", "on", "1"):
+        raise EditRequirementError("color.ocio and color.sdr are both colour-space conversions: ask for one (an OCIO display / view to Rec.709 replaces the tone map)")
+    return out
+
+
+def ocio_config(v: Any, key: str) -> str:
+    """ADR-100: an OpenColorIO built-in config URI (ocio://…) or the path of an existing .ocio file (the user's)."""
+    prefix = str(OCIO_INFO.get("builtin_prefix") or "ocio://")
+    if isinstance(v, str) and v.startswith(prefix):
+        if not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]{1,120}", v):
+            raise EditRequirementError(f"{key} {v!r} is not a built-in config name ({prefix}…)")
+        return v
+    return _file(v, key, tuple(OCIO_INFO.get("config_extensions") or (".ocio",)))
+
+
 def parse_color_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, Any]]:
     """→ {IR op type: {"params", "requirements"}} for the colour operations asked for (explicit USER / PROFILE only)."""
-    out: Dict[str, Dict[str, Any]] = {}
+    out: Dict[str, Dict[str, Any]] = _parse_new_color_ops(m)
     lut = m.get("color.lut")
     if "color.lut.strength" in m and m["color.lut.strength"].provenance != "DEFAULT" and (lut is None or lut.provenance == "DEFAULT"):
         raise EditRequirementError("color.lut.strength is set but color.lut is not: refusing an ambiguous request")

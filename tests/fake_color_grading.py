@@ -121,12 +121,14 @@ def main() -> int:
         emit(c)
         return 0
     if cmd == "doctor":
-        status = {"doctor_fail": "fail", "doctor_degraded": "degraded"}.get(MODE, "ok")
+        status = {"doctor_fail": "fail", "doctor_degraded": "degraded", "doctor_no_ocio": "degraded", "doctor_old_engine": "degraded"}.get(MODE, "ok")
         ok = status != "fail"
         ops = {}
         for t, spec in OPS.items():
             st = "supported" if ok else "unavailable"
             if MODE == "doctor_degraded" and t == "LUT_APPLY":
+                st = "unavailable"
+            if (MODE == "doctor_no_ocio" and t == "OCIO_TRANSFORM") or (MODE == "doctor_old_engine" and t in ("MATCH_CAMERA", "LEGALIZE")):   # ADR-100
                 st = "unavailable"
             ops[t] = {"status": st, "tool": spec["tool"], "required_capabilities": spec["required_capabilities"], "missing": [] if st != "unavailable" else ["filter:lut3d"], "unknown": []}
         emit({"schema": "color-grading/doctor@1", "skill": {"id": "color-grading", "version": CONTRACT["version"]}, "status": status,
@@ -230,6 +232,14 @@ def main() -> int:
                 return err("PATH_NOT_ALLOWED", "LUT outside allowed roots", {"reason": "outside_allowed_lut_roots"})
             if not os.path.isfile(lut) or Path(lut).suffix.lower() != ".cube":
                 return err("INVALID_INPUT", "LUT not found or not a .cube", {"reason": "lut"})
+        if t == "MATCH_CAMERA":   # ADR-100: the reference video through the input path policy
+            ref = os.path.realpath(str(params["reference_path"]))
+            if (roots and not any(within(r, ref) for r in roots)) or not os.path.isfile(ref):
+                return err("PATH_NOT_ALLOWED", "reference outside the allowed input roots", {"reason": "outside_allowed_roots"})
+        if t == "OCIO_TRANSFORM" and not str(params.get("config", "ocio://")).startswith("ocio://"):   # ADR-100: a .ocio file through the LUT roots
+            cfg = os.path.realpath(str(params["config"]))
+            if lut_roots and not any(within(r, cfg) for r in lut_roots):
+                return err("PATH_NOT_ALLOWED", "OCIO config outside allowed roots", {"reason": "outside_allowed_lut_roots"})
         if t == "HDR_TO_SDR" and (MODE == "not_hdr" or not meta.get("hdr")) and not params.get("force"):
             return err("TOOL_ERROR", "ffmpeg-skill/color --to-sdr failed: source is not tagged HDR (use force to tone-map anyway)", {"reason": "not_hdr"})   # like the real Skill: the engine refuses, reported as TOOL_ERROR
         results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t,

@@ -22,6 +22,7 @@ from ..media.analyzer import AnalysisResult
 from ..models import Decision, Requirement
 from ..policy.rules import RuleSet
 from .decision_engine import DecisionEngine, resolve_setting
+from ..tools.color_grading.adapter import OPERATION_NEEDS as COLOR_REMEDY
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
                         element_label, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, placement_problems,
                         planned_picture_size, qc_requested)
@@ -39,6 +40,9 @@ APPROVAL_KEYS = {"subtitle.generate": ("subtitle.generate.approval", "CONFIRM"),
                  "color.strip_dovi": ("color.strip_dovi.approval", "CONFIRM"), "color.hdr_to_sdr": ("color.hdr_to_sdr.approval", "CONFIRM"),
                  "color.primary_correction": ("color.primary_correction.approval", "CONFIRM"),
                  "color.lut": ("color.lut.approval", "CONFIRM"), "color.retag": ("color.retag.approval", "CONFIRM"),
+                 # ADR-100: CONFIRM like every colour operation; the explicit requirement waives it
+                 "color.ocio": ("color.ocio.approval", "CONFIRM"), "color.match_camera": ("color.match_camera.approval", "CONFIRM"),
+                 "color.legalize": ("color.legalize.approval", "CONFIRM"),
                  # one approval key per motion-graphics element type (ADR-031; every element type of the contract since ADR-064)
                  **{f"graphics.{t}": (f"graphics.{t}.approval", "CONFIRM") for t in ELEMENT_TYPES}}
 FINISHING_SUBJECTS = ("subtitle.", "thumbnail.", "color.", "graphics.", "qc.")
@@ -88,12 +92,21 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                 eng.decide(subject=op, type="KEEP", decision=f"keep {subject} as SDR", reason=f"the probe reports no HDR transfer on {sources[0]} ({v.get('color_transfer') or 'unknown transfer'}); nothing is tone-mapped by guessing",
                            confidence=1.0, evidence=ev, risk="LOW", approval="AUTO", provenance="OBSERVED", params={"asset_id": subject}, requirements=req)
                 continue
-            words = ", ".join(f"{k}={Path(v_).name if k == 'lut' else v_}" for k, v_ in p.items()) or "no parameters"
+            words = ", ".join(f"{k}={Path(v_).name if k in ('lut', 'reference_path') or (k == 'config' and not str(v_).startswith('ocio://')) else v_}" for k, v_ in p.items()) or "no parameters"
             eng.decide(subject=op, type="TRANSFORM", decision=f"{op} on {subject}: {words}", reason=f"user asked for {op} ({req[0].source}); applied to {'the joined programme' if len(sources) > 1 else 'the input'} after the edits",
                        confidence=1.0, evidence=ev, risk=spec["risk"], approval=approval_for(op, explicit=req[0], keys=APPROVAL_KEYS), provenance="USER",
                        params={"asset_id": subject, **p}, requirements=req, serves_intent=None)
             finished[subject] = True
-        cap_block(spec["skill"], f"capability.{spec['skill']}")
+        cap = caps.get(f"color-grading:{spec['type']}") if spec["type"] in COLOR_REMEDY else None
+        if spec["type"] in COLOR_REMEDY and (cap is None or getattr(cap, "status", "MISSING") != "AVAILABLE") and caps.get("color-grading") is not None \
+                and getattr(caps["color-grading"], "status", "MISSING") == "AVAILABLE":
+            # ADR-100: the package is here but its doctor reports this operation unavailable: BLOCK with what it needs (never run another way)
+            eng.decide(subject=f"capability.{spec['skill']}", type="BLOCK", decision=f"BLOCK: {spec['type']} unavailable here",
+                       reason=f"color-grading-skill's doctor reports {spec['type']} {getattr(cap, 'detail', '') or 'unavailable'}; {COLOR_REMEDY[spec['type']]}",
+                       confidence=1.0, evidence=[r.id for r in req] + [f"capability:color-grading:{spec['type']}"], risk="HIGH", approval="BLOCK", provenance="SYSTEM",
+                       params={"skill": spec["skill"], "missing": [f"color-grading:{spec['type']}"]}, requirements=req)
+        else:
+            cap_block(spec["skill"], f"capability.{spec['skill']}")
     # ---- motion graphics (one decision per element type; one render per subject in the plan)
     for typ in ELEMENT_TYPES:
         if typ not in mots:

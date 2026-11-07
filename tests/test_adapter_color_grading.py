@@ -264,7 +264,7 @@ def expected_unavailable(engine_dir: str) -> List[str]:
 
 def assert_doctor_healthy(tc: unittest.TestCase, doc: dict, engine_dir: str) -> None:
     """The doctor is "ok" when nothing is expected unavailable, else "degraded" with exactly the expected operations unavailable and every
-    other operation supported (ADR-097 addendum 6: none of the three is planned by the agent). No problems either way; a doctor degraded for any
+    other operation supported (ADR-100 plans the three; an unavailable one is BLOCKED by the plan). No problems either way; a doctor degraded for any
     other reason, or not degraded when it should be, fails."""
     tc.assertEqual(doc.get("problems") or [], [], doc.get("problems"))
     want = expected_unavailable(engine_dir)
@@ -322,6 +322,34 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         params = r.data["operation"]["parameters"]
         self.assertEqual((params["exposure"], params["saturation"]), (0.5, 0.0))
         self.assertIn("input", r.data["operation"]["measurements"]); self.assertIn("output", r.data["operation"]["measurements"])
+
+    def test_real_new_operations_follow_the_doctor(self):
+        """ADR-100 on the real Skill: LEGALIZE, MATCH_CAMERA (this clip against itself as the reference camera) and OCIO_TRANSFORM (built-in
+        studio config, sRGB to Rec.709 display) as the agent lowers them. Each runs when the doctor reports it supported here and is refused
+        when it reports it unavailable (PyOpenColorIO missing; ffmpeg-skill older than 3.1.6), which the plan BLOCKs before execution."""
+        if not (self.skill and self.engine and shutil.which("ffmpeg")):
+            self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
+        ws = str(Path(self.tmp) / "ws_new"); os.makedirs(ws, exist_ok=True)
+        ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=180)
+        statuses = ad.operation_status(ad.doctor())
+        unavailable = expected_unavailable(self.engine)
+        cases = {"LEGALIZE": {"profile": "bt709", "knee": 0.9},
+                 "MATCH_CAMERA": {"reference_path": "a", "at": 1.0, "reference_at": 1.0, "model": "curves", "lut_size": 17},
+                 "OCIO_TRANSFORM": {"config": "ocio://studio-config-latest", "source_space": "sRGB Encoded Rec.709 (sRGB)", "display": "Rec.1886 Rec.709 - Display",
+                                    "view": "Un-tone-mapped", "lut_size": 33}}
+        for n, (typ, params) in enumerate(sorted(cases.items())):
+            out_id = f"a_{typ.lower()}"
+            paths = {"a": self.src, out_id: str(Path(ws) / "ops" / f"0{n}_{typ.lower()}" / f"bars_{typ.lower()}.mp4")}
+            r = ad.run(Operation(tool="color-grading/run", args={"operation": typ, "input": "a", "output": out_id, **params}, inputs=["a"], outputs=[out_id], id=f"op_new{n}"),
+                       paths, timeout=180)
+            if typ in unavailable:
+                self.assertEqual(statuses[typ], "unavailable")
+                self.assertFalse(r.ok, f"{typ} ran although the doctor reports it unavailable")
+                continue
+            self.assertEqual(statuses[typ], "supported")
+            self.assertTrue(r.ok, (typ, r.data))
+            self.assertEqual(r.data["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
+            self.assertEqual(r.data["operation"]["type"], typ)
 
     def test_real_alpha_source_refused(self):
         """color-grading-skill 0.5.0 on real media: a ProRes 4444 source with an alpha plane is refused for PRIMARY_CORRECTION (UNSUPPORTED_FORMAT,
