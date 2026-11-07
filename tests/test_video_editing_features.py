@@ -338,6 +338,13 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             svc.revise(load_ir(pc), pc, user_requirements={"edit.precision": "smart"})
         self.assertIn("frame-precision", str(cm.exception))
+        # ... nor over a segment cache the brief contributed (the brief's accepted keys count as well as the explicit ones)
+        irb = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9"})
+        irb.doc["request"].setdefault("args", {})["brief"] = {"accepted": [{"key": "edit.segment_cache", "value": True}]}
+        pb = str(Path(self.tmp) / "brief_rev.json"); save_ir(irb, pb)
+        with self.assertRaises(ValueError) as cm:
+            svc.revise(load_ir(pb), pb, user_requirements={"edit.precision": "smart"})
+        self.assertIn("frame-precision", str(cm.exception))
         # without an explicit precision nothing changes (the default never picks smart)
         ir0 = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9"})
         self.assertNotEqual(next(op for op in ir0.doc["video"]["operations"] if op["type"] == "video.trim").get("precision"), "smart")

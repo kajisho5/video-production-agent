@@ -108,6 +108,14 @@ class ColorGradingAdapterTests(unittest.TestCase):
                 op["parameters"] = dict(op["parameters"], new_knob={"type": "number"})
         live["unsupported_operations"] = live["unsupported_operations"] + [{"type": "VIGNETTE", "status": "not_implemented", "reason": "x"}]
         self.assertEqual(contract_breaking_drift(live, pinned), [], "version bump + a new optional parameter + unsupported changing is non-fatal")
+        # ADR-106: a changed alpha policy (here the pattern the agent judges an alpha plane by) is reported and fatal, like color_space / hdr_sdr
+        live3 = json.loads(json.dumps(pinned))
+        live3["alpha"]["pix_fmt_pattern"] = ".*"
+        self.assertTrue(any(d.startswith("alpha:") for d in contract_drift(live3, pinned)))
+        self.assertTrue(any(d.startswith("alpha:") for d in contract_breaking_drift(live3, pinned)))
+        live4 = json.loads(json.dumps(pinned))
+        live4["alpha"]["keep_alpha"]["operations"] = ["LUT_APPLY"]
+        self.assertTrue(any(d.startswith("alpha:") for d in contract_breaking_drift(live4, pinned)))
         live2 = json.loads(json.dumps(pinned))
         live2["operations"] = [o for o in live2["operations"] if o["type"] != "PRIMARY_CORRECTION"]
         self.assertTrue(contract_breaking_drift(live2, pinned), "an operation this adapter relies on disappearing must stay fatal")

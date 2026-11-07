@@ -903,11 +903,11 @@ class Service:
         # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
         prev_req = dict((old["request"].get("args") or {}).get("requirements") or {})
         prev_req.update(user_requirements or {})
-        _check_precision_conflict(prev_req)   # ADR-106: the merged keys, not only the new ones
         brief_record = (old["request"].get("args") or {}).get("brief")
         rejected_brief = any(d["status"] == "REJECTED" and d["subject"] == brief_task.SUBJECT for d in old["decisions"])
         if brief_record and rejected_brief and not brief_record.get("rejected"):
             brief_record = {**brief_record, "rejected": True}   # ADR-061: a rejected reading of the brief contributes no keys from v(n+1) on
+        _check_precision_conflict({**brief_task.values_of(brief_record), **prev_req})   # ADR-106: the effective keys (brief + explicit), not only the new ones
         raw = (old["request"].get("raw") or "")
         if feedback:
             raw = (raw + "\n" + feedback).strip()

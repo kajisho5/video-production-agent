@@ -71,7 +71,8 @@ OPERATION_NEEDS = {"OCIO_TRANSFORM": "install color-grading-skill's optional `oc
                    "MATCH_CAMERA": "use ffmpeg-skill 3.1.6 or later (its BT.709 LUT legs)", "LEGALIZE": "use ffmpeg-skill 3.1.6 or later (its BT.709 LUT legs)"}
 OCIO_BUILTIN_PREFIX = "ocio://"   # ADR-100: contract.ocio.builtin_prefix: a built-in OpenColorIO config, not a file
 DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_operations", "output_formats", "execution", "ffmpeg_skill", "request", "response", "provenance",
-              "schema_versions", "errors", "lut", "color_space", "hdr_sdr")
+              "schema_versions", "errors", "lut", "color_space", "hdr_sdr",
+              "alpha")   # ADR-106: the alpha policy (refused_for, keep_alpha, pix_fmt_pattern); fatal like color_space / hdr_sdr
 DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabilities", "changes_duration", "changes_resolution", "deterministic")
 # ADR-045: the subset of DRIFT_KEYS / DRIFT_OPERATION_KEYS that can actually break this adapter if it changes.
 # `version` moves within the range check_contract() already accepts (that's the whole point of the range); a new
