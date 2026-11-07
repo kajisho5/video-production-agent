@@ -1301,8 +1301,8 @@ class MotionGraphicsElementTests(unittest.TestCase):
         self.assertEqual(sorted(ELEMENT_TYPES + MOTION_NOT_PLANNED), sorted(e["type"] for e in c["element_types"]))
         self.assertEqual(sorted(ELEMENT_TYPES + MOTION_NOT_PLANNED), sorted(c["tools"][0]["element_types"]))
         self.assertFalse(set(ELEMENT_TYPES) & set(MOTION_NOT_PLANNED))
-        self.assertEqual(len(ELEMENT_TYPES), 13)   # ADR-078: shape (motion-graphics-skill 0.2.7)
-        self.assertEqual(MOTION_NOT_PLANNED, ("logo", "rendered_layer"))
+        self.assertEqual(len(ELEMENT_TYPES), 15)   # ADR-078: shape (motion-graphics-skill 0.2.7); ADR-102: logo, rendered_layer (0.2.12 / 0.2.16)
+        self.assertEqual(MOTION_NOT_PLANNED, ())
         for e in c["element_types"]:
             if e["type"] in MOTION_NOT_PLANNED:
                 continue
@@ -1381,7 +1381,7 @@ class MotionGraphicsElementTests(unittest.TestCase):
         _check_requirement_keys(dict(NEW_ELEMENTS))
         for keys in MOTION_KEYS.values():
             for k in keys:
-                self.assertEqual(k in BRIEF_REQUIREMENT_KEYS, k not in ("motion.image", "motion.video"), k)
+                self.assertEqual(k in BRIEF_REQUIREMENT_KEYS, k not in ("motion.image", "motion.video", "motion.layer"), k)   # ADR-102: the layer clip is a file too
 
     def test_placement_against_the_planned_picture(self):
         self.assertEqual(placement_problems("text_overlay", {"text": "x", "position": {"x": 1000, "y": 10}}, (1280, 720)), [])
@@ -1406,14 +1406,20 @@ class MotionGraphicsElementTests(unittest.TestCase):
 
     def test_pipeline_every_element_decision_ir_step_and_skill_request(self):
         png, clip = self._files()
+        layer = pipeline_media(self.tmp, "layer.mov", duration=3.0)   # ADR-102: a pre-rendered clip (the fake Skill takes any file) and a theme with a logo
+        theme = Path(self.tmp) / "src" / "brand.json"
+        theme.write_text(json.dumps({"schema": "motion-graphics/theme@1", "colors": {"primary": "0B5FFF", "secondary": "00A3E0", "background": "0F1C2E", "text": "FFFFFF"},
+                                     "logo": {"path": "logo.png"}}), encoding="utf-8")
         req = dict(NEW_ELEMENTS, **{"motion.title": "Opening", "motion.title.text_color": "FFFFFF", "motion.lower_third": "Ada", "motion.lower_third.title": "Engineer",
                                     "motion.text": "LIVE", "motion.text.font_size": 48, "motion.text.fade": 0.5, "motion.image": png, "motion.image.opacity": 0.8,
-                                    "motion.video": clip, "motion.video.position": "bottom-right", "motion.video.scale_width": 320, "motion.video.chromakey": "00FF00"})
+                                    "motion.video": clip, "motion.video.position": "bottom-right", "motion.video.scale_width": 320, "motion.video.chromakey": "00FF00",
+                                    "motion.logo": True, "motion.logo.opacity": 0.8, "motion.layer": layer, "motion.layer.loop": False, "motion.layer.start": 1, "motion.layer.end": 3,
+                                    "motion.themes": {"brand": str(theme)}})
         svc = pipeline_service(self.tmp)
         r = plan_and_render(svc, [pipeline_media(self.tmp, "talk.mp4")], req, name="mg")
         d = r["ir"].doc
         self.assertEqual(r["validation"].errors, [])
-        decs = {x["subject"]: x for x in d["decisions"] if x["subject"].startswith("graphics.")}
+        decs = {x["subject"]: x for x in d["decisions"] if x["subject"].startswith("graphics.") and x["subject"] != "graphics.options"}   # ADR-102: the theme's own record
         self.assertEqual(sorted(decs), sorted(f"graphics.{t}" for t in ELEMENT_TYPES))
         for x in decs.values():
             self.assertEqual((x["type"], x["provenance"], x["approval"]), ("TRANSFORM", "USER", "AUTO"), x["subject"])
@@ -1427,7 +1433,8 @@ class MotionGraphicsElementTests(unittest.TestCase):
         self.assertEqual((op["image"], op["video"]), (png, clip))
         self.assertIn(str(Path(clip).parent), d["execution"]["allowed_inputs"])
         step = next(s_ for s_ in d["plan"]["steps"] if s_["skill"] == "motion_graphics")
-        self.assertEqual(len(step["params"]["elements"]), 13); self.assertEqual(sorted(step["decision_ids"]), sorted(x["id"] for x in decs.values()))
+        opts = next(x for x in d["decisions"] if x["subject"] == "graphics.options")
+        self.assertEqual(len(step["params"]["elements"]), 15); self.assertEqual(sorted(step["decision_ids"]), sorted([x["id"] for x in decs.values()] + [opts["id"]]))
         out = r["out"]
         self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
         prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))

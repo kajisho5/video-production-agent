@@ -1903,6 +1903,62 @@ class SubtitleFeaturesRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class MotionGraphicsFeaturesRealTests(unittest.TestCase):
+    """ADR-102 on the real motion-graphics-skill 0.2.16 and ffmpeg-skill: a theme file with a logo drawn by the `logo` element, a pre-rendered
+    alpha clip as a `rendered_layer`, a title fitted to a box width, reserved regions reported; and a style preset with a brand kit."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_mgf_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.media = str(src / "talk.mp4")
+        make_media(cls.media)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=orange:s=160x90:d=1", "-frames:v", "1", str(src / "logo.png")], check=True)
+        cls.layer = str(src / "lower_third.mov")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=navy:s=640x120:r=30:d=2",
+                        "-vf", "format=rgba,fade=t=in:st=0:d=0.3:alpha=1", "-c:v", "qtrle", cls.layer], check=True)
+        cls.theme = str(src / "brand.json")
+        Path(cls.theme).write_text(json.dumps({"schema": "motion-graphics/theme@1", "name": "brand",
+                                               "colors": {"primary": "0B5FFF", "secondary": "00A3E0", "background": "0F1C2E", "text": "FFFFFF"},
+                                               "logo": {"path": "logo.png", "position": "top-right", "margin": 24, "scale_width": 120}}), encoding="utf-8")
+
+    def setUp(self):
+        from video_agent.tools.motion_graphics import locate_motion_graphics
+        if not locate_motion_graphics():
+            self.skipTest("needs motion-graphics-skill (VIDEO_AGENT_MOTION_GRAPHICS_DIR)")
+
+    def _render(self, name, reqs):
+        svc = Service(workspace=str(Path(self.tmp) / name))
+        cap = svc.caps.resolve().get("motion-graphics")
+        if cap is None or cap.status != "AVAILABLE":
+            self.skipTest(f"motion-graphics unavailable: {getattr(cap, 'detail', '')[:120]}")
+        ir = svc.plan([self.media], "generic", user_requirements=reqs)
+        self.assertEqual(ir.doc["plan"]["status"], "APPROVED", ir.doc["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        p = str(Path(self.tmp) / f"{name}.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", json.dumps([r for r in out["execution"]["results"] if not r["ok"]])[:1500])
+        res = next(r for r in out["execution"]["results"] if r["tool"] == "motion-graphics/run")
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "json", res["output"]], capture_output=True, text=True, check=True)
+        v = next(s_ for s_ in json.loads(pr.stdout)["streams"] if s_["codec_type"] == "video")
+        self.assertEqual((v["width"], v["height"]), (1280, 720))
+        return ir.doc, res
+
+    def test_theme_logo_rendered_layer_fit_and_reserved_regions(self):
+        d, res = self._render("theme", {"motion.themes": {"brand": self.theme}, "motion.logo": True, "motion.logo.start": 0, "motion.logo.end": 6,
+                                        "motion.layer": self.layer, "motion.layer.position": "bottom-left", "motion.layer.in_duration": 0.3, "motion.layer.start": 1,
+                                        "motion.layer.end": 5, "motion.title": "A long opening title for the fitted box", "motion.title.fit": {"width": 600, "max_lines": 2},
+                                        "motion.reserved_regions": {"end_screen": {"duration": 5}, "on_overlap": "report"}})
+        types = sorted(o["type"] for o in res["data"]["operations"])
+        self.assertEqual(types, ["logo", "rendered_layer", "title"], res["data"]["operations"])
+
+    def test_style_preset_and_brand_kit(self):
+        d, res = self._render("style", {"motion.text": "LIVE", "motion.lower_third": "Ada", "motion.lower_third.style": "minimal", "motion.style": "news",
+                                        "motion.brand_kit": {"primary": "C8102E"}})
+        self.assertEqual(sorted(o["type"] for o in res["data"]["operations"]), ["lower_third", "text_overlay"])
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class TimelineExportRealTests(unittest.TestCase):
     """ADR-052 on the real ffmpeg-skill: `delivery.timeline=otio` → render.py --export-timeline writes the IR's cut list as an
     OpenTimelineIO document, registered as a TIMELINE Artifact; opentimelineio (when installed) reads it back with the same cuts."""

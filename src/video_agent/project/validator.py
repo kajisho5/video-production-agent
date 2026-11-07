@@ -712,7 +712,8 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"graphics.render element {e.get('id')}: start must be before end")
                 if sc and float(e.get("end", 0)) > float(sc["end"]) + 0.01:
                     errs.append(f"graphics.render element {e.get('id')}: ends at {e.get('end')} after the subject's timeline ({sc['end']:.3f})")
-                for typ, ref, exts, what in (("image_overlay", "image", (".png", ".jpg", ".jpeg"), "a PNG / JPEG"), ("video_overlay", "video", VIDEO_EXTENSIONS, "a video")):
+                for typ, ref, exts, what in (("image_overlay", "image", (".png", ".jpg", ".jpeg"), "a PNG / JPEG"), ("video_overlay", "video", VIDEO_EXTENSIONS, "a video"),
+                                             ("rendered_layer", "layer", VIDEO_EXTENSIONS, "a video")):   # ADR-102: the pre-rendered alpha clip
                     if e.get("type") != typ:
                         continue
                     f = (e.get("parameters") or {}).get(ref)
@@ -725,6 +726,14 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                 if e.get("type") in ELEMENT_TYPES:   # ADR-064: an explicit placement inside the picture the plan delivers to this point
                     for why in placement_problems(str(e["type"]), dict(e.get("parameters") or {}), planned_size(subj)):
                         errs.append(f"graphics.render element {e.get('id')}: {why}")
+            themes = ((op.get("options") or {}).get("themes") or {})   # ADR-102: the user's theme files, inside the allowed roots; a logo needs one
+            for name, f in themes.items():
+                if not isinstance(f, str) or Path(f).suffix.lower() != ".json" or any(part == ".." for part in f.replace("\\", "/").split("/")):
+                    errs.append(f"graphics.render on {subj}: theme {name} must be a .json file path without traversal")
+                elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
+                    errs.append(f"graphics.render on {subj}: theme {name} is outside the allowed input roots")
+            if any(e.get("type") == "logo" for e in op.get("elements") or []) and not themes:
+                errs.append(f"graphics.render on {subj}: a logo element draws the active theme's logo and no theme is given")
         elif t == "graphics.thumbnail":
             if seen.get(("thumbnail", subj)):
                 errs.append(f"more than one graphics.thumbnail on {subj}")

@@ -81,7 +81,7 @@ from .tools.nle_bridge import PACKAGE as NLE_BRIDGE_PACKAGE, NleBridgeAdapter, l
 from .agent.nle import check_nle_keys
 from .tools.ingest import TOOL_INVENTORY as INGEST_INVENTORY, TOOL_OFFLOAD as INGEST_OFFLOAD, TOOL_VERIFY as INGEST_VERIFY
 from .agent import offload as offload_task
-from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
+from .agent.finishing import COLOR_KEYS, ELEMENT_TYPES, MOTION_KEYS, MOTION_OPTION_KEYS, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, qc_requested
 from .agent.finishing import QC_REFERENCE_KEYS, parse_qc_reference
 from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
@@ -816,6 +816,8 @@ class Service:
         # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
         images += [op["stinger"] for op in plan["video_ops"] if op.get("type") == "video.concat" and op.get("stinger")]   # ADR-099: the stinger file
+        images += [op["layer"] for op in plan.get("graphics_ops") or [] if op.get("layer")] \
+            + [f for op in plan.get("graphics_ops") or [] for f in ((op.get("options") or {}).get("themes") or {}).values()]   # ADR-102: the layer clip, the theme files
         images += [op["reference_path"] for op in plan.get("color_ops") or [] if op.get("reference_path")]   # ADR-100: MATCH_CAMERA's reference video
         images += [op["config"] for op in plan.get("color_ops") or [] if op.get("config") and not str(op["config"]).startswith("ocio://")]   # ADR-100: a .ocio file
         images += [op["lut"] for op in plan.get("color_ops") or [] if op.get("lut")] + [op[ref] for op in plan.get("graphics_ops") or [] for ref in ("image", "video") if op.get(ref)] \
@@ -1732,6 +1734,7 @@ _SWITCH_REQUIREMENT_KEYS = frozenset(   # surface (1): what a request asks for
     | set(_SUBTITLE_REQUIREMENT_KEYS)
     | set(COLOR_KEYS)
     | {k for keys in MOTION_KEYS.values() for k in keys}
+    | set(MOTION_OPTION_KEYS)   # ADR-102: motion.style / .brand_kit / .themes / .theme / .reserved_regions
     | set(_THUMBNAIL_REQUIREMENT_KEYS)
     | {"qc"}
     | set(QC_REFERENCE_KEYS)   # ADR-058: qc.reference_video / qc.reference_metrics / qc.min_*
@@ -1745,7 +1748,7 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
 # is a file path (overlay / joined still (ADR-070) / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
 _PATH_REQUIREMENT_KEYS = frozenset({"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
-                                    "edit.concat.stinger", "edit.condense", "edit.ai_generated"})   # ADR-099: the stinger, the proposals file, the declared inputs
+                                    "edit.concat.stinger", "edit.condense", "edit.ai_generated", "motion.layer", "motion.themes"})   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 
 

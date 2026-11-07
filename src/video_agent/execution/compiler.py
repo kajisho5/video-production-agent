@@ -269,13 +269,19 @@ def lower_color_op(tool: str, op: Dict[str, Any], current: str, out_id: str, lut
     return args
 
 
-def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None, video_id: Optional[str] = None) -> Dict[str, Any]:
+def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: str, image_id: Optional[str] = None, video_id: Optional[str] = None,
+                          layer_id: Optional[str] = None, theme_ids: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """IR graphics.render → motion-graphics/run arguments: the element list as planned (image / video overlay paths become artifact ids)."""
     if tool != GRAPHICS_TOOL:
         raise CompileError(f"graphics.render cannot be executed by {tool}; the only tool of this operation is {GRAPHICS_TOOL}")
     elements = []
     for e in op.get("elements") or []:
-        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k not in ("image", "video")}}
+        el = {"id": e["id"], "type": e["type"], "start": float(e["start"]), "end": float(e["end"]), "parameters": {k: v for k, v in (e.get("parameters") or {}).items() if k not in ("image", "video", "layer")}}
+        if e["type"] == "rendered_layer" and layer_id:   # ADR-102
+            el["parameters"]["layer"] = layer_id
+        for k in ("style", "fit"):
+            if e.get(k) is not None:
+                el[k] = e[k]
         if e["type"] == "image_overlay" and image_id:
             el["parameters"]["image"] = image_id
         if e["type"] == "video_overlay" and video_id:
@@ -283,7 +289,13 @@ def lower_graphics_render(tool: str, op: Dict[str, Any], current: str, out_id: s
         if e.get("animation"):
             el["animation"] = {"kind": e["animation"]["kind"], "parameters": dict(e["animation"]["parameters"])}
         elements.append(el)
-    return {"input": current, "output": out_id, "elements": elements}
+    args: Dict[str, Any] = {"input": current, "output": out_id, "elements": elements}
+    if op.get("options"):   # ADR-102: the theme files travel as artifact ids the adapter resolves (like the images)
+        o = dict(op["options"])
+        if o.get("themes"):
+            o["themes"] = {n: (theme_ids or {}).get(n, f) for n, f in o["themes"].items()}
+        args["options"] = o
+    return args
 
 
 def lower_thumbnail(tool: str, op: Dict[str, Any], current: str, out_id: str) -> Dict[str, Any]:
@@ -572,14 +584,20 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_graphics" / f"{st['stem']}_graphics.mp4")
             tool = tool_for(GRAPHICS_SKILL, subject)
             inputs = [st["current"]]
-            refs: Dict[str, Optional[str]] = {"image": None, "video": None}
+            refs: Dict[str, Optional[str]] = {"image": None, "video": None, "layer": None}   # ADR-102: the rendered layer's clip
             for ref in refs:   # the composited files (named by the user) are inputs by path, like a LUT
                 if op.get(ref):
                     refs[ref] = f"{subject}_graphics_{ref}"
                     paths[refs[ref]] = op[ref]
                     keys[refs[ref]] = ""
                     inputs.append(refs[ref])
-            add(tool, lower_graphics_render(tool, op, st["current"], out_id, refs["image"], refs["video"]), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
+            theme_ids: Dict[str, str] = {}
+            for name, f in sorted(((op.get("options") or {}).get("themes") or {}).items()):   # ADR-102: the user's theme files, inputs by path
+                theme_ids[name] = f"{subject}_graphics_theme_{name}"
+                paths[theme_ids[name]], keys[theme_ids[name]] = f, ""
+                inputs.append(theme_ids[name])
+            add(tool, lower_graphics_render(tool, op, st["current"], out_id, refs["image"], refs["video"], refs["layer"], theme_ids), inputs, [out_id],
+                list(op.get("decision_ids") or []), st["fp"], skill=GRAPHICS_SKILL)
             st["current"] = out_id
         gen = next((op for op in (d.get("captions") or {}).get("operations") or [] if op["asset"] == subject and op["type"] == "captions.generate"), None)
         if gen is not None:

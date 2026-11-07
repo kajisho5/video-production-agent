@@ -2810,7 +2810,9 @@
          "sticker",
          "hook",
          "meme",
-         "shape"
+         "shape",
+         "logo",
+         "rendered_layer"
         ]
        },
        "start": {
@@ -2947,6 +2949,22 @@
          "color": {
           "type": "string",
           "maxLength": 32
+         },
+         "layer": {
+          "type": "string"
+         },
+         "in_duration": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 60
+         },
+         "out_duration": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 60
+         },
+         "loop": {
+          "type": "boolean"
          }
         }
        },
@@ -2976,6 +2994,41 @@
             "maximum": 30
            }
           }
+         }
+        }
+       },
+       "style": {
+        "type": "string"
+       },
+       "fit": {
+        "type": "object",
+        "required": [
+         "width"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "width": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 7680
+         },
+         "max_lines": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+         },
+         "min_scale": {
+          "type": "number",
+          "minimum": 0.3,
+          "maximum": 1.0
+         },
+         "profile": {
+          "enum": [
+           "ja-kinsoku"
+          ]
+         },
+         "lang": {
+          "type": "string"
          }
         }
        }
@@ -3125,6 +3178,35 @@
        "type": "number",
        "minimum": 0,
        "maximum": 1
+      }
+     }
+    },
+    "layer": {
+     "type": "string"
+    },
+    "options": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "style": {
+       "type": "string"
+      },
+      "brand_kit": {
+       "type": "object"
+      },
+      "themes": {
+       "type": "object",
+       "minProperties": 1,
+       "maxProperties": 16,
+       "additionalProperties": {
+        "type": "string"
+       }
+      },
+      "theme": {
+       "type": "string"
+      },
+      "reserved_regions": {
+       "type": "object"
       }
      }
     }

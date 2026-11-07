@@ -218,8 +218,14 @@ def main() -> int:
     if len(elements) > CONTRACT["limits"]["max_elements"]:
         return err("INVALID_REQUEST", "too many elements", {"field": "elements"})
     opts = req.get("options") or {}
-    if set(opts) - {"reuse_intermediates", "crf", "preset"}:
+    if set(opts) - {"reuse_intermediates", "crf", "preset", "style", "brand_kit", "themes", "theme", "reserved_regions", "platform", "audio_stream"}:   # ADR-102: 0.2.11 .. 0.2.16
         return err("INVALID_REQUEST", "unknown option")
+    if opts.get("themes") and ("style" in opts or "brand_kit" in opts):
+        return err("INVALID_REQUEST", "options.brand_kit / style are refused together with a theme")
+    if opts.get("style") is not None and opts["style"] not in CONTRACT["style_presets"]["names"]:
+        return err("INVALID_REQUEST", "unknown style preset")
+    if any(el.get("type") == "logo" for el in elements if isinstance(el, dict)) and not opts.get("themes"):
+        return err("INVALID_REQUEST", "a logo element needs options.themes (the active theme's logo)")
     crf = opts.get("crf", 18)
     if isinstance(crf, bool) or not isinstance(crf, int) or not 0 <= crf <= 51:
         return err("INVALID_REQUEST", "crf out of range", {"field": "document.options.crf"})
@@ -232,6 +238,10 @@ def main() -> int:
             return None, err("INVALID_INPUT", f"{what} not found", {"reason": "not_found"})
         return resolved, None
 
+    for tname, tf in (opts.get("themes") or {}).items():   # ADR-102: theme files under the path policy
+        _p, rc = resolve_input(tf, f"options.themes.{tname}")
+        if rc is not None:
+            return rc
     video, rc = resolve_input(req["video"]["path"], "document.video.path")
     if rc is not None:
         return rc
@@ -240,7 +250,7 @@ def main() -> int:
     assets, fonts = {}, {}
     for i, el in enumerate(elements):
         where = f"elements[{i}]"
-        if not isinstance(el, dict) or set(el) - {"id", "type", "start", "end", "parameters", "animation"} or not {"id", "type", "start", "end", "parameters"} <= set(el):
+        if not isinstance(el, dict) or set(el) - {"id", "type", "start", "end", "parameters", "animation", "style", "fit"} or not {"id", "type", "start", "end", "parameters"} <= set(el):
             return err("INVALID_REQUEST", f"{where}: element shape", {"field": where})
         if not isinstance(el["id"], str) or not ID_RE.match(el["id"]):
             return err("INVALID_REQUEST", f"{where}.id", {"field": f"{where}.id"})
@@ -292,7 +302,7 @@ def main() -> int:
                 return err("UNSUPPORTED_FORMAT", f"{where}.parameters.image_path extension", {"element_id": el["id"]})
             assets[el["id"]] = {"path": img, "sha256": sha(img), "size": os.path.getsize(img)}
             full["image_path"] = {"sha256": assets[el["id"]]["sha256"], "size": assets[el["id"]]["size"]}
-        if t == "video_overlay":   # like the real Skill: the clip is an input under the path policy, recorded by hash
+        if t in ("video_overlay", "rendered_layer"):   # like the real Skill: the clip is an input under the path policy, recorded by hash (ADR-102: the layer too)
             clip, rc = resolve_input(full["video_path"], f"{where}.parameters.video_path")
             if rc is not None:
                 return rc

@@ -23,7 +23,8 @@ from ..models import Decision, Requirement
 from ..policy.rules import RuleSet
 from .decision_engine import DecisionEngine, resolve_setting
 from ..tools.color_grading.adapter import OPERATION_NEEDS as COLOR_REMEDY
-from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
+from .editing import EditRequirementError
+from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, parse_motion_options, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL, THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL,
                         element_label, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, placement_problems,
                         planned_picture_size, qc_requested)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
@@ -57,6 +58,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
     sub = parse_subtitle_requirements(m)
     cols = parse_color_requirements(m)
     mots = parse_motion_requirements(m)
+    mopts = parse_motion_options(m)   # ADR-102
     th = parse_thumbnail_requirements(m)
     qc = qc_requested(m)
     qc_ref = parse_qc_reference(m)
@@ -147,6 +149,15 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             gparams: Dict[str, Any] = {"asset_id": subject, "type": typ, "start": round(float(start), 3), "end": (round(float(end), 3) if end is not None else None), "parameters": dict(el["params"])}
             if el.get("fade") is not None:
                 gparams["fade"] = float(el["fade"])
+            for k in ("style", "fit"):   # ADR-102: a style preset / text fit for this element
+                if el.get(k) is not None:
+                    gparams[k] = el[k]
+            if typ == "logo" and not mopts["options"].get("themes"):
+                # ADR-102: the logo element draws the active theme's logo; without a theme there is no logo to draw (never a file guessed)
+                eng.decide(subject=subj_key, type="BLOCK", decision=f"BLOCK: logo on {subject} without a theme", reason="the logo element draws the active theme's logo "
+                           "(motion.themes / motion.theme name the theme file and its logo); none is given", confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK",
+                           provenance="USER", params={"asset_id": subject, "type": typ}, requirements=req)
+                continue
             label = element_label(typ, el["params"])
             eng.decide(subject=subj_key, type="TRANSFORM", decision=f"{typ} {label} on {subject} from {gparams['start']:g}s to {'the end' if end is None else f'{end:g}s'}",
                        reason=f"user asked for a {typ.replace('_', ' ')} ({req[0].source}); rendered on the finished picture" + (f" ({size[0]}x{size[1]})" if size else "")
@@ -156,6 +167,15 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
             finished[subject] = True
     if mots:
         cap_block(GRAPHICS_SKILL, f"capability.{GRAPHICS_SKILL}")
+        if mopts["options"]:   # ADR-102: the document-level styling of every render (style / brand kit / theme / reserved regions), one record per subject
+            for subject, sources in subjects:
+                words = ", ".join(f"{k}={sorted(v) if k == 'themes' else v}" for k, v in mopts["options"].items())
+                eng.decide(subject="graphics.options", type="TRANSFORM", decision=f"motion-graphics styling on {subject}: {words}",
+                           reason="user asked for these render options (" + ", ".join(r.key for r in mopts["requirements"]) + "); an element's own parameters and style win over them",
+                           confidence=1.0, evidence=[r.id for r in mopts["requirements"]] + probe_ids_of(sources), risk="LOW", approval="AUTO", provenance="USER",
+                           params={"asset_id": subject, "options": dict(mopts["options"])}, requirements=mopts["requirements"], serves_intent=None)
+    elif mopts["options"]:
+        raise EditRequirementError(", ".join(r.key for r in mopts["requirements"]) + " style motion-graphics elements, and none is asked for (motion.*)")
     # ---- subtitles: generate (sidecar) and optional burn-in, from the recognised transcripts of the subject's sources
     if sub["enabled"]:
         req = sub["requirements"]
