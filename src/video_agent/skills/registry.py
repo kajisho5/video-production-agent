@@ -346,6 +346,9 @@ def default_registry() -> SkillRegistry:
         ("integrity_analysis", "integrity", "media-analysis/integrity", ["ffmpeg", "ffprobe", "media-analysis"], "Full decode error count, frame counts, timestamp monotonicity (PASS / WARN / FAIL)"),
         ("scene_analysis", "scene_detection", "media-analysis/scenes", ["ffmpeg", "ffprobe", "media-analysis"], "Visual cuts with score (not semantic scenes)"),
         ("timing_analysis", "timing", "media-analysis/timing", ["ffprobe", "media-analysis"], "Packet timestamps, gaps, A/V duration mismatch"),
+        # ADR-103: media-analysis-skill 0.1.13's editing-style profile (its contract names filter:edgedetect for the burned-in subtitle probe)
+        ("edit_style_analysis", "edit_style", "media-analysis/style", ["ffmpeg", "ffprobe", "media-analysis", "filter:scdet", "filter:edgedetect"],
+         "Editing-style profile: cut rate, shot lengths, subtitle frequency / coverage / position, loudness, silence share"),
     ):
         r.register(SkillSpec(name, "1.0", desc, {"asset": "media"}, {"observation": kind}, caps, "LOW", True, "AUTO", [tool]))
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
