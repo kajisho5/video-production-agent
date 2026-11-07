@@ -60,15 +60,20 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.x: the same contract, now rep
 # 0.2.11 .. 0.2.16 (motion-graphics-skill #37 .. #42): element types logo / rendered_layer, style presets, text fit, themes, reserved regions;
 # `response` gains `conditional.reserved_regions` and `success.plan.warnings` (#41), a fatal key here until the re-pin. The pinned element types
 # are unchanged. Re-pinned from the v0.2.16 tag (ADR-097 addendum 6).
+# 0.2.17 (ADR-106): options.layer_export (one alpha layer file per element + manifest.json, inside the workspace), response.conditional.layer_export,
+# flags_used graphics / overlay keep_alpha / alpha_codec / alpha_mode, ffmpeg-skill/color in tools, execution.executables gain the transparent
+# canvas and color.py --retag. `execution` and `response` are fatal keys here, so the re-pin was required; re-pinned from the v0.2.17 tag.
 # 0.2.10 (motion-graphics-skill #36): version-only (roadmap docs PR on 2026-11-06 released it); re-pinned from the tag (ADR-097).
 # 0.2.9 (motion-graphics-skill #35): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097).
 # 0.2.8: dependencies[0].version_range ffmpeg-skill ">=1.0 <3.0" (was <2.0); nothing else changed; re-pinned (ADR-083).
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["motion-graphics", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
-COMMON_ARGS = ("input", "output", "elements", "crf", "preset", "options")   # ADR-102: options (style / brand_kit / themes / theme / reserved_regions)
+COMMON_ARGS = ("input", "output", "elements", "crf", "preset", "options")   # ADR-102: options (style / brand_kit / themes / theme / reserved_regions); ADR-106: layer_export
 ELEMENT_KEYS = ("id", "type", "start", "end", "parameters", "animation", "style", "fit")   # ADR-102: style / fit
-OPTION_KEYS = ("style", "brand_kit", "themes", "theme", "reserved_regions")
+OPTION_KEYS = ("style", "brand_kit", "themes", "theme", "reserved_regions", "layer_export")
+LAYER_EXPORT_KEYS = ("directory", "alpha_codec", "alpha_mode")   # ADR-106: contract layer_export.shape (directory a plain name, resolved inside the workspace)
+LAYER_ALPHA_MODES = ("straight", "premultiplied")
 PARAMETER_TYPES = ("string", "integer", "number", "boolean", "color", "position", "font", "path")
 PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow")
 OUTPUT_EXTENSION = ".mp4"
@@ -78,7 +83,7 @@ DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_ele
               "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors",
               "colors")   # ADR-067: 0.2.4's colour-name table, which the agent's planning reads from the pin
 DRIFT_ELEMENT_KEYS = ("type", "tool", "animation", "parameters", "required_capabilities", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.16.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.17.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -390,7 +395,7 @@ class MotionGraphicsAdapter(ToolAdapter):
                 raise ToolError(f"motion-graphics: {where}: {et} requires parameter {({'image_path': 'image', 'video_path': 'video'}).get(k, k)!r}")
         return out
 
-    def options_for(self, raw: Any, paths: Dict[str, str]) -> Dict[str, Any]:
+    def options_for(self, raw: Any, paths: Dict[str, str], workspace: Optional[str] = None) -> Dict[str, Any]:
         """ADR-102: the request options the agent may send: a style preset, a brand kit (role -> opaque colour), theme files (artifact ids -> existing
         .json files inside the allowed roots) with the active theme, reserved regions. A theme with a style or a brand kit is refused (the Skill would)."""
         if not isinstance(raw, dict) or set(raw) - set(OPTION_KEYS):
@@ -433,6 +438,34 @@ class MotionGraphicsAdapter(ToolAdapter):
             if not isinstance(rr, dict) or set(rr) - {"end_screen", "cards", "on_overlap"}:
                 raise ToolError("motion-graphics: options.reserved_regions must be {end_screen?, cards?, on_overlap?}")
             out["reserved_regions"] = json.loads(json.dumps(rr))
+        if "layer_export" in raw:
+            out["layer_export"] = self._layer_export(raw["layer_export"], workspace)
+        return out
+
+    def _layer_export(self, raw: Any, workspace: Optional[str]) -> Dict[str, Any]:
+        """ADR-106 (0.2.17, contract `layer_export`): {directory, alpha_codec?, alpha_mode?}. The agent never takes a path from a plan: `directory`
+        is a plain name, sent as that folder inside the workspace (the Skill checks it again with its PathPolicy); the codec and the mode are the
+        contract's. Whether the located ffmpeg-skill can make the layers is the Skill's check (TOOL_ERROR ffmpeg_skill_lacks_flag before rendering)."""
+        le = as_dict(self.contract.get("layer_export"))
+        if not le:
+            raise ToolError("motion-graphics: this Skill's contract has no layer_export (0.2.17+)")
+        if not isinstance(raw, dict) or set(raw) - set(LAYER_EXPORT_KEYS) or "directory" not in raw:
+            raise ToolError("motion-graphics: options.layer_export must be {directory, alpha_codec?, alpha_mode?}")
+        name = raw["directory"]
+        if not isinstance(name, str) or not self.id_re.match(name):
+            raise ToolError(f"motion-graphics: options.layer_export.directory {name!r} must be a plain folder name (it is made inside the workspace)")
+        if not workspace:
+            raise ToolError("motion-graphics: options.layer_export needs a workspace")
+        out: Dict[str, Any] = {"directory": str(Path(workspace).resolve() / name)}
+        if "alpha_codec" in raw:
+            codecs = sorted(as_dict(le.get("containers")))
+            if raw["alpha_codec"] not in codecs:
+                raise ToolError(f"motion-graphics: options.layer_export.alpha_codec {raw['alpha_codec']!r} is not one of {codecs}")
+            out["alpha_codec"] = raw["alpha_codec"]
+        if "alpha_mode" in raw:
+            if raw["alpha_mode"] not in LAYER_ALPHA_MODES:
+                raise ToolError(f"motion-graphics: options.layer_export.alpha_mode {raw['alpha_mode']!r} is not one of {list(LAYER_ALPHA_MODES)}")
+            out["alpha_mode"] = raw["alpha_mode"]
         return out
 
     def animation_for(self, et: str, raw: Any, where: str) -> Dict[str, Any]:
@@ -555,7 +588,7 @@ class MotionGraphicsAdapter(ToolAdapter):
                 raise ToolError(f"motion-graphics: preset must be one of {PRESETS}")
             options["preset"] = str(args["preset"])
         if args.get("options") is not None:   # ADR-102
-            options.update(self.options_for(args["options"], paths))
+            options.update(self.options_for(args["options"], paths, workspace=self.workspace or str(Path(out).parent)))
         req: Dict[str, Any] = {"schema": REQUEST_SCHEMA, "video": {"path": str(Path(src).resolve())}, "output": {"path": str(Path(out).resolve()), "overwrite": True}, "elements": elements}
         if options:
             req["options"] = options
@@ -667,6 +700,20 @@ class MotionGraphicsAdapter(ToolAdapter):
             errs.append("operations lack a rendered/reused record per element executed by an ffmpeg-skill tool")
         if not isinstance(as_dict(doc.get("engine")).get(ENGINE_ID), str):
             errs.append("engine lacks ffmpeg-skill")
+        le = doc.get("layer_export")
+        if le is not None:   # ADR-106: every layer file the Skill reports exists inside the export folder and has the hash it reports
+            le = as_dict(le)
+            folder = str(le.get("directory") or "")
+            layers = [as_dict(x) for x in le.get("layers") or []]
+            if not folder or not layers or {str(x.get("id")) for x in layers} != set(element_ids):
+                errs.append("layer_export lacks its directory or a layer per element")
+            for x in layers:
+                f = str(x.get("path") or "")
+                if not f or not self._under(f, folder) or not os.path.isfile(f) or not fingerprint_matches(x.get("sha256"), f)[0]:
+                    errs.append(f"layer_export layer {x.get('id')!r}: file missing, outside {folder} or its sha256 differs")
+            man = as_dict(le.get("manifest"))
+            if not man.get("path") or not os.path.isfile(str(man["path"])) or not fingerprint_matches(man.get("sha256"), str(man["path"]))[0]:
+                errs.append("layer_export manifest missing or its sha256 differs")
         prov = as_dict(doc.get("provenance"))
         if prov.get("output_hash") != o.get("sha256") or not as_dict(prov.get("video")).get("sha256") or not prov.get("operations"):
             errs.append("provenance incomplete (output_hash / video.sha256 / operations)")
@@ -678,6 +725,8 @@ class MotionGraphicsAdapter(ToolAdapter):
         if dry_run:
             plan = as_dict(doc.get("plan"))
             data["plan"] = {"document_id": plan.get("document_id"), "video": plan.get("video"), "timeline": plan.get("timeline")}
+            if isinstance(doc.get("layer_export"), dict):   # ADR-106: response.layer_export in plan (directory, codec, mode, layers to be written)
+                data["layer_export"] = doc["layer_export"]
             data["timeline"] = [{k: as_dict(t).get(k) for k in ("id", "type", "start", "end")} for t in plan.get("timeline") or []]
             data["commands"] = []
             return data
@@ -692,6 +741,12 @@ class MotionGraphicsAdapter(ToolAdapter):
         engine_ver = str(data["engine"].get(ENGINE_ID) or "")
         data["observation"] = {"kind": "media.probe", "source": f"{ENGINE_ID}/probe@{engine_ver}", "provenance": "OBSERVED",
                                "data": {k: o.get(k) for k in ("duration", "width", "height", "size", "sha256")}}
+        if isinstance(doc.get("layer_export"), dict):   # ADR-106: the layer files and manifest, as the Skill wrote them (checked in _check_response)
+            le = doc["layer_export"]
+            data["layer_export"] = {"directory": le.get("directory"), "manifest": le.get("manifest"), "alpha_codec": le.get("alpha_codec"), "alpha_mode": le.get("alpha_mode"),
+                                    "verified": le.get("verified"), "layers": [{k: as_dict(x).get(k) for k in ("id", "type", "start", "end", "box", "box_precision", "file", "path",
+                                                                                                            "sha256", "size", "alpha_codec", "alpha_mode", "verified")}
+                                                                                for x in le.get("layers") or []]}
         data["provenance"] = {"document_id": prov.get("document_id"), "video": prov.get("video"), "assets": prov.get("assets"), "fonts": prov.get("fonts"),
                               "operations": prov.get("operations"), "output_hash": prov.get("output_hash")}
         return data

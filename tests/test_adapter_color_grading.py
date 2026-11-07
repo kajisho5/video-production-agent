@@ -71,13 +71,13 @@ class ColorGradingAdapterTests(unittest.TestCase):
         ad = self._adapter()
         # 0.5.0: OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE are in the contract; the agent does not plan them (finishing.COLOR_OPERATIONS, ADR-097 addendum 6)
         self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
-                         ("0.5.1", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
+                         ("0.6.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
         # color-grading-skill #23: WHITE_BALANCE is no longer an unsupported type but an `operation_aliases` entry (temperature / tint of
         # PRIMARY_CORRECTION); the agent lowers only declared operation types, so it keeps sending PRIMARY_CORRECTION itself
         self.assertEqual(ad.unsupported, []); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
         self.assertEqual([(a["type"], a["alias_of"]) for a in ad.contract["operation_aliases"]], [("WHITE_BALANCE", "PRIMARY_CORRECTION")])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.5.1", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.6.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
@@ -212,6 +212,62 @@ class ColorGradingAdapterTests(unittest.TestCase):
             self.assertTrue(r.ok, r.data)
             self.assertEqual(r.data["operation"]["parameters"]["tonemap"], curve, name)
             self.assertEqual(r.data["operation"]["tonemap_selection"], {"tonemap": curve, "rule": why, "input_transfer": transfer}, name)
+
+    def test_alpha_kept_by_lut_apply_and_primary_correction(self):
+        """ADR-106: color-grading-skill 0.6.0 (its ADR-30) grades an alpha source with the alpha kept for the contract's keep_alpha operations
+        (LUT_APPLY / PRIMARY_CORRECTION) where ffmpeg-skill/color has --keep-alpha and the container holds the alpha line. The agent takes that
+        as a success only when the result's alpha says kept and verified and the output stores an alpha plane; the record is kept."""
+        from video_agent.tools.color_grading.adapter import KEEP_ALPHA_OPERATIONS
+        ka = pinned_contract()["alpha"]["keep_alpha"]
+        self.assertEqual(tuple(ka["operations"]), KEEP_ALPHA_OPERATIONS)
+        self.assertIn("ffmpeg-skill/color:keep-alpha", pinned_contract()["optional_capabilities"])
+        src = fake_video(self.tmp, "alpha.mov", pix_fmt="yuva444p10le")
+        ad = self._adapter()
+        out = str(Path(self.ws) / "ops" / "01_correct" / "alpha_correct.mov")
+        op = Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_correct", "exposure": 0.5}, inputs=["a"], outputs=["a_correct"], id="op_alpha")
+        r = ad.run(op, {"a": src, "a_correct": out}, timeout=30)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual(r.data["alpha"], {"kept": True, "alpha_codec": "prores4444", "alpha_mode": "straight", "precision_bits": 8})
+        self.assertTrue(r.data["operation"]["alpha"]["verification"]["ok"])
+        self.assertEqual(r.data["artifact"]["pix_fmt"], "yuva444p12le")
+        # an alpha record on a success that does not say kept + verified is not a success
+        doc = {"schema": "color-grading/response@1", "skill": {"id": "color-grading", "version": ad.version}, "status": "ok", "dry_run": False, "plan": {"graph": {}},
+               "results": [{"node_id": "op:edit", "status": "completed", "tool": "ffmpeg-skill/color", "type": "LUT_APPLY", "alpha": {"kept": False, "verification": {"ok": False}}}],
+               "outputs": [{"output_id": "out", "status": "completed", "path": out, "artifact": {"pix_fmt": "yuva444p12le"}, "provenance": {}}]}
+        self.assertTrue(any("not kept and verified" in e for e in ad._check_response(doc, out, False)))
+        doc["results"][0]["alpha"] = {"kept": True, "verification": {"ok": True}}
+        doc["outputs"][0]["artifact"]["pix_fmt"] = "yuv420p"
+        self.assertTrue(any("stores no alpha plane" in e for e in ad._check_response(doc, out, False)))
+        doc["results"][0]["type"] = "HDR_TO_SDR"
+        self.assertTrue(any("does not keep alpha" in e for e in ad._check_response(doc, out, False)))
+        # an ffmpeg-skill without --keep-alpha: the 0.5.0 refusal, as before
+        os.environ["FAKE_CG_MODE"] = "no_keep_alpha"
+        r = ad.run(op, {"a": src, "a_correct": out}, timeout=30)
+        self.assertFalse(r.ok)
+        self.assertEqual((r.data["error"]["details"]["reason"], r.data["error"]["recovery_class"]), ("alpha_not_preserved", "UNSUPPORTED_MEDIA"))
+
+    def test_validation_reasons_map_to_their_recovery_classes(self):
+        """ADR-106: 0.6.0's VALIDATION_ERROR reasons (ffmpeg-skill/color's own check of the written file) keep the Skill's code and details and get
+        their own recovery class: legal_levels_failed -> LEGAL_LEVELS_FAILED, alpha_lost / alpha_mismatch / alpha_unverified -> ALPHA_NOT_KEPT.
+        Both BLOCK (never retried); any other VALIDATION_ERROR keeps the shared mapping (SKILL_ERROR)."""
+        from video_agent.execution.recovery import RECOVERY_TABLE
+        policy = pinned_contract()["alpha"]["keep_alpha"]["verification"] + pinned_contract()["legalize"]["clamp"]["verification"]
+        for reason, cls in (("legal_levels_failed", "LEGAL_LEVELS_FAILED"), ("alpha_lost", "ALPHA_NOT_KEPT"), ("alpha_mismatch", "ALPHA_NOT_KEPT"), ("alpha_unverified", "ALPHA_NOT_KEPT")):
+            self.assertIn(reason, policy)
+            self.assertEqual(RECOVERY_TABLE[cls]["action"], "BLOCK")
+            os.environ["FAKE_CG_MODE"] = reason
+            out = str(Path(self.ws) / "ops" / reason / "o.mp4")
+            r = self._adapter().run(Operation(tool="color-grading/run", args={"operation": "LEGALIZE", "input": "a", "output": "o"}, inputs=["a"], outputs=["o"], id="op_" + reason),
+                                    {"a": self.src, "o": out}, timeout=30)
+            e = r.data["error"]
+            self.assertEqual((r.ok, r.exit_code, e["code"], e["retryable"], e["details"]["reason"], e["recovery_class"]), (False, 11, "VALIDATION_ERROR", False, reason, cls))
+            self.assertEqual(classify_error(r), cls)
+            nxt = next_attempt(r, 1, 3, 30)
+            self.assertEqual((nxt["action"], nxt["class"]), ("BLOCK", cls))
+        os.environ["FAKE_CG_MODE"] = "validation_error"
+        r = self._adapter().run(Operation(tool="color-grading/run", args={"operation": "RETAG", "input": "a", "output": "o", "target": "bt709"}, inputs=["a"], outputs=["o"], id="op_v"),
+                                {"a": self.src, "o": str(Path(self.ws) / "ops" / "v" / "o.mp4")}, timeout=30)
+        self.assertEqual(r.data["error"]["recovery_class"], RECOVERY_CLASS["VALIDATION_ERROR"])
 
     def test_alpha_source_refusal_blocks_with_its_own_recovery_class(self):
         """color-grading-skill 0.5.0 (its ADR-25): an alpha source is refused for every re-encoding operation with UNSUPPORTED_FORMAT /
@@ -398,9 +454,12 @@ class ColorGradingRealSkillTests(unittest.TestCase):
             self.assertEqual(r.data["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
             self.assertEqual(r.data["operation"]["type"], typ)
 
-    def test_real_alpha_source_refused(self):
-        """color-grading-skill 0.5.0 on real media: a ProRes 4444 source with an alpha plane is refused for PRIMARY_CORRECTION (UNSUPPORTED_FORMAT,
-        alpha_not_preserved, exit 6) before anything runs, and the agent blocks it as UNSUPPORTED_MEDIA (ADR-097 addendum 6)."""
+    def test_real_alpha_source_kept_or_refused(self):
+        """color-grading-skill 0.6.0 on real media, by what its doctor detects (`optional_capabilities`, ffmpeg-skill/color:keep-alpha):
+        - supported (ffmpeg-skill 3.2.3+): PRIMARY_CORRECTION on a ProRes 4444 source with an alpha plane grades it with the alpha kept and verified;
+          the agent takes it as a success (alpha kept, the output stores an alpha plane) and keeps the record (ADR-106);
+        - otherwise (e.g. ffmpeg-skill 2.x): refused as in 0.5.0 (UNSUPPORTED_FORMAT, alpha_not_preserved, exit 6) before anything runs, blocked as
+          UNSUPPORTED_MEDIA (ADR-097 addendum 6)."""
         if not (self.skill and self.engine and shutil.which("ffmpeg")):
             self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
         src = str(Path(self.tmp) / "src_alpha" / "key.mov")
@@ -412,6 +471,14 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         out = str(Path(ws) / "ops" / "01_correct" / "key_correct.mov")
         r = ad.run(Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_correct", "format": "mov", "exposure": 0.5},
                              inputs=["a"], outputs=["a_correct"], id="op_real_alpha"), {"a": src, "a_correct": out}, timeout=120)
+        keep = ((ad.doctor().get("checks") or {}).get("optional_capabilities") or {}).get("ffmpeg-skill/color:keep-alpha") or {}
+        if keep.get("status") == "supported":
+            self.assertTrue(r.ok, r.data)
+            self.assertEqual((r.data["alpha"]["kept"], r.data["alpha"]["alpha_codec"], r.data["alpha"]["precision_bits"]), (True, "prores4444", 8))
+            self.assertTrue(r.data["operation"]["alpha"]["verification"]["ok"])
+            pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", out], capture_output=True, text=True, check=True)
+            self.assertTrue(pr.stdout.strip().startswith("yuva"), pr.stdout)
+            return
         self.assertFalse(r.ok, r.data)
         e = r.data["error"]
         self.assertEqual((r.exit_code, e["code"], e["retryable"], e["details"].get("reason"), e["recovery_class"]), (6, "UNSUPPORTED_FORMAT", False, "alpha_not_preserved", "UNSUPPORTED_MEDIA"))

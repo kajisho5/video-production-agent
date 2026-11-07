@@ -294,13 +294,13 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("video_rotate", "1.0", "Rotate clockwise by 90 / 180 / 270 degrees and / or mirror (no scaling, no crop)", {"asset": "video", "degrees": "int", "flip": "h|v"},
                          {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "LOW", True, "CONFIRM", ["video-editing/rotate"]))
     # ADR-099: video-editing-skill 0.5.0 -- PUNCH_IN (a zoom on the user's box for a time range), CONDENSE (the asset's trim when the user approved cut
-    # proposals) and CUT with a precision the user asked for (auto) or the segment cache. The last two run the asset's one video.trim
+    # proposals) and CUT with a precision the user asked for (auto; smart, ADR-106) or the segment cache. The last two run the asset's one video.trim
     r.register(SkillSpec("video_punch_in", "1.0", "Zoom in on a subject box for a time range (hard cut in and out; frame size kept)",
                          {"asset": "video", "start": "float", "end": "float", "scale": "float", "subject": "box"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/punch_in"]))
     r.register(SkillSpec("video_condense", "1.0", "Cut the approved proposals (retakes, silences, static spans) and keep the rest", {"asset": "video", "keep": "ranges"},
                          {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/condense"]))
-    r.register(SkillSpec("video_cut", "1.0", "Cut keep ranges with the requested precision (auto: stream copy where it lands within 0.2 s) or the segment cache",
+    r.register(SkillSpec("video_cut", "1.0", "Cut keep ranges with the requested precision (auto: stream copy where it lands within 0.2 s; smart: frame-accurate, only the partial GOPs re-encoded) or the segment cache",
                          {"asset": "video", "keep": "ranges"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "LOW", True, "AUTO", ["video-editing/cut"]))
     # ADR-070: video-editing-skill IMAGE_INSERT (0.4.0, #21): a still (title card, end slate) → a silent clip at the picture's frame / rate;
     # the plan joins it before / after the finished picture with a video_concat step (video-editing/concat) on the same subject

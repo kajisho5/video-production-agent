@@ -1782,12 +1782,12 @@ def _check_requirement_keys(user_requirements: Dict[str, Any]) -> None:
 _SWITCH_OR_AUTO = (True, False, "auto")
 _CORE_VALUE_CHECKS = {   # the six keys older than ADR-029's REQUIREMENT_KEYS constants, read directly by decision.py / intent.py
     "edit.trim_leading_silence": lambda v: v in _SWITCH_OR_AUTO, "edit.trim_trailing_silence": lambda v: v in _SWITCH_OR_AUTO,
-    "audio.normalize": lambda v: v in _SWITCH_OR_AUTO, "edit.precision": lambda v: v in ("frame", "keyframe-ok", "auto"),   # ADR-099: auto
+    "audio.normalize": lambda v: v in _SWITCH_OR_AUTO, "edit.precision": lambda v: v in ("frame", "keyframe-ok", "auto", "smart"),   # ADR-099: auto; ADR-106: smart
     "audio.loudness.target_lufs": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -70.0 <= float(v) <= -5.0,
     "audio.loudness.true_peak": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -9.0 <= float(v) <= 0.0,
 }
 _CORE_VALUE_HINTS = {"edit.trim_leading_silence": "true / false / auto", "edit.trim_trailing_silence": "true / false / auto", "audio.normalize": "true / false / auto",
-                     "edit.precision": "frame / keyframe-ok / auto", "audio.loudness.target_lufs": "a number of LUFS from -70 to -5", "audio.loudness.true_peak": "a number of dBTP from -9 to 0"}
+                     "edit.precision": "frame / keyframe-ok / auto / smart", "audio.loudness.target_lufs": "a number of LUFS from -70 to -5", "audio.loudness.true_peak": "a number of dBTP from -9 to 0"}
 
 
 def _check_core_values(user_requirements: Dict[str, Any]) -> None:
@@ -1809,7 +1809,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     if unknown:
         raise ValueError(f"unknown requirement key(s): {', '.join(unknown)} (matches a recognised namespace but is not a real key there)")
     _check_core_values(user_requirements)
-    if user_requirements.get("edit.segment_cache") in (True, "true", "yes", "on", "1") and user_requirements.get("edit.precision") in ("auto", "keyframe-ok"):
+    if user_requirements.get("edit.segment_cache") in (True, "true", "yes", "on", "1") and user_requirements.get("edit.precision") in ("auto", "keyframe-ok", "smart"):
         raise ValueError(f"edit.segment_cache renders frame-precision cuts; edit.precision={user_requirements['edit.precision']} asks for another precision (give one of them)")   # ADR-099
     reqs = [Requirement(key=k, value=user_requirements[k], provenance="USER", source="cli") for k in keys]
     rm = requirement_map(reqs)

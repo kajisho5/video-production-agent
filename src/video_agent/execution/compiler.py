@@ -110,8 +110,8 @@ def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -
         if op.get("segment_cache"):   # ADR-099: options.segment_cache (frame precision only; the lowering refuses anything else)
             args0["segment_cache"] = True
         return args0
-    if op.get("precision") == "auto" or op.get("segment_cache"):
-        raise CompileError(f"precision auto and the segment cache are video-editing-skill's; {tool} cannot run this video.trim")
+    if op.get("precision") in ("auto", "smart") or op.get("segment_cache"):   # ADR-106: smart, like auto, is video-editing-skill's
+        raise CompileError(f"precision auto / smart and the segment cache are video-editing-skill's; {tool} cannot run this video.trim")
     # the reference catalog shape (any adapter implementing the typed `cut` catalog): unchanged since Phase 1
     args: Dict[str, Any] = {"input": current, "segments": ",".join(f"{s:.3f}-{e:.3f}" for s, e in keep), "output": out_id}
     if op.get("accurate"):

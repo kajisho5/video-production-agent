@@ -39,7 +39,9 @@ CONTRACT_SCHEMA = "color-grading/contract@1"
 REQUEST_SCHEMA = "color-grading/request@1"
 RESPONSE_SCHEMA = "color-grading/response@1"
 DOCTOR_SCHEMA = "color-grading/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.", "0.5.")  # 0.5.0 (color-grading-skill #31 .. #37, ADR-097 addendum 6): OCIO_TRANSFORM /
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.0 (ADR-106): additive -- LEGALIZE clamp + measured shares,
+                                               # LUT_APPLY / PRIMARY_CORRECTION keep an alpha source's alpha (keep_alpha), three VALIDATION_ERROR reasons
+                                               # (mapped below); pinned blocks unchanged. 0.5.0 (color-grading-skill #31 .. #37, ADR-097 addendum 6): OCIO_TRANSFORM /
                                                # MATCH_CAMERA / LEGALIZE (not lowered), the pinned blocks kept byte-identical (#34),
                                                # alpha sources refused for re-encoding ops (#36: UNSUPPORTED_FORMAT, mapped to
                                                # UNSUPPORTED_MEDIA below). 0.4.0 (color-grading-skill #8): gamma/lift/gain/levels/curves
@@ -57,6 +59,13 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # (UNSUPPORTED_FORMAT, details.reason alpha_not_preserved, exit 6). That is the source media, not arguments the compiler got wrong, so it gets
 # its own recovery class (UNSUPPORTED_MEDIA: BLOCK, never retried) instead of the generic INVALID_ARGS (ADR-097 addendum 6).
 ALPHA_REFUSAL_REASON = "alpha_not_preserved"
+# color-grading-skill 0.6.0 (its ADR-29 / ADR-30, ADR-106 here): VALIDATION_ERROR reasons the Skill raises when ffmpeg-skill/color's own check of the
+# written file fails -- the clamp's legal_levels step, or the alpha step of an alpha-keeping grade (alpha_lost also for a VP9 alpha the probe does
+# not see). Not retryable (the same source and engine fail the same way); each gets its own recovery class so the BLOCK names what to change.
+VALIDATION_REASON_CLASS = {"legal_levels_failed": "LEGAL_LEVELS_FAILED", "alpha_lost": "ALPHA_NOT_KEPT", "alpha_mismatch": "ALPHA_NOT_KEPT",
+                           "alpha_unverified": "ALPHA_NOT_KEPT"}
+# contract alpha.keep_alpha.operations: the operations that grade an alpha source with the alpha kept (ffmpeg-skill/color --keep-alpha)
+KEEP_ALPHA_OPERATIONS = ("LUT_APPLY", "PRIMARY_CORRECTION")
 # ADR-100: what each 0.5.0 operation needs when the Skill's doctor reports it unavailable (said in the plan's BLOCK; the engine's name stays in tools/)
 OPERATION_NEEDS = {"OCIO_TRANSFORM": "install color-grading-skill's optional `ocio` extra (PyOpenColorIO)",
                    "MATCH_CAMERA": "use ffmpeg-skill 3.1.6 or later (its BT.709 LUT legs)", "LEGALIZE": "use ffmpeg-skill 3.1.6 or later (its BT.709 LUT legs)"}
@@ -77,7 +86,7 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # ADR-048: `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, reported by its doctor).
 FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.1.json")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.0.json")   # ADR-106: 0.6.0 (ADR-105: 0.5.1, HLG tone map defaults to mobius)
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -487,6 +496,15 @@ class ColorGradingAdapter(ToolAdapter):
         for k in ("duration", "width", "height", "codec"):
             if art.get(k) in (None, ""):
                 errs.append(f"artifact lacks probe fact {k}")
+        alpha = res[0].get("alpha") if len(res) == 1 else None
+        if alpha is not None:   # ADR-106: an alpha-keeping grade (0.6.0, keep_alpha) is a success only when the Skill says the alpha was kept and verified
+            a = as_dict(alpha)
+            if res[0].get("type") not in KEEP_ALPHA_OPERATIONS:
+                errs.append(f"alpha reported for {res[0].get('type')!r}, which does not keep alpha (contract alpha.keep_alpha.operations)")
+            elif a.get("kept") is not True or not as_dict(a.get("verification")).get("ok"):
+                errs.append("alpha reported but not kept and verified (alpha.kept / alpha.verification.ok)")
+            elif not re.match(str(as_dict(self.contract.get("alpha")).get("pix_fmt_pattern") or "^$"), str(art.get("pix_fmt") or "")):
+                errs.append(f"alpha kept but the output pix_fmt {art.get('pix_fmt')!r} stores no alpha plane")
         prov = as_dict(o.get("provenance"))
         if prov.get("skill") != SKILL_ID or str(prov.get("skill_version")) != self.version or prov.get("output_hash") != art.get("sha256") or not prov.get("operations"):
             errs.append("provenance incomplete (skill / version / output_hash / operations)")
@@ -509,6 +527,11 @@ class ColorGradingAdapter(ToolAdapter):
         data["operation"] = {k: res.get(k) for k in ("operation_id", "type", "tool", "status", "parameters", "input_hash", "measurements", "required_capabilities")}
         if isinstance(res.get("tonemap_selection"), dict):   # ADR-105: HDR_TO_SDR's curve and the Skill's rule (request | hlg_default | default)
             data["operation"]["tonemap_selection"] = res["tonemap_selection"]
+        for k in ("alpha", "legalize"):   # ADR-106: the kept alpha (LUT_APPLY / PRIMARY_CORRECTION) and LEGALIZE's clamp / measured shares, as the Skill wrote them
+            if isinstance(res.get(k), dict):
+                data["operation"][k] = res[k]
+        if isinstance(res.get("alpha"), dict):
+            data["alpha"] = {k: res["alpha"].get(k) for k in ("kept", "alpha_codec", "alpha_mode", "precision_bits")}
         data["artifact"] = {"path": out_path, "sha256": art.get("sha256"), "size": art.get("size"), "duration": art.get("duration"), "width": art.get("width"), "height": art.get("height"),
                             "codec": art.get("codec"), "pix_fmt": art.get("pix_fmt"), "color_space": art.get("color_space"), "color_primaries": art.get("color_primaries"),
                             "color_transfer": art.get("color_transfer"), "color_range": art.get("color_range"), "hdr": art.get("hdr"), "dolby_vision": art.get("dolby_vision"),
@@ -524,6 +547,8 @@ class ColorGradingAdapter(ToolAdapter):
         r = failed_result(op, SKILL_ID, getattr(self, "version", ""), attempt, dry_run, t0, code, errc, message, retryable, details)
         if errc == "UNSUPPORTED_FORMAT" and (details or {}).get("reason") == ALPHA_REFUSAL_REASON:
             r.data["error"]["recovery_class"] = "UNSUPPORTED_MEDIA"
+        elif errc == "VALIDATION_ERROR" and (details or {}).get("reason") in VALIDATION_REASON_CLASS:   # ADR-106
+            r.data["error"]["recovery_class"] = VALIDATION_REASON_CLASS[details["reason"]]
         return r
 
 

@@ -4,7 +4,7 @@
   "id": "color-grading",
   "name": "color-grading-skill",
   "package": "color-grading-skill",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "contract_version": 1,
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
@@ -30,7 +30,7 @@
     {
       "tool_id": "color-grading/run",
       "skill_id": "color-grading",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "role": "execution",
       "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
       "inputs": [
@@ -63,7 +63,8 @@
       "delegates_to": [
         "ffmpeg-skill/probe",
         "ffmpeg-skill/color",
-        "ffmpeg-skill/look"
+        "ffmpeg-skill/look",
+        "ffmpeg-skill/check"
       ]
     }
   ],
@@ -128,7 +129,8 @@
         "ffmpeg-skill/color"
       ],
       "optional_tools": [
-        "ffmpeg-skill/look"
+        "ffmpeg-skill/look",
+        "ffmpeg-skill/check"
       ]
     }
   ],
@@ -986,8 +988,91 @@
       "LEGALIZE"
     ],
     "pix_fmt_pattern": "^(yuva|gbrap|ya(8|16)|rgba|bgra|argb|abgr)",
-    "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes through ffmpeg-skill/color, which writes no alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). Premultiplied / straight alpha handling is not implemented (docs/decisions.md ADR-25)"
+    "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; docs/decisions.md ADR-25, ADR-30)",
+    "keep_alpha": {
+      "operations": [
+        "LUT_APPLY",
+        "PRIMARY_CORRECTION"
+      ],
+      "requires": "ffmpeg-skill/color:keep-alpha (--keep-alpha, --alpha-codec, --alpha-mode)",
+      "refused_for_with_keep_alpha": [
+        "HDR_TO_SDR",
+        "OCIO_TRANSFORM",
+        "MATCH_CAMERA",
+        "LEGALIZE"
+      ],
+      "alpha_codec_by_input_codec": {
+        "prores": "prores4444",
+        "qtrle": "qtrle",
+        "png": "png",
+        "vp9": "vp9"
+      },
+      "alpha_codec_default": "prores4444",
+      "containers": {
+        "prores4444": [
+          ".mov",
+          ".mkv"
+        ],
+        "qtrle": [
+          ".mov"
+        ],
+        "png": [
+          ".mov",
+          ".mkv"
+        ],
+        "vp9": [
+          ".mkv"
+        ]
+      },
+      "alpha_mode": "straight",
+      "encoders": {
+        "prores4444": "prores_ks",
+        "qtrle": "qtrle",
+        "png": "png",
+        "vp9": "libvpx-vp9"
+      },
+      "precision_bits": 8,
+      "precision": "ffmpeg-skill/color keeps the alpha at 8 bits: a deeper source alpha comes back within one 8-bit code (a warning says so); an 8-bit alpha is bit-identical",
+      "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without --keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
+      "premultiplied_source": "not un-premultiplied: the source's colour is taken as straight, as ffmpeg-skill/color takes it",
+      "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
+      "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
+      "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification} in results and provenance"
+    }
   },
+  "legalize": {
+    "clamp": {
+      "requires": "ffmpeg-skill/color:legalize",
+      "how": "color --lut <soft clip> --legalize <profile>: one encode, clamped after the 4:2:0 conversion",
+      "verification": "ffmpeg-skill/color's legal_levels step must pass (at most 1 % of one frame's luma or chroma samples out), else VALIDATION_ERROR legal_levels_failed",
+      "identity": "the clamp's profile (or null without it) is part of the operation identity"
+    },
+    "out_of_range_share": {
+      "requires": "ffmpeg-skill/check:levels",
+      "measured_on": [
+        "the operation's input (before)",
+        "the written file (after)"
+      ],
+      "keys": [
+        "frames",
+        "bit_depth",
+        "legal",
+        "out_of_range_pct",
+        "brng_pct",
+        "worst_frame",
+        "min",
+        "max",
+        "window_seconds",
+        "windows"
+      ],
+      "not_measured": "{measured: false, reason} on a checkout without check --levels, or when a file cannot be measured (an RGB picture)"
+    }
+  },
+  "optional_capabilities": [
+    "ffmpeg-skill/check:levels",
+    "ffmpeg-skill/color:legalize",
+    "ffmpeg-skill/color:keep-alpha"
+  ],
   "x264": {
     "crf_range": [
       0,
@@ -1044,7 +1129,8 @@
     "tools_used": [
       "probe",
       "color",
-      "look"
+      "look",
+      "check"
     ],
     "flags_used": {
       "probe": [
@@ -1080,7 +1166,11 @@
         "preset",
         "json",
         "quality",
-        "crf"
+        "crf",
+        "legalize",
+        "keep_alpha",
+        "alpha_codec",
+        "alpha_mode"
       ],
       "look": [
         "input",
@@ -1088,6 +1178,15 @@
         "at",
         "width",
         "no_timecode",
+        "json"
+      ],
+      "check": [
+        "input",
+        "platform",
+        "no_loudness",
+        "levels",
+        "levels_window",
+        "levels_tolerance",
         "json"
       ]
     },
@@ -1131,6 +1230,18 @@
         "encoder_quality": [
           "quality",
           "crf"
+        ]
+      }
+    },
+    "optional_flags": {
+      "color": {
+        "color_legalize": [
+          "legalize"
+        ],
+        "color_keep_alpha": [
+          "keep_alpha",
+          "alpha_codec",
+          "alpha_mode"
         ]
       }
     },
@@ -1253,10 +1364,11 @@
       "retagged (OCIO_TRANSFORM)",
       "reference (MATCH_CAMERA)",
       "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
-      "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})",
+      "legalize (LEGALIZE: profile, limits, knee, lut_sha256, clamp {applied, tool, standard, verification, residual} or {applied: false, reason}, out_of_range_share {measured, tool, standard, unit, before, after} or {measured: false, reason})",
+      "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification)",
       "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"
     ],
-    "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; LEGALIZE: the LUT's sha256"
+    "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp)"
   },
   "request_types": {
     "operation_types": [

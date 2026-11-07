@@ -4,7 +4,7 @@
   "id": "motion-graphics",
   "name": "motion-graphics-skill",
   "package": "motion-graphics-skill",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "contract_version": 1,
   "kind": "execution",
   "role": "motion graphics rendering (execution); not design, not decision",
@@ -28,7 +28,7 @@
     {
       "tool_id": "motion-graphics/run",
       "skill_id": "motion-graphics",
-      "version": "0.2.16",
+      "version": "0.2.17",
       "role": "execution",
       "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, video-on-video picture-in-picture/chroma-key overlays, solid-colour rectangles, with fade animation) onto a video and write a validated artifact with provenance",
       "inputs": [
@@ -69,7 +69,8 @@
         "ffmpeg-skill/probe",
         "ffmpeg-skill/graphics",
         "ffmpeg-skill/overlay",
-        "ffmpeg-skill/background"
+        "ffmpeg-skill/background",
+        "ffmpeg-skill/color"
       ]
     }
   ],
@@ -175,7 +176,8 @@
         "ffmpeg-skill/probe",
         "ffmpeg-skill/graphics",
         "ffmpeg-skill/overlay",
-        "ffmpeg-skill/background"
+        "ffmpeg-skill/background",
+        "ffmpeg-skill/color"
       ]
     }
   ],
@@ -1515,6 +1517,50 @@
     "validate": "`validate` touches no files, so it checks options.themes / options.theme structurally and applies no theme",
     "check_command": "motion-graphics theme-check <theme.json> --json prints the validated theme and its contrast report"
   },
+  "layer_export": {
+    "request_field": "options.layer_export",
+    "shape": {
+      "directory": "path inside the workspace (PathPolicy): the layer files and manifest.json are written there",
+      "alpha_codec?": "png | prores4444 | qtrle | vp9 (default prores4444)",
+      "alpha_mode?": "straight | premultiplied (default straight)"
+    },
+    "containers": {
+      "prores4444": ".mov",
+      "qtrle": ".mov",
+      "png": ".mov",
+      "vp9": ".webm"
+    },
+    "files": "one per element, <element id><container>, plus manifest.json; an existing one is replaced only with document.output.overwrite (OUTPUT_ERROR, details.reason exists, before anything renders)",
+    "timing": "every layer has the programme's size, frame rate and length and starts at 0 s; the element shows at its own start..end, as in the programme",
+    "how": "ffmpeg-skill/background --transparent makes one canvas (the source's size, rate and length) and ffmpeg-skill/color --retag gives it the programme's colour tags; each element is the same graphics / overlay call that burns it into the programme, on that canvas, with --keep-alpha --alpha-codec --alpha-mode (no audio), so every layer carries the programme's matrix, primaries and transfer tags",
+    "requires": {
+      "ffmpeg_skill_flags": {
+        "background": [
+          "transparent",
+          "fps",
+          "alpha_codec",
+          "alpha_mode"
+        ],
+        "graphics": [
+          "keep_alpha",
+          "alpha_codec",
+          "alpha_mode"
+        ],
+        "overlay": [
+          "keep_alpha",
+          "alpha_codec",
+          "alpha_mode"
+        ],
+        "color": [
+          "retag"
+        ]
+      },
+      "otherwise": "TOOL_ERROR before anything renders (details.reason ffmpeg_skill_lacks_flag, details.flags; or ffmpeg_skill_lacks_alpha_codec when the checkout does not offer the codec); doctor reports capability ffmpeg-skill-feature:layer_export"
+    },
+    "result": "response.layer_export {directory, manifest {path, sha256}, alpha_codec, alpha_mode, canvas {tool, operation_id, status, output_hash, parameters, seconds}, layers [{id, type, start, end, box, box_precision, file, path, sha256, size, duration, tool, alpha_codec, alpha_mode, verified, alpha, seconds, tool_commands_observed}], verified}; plan: response.layer_export {directory, alpha_codec, alpha_mode, manifest, canvas, layers [{id, type, start, end, file, tool, box, box_precision}]}",
+    "verification": "ffmpeg-skill reads each layer's alpha back (its `alpha` step: an alpha plane is stored, and every frame's alpha is at or above the canvas's) and says `verified`; this skill also probes each layer (size, length). A layer that ffmpeg-skill does not report verified is a warning, and layer_export.verified is false",
+    "box": "the element's box at rest, as reserved_regions computes it: exact for a shape and a sized image / video / layer, estimated for templates (box_precision says which); null when it could not be measured"
+  },
   "positions": {
     "named": [
       "top-left",
@@ -1576,7 +1622,8 @@
     "stderr": "diagnostics only",
     "executables": [
       "python3 <ffmpeg-skill>/scripts/{probe,graphics,overlay}.py (argv lists)",
-      "python3 <ffmpeg-skill>/scripts/background.py (argv list; shape elements only, ADR-22)"
+      "python3 <ffmpeg-skill>/scripts/background.py (argv list; shape elements, ADR-22, and the transparent canvas of a layer export, ADR-30)",
+      "python3 <ffmpeg-skill>/scripts/color.py --retag (argv list; the layer export canvas's colour tags, ADR-30)"
     ],
     "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, MOTION_GRAPHICS_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, ~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
     "shell": false,
@@ -1628,7 +1675,10 @@
         "bottom",
         "duration",
         "text",
-        "top"
+        "top",
+        "keep_alpha",
+        "alpha_codec",
+        "alpha_mode"
       ],
       "overlay": [
         "input",
@@ -1662,7 +1712,10 @@
         "crf",
         "overwrite",
         "platform",
-        "place"
+        "place",
+        "keep_alpha",
+        "alpha_codec",
+        "alpha_mode"
       ]
     },
     "required_flags": {
@@ -1860,6 +1913,11 @@
           "secondary?": "RRGGBB",
           "background?": "RRGGBB",
           "text?": "RRGGBB"
+        },
+        "layer_export?": {
+          "directory": "layers",
+          "alpha_codec?": "prores4444",
+          "alpha_mode?": "straight"
         }
       },
       "elements[].style?": "a style_presets name",
@@ -1882,6 +1940,14 @@
         ],
         "when": "options.reserved_regions is given",
         "shape": "see reserved_regions.result"
+      },
+      "layer_export": {
+        "in": [
+          "run",
+          "plan"
+        ],
+        "when": "options.layer_export is given",
+        "shape": "see layer_export.result"
       }
     },
     "success": {

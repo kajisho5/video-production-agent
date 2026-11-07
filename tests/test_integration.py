@@ -1907,7 +1907,7 @@ class SubtitleFeaturesRealTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class MotionGraphicsFeaturesRealTests(unittest.TestCase):
-    """ADR-102 on the real motion-graphics-skill 0.2.16 and ffmpeg-skill: a theme file with a logo drawn by the `logo` element, a pre-rendered
+    """ADR-102 on the real motion-graphics-skill 0.2.16 (pin 0.2.17, ADR-106) and ffmpeg-skill: a theme file with a logo drawn by the `logo` element, a pre-rendered
     alpha clip as a `rendered_layer`, a title fitted to a box width, reserved regions reported; and a style preset with a brand kit."""
 
     @classmethod
@@ -2087,7 +2087,7 @@ class VideoEditingRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.5.1"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.6.0"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
         # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
@@ -2187,7 +2187,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
         self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.5.1")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.6.0")
         self.assertEqual(len(prov["skill_observations"]), len(rows))
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
@@ -2242,7 +2242,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
-        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.5.1" for e in rows.values()))
+        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.6.0" for e in rows.values()))
 
     def test_image_insert_before_the_picture_end_to_end(self):
         """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
@@ -2280,7 +2280,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
         self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
         self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
-        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.5.1")
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.6.0")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
@@ -2371,6 +2371,25 @@ class VideoEditingFeaturesRealTests(unittest.TestCase):
         self.assertIn(r["data"]["reported"]["segments"]["join"], ("single", "stream_copy", "single_pass_fallback"))
         dur, _ = self._probe(r["output"])
         self.assertAlmostEqual(dur, sum(e - s for s, e in keep), delta=0.1)
+
+    def test_precision_smart(self):
+        """ADR-106 on the real video-editing-skill 0.6.0: edit.precision=smart runs TRIM precision smart. On an ffmpeg-skill with cut --smart
+        (3.2.3+) the engine re-encodes only the partial GOPs or falls back to a whole re-encode with its reason; on one without it (2.x) the Skill
+        runs --accurate and says engine_without_smart. Either way the cut is frame-accurate and the report says which happened."""
+        _, d, out = self._render("smart", [self.a], {"edit.trim": "2-10", "edit.precision": "smart"})
+        trim = next(op for op in d["video"]["operations"] if op["type"] == "video.trim")
+        self.assertEqual((trim["precision"], trim["accurate"]), ("smart", True))
+        r = next(x for x in out["execution"]["results"] if x["tool"] == "video-editing/trim")
+        cuts = r["data"]["reported"]["cuts"]
+        self.assertEqual(cuts["requested_precision"], "smart")
+        self.assertIsInstance(cuts["smart"], dict, cuts)
+        self.assertIsInstance(cuts["fallbacks"], list, cuts)
+        if cuts["smart"].get("applied") is not True:
+            self.assertTrue(cuts["smart"].get("reason_code"), cuts["smart"])   # a fallback always says why
+        if cuts["smart"].get("reason_code") == "engine_without_smart":
+            self.assertTrue(any("precision smart" in w for w in r["data"]["warnings"]), r["data"]["warnings"])
+        dur, _ = self._probe(r["output"])
+        self.assertAlmostEqual(dur, sum(e - s for s, e in trim["keep"]), delta=0.35, msg="smart is frame-accurate (contract.smart_cut.validation: within 0.35 s)")
 
     def test_stinger_concat_of_an_ai_generated_input(self):
         _, d, out = self._render("stinger", [self.a, self.b], {

@@ -56,7 +56,8 @@ FLIPS = ("h", "v")           # the contract's ROTATE.flip ("h | v")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "args", "script", "binary", "executable", "executables", "env", "environment",
                       "filter", "filters", "filter_complex", "ffmpeg", "ffprobe", "api_key", "apikey", "token", "secret", "password", "credentials",
                       "workspace", "allowed_input", "allowed_inputs", "allowed_input_roots", "allowed-input", "ffmpeg_skill_dir", "ffmpeg-skill-dir", "path", "paths")
-PRECISIONS = ("frame", "keyframe", "auto")   # TRIM / CUT precision (auto since 0.5.0: stream copy when the copy lands within 0.2 s, else frame)
+PRECISIONS = ("frame", "keyframe", "auto", "smart")   # TRIM / CUT precision (auto since 0.5.0: stream copy when the copy lands within 0.2 s, else frame;
+# smart since 0.6.0, ADR-106: frame-accurate, only the partial GOPs at each cut point re-encoded, else the whole cut -- contract.smart_cut)
 PUNCH_SCALE = (1.0, 4.0)                     # PUNCH_IN.scale: above 1, at most 4
 CONDENSE_LABEL = re.compile(r"^[a-z0-9][a-z0-9_+.-]{0,39}$")   # CONDENSE segments[].label / rules keys
 CONDENSE_SPEED = (0.25, 4.0)                 # CONDENSE {speed: factor}: 1/4..4, not 1
@@ -126,7 +127,7 @@ def ranges_from_args(args: Dict[str, Any]) -> List[Tuple[float, float]]:
 def _precision(args: Dict[str, Any]) -> str:
     if args.get("precision") is not None:
         if args["precision"] not in PRECISIONS:
-            raise ToolError("video-editing: precision must be frame, keyframe or auto")
+            raise ToolError("video-editing: precision must be frame, keyframe, auto or smart")
         return str(args["precision"])
     if args.get("accurate") is not None and not isinstance(args["accurate"], bool):
         raise ToolError("video-editing: accurate must be a boolean")
