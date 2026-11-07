@@ -1837,6 +1837,72 @@ class SubtitleMuxRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class SubtitleFeaturesRealTests(unittest.TestCase):
+    """ADR-101 on the real subtitle-skill 0.8.0 (and ffmpeg-skill caption, video-editing fill): TTML / EBU-TT-D sidecars (the Skill's profile
+    check, vertical writing, ruby), a ja-broadcast burn-in with ruby and a caller-named region the cues avoid, and shorts captions from word
+    timings on a 9:16 picture. Speech recognition is the fake process reading sidecar transcripts (CI has no ASR model)."""
+
+    SPEECH = [[4.0, 8.0, "本日の講演を始めます"], [9.0, 12.0, "音響設備について説明します"]]
+    WORDS = [[4.0, 5.0, "本日の"], [5.0, 6.5, "講演を"], [6.5, 8.0, "始めます"], [9.0, 10.0, "音響設備に"], [10.0, 11.0, "ついて"], [11.0, 12.0, "説明します"]]
+    _service = SubtitleMuxRealTests._service
+    _streams = SubtitleMuxRealTests._streams
+    _svc_with_subtitle = SubtitleMuxRealTests._svc_with_subtitle
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_subf_"))
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.media = str(src / "talk.mp4")
+        make_media(cls.media)
+        Path(cls.media + ".segments.json").write_text(json.dumps(cls.SPEECH, ensure_ascii=False), encoding="utf-8")
+        Path(cls.media + ".words.json").write_text(json.dumps(cls.WORDS, ensure_ascii=False), encoding="utf-8")
+
+    def _render(self, name, reqs, profile="generic"):
+        svc = self._svc_with_subtitle(name)
+        ir = svc.plan([self.media], profile, user_requirements=reqs, params={"language": "ja", "offline": True})
+        self.assertEqual(ir.doc["plan"]["status"], "APPROVED", ir.doc["plan"]["summary"])
+        self.assertEqual(svc.validate(ir).errors, [])
+        p = str(Path(svc.workspace) / f"{name}.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", json.dumps([r for r in out["execution"]["results"] if not r["ok"]], ensure_ascii=False)[:1500])
+        return ir.doc, out
+
+    def test_ttml_and_ebu_tt_d_sidecars(self):
+        for fmt, extra in (("ttml", {"subtitle.vertical": True, "subtitle.ruby": {"講演": "こうえん"}}), ("ebu-tt-d", {})):
+            d, out = self._render(f"ws_{fmt}", {"subtitle": fmt, **extra})
+            gen = next(r for r in out["execution"]["results"] if r["tool"] == "subtitle/generate")
+            self.assertIs(gen["data"]["conformance"]["valid"], True, gen["data"])
+            text = Path(gen["output"]).read_text(encoding="utf-8")
+            self.assertIn("<tt", text); self.assertTrue(gen["output"].endswith(".ttml"))
+            bad = [i for i in out["qa"]["items"] if i.get("name") in ("cues", "format") and i["status"] != "PASS"]
+            self.assertEqual(bad, [], "the agent's QA reads the TTML sidecar")
+            if fmt == "ttml":
+                self.assertIn("tbrl", text, "vertical writing (tts:writingMode)")
+                self.assertIn("こうえん", text, "the reading as IMSC ruby")
+
+    def test_ja_broadcast_burn_with_ruby_and_a_region_to_avoid(self):
+        d, out = self._render("ws_burn", {"subtitle": True, "subtitle.burn_in": True, "subtitle.regional_profile": "ja-broadcast", "subtitle.ruby": {"講演": "こうえん"},
+                                          "subtitle.placement.avoid": [{"name": "lower third", "box": [0.0, 0.75, 1.0, 0.25]}]})
+        ren = next(r for r in out["execution"]["results"] if r["tool"] == "subtitle/render")
+        self.assertTrue(ren["ok"]); self.assertEqual(ren["data"]["mode"], "burn")
+        self.assertIsInstance(ren["data"].get("placement"), dict, ren["data"])
+        streams, _ = self._streams(ren["output"])
+        self.assertEqual([t for t, _ in streams], ["video", "audio"])
+
+    def test_shorts_captions_on_a_vertical_picture(self):
+        from video_agent.tools.video_editing import locate_video_editing
+        if not locate_video_editing():
+            self.skipTest("needs video-editing-skill for the 9:16 fill")
+        d, out = self._render("ws_shorts", {"subtitle": True, "subtitle.burn_in": True, "subtitle.caption_profile": "shorts", "edit.fill": "9:16"})
+        gen = next(op for op in d["captions"]["operations"] if op["type"] == "captions.generate")
+        self.assertTrue(all(c.get("words") for c in gen["cues"]), gen["cues"])
+        ren = next(r for r in out["execution"]["results"] if r["tool"] == "subtitle/render")
+        self.assertIsNotNone(ren["data"].get("caption_profile"), ren["data"])
+        streams, _ = self._streams(ren["output"])
+        self.assertIn("video", [t for t, _ in streams])
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class TimelineExportRealTests(unittest.TestCase):
     """ADR-052 on the real ffmpeg-skill: `delivery.timeline=otio` → render.py --export-timeline writes the IR's cut list as an
     OpenTimelineIO document, registered as a TIMELINE Artifact; opentimelineio (when installed) reads it back with the same cuts."""

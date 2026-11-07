@@ -24,7 +24,8 @@ from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, ELEMENT_TYPES, GRAPHICS_S
 from .handoffs import JOB_PREFIX
 from .production_plan import PLANNER_ID, ProductionPlan, ProductionStep
 from .qc import QC_SKILL, rules_for_subject, sidecar_rules
-from .subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL, cues_from_transcripts, ir_captions_burn, ir_captions_generate, kept_ranges_of
+from .subtitles import (BURN_SKILL, GENERATE_SKILL, MUX_SKILL, QC_FORMATS, annotate_cues, cues_from_transcripts, ir_captions_burn, ir_captions_generate, kept_ranges_of,
+                        words_on_timeline)
 from .editor_timeline import SUBJECT as EDITOR_CUT_SUBJECT
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
@@ -166,6 +167,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             speed = next((float(op["factor"]) for op in video_ops if op.get("asset") == subject and op.get("type") == "video.speed"), 1.0)
             concat = next((op for op in video_ops if op.get("type") == "video.concat" and op.get("output") == subject), None)
             cues: List[Dict[str, Any]] = []
+            words: List[Dict[str, Any]] = []   # ADR-101: the word timings on the delivered timeline, only when the cues must carry them (shorts captions)
             tmap: Dict[str, Any] = {"speed": speed, "inputs": {}}
             for n, src in enumerate(sources):
                 keep = kept_ranges_of(video_ops, src, durations.get(src, 0.0))
@@ -173,13 +175,20 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 if concat is not None:   # where the input's first kept range lands on the programme timeline (map_point already removed the trimmed material)
                     seg = next((s_ for s_ in concat.get("segments") or [] if s_.get("input") == src), None)
                     offset = round(float(seg["timeline_range"][0]), 3) if seg else 0.0
-                cues += cues_from_transcripts([o for o in analysis.observations if o.kind == "transcript" and o.asset_id == src], keep, offset=offset, speed=speed,
-                                              id_prefix=f"c{n + 1}_" if len(sources) > 1 else "c")
+                trs = [o for o in analysis.observations if o.kind == "transcript" and o.asset_id == src]
+                cues += cues_from_transcripts(trs, keep, offset=offset, speed=speed, id_prefix=f"c{n + 1}_" if len(sources) > 1 else "c")
+                if d.params.get("words"):
+                    for o in trs:
+                        ws, _untimed, _why = transcript_words((o.data or {}).get("segments") or [])
+                        words += words_on_timeline(ws or [], keep, offset=offset, speed=speed)
                 tmap["inputs"][src] = {"keep": keep, "offset": offset}
             cues.sort(key=lambda c: (c["start"], c["id"]))
+            if d.params.get("ruby") or d.params.get("vertical") or d.params.get("words"):   # ADR-101: only what the user asked for
+                cues = annotate_cues(cues, ruby=d.params.get("ruby"), vertical=bool(d.params.get("vertical")),
+                                     words=sorted(words, key=lambda w: (w["start"], w["end"])) if d.params.get("words") else None)
             out_id = f"{subject}_captions"
             captions_ops.append(ir_captions_generate(subject, out_id, d.params["format"], d.params["language"], cues, [d.id], list(d.params.get("transcript_ids") or []), tmap,
-                                                     constraints=d.params.get("constraints"), scope=scope))
+                                                     constraints=d.params.get("constraints"), scope=scope, regional_profile=d.params.get("regional_profile")))
             order += 1
             st = ProductionStep(id=f"step_captions_{subject}", order=order, skill=GENERATE_SKILL, tool=tool_for(GENERATE_SKILL), inputs=[],
                                 params={"asset": subject, "format": d.params["format"], "language": d.params["language"], "cues": len(cues)}, outputs=[out_id],
@@ -190,7 +199,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             summary.append(f"Subtitles for {subject}: {len(cues)} cue(s) ({d.params['format']}, {d.params['language']}) on the delivered timeline")
             for b in decided(subject, "subtitle.burn_in"):
                 burn_out = f"{subject}_burn"
-                captions_ops.append(ir_captions_burn(subject, current_of[subject], out_id, burn_out, [b.id], scope=scope))
+                captions_ops.append(ir_captions_burn(subject, current_of[subject], out_id, burn_out, [b.id], scope=scope, render=b.params))
                 order += 1
                 bst = ProductionStep(id=f"step_burn_{subject}", order=order, skill=BURN_SKILL, tool=tool_for(BURN_SKILL), inputs=[current_of[subject], out_id], params={"asset": subject},
                                      outputs=[burn_out], depends_on=[x for x in [last_of.get(subject), st.id] if x], evidence=evidence_of([b.id]),
@@ -200,7 +209,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 summary.append(b.decision)
             for x in decided(subject, "subtitle.mux"):   # ADR-063: the same render, mode mux — a soft track in the deliverable
                 mux_out = f"{subject}_subs"
-                captions_ops.append(ir_captions_burn(subject, current_of[subject], out_id, mux_out, [x.id], scope=scope, op_type="captions.mux"))
+                captions_ops.append(ir_captions_burn(subject, current_of[subject], out_id, mux_out, [x.id], scope=scope, op_type="captions.mux", render=x.params))
                 order += 1
                 mst = ProductionStep(id=f"step_mux_{subject}", order=order, skill=MUX_SKILL, tool=tool_for(MUX_SKILL), inputs=[current_of[subject], out_id], params={"asset": subject},
                                      outputs=[mux_out], depends_on=[x_ for x_ in [last_of.get(subject), st.id] if x_], evidence=evidence_of([x.id]),
@@ -316,7 +325,11 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 steps.append(st)
                 gated.append((target, art, st.id))
                 qc_plan["subjects"][subject] = {"kind": "delivery", "targets": sorted(set(list((qc_plan["subjects"].get(subject) or {}).get("targets") or []) + [target]))}
-            if subject in sidecar_of:
+            sc_fmt = next((op.get("format") for op in captions_ops if op.get("type") == "captions.generate" and op.get("asset") == subject), None)
+            qc_reads = sc_fmt in QC_FORMATS   # ADR-101: a TTML / EBU-TT-D sidecar is not one qc-skill reads; subtitle-skill's own conformance check stands for it
+            if subject in sidecar_of and not qc_reads:
+                summary.append(f"QC of the {sc_fmt} sidecar of {subject}: subtitle-skill's {sc_fmt} conformance check (qc-skill reads {', '.join(QC_FORMATS)} sidecars)")
+            if subject in sidecar_of and qc_reads:
                 sc = sidecar_of[subject]
                 ref = next((s_.outputs[0] for s_ in steps if s_.skill == "delivery_export" and s_.outputs and s_.outputs[0].startswith(f"{subject}_delivery_")), None)
                 order += 1
@@ -328,7 +341,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 qc_plan["sidecars"][sc] = {"kind": "subtitle", "reference": ref, "subject": subject}
             # ADR-065: the deliverable set of each target checked together (qc-skill kind delivery_package) when the deliverable has
             # company — its subtitle sidecar and / or thumbnail; a lone deliverable is already covered by its own report
-            sc_id = sidecar_of.get(subject)
+            sc_id = sidecar_of.get(subject) if qc_reads else None
             th_id = next((o for s_ in steps if s_.skill in (THUMBNAIL_FRAME_SKILL, THUMBNAIL_RENDER_SKILL) and (s_.params or {}).get("asset") == subject for o in s_.outputs), None)
             extra = [x for x in (sc_id, th_id) if x]
             for target, art, qc_step in gated if extra else []:

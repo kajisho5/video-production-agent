@@ -417,17 +417,40 @@ def _sha256(path: str) -> str:
 
 def _read_text(path: str) -> str:
     try:
-        return open(path, "r", encoding="utf-8-sig", errors="replace").read()
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
+            return fh.read()
     except OSError:
         return ""
 
 
+TTML_NS = "http://www.w3.org/ns/ttml"   # ADR-101: TTML (IMSC 1.1 Text) and EBU-TT-D sidecars
+
+
+def _ttml_paragraphs(text: str) -> int:
+    """The number of <p> cues in the body of a TTML document, or -1 when it is not a TTML document (no DTD / entity is ever resolved)."""
+    import xml.etree.ElementTree as ET
+    if "<!DOCTYPE" in text or "<!ENTITY" in text:
+        return -1
+    try:
+        root = ET.fromstring(text.encode("utf-8"))
+    except ET.ParseError:
+        return -1
+    if root.tag != f"{{{TTML_NS}}}tt":
+        return -1
+    body = root.find(f"{{{TTML_NS}}}body")
+    return len(body.findall(f".//{{{TTML_NS}}}p")) if body is not None else 0
+
+
 def _cue_count(text: str, fmt: str) -> int:
     import re
+    if fmt in ("ttml", "ebu-tt-d"):
+        return max(0, _ttml_paragraphs(text))
     return len(re.findall(r"^\s*\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}", text, flags=re.M))
 
 
 def _looks_like(text: str, fmt: str) -> bool:
+    if fmt in ("ttml", "ebu-tt-d"):
+        return _ttml_paragraphs(text) >= 0
     if fmt == "vtt":
         return text.lstrip().startswith("WEBVTT")
     return bool(text.strip()) and "-->" in text and not text.lstrip().startswith("WEBVTT")

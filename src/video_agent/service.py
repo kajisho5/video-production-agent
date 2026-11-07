@@ -394,6 +394,8 @@ class Service:
         user_requirements = {**brief_task.values_of(brief_record), **explicit}   # explicit wins (ADR-061)
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
+        if (user_requirements or {}).get("subtitle.caption_profile") is not None and _subtitles_requested(user_requirements or {}):
+            params = dict(params or {}, word_timestamps=True)   # ADR-101: shorts captions split cues by recognised word timings, measured for the requirement
         if _filler_removal_requested(user_requirements or {}):
             # ADR-072: filler words are removed at recognised word timings: a transcript with word timestamps, chosen by the system for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])

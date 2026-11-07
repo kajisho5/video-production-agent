@@ -2522,7 +2522,9 @@
     "format": {
      "enum": [
       "srt",
-      "vtt"
+      "vtt",
+      "ttml",
+      "ebu-tt-d"
      ]
     },
     "language": {
@@ -2561,6 +2563,64 @@
        "speaker": {
         "type": "string",
         "pattern": "^SPEAKER_[0-9]{2,}$"
+       },
+       "ruby": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "object",
+         "required": [
+          "base",
+          "text"
+         ],
+         "additionalProperties": false,
+         "properties": {
+          "base": {
+           "type": "string",
+           "minLength": 1
+          },
+          "text": {
+           "type": "string",
+           "minLength": 1
+          }
+         }
+        }
+       },
+       "words": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "object",
+         "required": [
+          "text",
+          "start",
+          "end"
+         ],
+         "additionalProperties": false,
+         "properties": {
+          "text": {
+           "type": "string",
+           "minLength": 1
+          },
+          "start": {
+           "type": "number",
+           "minimum": 0
+          },
+          "end": {
+           "type": "number",
+           "minimum": 0
+          }
+         }
+        }
+       },
+       "style": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+         "vertical": {
+          "const": true
+         }
+        }
        }
       }
      }
@@ -2612,6 +2672,76 @@
      "type": "array",
      "items": {
       "type": "string"
+     }
+    },
+    "regional_profile": {
+     "enum": [
+      "ja-broadcast"
+     ]
+    },
+    "caption_profile": {
+     "enum": [
+      "shorts"
+     ]
+    },
+    "placement": {
+     "type": "object",
+     "required": [
+      "avoid"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "avoid": {
+       "type": "array",
+       "minItems": 1,
+       "items": {
+        "type": "object",
+        "required": [
+         "name",
+         "box"
+        ],
+        "additionalProperties": false,
+        "properties": {
+         "name": {
+          "type": "string",
+          "minLength": 1
+         },
+         "box": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+           "type": "number",
+           "minimum": 0,
+           "maximum": 1
+          }
+         },
+         "start": {
+          "type": "number",
+          "minimum": 0
+         },
+         "end": {
+          "type": "number",
+          "minimum": 0
+         }
+        }
+       }
+      },
+      "min_hold": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 60
+      },
+      "max_lines": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 4
+      },
+      "min_score": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 1
+      }
      }
     }
    }
