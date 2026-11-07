@@ -184,7 +184,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # sources[].ai_generated, outputs[].max_size and `propose`, all opt-in; 0.5.0 (#41) bumps contract_version "4.0" -> "5.0" for that shape and changes
 # nothing else. The request this adapter builds and the response it verifies are unchanged, so the gate takes 0.5.x; re-pinned from the v0.5.0 tag
 # (ADR-097 addendum 6). ADR-099 lowers and plans them (max_size: lowered only).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

@@ -50,7 +50,7 @@ COLOR_TOOL = "color-grading/run"
 # read from the pinned color-grading contract (the data file the adapter pins, read as data so the agent layer never imports a tool
 # package), the way ADR-064 reads motion-graphics. A re-pin that adds or narrows a parameter changes the keys and the plan-time check with
 # it; tests/test_satellite_params.py::ColorContractVocabularyTests says so, and the IR schema is checked against the same contract there.
-COLOR_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "color_grading" / "contract_0.5.0.json"
+COLOR_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "color_grading" / "contract_0.5.1.json"
 _COLOR_CONTRACT: Dict[str, Any] = json.loads(COLOR_CONTRACT_PATH.read_text(encoding="utf-8"))
 PRIMARY_CORRECTION_SPEC: Dict[str, Dict[str, Any]] = next(
     o for o in _COLOR_CONTRACT["operations"] if o.get("type") == "PRIMARY_CORRECTION")["parameters"]
