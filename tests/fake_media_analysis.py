@@ -36,6 +36,9 @@ def observation(req: dict) -> dict:
         "duration": {"container_duration": 16.0, "longest_stream_duration": 16.0},
         "integrity": {"status": "PASS", "decode_errors": 0},
         "scene_detection": {"cuts": [{"time": 8.0, "score": 42.0}]},
+        # ADR-103: an editing-style profile (a subset of the real Skill's keys)
+        "edit_style": {"profile_schema": "media-analysis/edit-style@1", "duration": 16.0, "video": {"status": "measured", "cut_count": 1, "cuts_per_minute": 3.75, "shot_count": 2},
+                       "audio": {"status": "measured"}, "subtitles": {"status": "measured"}, "unmeasured": []},
     }.get(kind, {"ok": True})
     ident = "0" * 60 + "%04x" % (hash(kind) & 0xFFFF)
     return {"id": "obs_" + ident[:16], "asset_id": req["asset_id"], "kind": kind, "data": data, "source": f"{tool}@{CONTRACT['version']}",

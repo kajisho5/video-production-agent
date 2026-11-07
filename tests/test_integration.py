@@ -847,7 +847,7 @@ class MediaAnalysisRealTests(unittest.TestCase):
         ws = str(Path(self.tmp) / "ws_all")
         svc = self._service(ws)
         installed = svc.caps.resolve()["media-analysis"].evidence["version"]   # whatever release is installed: provenance must name it
-        extra = ["stream_layout", "video_format", "audio_format", "duration", "integrity", "scene_detection", "timing"]
+        extra = ["stream_layout", "video_format", "audio_format", "duration", "integrity", "scene_detection", "timing", "edit_style"]   # ADR-103: edit_style
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=extra)
         obs = {o.kind: o for o in an.observations}
         self.assertEqual(sorted(obs), sorted(["media_probe", "silence", "loudness"] + extra))
@@ -857,6 +857,9 @@ class MediaAnalysisRealTests(unittest.TestCase):
             self.assertEqual(len(o.fingerprint), 64)
             self.assertEqual(o.cache.get("status"), "miss", o.kind)
         self.assertEqual(obs["duration"].tool, obs["timing"].tool, "one Skill tool serves two kinds; the kind stays on the observation")
+        # ADR-103: the editing-style profile, as the Skill measured it (the test clip is one shot: no cut)
+        self.assertEqual((obs["edit_style"].tool, obs["edit_style"].data["profile_schema"]), ("media-analysis/style", "media-analysis/edit-style@1"))
+        self.assertEqual((obs["edit_style"].data["video"]["cut_count"], obs["edit_style"].data["video"]["shot_count"]), (0, 1))
         self.assertEqual(len({o.fingerprint for o in obs.values()}), 1, "shared asset identity: one content fingerprint for every observation")
         # facts as measured: the Skill's own keys are kept, consumers read through one vocabulary
         from video_agent.media.analysis import loudness_facts
