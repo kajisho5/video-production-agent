@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 ECOSYSTEM_SOURCE = "AI-video-production-OS ecosystem.json (schema_version 2), read 2026-10-30"
-MARKETPLACE = "ai-video-production-os"
+MARKETPLACE = "velisa"
 GITHUB = "https://github.com/kajisho5/"
 
 

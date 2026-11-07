@@ -402,7 +402,7 @@ class PipelineTests(_Base):
         h = hs["image_prepare"]
         self.assertEqual((h["provided_by"], h["repositories"]), (["imagemagick-skill"], ["imagemagick-skill"]))
         self.assertIn("npx imagemagick-skill", h["install"])
-        self.assertIn("/plugin install imagemagick-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install imagemagick-skill@velisa", h["install"])
         self.assertIn("imagemagick-skill", h["reason"])
         self.assertTrue(any(b["subject"] == "capability.image_prepare" for b in ir.blocked()))
 
