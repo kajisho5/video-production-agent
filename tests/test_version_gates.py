@@ -78,7 +78,7 @@ class VersionGateTests(unittest.TestCase):
     def test_video_editing_versions(self):
         # ADR-097 addendum 6: video-editing-skill 0.5.0 bumps contract_version to "5.0" for the opt-in operations / fields 0.4.8 .. 0.4.18 added;
         # the request the adapter builds is unchanged, so the gate takes 0.5.x besides 0.1.x .. 0.4.x
-        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), ("0.5.0", "5.0"))
+        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), ("0.5.1", "5.0"))
         for v in ("0.4.0", "0.4.18", "0.5.0", "0.5.3"):
             live = with_version(ve.pinned_contract(), v)
             self.assertEqual(ve.check_contract(live), [], v)
