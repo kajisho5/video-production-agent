@@ -4,7 +4,7 @@
   "id": "color-grading",
   "name": "color-grading-skill",
   "package": "color-grading-skill",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "contract_version": 1,
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
@@ -30,7 +30,7 @@
     {
       "tool_id": "color-grading/run",
       "skill_id": "color-grading",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "role": "execution",
       "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
       "inputs": [
@@ -163,8 +163,8 @@
             "linear",
             "gamma"
           ],
-          "default": "hable",
-          "description": "tone-mapping curve"
+          "default": null,
+          "description": "tone-mapping curve; when omitted (None), chosen by the input's transfer: mobius for HLG (arib-std-b67), hable for PQ (smpte2084) and anything else; the choice and its rule are recorded as tonemap_selection in results and provenance"
         },
         "peak_nits": {
           "type": "number",
@@ -955,6 +955,23 @@
     "tone_mapping_selection": "always an explicit typed parameter (tonemap curve, peak, desat) from the caller; this skill never picks one automatically",
     "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set"
   },
+  "hdr_sdr_defaults": {
+    "tonemap": {
+      "when": "the request gives no tonemap",
+      "by_input_transfer": {
+        "arib-std-b67": "mobius"
+      },
+      "otherwise": "hable",
+      "explicit_wins": true,
+      "rules": {
+        "request": "the request named the curve (always wins)",
+        "hlg_default": "no curve in the request and the input transfer is HLG (arib-std-b67): mobius",
+        "default": "no curve in the request and the input transfer is not HLG (PQ smpte2084 or anything else): hable"
+      },
+      "input_transfer": "the source's measured color_transfer, through STRIP_DOVI, or the transfer a RETAG writes; after any other operation it is not known up front (null) and the otherwise curve applies",
+      "recorded_as": "tonemap_selection {tonemap, rule, input_transfer} in plan steps, results and provenance; parameters.tonemap holds the curve that ran"
+    }
+  },
   "alpha": {
     "preserved_by": [
       "RETAG",
@@ -1236,7 +1253,8 @@
       "retagged (OCIO_TRANSFORM)",
       "reference (MATCH_CAMERA)",
       "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
-      "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})"
+      "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})",
+      "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"
     ],
     "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; LEGALIZE: the LUT's sha256"
   },

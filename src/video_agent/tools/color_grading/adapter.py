@@ -77,7 +77,7 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # ADR-048: `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, reported by its doctor).
 FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.1.json")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -507,6 +507,8 @@ class ColorGradingAdapter(ToolAdapter):
         art, prov = as_dict(o.get("artifact")), as_dict(o.get("provenance"))
         data["operation_id"] = str(res.get("operation_id") or "")
         data["operation"] = {k: res.get(k) for k in ("operation_id", "type", "tool", "status", "parameters", "input_hash", "measurements", "required_capabilities")}
+        if isinstance(res.get("tonemap_selection"), dict):   # ADR-105: HDR_TO_SDR's curve and the Skill's rule (request | hlg_default | default)
+            data["operation"]["tonemap_selection"] = res["tonemap_selection"]
         data["artifact"] = {"path": out_path, "sha256": art.get("sha256"), "size": art.get("size"), "duration": art.get("duration"), "width": art.get("width"), "height": art.get("height"),
                             "codec": art.get("codec"), "pix_fmt": art.get("pix_fmt"), "color_space": art.get("color_space"), "color_primaries": art.get("color_primaries"),
                             "color_transfer": art.get("color_transfer"), "color_range": art.get("color_range"), "hdr": art.get("hdr"), "dolby_vision": art.get("dolby_vision"),

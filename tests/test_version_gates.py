@@ -88,7 +88,7 @@ class VersionGateTests(unittest.TestCase):
 
     def test_color_grading_versions(self):
         # ADR-097 addendum 6: color-grading-skill 0.5.0 (OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE, the alpha guard; pinned blocks unchanged)
-        self.assertEqual(cg.pinned_contract()["version"], "0.5.0")
+        self.assertEqual(cg.pinned_contract()["version"], "0.5.1")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
         for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2"):
             live = with_version(cg.pinned_contract(), v)
             self.assertEqual(cg.check_contract(live), [], v)

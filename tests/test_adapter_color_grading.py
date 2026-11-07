@@ -71,13 +71,13 @@ class ColorGradingAdapterTests(unittest.TestCase):
         ad = self._adapter()
         # 0.5.0: OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE are in the contract; the agent does not plan them (finishing.COLOR_OPERATIONS, ADR-097 addendum 6)
         self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
-                         ("0.5.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
+                         ("0.5.1", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
         # color-grading-skill #23: WHITE_BALANCE is no longer an unsupported type but an `operation_aliases` entry (temperature / tint of
         # PRIMARY_CORRECTION); the agent lowers only declared operation types, so it keeps sending PRIMARY_CORRECTION itself
         self.assertEqual(ad.unsupported, []); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
         self.assertEqual([(a["type"], a["alias_of"]) for a in ad.contract["operation_aliases"]], [("WHITE_BALANCE", "PRIMARY_CORRECTION")])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.5.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "0.5.1", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
@@ -194,6 +194,24 @@ class ColorGradingAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=1)
         self.assertEqual((r.exit_code, r.data["error"]["code"], r.data["error"]["retryable"], r.data["error"]["details"]["reason"]), (124, "CANCELLED", True, "timeout"))
         self.assertEqual(classify_error(r), "TIMEOUT")
+
+    def test_hdr_to_sdr_curve_is_the_skills_choice_and_is_recorded(self):
+        """ADR-105: color-grading-skill 0.5.1 (its ADR-28) picks HDR_TO_SDR's curve when the request names none: mobius for an HLG input,
+        hable for PQ or anything else. The agent sends no curve and keeps the Skill's tonemap_selection in the operation it reports."""
+        rule = pinned_contract()["hdr_sdr_defaults"]["tonemap"]
+        self.assertEqual((rule["by_input_transfer"], rule["otherwise"], rule["explicit_wins"]), ({"arib-std-b67": "mobius"}, "hable", True))
+        hdr = next(o for o in pinned_contract()["operations"] if o["type"] == "HDR_TO_SDR")
+        self.assertIsNone(hdr["parameters"]["tonemap"]["default"])
+        ad = self._adapter()
+        for name, transfer, curve, why in (("hlg.mp4", "arib-std-b67", "mobius", "hlg_default"), ("pq.mp4", "smpte2084", "hable", "default")):
+            src = fake_video(self.tmp, name, hdr=True)
+            meta = json.loads(Path(src).read_text()); meta["color_transfer"] = transfer; Path(src).write_text(json.dumps(meta))
+            out = str(Path(self.ws) / "jobs" / "j1" / "ops" / "01_sdr" / name)
+            r = ad.run(Operation(tool="color-grading/run", args={"operation": "HDR_TO_SDR", "input": "a", "output": "a_sdr"}, inputs=["a"], outputs=["a_sdr"], id="op_sdr"),
+                       {"a": src, "a_sdr": out}, timeout=30)
+            self.assertTrue(r.ok, r.data)
+            self.assertEqual(r.data["operation"]["parameters"]["tonemap"], curve, name)
+            self.assertEqual(r.data["operation"]["tonemap_selection"], {"tonemap": curve, "rule": why, "input_transfer": transfer}, name)
 
     def test_alpha_source_refusal_blocks_with_its_own_recovery_class(self):
         """color-grading-skill 0.5.0 (its ADR-25): an alpha source is refused for every re-encoding operation with UNSUPPORTED_FORMAT /
@@ -322,6 +340,30 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         params = r.data["operation"]["parameters"]
         self.assertEqual((params["exposure"], params["saturation"]), (0.5, 0.0))
         self.assertIn("input", r.data["operation"]["measurements"]); self.assertIn("output", r.data["operation"]["measurements"])
+
+    def test_real_hlg_tone_map_defaults_to_mobius(self):
+        """ADR-105 on the real Skill (0.5.1, its ADR-28): an HLG BT.2020 source tone-mapped as the agent lowers it (no curve sent) runs mobius;
+        the Skill's tonemap_selection says why and the engine command carries it. A PQ source keeps hable."""
+        if not (self.skill and self.engine and shutil.which("ffmpeg")):
+            self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
+        ws = str(Path(self.tmp) / "ws_hlg"); os.makedirs(ws, exist_ok=True)
+        ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.tmp) / "src_hdr")], ffmpeg_skill_dir=self.engine, timeout=180)
+        if ad.operation_status(ad.doctor())["HDR_TO_SDR"] != "supported":
+            self.skipTest("HDR_TO_SDR is not supported by this ffmpeg build (zscale / tonemap), as the Skill's doctor reports")
+        for n, (transfer, curve, why) in enumerate((("arib-std-b67", "mobius", "hlg_default"), ("smpte2084", "hable", "default"))):
+            src = str(Path(self.tmp) / "src_hdr" / f"hdr_{n}.mp4")
+            os.makedirs(os.path.dirname(src), exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25", "-t", "1", "-vf", "format=yuv420p10le",
+                            "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", f"colorprim=bt2020:transfer={transfer}:colormatrix=bt2020nc:log-level=error",
+                            "-tag:v", "hvc1", src], check=True)
+            out = str(Path(ws) / "ops" / f"0{n}_sdr" / f"hdr_{n}_sdr.mp4")
+            r = ad.run(Operation(tool="color-grading/run", args={"operation": "HDR_TO_SDR", "input": "a", "output": "a_sdr"}, inputs=["a"], outputs=["a_sdr"], id=f"op_hlg{n}"),
+                       {"a": src, "a_sdr": out}, timeout=180)
+            self.assertTrue(r.ok, r.data)
+            self.assertEqual(r.data["operation"]["parameters"]["tonemap"], curve, transfer)
+            self.assertEqual(r.data["operation"]["tonemap_selection"], {"tonemap": curve, "rule": why, "input_transfer": transfer})
+            self.assertIn(f"tonemap={curve}", " ".join(r.data["commands"]))
+            self.assertFalse(r.data["artifact"]["hdr"])
 
     def test_real_new_operations_follow_the_doctor(self):
         """ADR-100 on the real Skill: LEGALIZE, MATCH_CAMERA (this clip against itself as the reference camera) and OCIO_TRANSFORM (built-in

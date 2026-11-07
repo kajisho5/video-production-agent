@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.5.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_0.5.1.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_CG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_CG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -242,7 +242,13 @@ def main() -> int:
                 return err("PATH_NOT_ALLOWED", "OCIO config outside allowed roots", {"reason": "outside_allowed_lut_roots"})
         if t == "HDR_TO_SDR" and (MODE == "not_hdr" or not meta.get("hdr")) and not params.get("force"):
             return err("TOOL_ERROR", "ffmpeg-skill/color --to-sdr failed: source is not tagged HDR (use force to tone-map anyway)", {"reason": "not_hdr"})   # like the real Skill: the engine refuses, reported as TOOL_ERROR
-        results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t,
+        extra = {}
+        if t == "HDR_TO_SDR":   # color-grading-skill 0.5.1 (its ADR-28): no tonemap -> mobius for an HLG input, hable otherwise; the choice is recorded
+            transfer = meta.get("color_transfer")
+            rule = "request" if params.get("tonemap") else ("hlg_default" if transfer == "arib-std-b67" else "default")
+            params = dict(params, tonemap=params.get("tonemap") or ("mobius" if rule == "hlg_default" else "hable"))
+            extra["tonemap_selection"] = {"tonemap": params["tonemap"], "rule": rule, "input_transfer": transfer}
+        results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t, **extra,
                         "tool": OPS[t]["tool"], "required_capabilities": OPS[t]["required_capabilities"], "input": op["input"], "parameters": params,
                         "status": "reused" if MODE == "reused" else "completed", "input_hash": sha(src), "seconds": 0.01, "tool_commands_observed": ["fake ffmpeg -i in -vf x out"], "measurements": {}})
     outs = pj["outputs"]
