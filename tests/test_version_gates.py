@@ -90,8 +90,9 @@ class VersionGateTests(unittest.TestCase):
     def test_color_grading_versions(self):
         # ADR-097 addendum 6: color-grading-skill 0.5.0 (OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE, the alpha guard; pinned blocks unchanged)
         # ADR-106: 0.6.0 (LEGALIZE clamp and measured shares, keep_alpha for LUT_APPLY / PRIMARY_CORRECTION; additive, pinned blocks unchanged)
-        self.assertEqual(cg.pinned_contract()["version"], "0.6.0")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
-        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.3"):
+        # ADR-106 addendum 1: 0.6.1 rewords hdr_sdr.tone_mapping_selection (the transfer-based default of 0.5.1, written down); re-pinned
+        self.assertEqual(cg.pinned_contract()["version"], "0.6.1")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
+        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.3"):
             live = with_version(cg.pinned_contract(), v)
             self.assertEqual(cg.check_contract(live), [], v)
             self.assertEqual(cg.contract_breaking_drift(live), [], v)

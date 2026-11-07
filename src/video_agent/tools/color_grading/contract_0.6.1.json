@@ -4,7 +4,7 @@
   "id": "color-grading",
   "name": "color-grading-skill",
   "package": "color-grading-skill",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "contract_version": 1,
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
@@ -30,7 +30,7 @@
     {
       "tool_id": "color-grading/run",
       "skill_id": "color-grading",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "role": "execution",
       "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
       "inputs": [
@@ -954,7 +954,7 @@
       0.0,
       5.0
     ],
-    "tone_mapping_selection": "always an explicit typed parameter (tonemap curve, peak, desat) from the caller; this skill never picks one automatically",
+    "tone_mapping_selection": "an explicit typed parameter (tonemap curve, peak, desat) from the caller always wins; when the request gives no tonemap, a fixed rule on the input's measured transfer picks it (hdr_sdr_defaults): mobius for HLG (arib-std-b67), hable for PQ and any other or unknown transfer; never chosen from the picture",
     "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set"
   },
   "hdr_sdr_defaults": {

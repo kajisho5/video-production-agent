@@ -39,7 +39,7 @@ CONTRACT_SCHEMA = "color-grading/contract@1"
 REQUEST_SCHEMA = "color-grading/request@1"
 RESPONSE_SCHEMA = "color-grading/response@1"
 DOCTOR_SCHEMA = "color-grading/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.0 (ADR-106): additive -- LEGALIZE clamp + measured shares,
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.1 (ADR-106 addendum 1): hdr_sdr.tone_mapping_selection reworded only. 0.6.0 (ADR-106): additive -- LEGALIZE clamp + measured shares,
                                                # LUT_APPLY / PRIMARY_CORRECTION keep an alpha source's alpha (keep_alpha), three VALIDATION_ERROR reasons
                                                # (mapped below); pinned blocks unchanged. 0.5.0 (color-grading-skill #31 .. #37, ADR-097 addendum 6): OCIO_TRANSFORM /
                                                # MATCH_CAMERA / LEGALIZE (not lowered), the pinned blocks kept byte-identical (#34),
@@ -87,7 +87,7 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # ADR-048: `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, reported by its doctor).
 FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.0.json")   # ADR-106: 0.6.0 (ADR-105: 0.5.1, HLG tone map defaults to mobius)
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.1.json")   # ADR-106 addendum 1: 0.6.1 (hdr_sdr wording only); ADR-106: 0.6.0 (ADR-105: 0.5.1, HLG tone map defaults to mobius)
 
 
 def pinned_contract() -> Dict[str, Any]:
