@@ -595,7 +595,8 @@ class MotionGraphicsAdapter(ToolAdapter):
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("path", "paths", "workspace")), "request")
         if hit:
             raise ToolError(f"motion-graphics: refusing to send a request carrying {hit}")
-        return {"request": req, "output": out, "input": src, "element_ids": ids, "workspace": self.workspace or str(Path(out).parent)}
+        layer_dir = as_dict(options.get("layer_export")).get("directory")
+        return {"request": req, "output": out, "input": src, "element_ids": ids, "workspace": self.workspace or str(Path(out).parent), "layer_dir": layer_dir}
 
     @staticmethod
     def _under(path: str, root: str) -> bool:
@@ -649,7 +650,7 @@ class MotionGraphicsAdapter(ToolAdapter):
                 details["reason"] = details.get("reason") or "signal"
             remove_fresh(b["output"], t0)
             return self._fail(op, attempt, dry_run, t0, code if code != 0 else 1, errc, str(ed.get("message") or tail or "")[:500], retryable=bool(retry), details=details)
-        errs = self._check_response(doc, b["output"], dry_run, b["element_ids"])
+        errs = self._check_response(doc, b["output"], dry_run, b["element_ids"], b.get("layer_dir"))
         if errs:
             remove_fresh(b["output"], t0)
             return self._fail(op, attempt, dry_run, t0, code if code != 0 else 9, "INVALID_RESULT", "; ".join(errs), retryable=False, details={"exit_code": code})
@@ -659,7 +660,7 @@ class MotionGraphicsAdapter(ToolAdapter):
         data = self._success_data(doc, b["output"], dry_run)
         return ToolResult(op.id, op.tool, True, 0, None if dry_run else b["output"], data, list(data.get("commands") or []), tail, secs, attempt, dry_run)
 
-    def _check_response(self, doc: Dict[str, Any], out_path: str, dry_run: bool, element_ids: List[str]) -> List[str]:
+    def _check_response(self, doc: Dict[str, Any], out_path: str, dry_run: bool, element_ids: List[str], layer_dir: Optional[str] = None) -> List[str]:
         errs: List[str] = []
         if doc.get("schema") != RESPONSE_SCHEMA:
             errs.append(f"response schema {doc.get('schema')!r}")
@@ -701,19 +702,29 @@ class MotionGraphicsAdapter(ToolAdapter):
         if not isinstance(as_dict(doc.get("engine")).get(ENGINE_ID), str):
             errs.append("engine lacks ffmpeg-skill")
         le = doc.get("layer_export")
-        if le is not None:   # ADR-106: every layer file the Skill reports exists inside the export folder and has the hash it reports
+        if (le is not None) != (layer_dir is not None):
+            errs.append("layer_export reported without being asked for" if le is not None else "layer_export asked for but not reported")
+        if le is not None and layer_dir is not None:   # ADR-106: the requested folder, one layer per element named <id><container>, each file there with its hash
             le = as_dict(le)
             folder = str(le.get("directory") or "")
             layers = [as_dict(x) for x in le.get("layers") or []]
-            if not folder or not layers or {str(x.get("id")) for x in layers} != set(element_ids):
-                errs.append("layer_export lacks its directory or a layer per element")
+            ids = [str(x.get("id")) for x in layers]
+            if not folder or not same_file(folder, layer_dir):
+                errs.append(f"layer_export.directory {folder!r} is not the requested {layer_dir}")
+            if sorted(ids) != sorted(element_ids):
+                errs.append("layer_export does not carry exactly one layer per element")
+            ext = as_dict(as_dict(self.contract.get("layer_export")).get("containers")).get(str(le.get("alpha_codec")))
             for x in layers:
                 f = str(x.get("path") or "")
-                if not f or not self._under(f, folder) or not os.path.isfile(f) or not fingerprint_matches(x.get("sha256"), f)[0]:
-                    errs.append(f"layer_export layer {x.get('id')!r}: file missing, outside {folder} or its sha256 differs")
+                want = f"{x.get('id')}{ext}" if ext else None
+                if want is None or x.get("file") != want or os.path.basename(f) != want:
+                    errs.append(f"layer_export layer {x.get('id')!r}: file {x.get('file')!r} is not <element id><container> ({want})")
+                elif not self._under(f, layer_dir) or not os.path.isfile(f) or not fingerprint_matches(x.get("sha256"), f)[0]:
+                    errs.append(f"layer_export layer {x.get('id')!r}: file missing, outside {layer_dir} or its sha256 differs")
             man = as_dict(le.get("manifest"))
-            if not man.get("path") or not os.path.isfile(str(man["path"])) or not fingerprint_matches(man.get("sha256"), str(man["path"]))[0]:
-                errs.append("layer_export manifest missing or its sha256 differs")
+            if (not man.get("path") or os.path.basename(str(man["path"])) != "manifest.json" or not self._under(str(man["path"]), layer_dir)
+                    or not os.path.isfile(str(man["path"])) or not fingerprint_matches(man.get("sha256"), str(man["path"]))[0]):
+                errs.append("layer_export manifest.json missing, outside the folder or its sha256 differs")
         prov = as_dict(doc.get("provenance"))
         if prov.get("output_hash") != o.get("sha256") or not as_dict(prov.get("video")).get("sha256") or not prov.get("operations"):
             errs.append("provenance incomplete (output_hash / video.sha256 / operations)")

@@ -903,6 +903,7 @@ class Service:
         # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
         prev_req = dict((old["request"].get("args") or {}).get("requirements") or {})
         prev_req.update(user_requirements or {})
+        _check_precision_conflict(prev_req)   # ADR-106: the merged keys, not only the new ones
         brief_record = (old["request"].get("args") or {}).get("brief")
         rejected_brief = any(d["status"] == "REJECTED" and d["subject"] == brief_task.SUBJECT for d in old["decisions"])
         if brief_record and rejected_brief and not brief_record.get("rejected"):
@@ -1797,6 +1798,13 @@ def _check_core_values(user_requirements: Dict[str, Any]) -> None:
             raise ValueError(f"{k} must be {_CORE_VALUE_HINTS[k]}, got {user_requirements[k]!r}")
 
 
+def _check_precision_conflict(reqs: Dict[str, Any]) -> None:
+    """ADR-099 / ADR-106: the segment cache renders frame-precision cuts, so it cannot be combined with another explicit precision. Checked on a
+    plan's own keys and, on revise, on the merged keys (a new precision over an earlier cache, or the other way round)."""
+    if reqs.get("edit.segment_cache") in (True, "true", "yes", "on", "1") and reqs.get("edit.precision") in ("auto", "keyframe-ok", "smart"):
+        raise ValueError(f"edit.segment_cache renders frame-precision cuts; edit.precision={reqs['edit.precision']} asks for another precision (give one of them)")
+
+
 def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     """Explicit `edit.*` requirements are range-checked before any analysis runs (an invalid value is a planning error, not a
     guess and not something a later stage corrects). A key matching one of these 7 namespaces but recognised by neither the
@@ -1809,8 +1817,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     if unknown:
         raise ValueError(f"unknown requirement key(s): {', '.join(unknown)} (matches a recognised namespace but is not a real key there)")
     _check_core_values(user_requirements)
-    if user_requirements.get("edit.segment_cache") in (True, "true", "yes", "on", "1") and user_requirements.get("edit.precision") in ("auto", "keyframe-ok", "smart"):
-        raise ValueError(f"edit.segment_cache renders frame-precision cuts; edit.precision={user_requirements['edit.precision']} asks for another precision (give one of them)")   # ADR-099
+    _check_precision_conflict(user_requirements)
     reqs = [Requirement(key=k, value=user_requirements[k], provenance="USER", source="cli") for k in keys]
     rm = requirement_map(reqs)
     parse_edit_requirements(rm)

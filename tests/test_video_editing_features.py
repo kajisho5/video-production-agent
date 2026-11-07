@@ -332,6 +332,12 @@ class PlanTests(unittest.TestCase):
                     {"a": self.a, "o": str(Path(self.tmp) / "dry" / "o.mp4")}, timeout=30, dry_run=True)
         self.assertTrue(dr.ok, dr.data)
         self.assertEqual(dr.data["plan"]["steps"][0]["smart"]["engine_flag"], "--smart")
+        # a revision cannot add smart over an earlier segment cache (the merged keys are checked, not only the new ones)
+        irc = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9", "edit.segment_cache": True})
+        pc = str(Path(self.tmp) / "cache_rev.json"); save_ir(irc, pc)
+        with self.assertRaises(ValueError) as cm:
+            svc.revise(load_ir(pc), pc, user_requirements={"edit.precision": "smart"})
+        self.assertIn("frame-precision", str(cm.exception))
         # without an explicit precision nothing changes (the default never picks smart)
         ir0 = svc.plan([self.a], "generic", user_requirements={"edit.trim": "1-9"})
         self.assertNotEqual(next(op for op in ir0.doc["video"]["operations"] if op["type"] == "video.trim").get("precision"), "smart")

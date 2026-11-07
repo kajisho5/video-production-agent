@@ -93,6 +93,10 @@ def pinned_contract() -> Dict[str, Any]:
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 
 
+# ADR-106: what an alpha plane looks like in a pix_fmt, from the pinned contract's alpha.pix_fmt_pattern (trusted; never taken from the live contract)
+ALPHA_PIX_FMT_RE = re.compile(str(pinned_contract()["alpha"]["pix_fmt_pattern"]))
+
+
 def check_contract(contract: Any) -> List[str]:
     """Compatibility checks: schema, id, version range, kind, execution flags, canonical invocation, the single tool, typed operation
     parameters, forbidden fields, error codes. Anything off is refused, never patched."""
@@ -501,9 +505,9 @@ class ColorGradingAdapter(ToolAdapter):
             a = as_dict(alpha)
             if res[0].get("type") not in KEEP_ALPHA_OPERATIONS:
                 errs.append(f"alpha reported for {res[0].get('type')!r}, which does not keep alpha (contract alpha.keep_alpha.operations)")
-            elif a.get("kept") is not True or not as_dict(a.get("verification")).get("ok"):
+            elif a.get("kept") is not True or as_dict(a.get("verification")).get("ok") is not True:
                 errs.append("alpha reported but not kept and verified (alpha.kept / alpha.verification.ok)")
-            elif not re.match(str(as_dict(self.contract.get("alpha")).get("pix_fmt_pattern") or "^$"), str(art.get("pix_fmt") or "")):
+            elif not ALPHA_PIX_FMT_RE.match(str(art.get("pix_fmt") or "")):   # the pinned pattern, not the live one (a looser live one cannot pass an opaque file)
                 errs.append(f"alpha kept but the output pix_fmt {art.get('pix_fmt')!r} stores no alpha plane")
         prov = as_dict(o.get("provenance"))
         if prov.get("skill") != SKILL_ID or str(prov.get("skill_version")) != self.version or prov.get("output_hash") != art.get("sha256") or not prov.get("operations"):

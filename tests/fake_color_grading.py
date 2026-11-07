@@ -289,7 +289,8 @@ def main() -> int:
         return err("CANCELLED", "interrupted", {"reason": "signal"})
     last = results[-1]
     payload = {"fake": True, "duration": meta["duration"], "video": True, "channels": meta.get("channels", 2), "hdr": False if last["type"] == "HDR_TO_SDR" else bool(meta.get("hdr")),
-               "color": last["type"].lower(), "lufs": meta.get("lufs", -11.0)}
+               "color": last["type"].lower(), "lufs": meta.get("lufs", -11.0),
+               **({"pix_fmt": "yuva444p12le", "codec": "prores"} if last.get("alpha") else {})}   # a kept alpha stays in the file (a later op sees it)
     if MODE != "output_missing":
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         Path(out_path).write_bytes(json.dumps(payload).encode())

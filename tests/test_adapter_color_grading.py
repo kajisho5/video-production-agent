@@ -230,10 +230,24 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertEqual(r.data["alpha"], {"kept": True, "alpha_codec": "prores4444", "alpha_mode": "straight", "precision_bits": 8})
         self.assertTrue(r.data["operation"]["alpha"]["verification"]["ok"])
         self.assertEqual(r.data["artifact"]["pix_fmt"], "yuva444p12le")
+        # LUT_APPLY keeps it too (the other keep_alpha operation)
+        lut = Path(self.tmp) / "src" / "look.cube"; lut.write_text("TITLE fake\n")
+        lout = str(Path(self.ws) / "ops" / "01_lut" / "alpha_lut.mov")
+        rl = ad.run(Operation(tool="color-grading/run", args={"operation": "LUT_APPLY", "input": "a", "output": "a_lut", "lut": str(lut)}, inputs=["a"], outputs=["a_lut"], id="op_alpha_lut"),
+                    {"a": src, "a_lut": lout}, timeout=30)
+        self.assertTrue(rl.ok, rl.data)
+        self.assertEqual((rl.data["alpha"]["kept"], rl.data["operation"]["type"]), (True, "LUT_APPLY"))
+        # the graded file keeps its alpha, so a following LEGALIZE (refused with keep_alpha) is refused on it, as on the source
+        rg = ad.run(Operation(tool="color-grading/run", args={"operation": "LEGALIZE", "input": "a", "output": "a_legal"}, inputs=["a"], outputs=["a_legal"], id="op_alpha_legal"),
+                    {"a": out, "a_legal": str(Path(self.ws) / "ops" / "02_legal" / "alpha_legal.mov")}, timeout=30)
+        self.assertFalse(rg.ok)
+        self.assertEqual((rg.data["error"]["details"]["reason"], rg.data["error"]["recovery_class"]), ("alpha_not_preserved", "UNSUPPORTED_MEDIA"))
         # an alpha record on a success that does not say kept + verified is not a success
         doc = {"schema": "color-grading/response@1", "skill": {"id": "color-grading", "version": ad.version}, "status": "ok", "dry_run": False, "plan": {"graph": {}},
                "results": [{"node_id": "op:edit", "status": "completed", "tool": "ffmpeg-skill/color", "type": "LUT_APPLY", "alpha": {"kept": False, "verification": {"ok": False}}}],
                "outputs": [{"output_id": "out", "status": "completed", "path": out, "artifact": {"pix_fmt": "yuva444p12le"}, "provenance": {}}]}
+        self.assertTrue(any("not kept and verified" in e for e in ad._check_response(doc, out, False)))
+        doc["results"][0]["alpha"] = {"kept": True, "verification": {"ok": "false"}}   # a verdict that is not the boolean true is no verdict
         self.assertTrue(any("not kept and verified" in e for e in ad._check_response(doc, out, False)))
         doc["results"][0]["alpha"] = {"kept": True, "verification": {"ok": True}}
         doc["outputs"][0]["artifact"]["pix_fmt"] = "yuv420p"
@@ -406,6 +420,9 @@ class ColorGradingRealSkillTests(unittest.TestCase):
         ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.tmp) / "src_hdr")], ffmpeg_skill_dir=self.engine, timeout=180)
         if ad.operation_status(ad.doctor())["HDR_TO_SDR"] != "supported":
             self.skipTest("HDR_TO_SDR is not supported by this ffmpeg build (zscale / tonemap), as the Skill's doctor reports")
+        encoders = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+        if " libx265 " not in encoders:
+            self.skipTest("the HLG / PQ fixtures are made with libx265, which this ffmpeg build lacks")
         for n, (transfer, curve, why) in enumerate((("arib-std-b67", "mobius", "hlg_default"), ("smpte2084", "hable", "default"))):
             src = str(Path(self.tmp) / "src_hdr" / f"hdr_{n}.mp4")
             os.makedirs(os.path.dirname(src), exist_ok=True)

@@ -341,7 +341,7 @@ class SuccessTests(Base):
         b = a.build_request(TOOL_ID, self.op(options={"layer_export": {"directory": "layers", "alpha_codec": "qtrle", "alpha_mode": "premultiplied"}}).args, self.paths())
         self.assertEqual(b["request"]["options"]["layer_export"], {"directory": os.path.join(self.ws, "layers"), "alpha_codec": "qtrle", "alpha_mode": "premultiplied"})
         for bad in ({"directory": "../up"}, {"directory": "/abs/dir"}, {}, {"directory": "layers", "alpha_codec": "h264"}, {"directory": "layers", "alpha_mode": "linear"},
-                    {"directory": "layers", "path": "x"}, "layers"):
+                    {"directory": "layers", "path": "x"}, {"directory": "layers", "codec": "png"}, "layers"):
             with self.assertRaises(ToolError, msg=str(bad)):
                 a.build_request(TOOL_ID, self.op(options={"layer_export": bad}).args, self.paths())
         r = a.run(self.op(options={"layer_export": {"directory": "layers"}}), self.paths(), timeout=20)
@@ -355,6 +355,17 @@ class SuccessTests(Base):
         dr = a.run(self.op(options={"layer_export": {"directory": "layers2"}}), self.paths("out/dry.mp4"), dry_run=True)
         self.assertTrue(dr.ok, dr.data)
         self.assertEqual([x["file"] for x in dr.data["layer_export"]["layers"]], ["title.mov", "t1.mov"])
+        # the reported export must be the requested one: its folder, one layer per element named <id><container>, manifest.json in the folder
+        good = {"schema": "motion-graphics/response@1", "skill": {"id": SKILL_ID, "version": a.version}, "status": "ok", "dry_run": False}
+        def le_errs(**over):
+            le = json.loads(json.dumps(r.data["layer_export"])); le.update(over)
+            return [e for e in a._check_response(dict(good, layer_export=le), self.paths()["out"], False, ["t1", "title"], os.path.join(self.ws, "layers")) if "layer_export" in e]
+        self.assertEqual(le_errs(), [])
+        self.assertTrue(le_errs(directory=os.path.join(self.ws, "elsewhere")))
+        lay = r.data["layer_export"]["layers"]
+        self.assertTrue(le_errs(layers=[lay[0], lay[0]]))
+        self.assertTrue(le_errs(layers=[lay[0], dict(lay[1], file="manifest.json", path=le["manifest"]["path"], sha256=le["manifest"]["sha256"])]))
+        self.assertTrue([e for e in a._check_response(dict(good, layer_export=r.data["layer_export"]), self.paths()["out"], False, ["t1", "title"], None) if "layer_export" in e])
         self.mode("layer_hash_mismatch")   # a layer whose reported hash is not the file's is not a success
         r = a.run(self.op(options={"layer_export": {"directory": "layers3"}}), self.paths("out/bad.mp4"), timeout=20)
         self.assertFalse(r.ok)
