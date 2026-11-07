@@ -116,6 +116,10 @@ class ColorGradingAdapterTests(unittest.TestCase):
         live4 = json.loads(json.dumps(pinned))
         live4["alpha"]["keep_alpha"]["operations"] = ["LUT_APPLY"]
         self.assertTrue(any(d.startswith("alpha:") for d in contract_breaking_drift(live4, pinned)))
+        # ADR-106 addendum 1: the agent sends no tonemap and relies on the Skill's transfer-based rule, so a changed rule is fatal even with hdr_sdr unchanged
+        live5 = json.loads(json.dumps(pinned))
+        live5["hdr_sdr_defaults"]["tonemap"]["by_input_transfer"] = {"arib-std-b67": "hable"}
+        self.assertTrue(any(d.startswith("hdr_sdr_defaults:") for d in contract_breaking_drift(live5, pinned)))
         live2 = json.loads(json.dumps(pinned))
         live2["operations"] = [o for o in live2["operations"] if o["type"] != "PRIMARY_CORRECTION"]
         self.assertTrue(contract_breaking_drift(live2, pinned), "an operation this adapter relies on disappearing must stay fatal")
