@@ -55,6 +55,10 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    # take assembly crossfades (ADR-054): the programme audio replaces the assembled picture's hard-cut audio
                    "audio_mux": ("asset", "video", "audio"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)
+                   # ADR-100: the parameters of the new colour operations by the contract's names
+                   "color_ocio": ("asset", "config", "source_space", "destination_space", "display", "view", "look", "lut_size", "output_tags"),
+                   "color_match_camera": ("asset", "reference_path", "reference_at", "at", "model", "patches", "lut_size"),
+                   "color_legalize": ("asset", "profile", "knee", "lut_size"),
                    "color_strip_dovi": ("asset",), "color_hdr_to_sdr": ("asset",), "color_lut": ("asset", "lut", "lut_strength"), "color_retag": ("asset", "target"),
                    "color_primary_correction": ("asset", "exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
                                                 "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves"),

@@ -3014,8 +3014,11 @@
      "enum": [
       "color.strip_dovi",
       "color.hdr_to_sdr",
+      "color.ocio",
+      "color.match_camera",
       "color.primary_correction",
       "color.lut",
+      "color.legalize",
       "color.retag"
      ]
     },
@@ -3141,6 +3144,81 @@
      "items": {
       "type": "string"
      }
+    },
+    "config": {
+     "type": "string",
+     "minLength": 1
+    },
+    "source_space": {
+     "type": "string",
+     "minLength": 1
+    },
+    "destination_space": {
+     "type": "string",
+     "minLength": 1
+    },
+    "display": {
+     "type": "string",
+     "minLength": 1
+    },
+    "view": {
+     "type": "string",
+     "minLength": 1
+    },
+    "look": {
+     "type": "string",
+     "minLength": 1
+    },
+    "lut_size": {
+     "enum": [
+      17,
+      33,
+      65,
+      129
+     ]
+    },
+    "output_tags": {
+     "enum": [
+      "bt709",
+      "bt2020-pq",
+      "bt2020-hlg",
+      "bt601"
+     ]
+    },
+    "reference_path": {
+     "type": "string",
+     "minLength": 1
+    },
+    "reference_at": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 86400.0
+    },
+    "at": {
+     "type": "number",
+     "minimum": 0.0,
+     "maximum": 86400.0
+    },
+    "model": {
+     "enum": [
+      "curves",
+      "matrix"
+     ]
+    },
+    "patches": {
+     "type": "string",
+     "minLength": 1
+    },
+    "profile": {
+     "enum": [
+      "bt709",
+      "ebu-r103"
+     ]
+    },
+    "knee": {
+     "type": "number",
+     "minimum": 0.8,
+     "maximum": 0.99
     }
    }
   },

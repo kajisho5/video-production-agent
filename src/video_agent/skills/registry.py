@@ -454,6 +454,12 @@ def default_registry() -> SkillRegistry:
         ("color_primary_correction", "PRIMARY_CORRECTION", "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, lift / gain, levels, a curves preset", {"asset": "video"}, "MEDIUM"),
         ("color_lut", "LUT_APPLY", "Apply a 3D .cube LUT", {"asset": "video", "lut": "cube"}, "MEDIUM"),
         ("color_retag", "RETAG", "Re-tag the colour metadata (bt709 / bt2020-pq / bt2020-hlg / bt601)", {"asset": "video", "target": "str"}, "LOW"),
+        # ADR-100: color-grading-skill 0.5.0; each gated by the Skill's doctor per operation (`color-grading:<TYPE>`: OCIO_TRANSFORM needs the
+        # optional PyOpenColorIO, MATCH_CAMERA / LEGALIZE need ffmpeg-skill 3.1.6+)
+        ("color_ocio", "OCIO_TRANSFORM", "Convert colour spaces as an OpenColorIO config names them (source space -> destination space or display / view, optional look)",
+         {"asset": "video", "source_space": "str"}, "MEDIUM"),
+        ("color_match_camera", "MATCH_CAMERA", "Match this camera's colour to a reference camera's video (a fitted correction applied as a 3D LUT)", {"asset": "video", "reference": "video"}, "MEDIUM"),
+        ("color_legalize", "LEGALIZE", "Soft-clip into broadcast-legal levels (BT.709 legal range or the EBU R 103 tolerance)", {"asset": "video"}, "LOW"),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading", f"color-grading:{typ}"], risk, True, "CONFIRM", ["color-grading/run"]))
     r.register(SkillSpec("motion_graphics", "1.0", "Render the motion-graphics elements (titles, lower thirds, text / image / video overlays, bugs, chapters, progress, countdowns, stickers, hooks, memes, shapes) onto the picture (one request per subject)", {"asset": "video", "elements": "list"}, {"artifact": "INTERMEDIATE"},
