@@ -66,52 +66,54 @@ jobs:
         with: {python-version: "3.11"}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core imagemagick   # imagemagick: ADR-077's ImagePrepareRealTests (imagemagick-skill uses IM6's convert / identify)
       - run: git clone --depth 1 --branch "${{ matrix.ffmpeg_skill }}" https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - if: matrix.ffmpeg_skill == 'main'
+        run: git -C ../ffmpeg-skill fetch -q --depth 1 origin 6e42a79247909659b3d80833120b272fb5e46aba && git -C ../ffmpeg-skill checkout -q 6e42a79247909659b3d80833120b272fb5e46aba
       - run: python3 ../ffmpeg-skill/scripts/_contract.py --json --static | python3 -c "import json,sys; d=json.load(sys.stdin); print('ffmpeg-skill', d['skill']['version'], 'contract', d['contract_version'])"
-      - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
+      - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill && git -C ../media-analysis-skill fetch -q --depth 1 origin 88c5c903b53b98be67a6c40e381e558a0677177e && git -C ../media-analysis-skill checkout -q 88c5c903b53b98be67a6c40e381e558a0677177e
+      - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill && git -C ../transcription-skill fetch -q --depth 1 origin e4e6813c355136f1941fe89740dfaf828f40dd5a && git -C ../transcription-skill checkout -q e4e6813c355136f1941fe89740dfaf828f40dd5a   # contract / doctor / path policy only: no ASR engine, no model download in CI
       # video-editing-skill (ADR-028): main (PR #1 merged); no install needed, the checkout is run as `python -m video_editing_skill.cli`
-      - run: git clone --depth 1 https://github.com/kajisho5/video-editing-skill ../video-editing-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/video-editing-skill ../video-editing-skill && git -C ../video-editing-skill fetch -q --depth 1 origin ec65a369dfb76bea9d90f275a6f368e3901ae712 && git -C ../video-editing-skill checkout -q ec65a369dfb76bea9d90f275a6f368e3901ae712
       # audio-production-skill (ADR-030): main (PR #1 merged); run as `python -m audio_production.cli` from the checkout, no install
-      - run: git clone --depth 1 https://github.com/kajisho5/audio-production-skill ../audio-production-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/audio-production-skill ../audio-production-skill && git -C ../audio-production-skill fetch -q --depth 1 origin e52d76df62e9a4aaa11c7ef1aedca171beb67196 && git -C ../audio-production-skill checkout -q e52d76df62e9a4aaa11c7ef1aedca171beb67196
       # Phase 3 finishing Skills (ADR-031 / ADR-032): main (PR #1 merged in each); run from the checkouts, no install. thumbnail-skill renders with Pillow.
-      - run: git clone --depth 1 https://github.com/kajisho5/subtitle-skill ../subtitle-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/thumbnail-skill ../thumbnail-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/color-grading-skill ../color-grading-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/motion-graphics-skill ../motion-graphics-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/subtitle-skill ../subtitle-skill && git -C ../subtitle-skill fetch -q --depth 1 origin 9bd804970c420cbc79beefa028bc874ca024ec40 && git -C ../subtitle-skill checkout -q 9bd804970c420cbc79beefa028bc874ca024ec40
+      - run: git clone --depth 1 https://github.com/kajisho5/thumbnail-skill ../thumbnail-skill && git -C ../thumbnail-skill fetch -q --depth 1 origin a5da2116abea53f51d0364c15481e079faf2c91c && git -C ../thumbnail-skill checkout -q a5da2116abea53f51d0364c15481e079faf2c91c
+      - run: git clone --depth 1 https://github.com/kajisho5/color-grading-skill ../color-grading-skill && git -C ../color-grading-skill fetch -q --depth 1 origin d86f353e171ac931e24e14e13470982c22b665de && git -C ../color-grading-skill checkout -q d86f353e171ac931e24e14e13470982c22b665de
+      - run: git clone --depth 1 https://github.com/kajisho5/motion-graphics-skill ../motion-graphics-skill && git -C ../motion-graphics-skill fetch -q --depth 1 origin 8a1543436a3c4eefb246ea17c24626fd6bb92dde && git -C ../motion-graphics-skill checkout -q 8a1543436a3c4eefb246ea17c24626fd6bb92dde
+      - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill && git -C ../qc-skill fetch -q --depth 1 origin cc2a8abce6498fe9892e5a3d6ed5d4c42966d0f9 && git -C ../qc-skill checkout -q cc2a8abce6498fe9892e5a3d6ed5d4c42966d0f9
       # ingest-skill (ADR-059): URL inputs go through `ingest fetch`; its fetch extra installs yt-dlp. The test downloads from 127.0.0.1 only. ADR-066: the card offload (IngestOffloadRealTests) runs on a synthetic XDCAM EX-like card
-      - run: git clone --depth 1 https://github.com/kajisho5/ingest-skill ../ingest-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/ingest-skill ../ingest-skill && git -C ../ingest-skill fetch -q --depth 1 origin 542ec11945aa539796d717a905460294f07cf36f && git -C ../ingest-skill checkout -q 542ec11945aa539796d717a905460294f07cf36f
       # voice-enhance-skill (ADR-073): main (no release tag); run from the checkout. No engine in CI: the tests stand in a deep-filter that copies its input
       # and a nara_wpe whose wpe_v8 is the identity (as voice-enhance-skill's own tests do); numpy is for those engines' STFT and the real crosstalk engine
-      - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill && git -C ../voice-enhance-skill fetch -q --depth 1 origin 9e0c150d2ce2b93c485ab330f74a81e8876a2397 && git -C ../voice-enhance-skill checkout -q 9e0c150d2ce2b93c485ab330f74a81e8876a2397
       # imagemagick-skill (ADR-077): main (contract 0.8.1, = the v0.8.1 tag but for CI files); its scripts run from the checkout, standard library only
-      - run: git clone --depth 1 https://github.com/kajisho5/imagemagick-skill ../imagemagick-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/imagemagick-skill ../imagemagick-skill && git -C ../imagemagick-skill fetch -q --depth 1 origin 4d5066dc3ae397b44469a443f1167b8d2ad4c986 && git -C ../imagemagick-skill checkout -q 4d5066dc3ae397b44469a443f1167b8d2ad4c986
       # detection-skill (ADR-090): main (no release tag); run from the checkout, its `faces` extra installs opencv-python-headless + numpy. The YuNet model file is
       # fetched here, pinned by sha256, the way detection-skill's own CI does (the Skill never downloads anything); its fixture astronaut.jpg is the face filmed
-      - run: git clone --depth 1 https://github.com/kajisho5/detection-skill ../detection-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/detection-skill ../detection-skill && git -C ../detection-skill fetch -q --depth 1 origin c46c91ab8cb1690afb87c1317f836fb59c74a6e1 && git -C ../detection-skill checkout -q c46c91ab8cb1690afb87c1317f836fb59c74a6e1
       - run: |
           mkdir -p ../detection-models
           curl -fsSL -o ../detection-models/face_detection_yunet_2026may.onnx https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
           echo "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0  ../detection-models/face_detection_yunet_2026may.onnx" | sha256sum -c -
       # dubbing-skill (ADR-085): main (no release tag); run from the checkout, standard library only. No TTS engine in CI: DubbingRealTests checks the
       # live contract against the pin, the doctor's ENGINE_UNAVAILABLE, the blocked plan and that the real CLI accepts the adapter's argv
-      - run: git clone --depth 1 https://github.com/kajisho5/dubbing-skill ../dubbing-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/dubbing-skill ../dubbing-skill && git -C ../dubbing-skill fetch -q --depth 1 origin 1c550392ed2c021c60eeb3064d75aa2563980f88 && git -C ../dubbing-skill checkout -q 1c550392ed2c021c60eeb3064d75aa2563980f88
       # diarization-skill (ADR-086): main (no release tag); run from the checkout. No pyannote.audio and no gated pipeline in CI: the tests check the
       # live contract, the doctor's not-ready verdict and the handoff
-      - run: git clone --depth 1 https://github.com/kajisho5/diarization-skill ../diarization-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/diarization-skill ../diarization-skill && git -C ../diarization-skill fetch -q --depth 1 origin 3254cc0943b40e576100ddb4afc4bbe87ecb002a && git -C ../diarization-skill checkout -q 3254cc0943b40e576100ddb4afc4bbe87ecb002a
       # publish-skill (ADR-087): main (no release tag); run from the checkout, standard library only. PublishRealTests is offline: the live contract,
       # publish plan and the dry run of a real file (no credentials, no upload, no network)
-      - run: git clone --depth 1 https://github.com/kajisho5/publish-skill ../publish-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/publish-skill ../publish-skill && git -C ../publish-skill fetch -q --depth 1 origin 7c6e61ce78575396a0afcc3dbc34edbbd16b4b10 && git -C ../publish-skill checkout -q 7c6e61ce78575396a0afcc3dbc34edbbd16b4b10
       # nle-bridge-skill (ADR-089): main (no release tag); run from the checkout, standard library only. NleBridgeRealTests: a conform package from the IR
-      - run: git clone --depth 1 https://github.com/kajisho5/nle-bridge-skill ../nle-bridge-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/nle-bridge-skill ../nle-bridge-skill && git -C ../nle-bridge-skill fetch -q --depth 1 origin 886559a75c676b651b0693bc0c2a55ff419efd5b && git -C ../nle-bridge-skill checkout -q 886559a75c676b651b0693bc0c2a55ff419efd5b
       # slide-sync-skill (ADR-091): main (no release tag); run from the checkout, its `pdf` extra installs pypdfium2 for the deck import (no LibreOffice: pptx / key are not tested)
-      - run: git clone --depth 1 https://github.com/kajisho5/slide-sync-skill ../slide-sync-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/slide-sync-skill ../slide-sync-skill && git -C ../slide-sync-skill fetch -q --depth 1 origin 7b3271584a9c53ff178bce1029d4943beeb9f53f && git -C ../slide-sync-skill checkout -q 7b3271584a9c53ff178bce1029d4943beeb9f53f
       # sound-design-skill (ADR-092): main (no release tag); run from the checkout, stdlib only. Library mode only in CI (no ACE-Step): the bed is the user's licensed file
-      - run: git clone --depth 1 https://github.com/kajisho5/sound-design-skill ../sound-design-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/sound-design-skill ../sound-design-skill && git -C ../sound-design-skill fetch -q --depth 1 origin c9934ee3d38b1cfb3fe03b762cf23177199d0907 && git -C ../sound-design-skill checkout -q c9934ee3d38b1cfb3fe03b762cf23177199d0907
       # remotion-ffmpeg-skill (ADR-093): main (= v0.12.1); its scripts run from the checkout. No npm install / Remotion render in CI: contract, doctor, the project check
-      - run: git clone --depth 1 https://github.com/kajisho5/remotion-ffmpeg-skill ../remotion-ffmpeg-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/remotion-ffmpeg-skill ../remotion-ffmpeg-skill && git -C ../remotion-ffmpeg-skill fetch -q --depth 1 origin 46c9b09592f2ec75c4453c7186f5ea60072377f5 && git -C ../remotion-ffmpeg-skill checkout -q 46c9b09592f2ec75c4453c7186f5ea60072377f5
       # artifacts-skill (ADR-095): main (no release tag); run from the checkout (Python 3.10+). Markdown verification needs only the standard library: no extra installed
-      - run: git clone --depth 1 https://github.com/kajisho5/artifacts-skill ../artifacts-skill
+      - run: git clone --depth 1 https://github.com/kajisho5/artifacts-skill ../artifacts-skill && git -C ../artifacts-skill fetch -q --depth 1 origin 539e523a44a912763ac792aae739906caa5b55ae && git -C ../artifacts-skill checkout -q 539e523a44a912763ac792aae739906caa5b55ae
       - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]" -e "../detection-skill[faces]" -e "../slide-sync-skill[pdf]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS"
         env:
@@ -155,9 +157,9 @@ jobs:
         uses: actions/setup-node@v4
         with: {node-version: "22"}
       - if: matrix.shard == 1
-        run: git clone --depth 1 https://github.com/kajisho5/blender-skill ../blender-skill
+        run: git clone --depth 1 https://github.com/kajisho5/blender-skill ../blender-skill && git -C ../blender-skill fetch -q --depth 1 origin af185d0ac11e6ce9b2b712437a1b5a4289e8d4c9 && git -C ../blender-skill checkout -q af185d0ac11e6ce9b2b712437a1b5a4289e8d4c9
       - if: matrix.shard == 1
-        run: git clone --depth 1 https://github.com/kajisho5/hyperframes-skill ../hyperframes-skill && cd ../hyperframes-skill && npm ci --ignore-scripts
+        run: git clone --depth 1 https://github.com/kajisho5/hyperframes-skill ../hyperframes-skill && git -C ../hyperframes-skill fetch -q --depth 1 origin fc1515b188c7d44124947dfd7bc5044ffead52c7 && git -C ../hyperframes-skill checkout -q fc1515b188c7d44124947dfd7bc5044ffead52c7 && cd ../hyperframes-skill && npm ci --ignore-scripts
       - if: matrix.shard == 1
         run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests
         env:
