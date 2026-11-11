@@ -1,8 +1,23 @@
-# Manual trigger only for now (the account's Actions minutes are limited; ffmpeg-skill's CI uses the same policy).
-# Add `pull_request:` under `on:` when minutes are available.
+# Runs by itself on every pull request, on every push to main and once a night; `workflow_dispatch` stays for a run by hand.
+# The repository is public, so the standard GitHub-hosted runners cost no Actions minutes.
+# The nightly run is the early warning for contract drift: the integration job installs the sibling Skills from their main
+# branches, so a Skill release that breaks a pinned contract fails here without any change to this repository. A failed
+# nightly run opens the "Nightly tests failed" issue (or comments on the open one): see the `nightly-failure` job.
 name: tests
 on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 18 * * *"   # 18:17 UTC every day (03:17 JST); off the hour, where scheduled runs queue up
   workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # A new push to a pull request cancels that pull request's run in progress. Every other run (main, nightly, by hand) has a
+  # group of its own (the run id), so it is never cancelled and never replaced while it waits.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || format('{0}-{1}', github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   unit:
     strategy:
@@ -130,3 +145,27 @@ jobs:
         env:
           VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
           VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
+  nightly-failure:
+    # Only for the nightly run: make its failure visible as an issue. One open issue at a time; later failures comment on it.
+    name: report nightly failure
+    needs: [unit, integration]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Nightly tests failed
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="The nightly \`tests\` run failed on \`${GITHUB_SHA}\`: ${RUN_URL}
+
+          The integration job installs the sibling Skills from their main branches, so the usual cause is a Skill release that moved a contract this repository pins. Close this issue once a nightly run is green again."
+          number="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+            | jq -s --arg t "$TITLE" '[.[][] | select(.pull_request == null and .title == $t) | .number] | first // empty')"
+          if [ -n "$number" ]; then
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" -f body="$body" --jq .html_url
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues" -f title="$TITLE" -f body="$body" --jq .html_url
+          fi
