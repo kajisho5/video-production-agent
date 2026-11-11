@@ -42,13 +42,25 @@ jobs:
     # ADR-082: the real-Skill suite against ffmpeg-skill main (3.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0) and against
     # v2.24.1 (the last 2.x, contract_version 1.0), both inside SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg
     # (>= 6.1) satisfy both. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
+    #
+    # Each engine leg is split across INTEGRATION_SHARDS runners, because one runner took about an hour for the suite. Nothing is
+    # listed by hand: tests/integration_shards.py puts every test class of tests/test_integration.py in exactly one shard (whole
+    # classes, balanced by measured duration) and refuses to run unless every test id is in exactly one shard. Shard 1 is the
+    # lightest and also runs the three small real-Skill suites at the end of this job. To change the number of shards, change
+    # `shard` and INTEGRATION_SHARDS together: the "shard matrix" step fails when they disagree.
     strategy:
       fail-fast: false
       matrix:
         ffmpeg_skill: ["main", "v2.24.1"]
-    name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }})
+        shard: [1, 2, 3, 4, 5, 6]
+    name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }}, shard ${{ matrix.shard }})
+    env:
+      INTEGRATION_SHARDS: "6"
     runs-on: ubuntu-latest
     steps:
+      - name: shard matrix matches INTEGRATION_SHARDS
+        # strategy.job-total = engine legs (2) x shards in the matrix; a shard missing from the matrix would silently drop its tests
+        run: test "${{ strategy.job-total }}" -eq "$(( 2 * INTEGRATION_SHARDS ))"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
@@ -101,7 +113,7 @@ jobs:
       # artifacts-skill (ADR-095): main (no release tag); run from the checkout (Python 3.10+). Markdown verification needs only the standard library: no extra installed
       - run: git clone --depth 1 https://github.com/kajisho5/artifacts-skill ../artifacts-skill
       - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]" -e "../detection-skill[faces]" -e "../slide-sync-skill[pdf]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
-      - run: python -m unittest -v tests/test_integration.py
+      - run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS"
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
           VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
@@ -127,28 +139,34 @@ jobs:
           VIDEO_AGENT_REMOTION_DIR: "${{ github.workspace }}/../remotion-ffmpeg-skill"
           VIDEO_AGENT_ARTIFACTS_DIR: "${{ github.workspace }}/../artifacts-skill"
       # ADR-076: the color-grading adapter against color-grading-skill main (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
-      - run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests
+      - if: matrix.shard == 1
+        run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests
         env:
           VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
       # ADR-058: the qc adapter against qc-skill main (contract drift, reference metrics SSIM / PSNR); the fake-based tests of the same file run in the unit job
-      - run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
+      - if: matrix.shard == 1
+        run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
         env:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
       # ADR-080: the pinned blender-skill / hyperframes-skill contracts of the render_3d / html_scene_render handoffs against each main
       # (contract only: no Blender, no Chromium; hyperframes' contract needs its npm dependencies, installed without their install scripts)
-      - uses: actions/setup-node@v4
+      - if: matrix.shard == 1
+        uses: actions/setup-node@v4
         with: {node-version: "22"}
-      - run: git clone --depth 1 https://github.com/kajisho5/blender-skill ../blender-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/hyperframes-skill ../hyperframes-skill && cd ../hyperframes-skill && npm ci --ignore-scripts
-      - run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests
+      - if: matrix.shard == 1
+        run: git clone --depth 1 https://github.com/kajisho5/blender-skill ../blender-skill
+      - if: matrix.shard == 1
+        run: git clone --depth 1 https://github.com/kajisho5/hyperframes-skill ../hyperframes-skill && cd ../hyperframes-skill && npm ci --ignore-scripts
+      - if: matrix.shard == 1
+        run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests
         env:
           VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
           VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
   nightly-failure:
     # Only for the nightly run: make its failure visible as an issue. One open issue at a time; later failures comment on it.
     name: report nightly failure
-    needs: [unit, integration]
+    needs: [unit, integration]   # `integration` is every engine leg x shard
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
