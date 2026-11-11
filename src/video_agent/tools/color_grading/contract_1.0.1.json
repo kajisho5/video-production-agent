@@ -4,7 +4,7 @@
   "id": "color-grading",
   "name": "color-grading-skill",
   "package": "color-grading-skill",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "contract_version": 1,
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
@@ -30,7 +30,7 @@
     {
       "tool_id": "color-grading/run",
       "skill_id": "color-grading",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "role": "execution",
       "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
       "inputs": [

@@ -125,9 +125,9 @@ class VersionGateTests(unittest.TestCase):
         # ADR-097 addendum 6: color-grading-skill 0.5.0 (OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE, the alpha guard; pinned blocks unchanged)
         # ADR-106: 0.6.0 (LEGALIZE clamp and measured shares, keep_alpha for LUT_APPLY / PRIMARY_CORRECTION; additive, pinned blocks unchanged)
         # ADR-106 addendum 1: 0.6.1 rewords hdr_sdr.tone_mapping_selection (the transfer-based default of 0.5.1, written down); re-pinned
-        # ADR-107: 1.0.0 was an unintended version number for the 0.6 line (the 0.6.1 contract, version only). It is to be withdrawn and re-released as
-        # 0.6.2, so the gate takes 1.0.x and 0.6.x of the same contract; 1.0 is not a new contract generation, and 0.7 / 1.1 / 2.0 stay out
-        self.assertEqual(cg.pinned_contract()["version"], "1.0.0")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
+        # ADR-107: 1.0.0 was an unintended version number for the 0.6 line (the 0.6.1 contract, version only), so the gate takes 1.0.x and 0.6.x of the
+        # same contract; 1.0 is not a new contract generation, and 0.7 / 1.1 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only
+        self.assertEqual(cg.pinned_contract()["version"], "1.0.1")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
         for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1"):
             live = with_version(cg.pinned_contract(), v)
             self.assertEqual(cg.check_contract(live), [], v)
@@ -136,9 +136,9 @@ class VersionGateTests(unittest.TestCase):
             self.assertTrue(cg.check_contract(with_version(cg.pinned_contract(), v)), v)
 
     def test_audio_production_versions(self):
-        # ADR-107: 1.0.0 was an unintended version number for the 0.4 line (the 0.4.10 contract, version only). It is to be withdrawn and re-released as
-        # 0.4.11, so the gate takes 1.0.x and 0.4.x of the same contract; 1.0 is not a new contract generation, and 0.5 / 1.1 / 2.0 stay out
-        self.assertEqual(ap.pinned_contract()["version"], "1.0.0")
+        # ADR-107: 1.0.0 was an unintended version number for the 0.4 line (the 0.4.10 contract, version only), so the gate takes 1.0.x and 0.4.x of the
+        # same contract; 1.0 is not a new contract generation, and 0.5 / 1.1 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only
+        self.assertEqual(ap.pinned_contract()["version"], "1.0.1")
         for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1"):
             live = with_version(ap.pinned_contract(), v)
             self.assertEqual(ap.check_contract(live), [], v)
