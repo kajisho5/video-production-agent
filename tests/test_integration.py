@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_ai_provider import FakeAIProvider  # noqa: E402
+from pin_check import assert_live_matches_pin  # noqa: E402  ADR-108: live contract vs pin, the version by range
 from video_agent.project import load_ir, save_ir
 from video_agent.service import Service
 from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
@@ -21,6 +22,12 @@ from video_agent.tools.media_analysis import locate_media_analysis
 from video_agent.tools.transcription import locate_transcription
 
 TONE = "0.5*sin(2*PI*440*t)*between(t\\,3\\,14)*gt(sin(2*PI*0.7*t)\\,-0.6)"
+
+
+def live_version(adapter_cls, skill) -> str:
+    """The release version the installed checkout's own contract reports: what provenance records as an operation's tool_version
+    (ADR-108: it may be a version-only release ahead of the pin, inside the adapter's gate)."""
+    return adapter_cls(skill, ffmpeg_skill_dir=str(locate_ffmpeg_skill().root)).version
 
 
 def make_media(path: str, hdr: bool = False, vfr: bool = False) -> None:
@@ -643,7 +650,9 @@ class IngestOffloadRealTests(unittest.TestCase):
         self.assertEqual(set(probes), set(off["asset_ids"]), "the agent's own analysis of the verified copies")
         self.assertTrue(self.svc.validate(load_ir(path)).ok)
         ad = IngestAdapter(locate_ingest())
-        self.assertEqual((ad.drift(), ad.breaking_drift()), ([], []), "the pinned contract equals ingest-skill main")
+        from video_agent.tools.ingest import adapter as ingest_adapter
+        assert_live_matches_pin(self, "ingest-skill", ad.contract, ingest_adapter)   # the pinned contract equals ingest-skill main, but for a version-only release
+        self.assertEqual(ad.breaking_drift(), [])
         for r in roots:
             v = ad.measure("ingest/verify", {"target": str(r)})
             self.assertTrue(v.ok and v.data["verified"], v.data.get("failures"))
@@ -2037,10 +2046,9 @@ class VideoEditingRealTests(unittest.TestCase):
         if not self.ve:
             self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
         from video_agent.capabilities import CapabilityResolver
-        from video_agent.tools.video_editing import VideoEditingAdapter, contract_drift, pinned_contract
+        from video_agent.tools.video_editing import VideoEditingAdapter, adapter as ve_adapter, contract_drift
         ad = VideoEditingAdapter(self.ve, workspace=self.tmp, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
-        self.assertEqual(ad.version, pinned_contract()["version"])
-        self.assertEqual(contract_drift(ad.contract), [], "the installed video-editing-skill contract drifted from the pinned one: re-verify the adapter")
+        assert_live_matches_pin(self, "video-editing-skill", ad.contract, ve_adapter)
         doc = ad.doctor()
         self.assertTrue(doc["ok"], doc.get("problems"))
         rows = {c["check"]: c for c in doc["checks"]}
@@ -2050,7 +2058,7 @@ class VideoEditingRealTests(unittest.TestCase):
         caps = CapabilityResolver(str(locate_ffmpeg_skill().root), video_editing_dir=str(self.ve.root) if self.ve.root else None).resolve()
         self.assertEqual(caps["video-editing"].status, "AVAILABLE", caps["video-editing"].detail)
         self.assertEqual(caps["video-editing"].evidence["engine"]["id"], "ffmpeg-skill")
-        self.assertEqual(caps["video-editing"].evidence["drift"], [])
+        self.assertEqual(caps["video-editing"].evidence["drift"], contract_drift(ad.contract))   # the adapter's own report: empty, or the version-only drift checked above
         self.assertEqual(caps["encoder:aac"].status, "AVAILABLE"); self.assertIn(caps["filter:xfade"].status, ("AVAILABLE", "MISSING"))
         svc = self._service(str(Path(self.tmp) / "ws_cap"))
         pk = {r["skill_id"]: r for r in svc.packages()}["video-editing"]
@@ -2087,7 +2095,8 @@ class VideoEditingRealTests(unittest.TestCase):
         self.assertAlmostEqual(float(probe["duration"]), sum(e - s for s, e in keep), delta=1.6, msg="keyframe-precision cut lands within the Skill's tolerance")
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.6.2"))
+        from video_agent.tools.video_editing import VideoEditingAdapter
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", live_version(VideoEditingAdapter, self.ve)))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(sorted(trim["args"]), ["input", "keep", "output", "precision"])
         # the deliverable of the generic profile is the last intermediate: its hash equals the one the Skill reported for its output chain
@@ -2186,8 +2195,10 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         rows = [e for e in prov["operations"] if e["tool"].startswith("video-editing/")]
         self.assertEqual([e["skill"] for e in rows], [f"video_{t.split('.', 1)[1]}" for t in expect_ops])
         self.assertEqual(len(rows[0]["input"]), 2); self.assertIn(os.path.abspath(self.png), rows[4]["input"])
+        from video_agent.tools.video_editing import VideoEditingAdapter
+        installed = live_version(VideoEditingAdapter, self.ve)
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == "0.6.2")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == installed)
         self.assertEqual(len(prov["skill_observations"]), len(rows))
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] == "TRANSFORM" and dec[i]["provenance"] == "USER" for e in rows for i in e["decision"]))
@@ -2242,7 +2253,8 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         rows = {e["skill"]: e for e in prov["operations"] if e["tool"].startswith("video-editing/")}
         self.assertEqual((rows["video_trim"]["args"]["precision"], rows["video_rotate"]["args"]["degrees"], rows["video_rotate"]["args"]["flip"]), ("frame", 90, "h"))
-        self.assertTrue(all(e["decision"] and e["tool_version"] == "0.6.2" for e in rows.values()))
+        from video_agent.tools.video_editing import VideoEditingAdapter
+        self.assertTrue(all(e["decision"] and e["tool_version"] == live_version(VideoEditingAdapter, self.ve) for e in rows.values()))
 
     def test_image_insert_before_the_picture_end_to_end(self):
         """ADR-070: `edit.image_insert` (a real 160x90 PNG, 2 s, before) → video-editing/image_insert at the picture's own frame / rate after
@@ -2280,7 +2292,8 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
         join = next(e for e in prov["operations"] if e["tool"] == "video-editing/concat")
         self.assertEqual((still["skill"], still["args"]["duration"], still["args"]["width"], still["args"]["height"]), ("video_image_insert", 2.0, 640, 360))
         self.assertEqual(join["args"]["inputs"][0], still["args"]["output"], "the still first")
-        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == "0.6.2")
+        from video_agent.tools.video_editing import VideoEditingAdapter
+        self.assertTrue(still["decision"] and join["decision"] and still["tool_version"] == live_version(VideoEditingAdapter, self.ve))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
@@ -2438,7 +2451,7 @@ class AudioProductionRealTests(unittest.TestCase):
         """plan → (status as expected before any approval) → render(approve=all) → COMPLETED. `expect_plan_status` "REVIEW" means the
         plan waits for the CONFIRM decisions in `pending_subjects` (ADR-033: a video container's audio.extract); the explicit
         `approve=["all"]` of render is the existing approval mechanism, after which the saved plan must be APPROVED."""
-        from video_agent.tools.audio_production import pinned_contract as ap_pinned
+        from video_agent.tools.audio_production import AudioProductionAdapter
         ws = str(Path(self.tmp) / name)
         svc = svc or Service(workspace=ws)
         ws = svc.workspace
@@ -2474,8 +2487,9 @@ class AudioProductionRealTests(unittest.TestCase):
         prov = json.loads((Path(ws) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         rows = [e for e in prov["operations"] if e["tool"] == "audio-production/run"]
         self.assertEqual([e["skill"] for e in rows], expect_skills)
+        installed = live_version(AudioProductionAdapter, self.ap)
         for e in rows:
-            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == ap_pinned()["version"] and e["skill_package"] == "audio-production")
+            self.assertTrue(e["decision"] and e["skill_result"]["artifact"]["sha256"] and e["tool_version"] == installed and e["skill_package"] == "audio-production")
         dec = {x["id"]: x for x in d["decisions"]}
         self.assertTrue(all(dec[i]["type"] in ("TRANSFORM", "REMOVE") for e in rows for i in e["decision"]))
         return svc, p, out, res, prov
@@ -2484,10 +2498,9 @@ class AudioProductionRealTests(unittest.TestCase):
         if not self.ap:
             self.skipTest("needs an audio-production-skill checkout (VIDEO_AGENT_AUDIO_PRODUCTION_DIR)")
         from video_agent.capabilities import CapabilityResolver
-        from video_agent.tools.audio_production import AudioProductionAdapter, contract_drift, pinned_contract
+        from video_agent.tools.audio_production import AudioProductionAdapter, adapter as ap_adapter, contract_drift
         ad = AudioProductionAdapter(self.ap, workspace=self.tmp, allowed_inputs=[str(Path(self.wav).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
-        self.assertEqual(ad.version, pinned_contract()["version"])
-        self.assertEqual(contract_drift(ad.contract), [], "the installed audio-production-skill contract drifted from the pinned one: re-verify the adapter")
+        assert_live_matches_pin(self, "audio-production-skill", ad.contract, ap_adapter)
         doc = ad.doctor()
         self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
         self.assertEqual(doc["checks"]["ffmpeg_skill"]["status"], "ok", doc["checks"]["ffmpeg_skill"])
@@ -2496,7 +2509,7 @@ class AudioProductionRealTests(unittest.TestCase):
         self.assertNotRegex(json.dumps(doc).replace("secrets_shown", ""), r"(?i)(api[_-]?key|token|secret|password)")
         caps = CapabilityResolver(str(locate_ffmpeg_skill().root), audio_production_dir=str(self.ap.root) if self.ap.root else None).resolve()
         self.assertEqual(caps["audio-production"].status, "AVAILABLE", caps["audio-production"].detail)
-        self.assertEqual(caps["audio-production"].evidence["drift"], []); self.assertEqual(caps["audio-production"].evidence["engine"]["id"], "ffmpeg-skill")
+        self.assertEqual(caps["audio-production"].evidence["drift"], contract_drift(ad.contract)); self.assertEqual(caps["audio-production"].evidence["engine"]["id"], "ffmpeg-skill")
         for t in ("CUT", "NORMALIZE", "CONCAT", "GAIN", "MONO", "FADE_IN"):
             self.assertEqual(caps[f"audio-production:{t}"].status, "AVAILABLE", (t, caps[f"audio-production:{t}"].detail))
         svc = Service(workspace=str(Path(self.tmp) / "ws_cap"))
@@ -3238,12 +3251,11 @@ class VoiceEnhanceRealTests(unittest.TestCase):
 
     def test_live_contract_equals_the_pin_and_missing_engines_carry_the_skills_codes(self):
         from video_agent.capabilities import CapabilityResolver
-        from video_agent.tools.voice_enhance import VoiceEnhanceAdapter, drift, pinned_contract
+        from video_agent.tools.voice_enhance import VoiceEnhanceAdapter, adapter as vo_adapter, drift
         for k in self.engines:
             os.environ.pop(k, None)
         ad = VoiceEnhanceAdapter(self.ve, ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
-        self.assertEqual(ad.version, pinned_contract()["version"])
-        self.assertEqual(drift(ad.contract), [], "voice-enhance-skill main drifted from the pin (no release tag: the pin follows main): re-verify the adapter")
+        assert_live_matches_pin(self, "voice-enhance-skill", ad.contract, vo_adapter)   # no release tag: the pin follows main
         doc = ad.doctor()
         self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
         ev = ad.operation_evidence(doc)
@@ -3252,7 +3264,7 @@ class VoiceEnhanceRealTests(unittest.TestCase):
             self.assertIn("DeepFilterNet3_onnx.tar.gz", ev["ISOLATE"]["install"])
         caps = CapabilityResolver(str(locate_ffmpeg_skill().root)).resolve()
         self.assertEqual(caps["voice-enhance"].status, "AVAILABLE", caps["voice-enhance"].detail)
-        self.assertEqual(caps["voice-enhance"].evidence["drift"], [])
+        self.assertEqual(caps["voice-enhance"].evidence["drift"], drift(ad.contract))   # the adapter's own report: empty, or the version-only drift checked above
         svc = Service(workspace=str(Path(self.tmp) / "ws_missing"))
         ir = svc.plan([self.talk], "generic", user_requirements={"audio.production": True, "voice.isolate": True})
         b = next(x for x in ir.doc["decisions"] if x["subject"] == "voice.isolate")
@@ -3373,7 +3385,8 @@ class ImagePrepareRealTests(unittest.TestCase):
         from video_agent.tools.imagemagick import ImageMagickAdapter
         ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
         ad = ImageMagickAdapter(self.im, workspace=ws, allowed_inputs=[str(Path(self.png).parent)])
-        self.assertEqual(ad.drift(), [], "the installed imagemagick-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.imagemagick import adapter as im_adapter
+        assert_live_matches_pin(self, "imagemagick-skill", ad.contract, im_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         self.assertEqual(doc["status"], "ok", doc.get("problems"))
@@ -3487,7 +3500,8 @@ class FaceRedactionRealTests(unittest.TestCase):
 
     def test_live_contract_and_doctor(self):
         ad = self.adapter()
-        self.assertEqual(ad.drift(), [], "the installed detection-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.detection import adapter as de_adapter
+        assert_live_matches_pin(self, "detection-skill", ad.contract, de_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         self.assertTrue(doc["ready"].get("tracks"), doc.get("problems"))
@@ -3570,12 +3584,11 @@ class DubbingRealTests(unittest.TestCase):
     def test_live_contract_doctor_plan_and_argv_on_the_real_skill(self):
         from video_agent.capabilities import CapabilityResolver
         from video_agent.models import Operation
-        from video_agent.tools.dubbing import DubbingAdapter, breaking_drift, drift, pinned_contract
+        from video_agent.tools.dubbing import DubbingAdapter, adapter as du_adapter, breaking_drift
         ff = str(locate_ffmpeg_skill().root)
         ad = DubbingAdapter(self.dub, workspace=str(Path(self.tmp) / "ws"), allowed_inputs=[str(Path(self.tmp) / "src")], ffmpeg_skill_dir=ff)
-        self.assertEqual(ad.version, pinned_contract()["version"])
         self.assertEqual(breaking_drift(ad.contract), [], "dubbing-skill main changed what the adapter relies on: re-verify the adapter")
-        self.assertEqual(drift(ad.contract), [], "dubbing-skill main drifted from the pin (no release tag: the pin follows main): re-pin")
+        assert_live_matches_pin(self, "dubbing-skill", ad.contract, du_adapter)   # no release tag: the pin follows main
         doc = ad.doctor()
         self.assertIn(doc["status"], ("ok", "degraded"), doc.get("problems"))
         ev = ad.operation_evidence(doc)["DUB"]
@@ -3626,7 +3639,8 @@ class DiarizationRealTests(unittest.TestCase):
         from video_agent.tools.diarization import DiarizationAdapter
         ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
         ad = DiarizationAdapter(self.dia, workspace=ws, allowed_inputs=[str(Path(self._wav()).parent)])
-        self.assertEqual(ad.drift(), [], "the installed diarization-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.diarization import adapter as di_adapter
+        assert_live_matches_pin(self, "diarization-skill", ad.contract, di_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         status = ad.operation_status(doc)
@@ -3764,7 +3778,8 @@ class ThumbnailFeaturesRealTests(unittest.TestCase):
     def test_live_contract_has_every_tool(self):
         from video_agent.tools.thumbnail import TOOLS, ThumbnailAdapter, locate_thumbnail
         ad = ThumbnailAdapter(locate_thumbnail(), workspace=str(Path(self.tmp) / "ws"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
-        self.assertEqual(ad.drift(), [], "the installed thumbnail-skill contract drifted from the pin: re-verify the adapter (and re-pin)")
+        from video_agent.tools.thumbnail import adapter as th_adapter
+        assert_live_matches_pin(self, "thumbnail-skill", ad.contract, th_adapter)
         self.assertEqual(sorted(t for t in TOOLS if ad.supports(t)), sorted(TOOLS))
 
     def test_variants_layers_and_batch(self):
@@ -3976,7 +3991,8 @@ class SlideSyncRealTests(unittest.TestCase):
         from video_agent.tools.slide_sync import SlideSyncAdapter
         ws = str(Path(self.tmp) / "ws_adapter"); os.makedirs(ws, exist_ok=True)
         ad = SlideSyncAdapter(self.ss, workspace=ws, ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
-        self.assertEqual(ad.drift(), [], "the installed slide-sync-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.slide_sync import adapter as ss_adapter
+        assert_live_matches_pin(self, "slide-sync-skill", ad.contract, ss_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         self.assertEqual(ad.operation_status(doc)["DETECT"], "supported", doc.get("problems"))
@@ -4034,7 +4050,8 @@ class SoundDesignBgmRealTests(unittest.TestCase):
     def test_live_contract_and_doctor(self):
         from video_agent.tools.sound_design import SoundDesignAdapter
         ad = SoundDesignAdapter(self.sd, workspace=str(Path(self.tmp) / "ws_adapter"), ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
-        self.assertEqual(ad.drift(), [], "the installed sound-design-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.sound_design import adapter as sd_adapter
+        assert_live_matches_pin(self, "sound-design-skill", ad.contract, sd_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         self.assertEqual(ad.operation_status(doc)["LIBRARY"], "supported", doc.get("problems"))
@@ -4092,7 +4109,8 @@ class RemotionRealTests(unittest.TestCase):
     def test_live_contract_doctor_and_uninstalled_project(self):
         from video_agent.tools.remotion import RemotionAdapter
         ad = RemotionAdapter(self.rf, workspace=str(Path(self.tmp) / "ws_adapter"))
-        self.assertEqual(ad.drift(), [], "the installed remotion-ffmpeg-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.remotion import adapter as rf_adapter
+        assert_live_matches_pin(self, "remotion-ffmpeg-skill", ad.contract, rf_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         node = next((c for c in doc.get("checks") or [] if c.get("check") == "node"), {})
@@ -4133,7 +4151,8 @@ class DocumentVerifyRealTests(unittest.TestCase):
     def test_live_contract_and_doctor(self):
         from video_agent.tools.artifacts import ArtifactsAdapter
         ad = ArtifactsAdapter(self.af)
-        self.assertEqual(ad.drift(), [], "the installed artifacts-skill contract drifted from the pinned one: re-verify the adapter (and re-pin)")
+        from video_agent.tools.artifacts import adapter as af_adapter
+        assert_live_matches_pin(self, "artifacts-skill", ad.contract, af_adapter)
         self.assertEqual(ad.breaking_drift(), [])
         doc = ad.doctor()
         self.assertEqual(ad.operation_status(doc)["VERIFY"], "supported", doc.get("problems"))

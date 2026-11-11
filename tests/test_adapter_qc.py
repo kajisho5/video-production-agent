@@ -430,7 +430,9 @@ class QcRealSkillTests(unittest.TestCase):
 
     def test_real_contract_doctor_and_runs(self):
         ad = self._adapter(); paths = {"clip": self.src, "sub": self.srt}
-        self.assertEqual(ad.drift(), [], ad.drift()); self.assertTrue(ad.version.startswith(("0.1.", "0.2.", "1.0.")))   # the gate (ADR-097: 1.0.x)
+        from pin_check import assert_live_matches_pin
+        from video_agent.tools.qc import adapter as qc_adapter
+        assert_live_matches_pin(self, "qc-skill", ad.contract, qc_adapter)   # content == pin; the version inside the gate (ADR-097: 1.0.x), version-only drift reported (ADR-108)
         doc = ad.doctor()
         self.assertIn(doc["status"], ("ok", "degraded")); self.assertEqual(QcAdapter.capability_status(doc)["ffprobe"], "AVAILABLE")
         r = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"expected_width": 640, "expected_height": 360, "expected_frame_rate": 25}}}, inputs=["clip"], outputs=[], kind="qa", id="op_r1"), paths)

@@ -394,7 +394,9 @@ class ColorGradingRealSkillTests(unittest.TestCase):
             self.skipTest("needs VIDEO_AGENT_COLOR_GRADING_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR and ffmpeg")
         ws = str(Path(self.tmp) / "ws"); os.makedirs(ws, exist_ok=True)
         ad = ColorGradingAdapter(self.skill, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=self.engine, timeout=120)
-        self.assertEqual(ad.drift(), [], "the installed color-grading-skill contract drifted from the pinned one: re-verify the adapter")
+        from pin_check import assert_live_matches_pin
+        from video_agent.tools.color_grading import adapter as cg_adapter
+        assert_live_matches_pin(self, "color-grading-skill", ad.contract, cg_adapter)
         doc = ad.doctor()
         assert_doctor_healthy(self, doc, self.engine)
         self.assertEqual(ad.operation_status(doc)["RETAG"], "supported")
