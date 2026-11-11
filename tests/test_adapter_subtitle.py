@@ -98,7 +98,7 @@ class Base(unittest.TestCase):
 class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
-        self.assertEqual(a.version, "0.8.0")
+        self.assertEqual(a.version, "0.9.1")
         self.assertEqual(a.contract_version, "1.0.0")
         self.assertEqual(a.tools, {TOOL_GENERATE, TOOL_RENDER})
         self.assertTrue(a.supports(TOOL_RENDER) and not a.supports("subtitle/transcribe"))
@@ -343,7 +343,7 @@ class RunTests(Base):
             self.assertTrue(r.ok, r.data)
             self.assertEqual(r.output, self.paths[key])
             d = r.data
-            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.8.0"})
+            self.assertEqual(d["skill"], {"id": "subtitle", "version": "0.9.1"})
             self.assertEqual(d["status"], "completed")
             self.assertEqual(d["operation_type"], "generate")
             self.assertEqual(d["artifact"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
@@ -355,7 +355,7 @@ class RunTests(Base):
             self.assertEqual(d["warnings"], [])
             self.assertEqual(d["commands"], [])
             self.assertEqual(r.commands, [])
-            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.8.0", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
+            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": "0.9.1", "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
             self.assertNotIn("engine", d)
             self.assertNotIn("observation", d)
             text = Path(r.output).read_text(encoding="utf-8")
@@ -512,6 +512,119 @@ class SecurityTests(Base):
         self.assertTrue(os.path.isabs(b["request"]["workspace"]))
         self.assertFalse(os.path.isabs(b["request"]["output_path"]))
         self.assertFalse(os.path.isabs(b["request"]["video_input"]))
+
+
+class FontsDirTests(Base):
+    """ADR-107: subtitle-skill 0.9.0 render's `fonts_dir` (burn only): a directory inside the workspace with the caller's own font files, sent
+    workspace-relative and checked like the render input; the Skill's guided refusal of a burn no installed font covers (INVALID_INPUT,
+    details.field fonts_dir) gets its own recovery class."""
+
+    def setUp(self):
+        super().setUp()
+        self.fonts = os.path.join(self.ws, "fonts", "ja")
+        os.makedirs(self.fonts)
+        Path(self.fonts, "Example-Regular.ttf").write_bytes(b"not a real font: the fake only lists the files")
+        Path(self.fonts, "notes.txt").write_text("not a font")
+
+    def test_the_pin_declares_it(self):
+        c = pinned_contract()
+        self.assertIs(c["capabilities"]["fonts_dir"], True)
+        self.assertIn("fonts_dir", c["parameters"]["render"])
+        self.assertIn("fonts_dir?", c["operations"]["render"]["inputs"]); self.assertIn("fonts_dir?", c["operations"]["render"]["outputs"])
+        self.assertNotIn("fonts_dir?", c["operations"]["generate"]["inputs"])
+
+    def test_lowering_is_workspace_relative(self):
+        a = self.adapter()
+        for ref, paths in ((self.fonts, self.paths), ("fonts", dict(self.paths, fonts=self.fonts))):   # an absolute path, or a reference the plan resolves
+            b = a.build_request(TOOL_RENDER, self.render_args(fonts_dir=ref), paths)
+            self.assertEqual((b["request"]["fonts_dir"], b["fonts_dir"]), ("fonts/ja", "fonts/ja"))
+            self.assertNotIn(self.ws, json.dumps({k: v for k, v in b["request"].items() if k != "workspace"}), "no absolute path besides the workspace itself")
+        self.assertEqual(a.build_request(TOOL_RENDER, self.render_args(fonts_dir=self.fonts, mode="burn"), self.paths)["request"]["fonts_dir"], "fonts/ja")
+        self.assertNotIn("fonts_dir", a.build_request(TOOL_RENDER, self.render_args(), self.paths)["request"], "never sent unless asked for")
+
+    def test_refusals(self):
+        a = self.adapter()
+        outside = os.path.join(self.tmp, "outside-fonts")
+        os.makedirs(outside)
+        Path(outside, "Example-Regular.ttf").write_bytes(b"x")
+        file_not_dir = os.path.join(self.fonts, "Example-Regular.ttf")
+        for args, msg in ((self.render_args(fonts_dir=self.fonts, mode="mux"), "burned captions"),
+                          (self.render_args(fonts_dir=outside), "inside the workspace"),
+                          (self.render_args(fonts_dir=self.ws), "inside the workspace"),
+                          (self.render_args(fonts_dir=os.path.join(self.ws, "fonts", "missing")), "not a directory"),
+                          (self.render_args(fonts_dir=file_not_dir), "not a directory"),
+                          (self.render_args(fonts_dir=""), "directory path"), (self.render_args(fonts_dir=["fonts"]), "directory path")):
+            with self.assertRaises(ToolError, msg=str(args.get("fonts_dir"))) as cm:
+                a.build_request(TOOL_RENDER, args, self.paths)
+            self.assertIn(msg, str(cm.exception))
+        with self.assertRaises(ToolError) as cm:   # render only: generate writes a text file, nothing is drawn
+            a.build_request(TOOL_GENERATE, self.gen_args(fonts_dir=self.fonts), self.paths)
+        self.assertIn("unknown argument", str(cm.exception))
+        # the allowed roots and the path policy see the directory like any other input
+        with self.assertRaises(ToolError) as cm:
+            self.adapter(allowed_inputs=[os.path.join(self.tmp, "elsewhere")]).build_request(TOOL_RENDER, self.render_args(fonts_dir=outside), self.paths)
+        self.assertIn("outside the allowed roots", str(cm.exception))
+        with self.assertRaises(ToolError) as cm:
+            self.adapter(path_policy=PathPolicy([], self.ws)).build_request(TOOL_RENDER, self.render_args(fonts_dir=outside), self.paths)
+        self.assertIn("outside allowed roots", str(cm.exception))
+        # a contract without the parameter (an older Skill) is never sent the field
+        old = self.adapter()
+        old.contract = dict(old.contract, parameters=dict(old.contract["parameters"], render=[p for p in old.contract["parameters"]["render"] if p != "fonts_dir"]))
+        with self.assertRaises(ToolError) as cm:
+            old.build_request(TOOL_RENDER, self.render_args(fonts_dir=self.fonts), self.paths)
+        self.assertIn("declares no render fonts_dir", str(cm.exception))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    def test_a_symlink_out_of_the_workspace_is_refused(self):
+        outside = os.path.join(self.tmp, "outside-fonts")
+        os.makedirs(outside)
+        link = os.path.join(self.ws, "fonts", "link")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available here")
+        with self.assertRaises(ToolError) as cm:
+            self.adapter().build_request(TOOL_RENDER, self.render_args(fonts_dir=link), self.paths)
+        self.assertIn("inside the workspace", str(cm.exception))
+
+    def test_burn_with_fonts_dir_records_what_the_skill_read(self):
+        r = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=self.fonts)), self.paths)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual(r.data["fonts_dir"], {"path": "fonts/ja", "family": "Fake Sans", "files": ["Example-Regular.ttf"]})
+        self.assertEqual(r.data["mode"], "burn")
+        dry = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=self.fonts)), self.paths, dry_run=True)
+        self.assertEqual(dry.data["request"]["fonts_dir"], "fonts/ja")
+        with Env(mode="no_fonts_dir_record"):   # a burn that was asked to use the directory and does not say so is not admitted
+            bad = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=self.fonts)), self.paths)
+        self.assertEqual((bad.ok, bad.data["error"]["code"]), (False, "INVALID_RESULT"))
+        self.assertIn("fonts_dir", bad.data["error"]["message"])
+        self.assertFalse(os.path.exists(self.paths["burn"]), "the unadmitted output is removed")
+        empty = os.path.join(self.ws, "fonts", "empty")
+        os.makedirs(empty)
+        none = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=empty)), self.paths)   # the Skill's own refusal, kept as it is
+        self.assertEqual((none.ok, none.data["error"]["code"], none.data["error"]["recovery_class"]), (False, "INVALID_INPUT", "INPUT_MISSING"))
+
+    def test_the_guided_refusal_asks_for_a_fonts_directory(self):
+        from video_agent.execution.recovery import RECOVERY_TABLE, classify_error, next_attempt
+        with Env(mode="no_font"):
+            r = self.adapter().run(self.op(TOOL_RENDER, self.render_args()), self.paths)
+            e = r.data["error"]
+            self.assertEqual((r.ok, e["code"], e["retryable"], e["details"], e["recovery_class"]), (False, "INVALID_INPUT", False, {"field": "fonts_dir"}, "FONTS_DIR_REQUIRED"))
+            self.assertIn("no installed font covers", e["message"])
+            self.assertEqual(classify_error(r), "FONTS_DIR_REQUIRED")
+            nxt = next_attempt(r, 1, 3, 30)
+            self.assertEqual((nxt["action"], nxt["class"]), ("BLOCK", "FONTS_DIR_REQUIRED"))
+            self.assertEqual(nxt["reason"], RECOVERY_TABLE["FONTS_DIR_REQUIRED"]["hint"])
+            self.assertIn("supply a fonts directory", nxt["reason"]); self.assertIn("subtitle.fonts_dir", nxt["reason"])
+            # a soft track is drawn by the player: no font is needed, nothing is refused
+            self.assertTrue(self.adapter().run(self.op(TOOL_RENDER, self.render_args(mode="mux", output="burn")), self.paths).ok)
+            # the same burn with the directory goes through
+            ok = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=self.fonts)), self.paths)
+            self.assertTrue(ok.ok, ok.data)
+        # any other INVALID_INPUT keeps the shared class (the field decides, never the message)
+        with Env(mode="ok"):
+            other = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=os.path.join(self.ws, "intermediate"))), self.paths)
+        self.assertEqual((other.data["error"]["code"], other.data["error"]["recovery_class"]), ("INVALID_INPUT", "INPUT_MISSING"))
 
 
 @unittest.skipUnless(os.environ.get(ENV_DIR), f"set {ENV_DIR} to a subtitle-skill checkout")

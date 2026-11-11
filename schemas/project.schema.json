@@ -2685,6 +2685,10 @@
       "shorts"
      ]
     },
+    "fonts_dir": {
+     "type": "string",
+     "minLength": 1
+    },
     "placement": {
      "type": "object",
      "required": [

@@ -44,7 +44,7 @@ CONTRACT_SCHEMA = "video-editing/contract@1"
 REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"
 DOCTOR_SCHEMA = "video-editing/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.0 (contract_version 6.0, ADR-106): TRIM / CUT precision smart, opt-in. 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.1 / 0.6.2 (ADR-107): version-only, re-pinned from the v0.6.2 tag. 0.6.0 (contract_version 6.0, ADR-106): TRIM / CUT precision smart, opt-in. 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
 # 0.4.2 (video-editing-skill #26): passes cut.py --no-keep-hevc where ffmpeg-skill 3.x offers it (engine.compatibility.detected gains that line); nothing else changed; re-pinned (ADR-083).
                                                # yet lowered here -- a real follow-up, not implemented by this
                                                # widening alone) and outputs[].encoding named directly in
@@ -185,9 +185,9 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # nothing else. The request this adapter builds and the response it verifies are unchanged, so the gate takes 0.5.x; re-pinned from the v0.5.0 tag
 # (ADR-097 addendum 6). ADR-099 lowers and plans them (max_size: lowered only).
 # 0.6.0 (contract_version "6.0"): TRIM / CUT precision smart (opt-in; frame stays the default and auto never picks it), contract.smart_cut,
-# execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version, so the re-pin is required;
+# execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version (fatal drift until ADR-107 left that label out of the fatal comparison), so the re-pin was required;
 # re-pinned from the v0.6.0 tag (ADR-106). The agent sends smart only when the user asked for it (edit.precision=smart).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.2.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -213,8 +213,18 @@ FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "operatio
 FATAL_DRIFT_TOOL_KEYS = tuple(k for k in DRIFT_TOOL_KEYS if k not in ("version", "parameters"))
 
 
+def _without_release_label(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """ADR-107 (review): `response_shape.skill.version` is the Skill's release version written a second time. Like the top-level `version`, it moves
+    inside the range check_contract() accepts and changes no call this adapter builds, so it is left out of the fatal comparison; every other field
+    of response_shape (schema, skill id, status, execution) stays fatal. contract_drift() still reports the difference."""
+    rs = contract.get("response_shape")
+    if not isinstance(rs, dict) or not isinstance(rs.get("skill"), dict):
+        return contract
+    return {**contract, "response_shape": {**rs, "skill": {k: v for k, v in rs["skill"].items() if k != "version"}}}
+
+
 def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
-    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "tools", "tool_id", FATAL_DRIFT_TOOL_KEYS)
+    return breaking_drift(_without_release_label(live), _without_release_label(pinned or pinned_contract()), FATAL_DRIFT_KEYS, "tools", "tool_id", FATAL_DRIFT_TOOL_KEYS)
 
 
 def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:

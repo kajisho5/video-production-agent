@@ -1760,7 +1760,8 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
 # is a file path (overlay / joined still (ADR-070) / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
 _PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
-                                    "edit.concat.stinger", "edit.condense", "edit.ai_generated", "motion.layer", "motion.themes"})   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
+                                    "edit.concat.stinger", "edit.condense", "edit.ai_generated", "motion.layer", "motion.themes",
+                                    "subtitle.fonts_dir"})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 
 

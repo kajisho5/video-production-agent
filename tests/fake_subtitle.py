@@ -6,7 +6,9 @@ self-describing media file (the format tests/fake_adapter.py probes) for render,
 
   ok | reused | tool_error | output_missing | hash_mismatch | malformed | empty | two_docs | text | nonzero_ok | wrong_schema | wrong_skill |
   wrong_version | wrong_operation | bad_contract | contract_fail | contract_drift | doctor_fail | timeout | cancelled | validation_error |
-  dependency_error | internal_error | unknown_code | cue_count_mismatch | vtt_render_unsupported | warning_observation | no_engine
+  dependency_error | internal_error | unknown_code | cue_count_mismatch | vtt_render_unsupported | warning_observation | no_engine |
+  no_font (ADR-107: a burn without `fonts_dir` is refused the way subtitle-skill 0.9.0 does on a machine with no font for the text:
+  INVALID_INPUT, details {"field": "fonts_dir"}; with `fonts_dir` it succeeds) | no_fonts_dir_record (the response leaves `fonts_dir` out)
 
 FAKE_SUBTITLE_CALLS: a file every invocation (subcommand + argv + cwd + VIDEO_* env) is appended to (security tests read it).
 Never runs ffmpeg or ffmpeg-skill, never imports subtitle_skill. Test double only."""
@@ -20,7 +22,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "subtitle" / "contract_0.8.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "subtitle" / "contract_0.9.1.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_SUBTITLE_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_SUBTITLE_CALLS")
 NON_RETRYABLE = set(CONTRACT["errors"]["non_retryable"])
@@ -28,6 +30,7 @@ FORBIDDEN = {"command", "argv", "shell", "executable", "filter", "filter_complex
 CUE_FIELDS = {"id", "start", "end", "text", "speaker", "style", "metadata", "ruby", "words"}   # ADR-101: ruby / words (0.6.0+)
 CONSTRAINT_FIELDS = set(CONTRACT["parameters"]["constraints"])
 ENGINE_DIR_ENV = "SUBTITLE_SKILL_FFMPEG_SKILL_DIR"
+FONT_SUFFIXES = (".ttf", ".otf", ".ttc")   # ADR-107: the font files subtitle-skill 0.9.0 reads directly inside `fonts_dir`
 
 
 def log(kind: str, argv) -> None:
@@ -276,6 +279,31 @@ def main() -> int:
         mode = req.get("mode", "burn")   # the contract's render modes (burn | mux); mux adds a soft subtitle stream, the picture is untouched
         if mode not in CONTRACT["capabilities"]["render_modes"]:
             return err("INVALID_INPUT", f"request.mode must be one of {sorted(CONTRACT['capabilities']['render_modes'])}, got {mode!r}")
+        # ADR-107: `fonts_dir` (0.9.0, burn only), checked like the real Skill: a workspace-relative directory holding font files
+        fonts = None
+        if req.get("fonts_dir") is not None:
+            fd = req["fonts_dir"]
+            if not isinstance(fd, str) or not fd:
+                return err("INVALID_INPUT", "request.fonts_dir must be a non-empty path inside the workspace")
+            if mode != "burn":
+                return err("INVALID_INPUT", "fonts_dir is for burned captions (mode 'burn')")
+            fd_rel = rel_path(fd)
+            if fd_rel is None:
+                return err("PATH_NOT_ALLOWED", f"absolute paths / traversal are not allowed: {fd!r}")
+            fdir = os.path.realpath(os.path.join(ws, fd_rel))
+            if not os.path.exists(fdir):
+                return err("MISSING_INPUT", f"input not found: {fd!r}")
+            if not within(ws, fdir):
+                return err("PATH_NOT_ALLOWED", "path escapes workspace root (possible symlink escape)")
+            if not os.path.isdir(fdir):
+                return err("INVALID_INPUT", f"not a directory: {fd!r}")
+            files = sorted(n for n in os.listdir(fdir) if n.lower().endswith(FONT_SUFFIXES) and os.path.isfile(os.path.join(fdir, n)))
+            if not files:
+                return err("INVALID_INPUT", f"fonts_dir holds no font file subtitle-skill can read ({', '.join(FONT_SUFFIXES)} with a family name)")
+            fonts = {"path": fd, "family": "Fake Sans", "files": files}
+        elif MODE == "no_font" and mode == "burn":
+            return err("INVALID_INPUT", "ffmpeg-skill/caption refused the burn: no installed font covers Japanese text on this machine; install one. Or set request.fonts_dir "
+                                        "to a workspace directory holding a font file (.ttf/.otf/.ttc) that covers the text.", {"field": "fonts_dir"})
         engine = ("ffmpeg-skill", "0.9.1-fake")
         payload = json.dumps({"fake": True, "duration": in_dur(video), "video": True, "channels": 2, "captions": mode == "burn", "cues": len(cues),
                               "subtitle_streams": 1 if mode == "mux" else 0}).encode()
@@ -309,6 +337,8 @@ def main() -> int:
         resp["placement"] = {"moves": [], "top_cues": []}
     if op == "render" and req.get("caption_profile") is not None:
         resp["caption_profile"] = {"name": req["caption_profile"]}
+    if op == "render" and fonts is not None and MODE != "no_fonts_dir_record":
+        resp["fonts_dir"] = fonts
     if engine and MODE != "no_engine":
         resp["engine"], resp["engine_version"] = engine
         resp["mode"] = ("burn" if req.get("mode") == "mux" else "mux") if MODE == "wrong_mode" else req.get("mode", "burn")

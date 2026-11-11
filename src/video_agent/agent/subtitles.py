@@ -27,6 +27,7 @@ Vocabulary and arithmetic only, no execution and no recognition:
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,7 +38,7 @@ from .editing import EditRequirementError, _bool, _number
 # ADR-101: the pinned subtitle-skill contract, read as data (the agent layer imports no tool package): generate's formats, the regional and
 # caption profiles and the placement fields it declares. TTML (IMSC 1.1 Text) and EBU-TT-D are sidecar formats only: render (burn / mux)
 # stays SRT through the engine's caption tool, from the same cues.
-SUBTITLE_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "subtitle" / "contract_0.8.0.json"
+SUBTITLE_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "subtitle" / "contract_0.9.1.json"
 _SUB_CONTRACT: Dict[str, Any] = json.loads(SUBTITLE_CONTRACT_PATH.read_text(encoding="utf-8"))
 FORMATS = tuple(str(f) for f in _SUB_CONTRACT["operations"]["generate"]["formats"])   # srt, vtt, ttml, ebu-tt-d
 SIDECAR_EXTENSIONS = {"srt": "srt", "vtt": "vtt", "ttml": "ttml", "ebu-tt-d": "ttml"}   # the sidecar file's extension per format
@@ -51,6 +52,10 @@ SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")   # ADR-096: diarization-skill's an
 # never applied unless asked for -- the default stays the international one
 NEW_KEYS = ("subtitle.regional_profile", "subtitle.caption_profile", "subtitle.placement.avoid") + tuple(f"subtitle.placement.{k}" for k in PLACEMENT_SETTINGS) \
     + ("subtitle.ruby", "subtitle.vertical")
+# ADR-107: subtitle-skill 0.9.0 render's `fonts_dir` (burn only): a directory inside the agent workspace with the user's own font files, for a machine
+# where no installed font covers the subtitle's script. Only the user names it (never a brief, never chosen here); the Skill reads the family from the files
+FONTS_DIR_KEY = "subtitle.fonts_dir"
+NEW_KEYS = NEW_KEYS + (FONTS_DIR_KEY,)
 REQUIREMENT_KEYS = ("subtitle", "subtitle.format", "subtitle.burn_in", "subtitle.mode", "subtitle.max_chars_per_line", "subtitle.max_lines") + NEW_KEYS
 # subtitle-skill render's `mode` (contract capabilities.render_modes, pinned 0.2.0): burn into the picture, or mux a soft track. Muxing is
 # subtitle-skill's job (ecosystem.json: 字幕生成・検証 / 字幕焼き込み; the contract's render delegates to ffmpeg-skill/caption --mode mux),
@@ -117,10 +122,23 @@ def parse_subtitle_requirements(m: Dict[str, Requirement]) -> Dict[str, Any]:
 
 
 def _parse_new_options(vals: Dict[str, Any], fmt: Optional[str], burn: bool, mux: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """ADR-101: → (render options {regional_profile?, caption_profile?, placement?}, cue options {regional_profile?, ruby?, vertical?}). Every one is
-    opt-in; nothing here is assumed from the language or the platform."""
+    """ADR-101: → (render options {regional_profile?, caption_profile?, placement?, fonts_dir? (ADR-107)}, cue options {regional_profile?, ruby?,
+    vertical?}). Every one is opt-in; nothing here is assumed from the language or the platform."""
     render: Dict[str, Any] = {}
     cue: Dict[str, Any] = {}
+    if FONTS_DIR_KEY in vals:   # ADR-107: the shape and the directory here; inside the workspace is checked by the IR validator and the adapter
+        fd = vals[FONTS_DIR_KEY]
+        if "fonts_dir" not in (_SUB_CONTRACT["parameters"].get("render") or []):
+            raise EditRequirementError(f"{FONTS_DIR_KEY}: the pinned subtitle-skill contract declares no render fonts_dir")
+        if not isinstance(fd, str) or not fd.strip() or "\n" in fd or "\x00" in fd:
+            raise EditRequirementError(f"{FONTS_DIR_KEY} must be a directory path (font files inside the agent workspace)")
+        if any(part == ".." for part in fd.replace("\\", "/").split("/")):
+            raise EditRequirementError(f"{FONTS_DIR_KEY} path contains '..' (traversal)")
+        if not burn:
+            raise EditRequirementError(f"{FONTS_DIR_KEY} is the fonts a burn-in is drawn with (a soft track is drawn by the player): it needs subtitle.burn_in=true")
+        if not os.path.isdir(fd):
+            raise EditRequirementError(f"{FONTS_DIR_KEY} directory not found: {fd}")
+        render["fonts_dir"] = os.path.abspath(fd)
     if "subtitle.regional_profile" in vals:
         rp = vals["subtitle.regional_profile"]
         if not isinstance(rp, str) or rp not in REGIONAL_PROFILES:
@@ -334,9 +352,9 @@ def ir_captions_generate(subject: str, output: str, fmt: str, language: str, cue
 def ir_captions_burn(subject: str, input_id: str, sidecar: str, output: str, decision_ids: List[str], scope: Optional[Dict[str, float]] = None,
                      op_type: str = "captions.burn", render: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """IR captions.burn, or (ADR-063) captions.mux: the same references; the compiler asks subtitle-skill render for the mode. ADR-101: the
-    render options the user asked for (placement, regional_profile, caption_profile) ride on the record."""
+    render options the user asked for (placement, regional_profile, caption_profile) ride on the record. ADR-107: fonts_dir on the burn only."""
     rec: Dict[str, Any] = {"type": op_type, "asset": subject, "input": input_id, "sidecar": sidecar, "output": output}
-    for k in ("placement", "regional_profile", "caption_profile"):
+    for k in ("placement", "regional_profile", "caption_profile") + (("fonts_dir",) if op_type == "captions.burn" else ()):
         if (render or {}).get(k):
             rec[k] = render[k]
     if scope is not None:

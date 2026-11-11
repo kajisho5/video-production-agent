@@ -2717,7 +2717,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         from video_agent.tools.media_analysis import PACKAGE, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.13", "media-analysis/contract@1"))
+        self.assertEqual((ad.name, ad.version, ad.contract["schema"]), ("media-analysis", "0.1.15", "media-analysis/contract@1"))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
         self.assertEqual(set(pkg.tool_ids()), set(ad.contract["kind_to_tool"].values()), "every kind maps to a declared tool (timing serves two kinds)")
@@ -2773,7 +2773,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         ad = self._adapter()
         r = ad.measure("media-analysis/silence", {"input": self.src, "asset_id": "asset_1", "kind": "silence"})
         self.assertTrue(r.ok and r.exit_code == 0)
-        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.13")
+        self.assertEqual(r.data["observation"]["source"], "media-analysis/silence@0.1.15")
         self.assertEqual(r.data["cache"]["status"], "miss")
         self.assertEqual(r.commands, ["ffprobe: metadata"], "the Skill reports what it ran; the agent never built it")
         # through the analyzer: lifted Observation keeps the external identity and provenance; agent cache is not used
@@ -2786,10 +2786,10 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["duration", "loudness", "media_probe", "scene_detection", "silence"])
         sil = obs["silence"]
-        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.13", "media-analysis/silence", "media-analysis/silence@0.1.13"))
+        self.assertEqual((sil.provenance, sil.skill, sil.skill_version, sil.tool, sil.source), ("OBSERVED", "media-analysis", "0.1.15", "media-analysis/silence", "media-analysis/silence@0.1.15"))
         self.assertTrue(sil.external_id.startswith("obs_") and sil.external_id != sil.id)
         self.assertEqual(sil.fingerprint, "f" * 64)
-        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.13")
+        self.assertEqual(sil.analyzer, "media-analysis/silence@0.1.15")
         self.assertEqual(sil.cache["status"], "miss")
         self.assertEqual(sil.data["segments"][0]["type"], "leading", "facts as measured; no interpretation added")
         rows = {x["kind"]: x for x in res.analyses[0]["rows"]}
@@ -2849,7 +2849,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(tools["scene_analysis"], "media-analysis/scenes")
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["implemented"] and rows["media-analysis"]["available"])
-        self.assertEqual(rows["media-analysis"]["version"], "0.1.13")
+        self.assertEqual(rows["media-analysis"]["version"], "0.1.15")
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["integrity_analysis"]["status"], sk["integrity_analysis"]["tool"]), ("AVAILABLE", "media-analysis/integrity"))
         # capability resolver uses the Skill's doctor (no import): version / contract / tools / kinds / execution.
@@ -2863,7 +2863,7 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(sorted(ir.doc["analysis"]["analyses"][0]["request"]["kinds"]), ["loudness", "media_probe", "silence"])
         profile, rules, an = svc.analyze([self.src], "youtube", kinds=["duration"])
         d = next(o for o in an.observations if o.kind == "duration")
-        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.13"))
+        self.assertEqual((d.skill, d.tool, d.skill_version), ("media-analysis", "media-analysis/timing", "0.1.15"))
         self.assertNotEqual(svc.registry.tool("media-analysis/timing").version, "", "tool version recorded separately from the skill version")
 
     # boundaries: no import, no engine invocation, no event → command; observation ≠ inference
@@ -4143,7 +4143,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.video_editing import PACKAGE, ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.6.0", "video-editing", "video-editing/contract@1"))
+        self.assertEqual((ad.name, ad.version, ad.contract["skill_id"], ad.contract["schema"]), ("video-editing", "0.6.2", "video-editing", "video-editing/contract@1"))
         self.assertEqual(sorted(ad.tools), [f"video-editing/{t}" for t in ("concat", "condense", "crop", "cut", "fill", "fit", "freeze", "image_insert", "overlay", "punch_in", "resize",
                                                                           "reverse", "rotate", "speed", "trim")])
         self.assertEqual(ad.drift(), [], "the installed (fake) contract equals the pinned 0.5.0 contract")
@@ -4160,7 +4160,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual(Lowering(grown).contract_only(), sorted(list(NOT_LOWERED) + ["MIRROR"]))
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
-        self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.6.0", "kajisho5/video-editing-skill"))
+        self.assertEqual((pkg.skill_id, pkg.version, pkg.repository), ("video-editing", "0.6.2", "kajisho5/video-editing-skill"))
         cut = pkg.tool("video-editing/cut")
         self.assertEqual((cut.produces_output, cut.deterministic, cut.kind, cut.inputs, cut.result_keys), (True, True, "transform", ["input", "output"], ["operation_id", "output", "probe", "commands", "provenance"]))
         self.assertEqual(cut.required_capabilities, ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "video-editing"])
@@ -4217,7 +4217,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         same = lambda a, b: os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))  # noqa: E731  (Windows: the adapter reports the resolved path, tempfile may give an 8.3 short name)
         self.assertEqual((r.exit_code, r.tool, r.dry_run), (0, "video-editing/cut", False)); self.assertTrue(same(r.output, out), (r.output, out))
         self.assertTrue(os.path.isfile(out))
-        self.assertEqual(r.data["skill"], {"id": "video-editing", "version": "0.6.0"})
+        self.assertEqual(r.data["skill"], {"id": "video-editing", "version": "0.6.2"})
         self.assertEqual(r.data["status"], "completed")
         art = r.data["artifact"]
         self.assertTrue(same(art["path"], out)); self.assertEqual((art["size"], art["reused"]), (os.path.getsize(out), False))
@@ -4227,7 +4227,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertEqual((obs["kind"], obs["provenance"]), ("media.probe", "OBSERVED")); self.assertTrue(obs["source"].startswith("ffmpeg-skill/probe@"))
         self.assertEqual(r.data["timeline"]["tracks"][0]["kind"], "video")
         rec = r.data["operation"]
-        self.assertEqual((rec["type"], rec["status"], rec["skill"], rec["skill_version"], rec["tool"]), ("CUT", "completed", "video-editing", "0.6.0", "ffmpeg-skill/cut"))
+        self.assertEqual((rec["type"], rec["status"], rec["skill"], rec["skill_version"], rec["tool"]), ("CUT", "completed", "video-editing", "0.6.2", "ffmpeg-skill/cut"))
         self.assertEqual(rec["output"]["sha256"], art["sha256"]); self.assertEqual(rec["inputs"][0]["kind"], "source")
         self.assertEqual(r.commands, rec and r.data["commands"]); self.assertTrue(r.commands and "provenance only" in r.commands[0])
         # the process boundary: one `run` call, argv as a list with the canonical shape, request JSON on stdin (not argv), workspace = the op dir
@@ -4392,7 +4392,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         pk = next(p for p in svc2.packages() if p["skill_id"] == "video-editing")
         # ADR-062: ROTATE (0.3.0) and FREEZE / REVERSE (0.4.0, video-editing-skill #20) are lowered now, and IMAGE_INSERT (ADR-070), so every tool the contract
         # declares is usable (a type a later contract adds without a lowering here stays out: adapter.supports())
-        self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.6.0")
+        self.assertTrue(pk["available"]); self.assertEqual(pk["version"], "0.6.2")
         self.assertEqual(sorted(pk["usable_tools"]), sorted(ad.tools))   # PUNCH_IN / CONDENSE lowered since ADR-099
         # a tool-level capability the resolver knows and reports missing blocks the tool; names it does not resolve are the Skill's doctor's business
         svc3 = make_service(self.tmp, caps=FakeCaps(missing=["encoder:libx264"], extra=["video-editing"]), adapter=ToolRouter([FakeAdapter(), ad]))
@@ -4453,7 +4453,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         self.assertTrue(any(o.tool == "ffmpeg-skill/loudness" for o in fake.calls), "the rest of the chain is unchanged")
         prov = json.loads((Path(self.tmp) / "jobs" / out["job"]["id"] / "provenance.json").read_text())
         trim = next(e for e in prov["operations"] if e["skill"] == "silence_cleanup")
-        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.6.0"))
+        self.assertEqual((trim["skill_package"], trim["tool"], trim["tool_version"]), ("video-editing", "video-editing/cut", "0.6.2"))
         self.assertEqual(trim["skill_result"]["artifact"]["sha256"], cut["data"]["artifact"]["sha256"])
         self.assertEqual(trim["skill_result"]["observation"]["provenance"], "OBSERVED")
         self.assertTrue(trim["result"]["commands"] and "provenance only" in trim["result"]["commands"][0])
@@ -4780,7 +4780,7 @@ class VideoEditingOperationsTests(unittest.TestCase):
         rows = [e for e in prov["operations"] if e["tool"].startswith("video-editing/")]
         self.assertEqual([e["skill"] for e in rows], ["video_concat", "video_speed", "video_resize", "video_fit", "video_overlay"])
         for e in rows:
-            self.assertTrue(e["decision"]); self.assertEqual(e["skill_package"], "video-editing"); self.assertEqual(e["tool_version"], "0.6.0")
+            self.assertTrue(e["decision"]); self.assertEqual(e["skill_package"], "video-editing"); self.assertEqual(e["tool_version"], "0.6.2")
             self.assertTrue(e["skill_result"]["artifact"]["sha256"]); self.assertTrue(e["input"] and e["output"])
             self.assertEqual(e["skill_result"]["observation"]["provenance"], "OBSERVED")
         self.assertEqual(len(rows[0]["input"]), 2); self.assertEqual(rows[4]["input"][1], os.path.abspath(self.png))
@@ -5157,10 +5157,10 @@ class AudioProductionAdapterTests(unittest.TestCase):
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
-        self.assertEqual(ad.version, "0.4.10"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "1.0.0"); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
         self.assertEqual(len(ad.lowering.supported_types()), 16); self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])   # 0.4.6 (ADR-071): + FILLER_REMOVE (planned since ADR-072 as audio.filler_remove)
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "0.4.10", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", "1.0.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
         self.assertEqual(pk.validate(), []); self.assertTrue(pk.tools[0].produces_output)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         # incompatible contracts are refused, never patched
@@ -5210,7 +5210,7 @@ class AudioProductionAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertEqual(r.output, paths["a_norm"]); self.assertTrue(os.path.isfile(r.output))
         d = r.data
-        self.assertEqual(d["skill"], {"id": "audio-production", "version": "0.4.10"}); self.assertEqual(d["operation_type"], "NORMALIZE")
+        self.assertEqual(d["skill"], {"id": "audio-production", "version": "1.0.0"}); self.assertEqual(d["operation_type"], "NORMALIZE")
         self.assertEqual(d["operation"]["type"], "NORMALIZE"); self.assertEqual(d["operation"]["tool"], "ffmpeg-skill/loudness")
         self.assertEqual(d["operation"]["parameters"], {"target_lufs": -16.0, "true_peak_db": -1.5, "tolerance_lufs": 1.0})
         self.assertEqual(d["artifact"]["sha256"], hashlib_sha(paths["a_norm"])); self.assertEqual(d["artifact"]["format"], "wav"); self.assertFalse(d["artifact"]["reused"])
@@ -5615,7 +5615,7 @@ class AudioProductionPathTests(unittest.TestCase):
         rows = prov["operations"]
         self.assertEqual([r["skill"] for r in rows], ["audio_cut", "audio_gain", "audio_mono", "audio_fade_out", "audio_normalize"])
         for r in rows:
-            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "0.4.10"))
+            self.assertTrue(r["decision"]); self.assertEqual((r["skill_package"], r["tool_version"]), ("audio-production", "1.0.0"))
             self.assertTrue(r["skill_result"]["artifact"]["sha256"]); self.assertEqual(r["skill_result"]["observation"]["provenance"], "OBSERVED"); self.assertEqual(r["skill_result"]["operation"]["skill"], "audio-production")
         self.assertEqual([o["kind"] for o in prov["skill_observations"]], ["media.probe"] * 5 + ["loudness"])
         self.assertEqual(prov["skill_observations"][-1]["data"]["target_lufs"], -16.0)

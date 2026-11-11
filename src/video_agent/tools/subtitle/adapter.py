@@ -53,7 +53,7 @@ CONTRACT_SKILL_ID = "subtitle-skill"          # the Skill's own id (the agent pa
 TOOL_GENERATE = "subtitle/generate"
 TOOL_RENDER = "subtitle/render"
 CONTRACT_VERSION = "1.0.0"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.", "0.7.", "0.8.")  # 0.2.0 (subtitle-skill #19): ja/zh/ko locale profiles; the contract is byte-identical to 0.1.x. 0.2.1 (#20): provides[] tool ids are subtitle/...
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.", "0.7.", "0.8.", "0.9.")  # 0.2.0 (subtitle-skill #19): ja/zh/ko locale profiles; the contract is byte-identical to 0.1.x. 0.2.1 (#20): provides[] tool ids are subtitle/...
 # 0.3.0: adds the translate and mux operations (both EXPERIMENTAL); 0.4.0: translate engines opus-mt / ollama. generate / render are unchanged, so the adapter takes 0.3.x / 0.4.x as before (ADR-078)
 # 0.4.1 (CI changes only): version-only; the pin is re-taken from main (ADR-083).
 # 0.4.2 (subtitle-skill #27): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097).
@@ -63,6 +63,9 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.", "0.7
 # and two more generate / translate formats; render stays SRT through ffmpeg-skill/caption, and a request the adapter builds is unchanged.
 # Re-pinned from the v0.8.0 tag and the gate widened to 0.8.x (ADR-097 addendum 6). ADR-101 sends them when a plan asks for them (placement: the
 # caller-named regions only), and the TTML / EBU-TT-D sidecar formats.
+# 0.9.0 (ADR-107): render takes an optional `fonts_dir` (burn only): a directory inside the workspace with the caller's own font files, for a
+# machine where no installed font covers the subtitle's script. 0.9.1 is version-only. Re-pinned from the v0.9.1 tag and the gate widened to 0.9.x; `capabilities`,
+# `operations` and `parameters` are fatal drift keys, so an installed 0.8.x is refused from here on (subtitle-skill 0.9.0 or later is needed).
 ENGINE_ID = "ffmpeg-skill"
 ENGINE_DIR_ENV = "SUBTITLE_SKILL_FFMPEG_SKILL_DIR"   # the only way the Skill learns where ffmpeg-skill is (a location, not a credential)
 OPERATIONS = ("generate", "render")
@@ -72,7 +75,11 @@ REQUIRED_ERROR_CODES = ("CANCELLED", "DEPENDENCY_ERROR", "INTERNAL_ERROR", "INVA
                         "PATH_NOT_ALLOWED", "TOOL_ERROR", "UNSUPPORTED_FORMAT", "UNSUPPORTED_OPERATION", "VALIDATION_ERROR")
 REQUIRED_OUT_OF_SCOPE = ("speech_recognition", "transcription", "speaker_diarization", "ai_editing_decisions", "arbitrary_ffmpeg_execution")
 COMMON_ARGS = ("operation", "format", "document_id", "language", "cues", "constraints", "video_duration", "output", "regional_profile")   # ADR-101: regional_profile
-RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode", "placement", "caption_profile")   # mode: the contract's render parameter (burn | mux, ADR-063); ADR-101: placement / caption_profile
+RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode", "placement", "caption_profile", "fonts_dir")   # mode: the contract's render parameter (burn | mux, ADR-063); ADR-101: placement / caption_profile; ADR-107: fonts_dir
+# ADR-107: subtitle-skill 0.9.0's guided refusal of a burn no installed font covers: INVALID_INPUT with details {"field": "fonts_dir"} (its message keeps the
+# engine's reason and names the field). Read by the field, never by the message; execution/recovery.py says what the user supplies.
+FONTS_DIR_FIELD = "fonts_dir"
+FONTS_DIR_RECOVERY_CLASS = "FONTS_DIR_REQUIRED"
 # speaker (ADR-096): only diarization-skill's anonymous SPEAKER_nn of a diarized transcript; ADR-101: ruby [{base, text}], words [{text, start, end}],
 # style {vertical} -- the only style field the agent sends
 CUE_KEYS = ("id", "start", "end", "text", "speaker", "ruby", "words", "style")
@@ -85,7 +92,7 @@ MAX_CUE_TEXT = 2000
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _LANG_RE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
 DRIFT_KEYS = ("skill_id", "version", "contract_version", "deterministic", "capabilities", "operations", "out_of_scope", "parameters", "errors")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.8.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.9.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -468,11 +475,35 @@ class SubtitleAdapter(ToolAdapter):
             if not isinstance(pl, dict) or not pl.get("avoid") or set(pl) - set(PLACEMENT_KEYS):
                 raise ToolError(f"subtitle-skill: placement must be {{avoid: [regions], {', '.join(PLACEMENT_KEYS[1:])}?}}")
             req["placement"] = json.loads(json.dumps(pl))
+        if args.get("fonts_dir") is not None:   # ADR-107: the caller's own font files, burn only; a directory inside the workspace, sent workspace-relative
+            req["fonts_dir"] = self._fonts_dir_for(args["fonts_dir"], paths, mode)
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("workspace",)), "request")
         if hit:
             raise ToolError(f"subtitle-skill: refusing to send a request carrying {hit}")
         return {"request": req, "output": out, "input": src, "type": op_type, "format": fmt, "workspace": self.workspace, "cue_count": len(cues), "mode": mode,
-                "placement": req.get("placement")}
+                "placement": req.get("placement"), "fonts_dir": req.get("fonts_dir")}
+
+    def _fonts_dir_for(self, ref: Any, paths: Dict[str, str], mode: Optional[str]) -> str:
+        """ADR-107: render's `fonts_dir` (subtitle-skill 0.9.0, burn only) checked like the render input: declared by the installed contract, an existing
+        directory, inside the allowed roots and inside the workspace (the Skill takes workspace-relative paths only; symlinks are resolved first).
+        Returns the workspace-relative path the request carries. Which family is drawn is the Skill's choice from those files, never set here."""
+        if FONTS_DIR_FIELD not in [str(x) for x in as_dict(self.contract.get("parameters")).get("render") or []]:
+            raise ToolError("subtitle-skill: the installed contract declares no render fonts_dir")
+        if mode == "mux":
+            raise ToolError("subtitle-skill: fonts_dir is for burned captions (render mode burn); a soft track is drawn by the player")
+        if not isinstance(ref, str) or not ref.strip() or "\x00" in ref or "\n" in ref:
+            raise ToolError("subtitle-skill: fonts_dir must be a directory path")
+        fd = paths.get(ref, ref)
+        if not os.path.isdir(fd):
+            raise ToolError(f"subtitle-skill: fonts_dir is not a directory: {fd}")
+        fd = str(Path(fd).resolve())
+        if self.path_policy is not None:
+            self.path_policy.check_input(fd)
+        elif self.allowed_inputs and not any(self._under(fd, r) for r in self.allowed_inputs + [self.workspace]):
+            raise ToolError(f"subtitle-skill: fonts_dir outside the allowed roots: {fd}")
+        if not self._under(fd, self.workspace) or same_file(fd, self.workspace):
+            raise ToolError(f"subtitle-skill: fonts_dir must be a directory inside the workspace (the Skill takes workspace-relative paths only): {fd}")
+        return os.path.relpath(os.path.realpath(fd), os.path.realpath(self.workspace)).replace(os.sep, "/")
 
     @staticmethod
     def _under(path: str, root: str) -> bool:
@@ -557,6 +588,8 @@ class SubtitleAdapter(ToolAdapter):
                 errs.append(f"render must report engine {ENGINE_ID} with a version, got {doc.get('engine')!r} / {doc.get('engine_version')!r}")
             if b.get("placement") and not isinstance(doc.get("placement"), dict):   # ADR-101: every move is reported with the box that caused it
                 errs.append("render with placement must report its placement record")
+            if b.get("fonts_dir") and as_dict(doc.get("fonts_dir")).get("path") != b["fonts_dir"]:   # ADR-107: the directory the family was read from, as sent
+                errs.append(f"render with fonts_dir must report it (path {b['fonts_dir']!r}), got {doc.get('fonts_dir')!r}")
             if b.get("mode") is not None and doc.get("mode") != b["mode"]:   # ADR-063: a burn reported for a requested mux (or the reverse) is not admitted
                 errs.append(f"render mode {doc.get('mode')!r} != requested {b['mode']!r}")
         if b["type"] == "generate" and b["format"] in TTML_FORMATS and as_dict(doc.get("conformance")).get("valid") is not True:
@@ -571,7 +604,7 @@ class SubtitleAdapter(ToolAdapter):
                                 "warnings": [dict(w) for w in doc.get("observation") or [] if isinstance(w, dict)],
                                 "provenance": {"skill": doc.get("skill"), "skill_version": doc.get("skill_version"), "contract_version": doc.get("contract_version"), "output_hash": sha},
                                 "commands": []}
-        for k in ("conformance", "placement", "regional_profile", "caption_profile"):   # ADR-101: what the Skill reports about the new inputs, as provenance
+        for k in ("conformance", "placement", "regional_profile", "caption_profile", "fonts_dir"):   # ADR-101: what the Skill reports about the new inputs, as provenance (ADR-107: fonts_dir {path, family, files})
             if doc.get(k) is not None:
                 data[k] = doc[k]
         if b["type"] == "render":
@@ -581,7 +614,10 @@ class SubtitleAdapter(ToolAdapter):
         return data
 
     def _fail(self, op: Operation, attempt: int, dry_run: bool, t0: float, code: int, errc: str, message: str, retryable: bool, details: Optional[Dict[str, Any]] = None) -> ToolResult:
-        return failed_result(op, SKILL_ID, getattr(self, "version", ""), attempt, dry_run, t0, code, errc, message, retryable, details)
+        r = failed_result(op, SKILL_ID, getattr(self, "version", ""), attempt, dry_run, t0, code, errc, message, retryable, details)
+        if errc == "INVALID_INPUT" and (details or {}).get("field") == FONTS_DIR_FIELD:   # ADR-107: no installed font covers the text; the user supplies a fonts directory
+            r.data["error"]["recovery_class"] = FONTS_DIR_RECOVERY_CLASS
+        return r
 
 
 def lift_result(result: ToolResult, asset_id: Optional[str] = None) -> Optional[Observation]:
