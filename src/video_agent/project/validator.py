@@ -847,6 +847,14 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                 errs.append(f"{t} on {subj}: the input is a source asset; the render takes an intermediate inside the workspace")
             if op.get("sidecar") != f"{subj}_captions":
                 errs.append(f"{t} on {subj}: sidecar reference {op.get('sidecar')!r} is not the subject's captions")
+            if op.get("fonts_dir") is not None:   # ADR-107: the user's font files of a burn, a directory inside the workspace (subtitle-skill takes workspace-relative paths only)
+                fd, ws = op["fonts_dir"], (d.get("execution") or {}).get("workspace")
+                if t != "captions.burn":
+                    errs.append(f"{t} on {subj}: fonts_dir is for a burn-in (a soft track is drawn by the player)")
+                elif not isinstance(fd, str) or not fd.strip() or any(part == ".." for part in fd.replace("\\", "/").split("/")):
+                    errs.append("captions.burn fonts_dir needs a directory path without traversal")
+                elif not ws or not _under(fd, str(ws)) or Path(fd).resolve() == Path(str(ws)).resolve():
+                    errs.append(f"captions.burn fonts_dir is outside the workspace (subtitle-skill reads fonts from a directory inside it): {Path(fd).name}")
             stage[subj] = 20
         else:
             errs.append(f"unknown captions operation type {t!r}")

@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .editing import EditRequirementError, _bool, _number, _token
 
-THUMBNAIL_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "thumbnail" / "contract_0.1.15.json"
+THUMBNAIL_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "thumbnail" / "contract_0.1.16.json"
 _CONTRACT: Dict[str, Any] = json.loads(THUMBNAIL_CONTRACT_PATH.read_text(encoding="utf-8"))
 PRESETS: Dict[str, Dict[str, Any]] = dict(_CONTRACT["platform_presets"]["presets"])
 _BATCH = _CONTRACT["batch"]

@@ -1,7 +1,9 @@
 """ADR-101: subtitle-skill 0.5.0 .. 0.8.0's opt-in inputs wired end to end on the fake engine and the fake subtitle-skill: the TTML / EBU-TT-D
 sidecar formats (checked by the Skill's conformance; QC reads srt / vtt only), render `placement` (caller-named regions), `regional_profile`
 (ja-broadcast, only when asked and only for Japanese), `caption_profile` shorts (word timings of a word-timestamped transcript on a vertical
-picture), cue `ruby` from the user's readings and style `vertical`. Without these keys nothing changes (international default)."""
+picture), cue `ruby` from the user's readings and style `vertical`. Without these keys nothing changes (international default).
+ADR-107: subtitle-skill 0.9.0's `fonts_dir` (`subtitle.fonts_dir`, burn only, a directory inside the workspace) and the Skill's guided refusal of a burn
+no installed font covers, which blocks with what the user supplies."""
 from __future__ import annotations
 
 import json
@@ -136,6 +138,92 @@ class PlanTests(unittest.TestCase):
                       params={"language": "ja"})
         blk = next(x for x in ir.doc["decisions"] if x["subject"] == "subtitle.burn_in" and x["approval"] == "BLOCK")
         self.assertIn("vertical", blk["reason"])
+
+    def _fonts(self, svc, name="fonts"):
+        d = Path(svc.workspace) / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "Example-Regular.otf").write_bytes(b"not a real font: the fake only lists the files")
+        return str(d)
+
+    def test_fonts_dir_requirement(self):
+        """ADR-107: `subtitle.fonts_dir` is a directory the user names, for a burn-in only; nothing is sent without it."""
+        fonts = self._fonts(pipeline_service(self.tmp, caps=PipelineCaps()))
+        p = parse_subtitle_requirements(reqs({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": fonts}))
+        self.assertEqual(p["render"], {"fonts_dir": fonts})
+        self.assertEqual(parse_subtitle_requirements(reqs({"subtitle": True, "subtitle.mode": "burn", "subtitle.fonts_dir": fonts}))["render"], {"fonts_dir": fonts})
+        self.assertNotIn("fonts_dir", parse_subtitle_requirements(reqs({"subtitle": True, "subtitle.burn_in": True}))["render"])
+        for bad, msg in (({"subtitle": True, "subtitle.fonts_dir": fonts}, "needs subtitle.burn_in"),
+                         ({"subtitle": True, "subtitle.mode": "mux", "subtitle.fonts_dir": fonts}, "needs subtitle.burn_in"),
+                         ({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": fonts + "/../fonts"}, "traversal"),
+                         ({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": fonts + "/missing"}, "directory not found"),
+                         ({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": fonts + "/Example-Regular.otf"}, "directory not found"),
+                         ({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": ""}, "directory path"),
+                         ({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": True}, "directory path"),
+                         ({"subtitle.fonts_dir": fonts}, "ambiguous")):
+            with self.assertRaises(EditRequirementError, msg=str(bad)) as cm:
+                parse_subtitle_requirements(reqs(bad))
+            self.assertIn(msg, str(cm.exception))
+        from video_agent.service import BRIEF_REQUIREMENT_KEYS, _check_requirement_keys
+        _check_requirement_keys({"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": fonts})
+        self.assertNotIn("subtitle.fonts_dir", BRIEF_REQUIREMENT_KEYS, "a path: only the user names it, never a brief")
+
+    def test_burn_with_fonts_dir(self):
+        svc = pipeline_service(self.tmp, caps=PipelineCaps())
+        fonts = self._fonts(svc)
+        r = plan_and_render(svc, [self.a], {"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": fonts}, name="f1")
+        d = r["ir"].doc
+        self.assertEqual((d["plan"]["status"], r["validation"].errors), ("APPROVED", []), d["plan"]["summary"])
+        ops = {op["type"]: op for op in d["captions"]["operations"]}
+        self.assertEqual(ops["captions.burn"]["fonts_dir"], fonts)
+        self.assertNotIn("fonts_dir", ops["captions.generate"], "the sidecar is text: nothing is drawn")
+        out = r["out"]
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = next(x for x in out["execution"]["results"] if x["tool"] == "subtitle/render")
+        self.assertEqual(res["data"]["fonts_dir"], {"path": "fonts", "family": "Fake Sans", "files": ["Example-Regular.otf"]}, "the request carried the workspace-relative directory")
+        rows = {e["tool"]: e for e in self._prov(svc, out)["operations"] if e["tool"].startswith("subtitle/")}
+        self.assertEqual(rows["subtitle/render"]["args"]["fonts_dir"], fonts)
+        self.assertNotIn("fonts_dir", rows["subtitle/generate"]["args"])
+        # without the key the burn is planned and sent as before
+        r0 = plan_and_render(pipeline_service(tempfile.mkdtemp(), caps=PipelineCaps()), [self.a], {"subtitle": True, "subtitle.burn_in": True}, name="f0")
+        self.assertNotIn("fonts_dir", next(op for op in r0["ir"].doc["captions"]["operations"] if op["type"] == "captions.burn"))
+        self.assertNotIn("fonts_dir", next(x for x in r0["out"]["execution"]["results"] if x["tool"] == "subtitle/render")["data"])
+
+    def test_fonts_dir_outside_the_workspace_is_refused_before_execution(self):
+        svc = pipeline_service(self.tmp, caps=PipelineCaps())
+        outside = Path(self.tmp) / "src" / "fonts"   # inside an allowed input root, but subtitle-skill reads fonts from the workspace only
+        outside.mkdir(parents=True)
+        (outside / "Example-Regular.otf").write_bytes(b"x")
+        for where in (str(outside), svc.workspace):
+            ir = svc.plan([self.a], "youtube", user_requirements={"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": where}, params={"language": "ja"})
+            rep = svc.validate(ir)
+            self.assertTrue(any("fonts_dir is outside the workspace" in e for e in rep.errors), rep.errors)
+        # the IR is closed against a fonts directory on anything but the burn
+        from video_agent.execution.compiler import CompileError, lower_captions
+        ir = svc.plan([self.a], "generic", user_requirements={"subtitle": True, "subtitle.mode": "mux", "edit.speed": 2}, params={"language": "ja"})
+        mux = next(op for op in ir.doc["captions"]["operations"] if op["type"] == "captions.mux")
+        mux["fonts_dir"] = self._fonts(svc)
+        self.assertTrue(any("fonts_dir is for a burn-in" in e for e in svc.validate(ir).errors))
+        with self.assertRaises(CompileError):
+            lower_captions("subtitle/render", dict(mux, _language="ja", _cues=[]), "cur", "out", "side")
+
+    def test_no_font_for_the_text_blocks_with_what_to_supply(self):
+        """ADR-107: subtitle-skill refuses a burn no installed font covers (INVALID_INPUT, details.field fonts_dir). The agent does not retry it and
+        says what the user supplies; the same request with `subtitle.fonts_dir` completes."""
+        import os
+        os.environ["FAKE_SUBTITLE_MODE"] = "no_font"
+        svc = pipeline_service(self.tmp, caps=PipelineCaps())
+        r = plan_and_render(svc, [self.a], {"subtitle": True, "subtitle.burn_in": True}, name="n1")
+        out = r["out"]
+        self.assertNotEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = [x for x in out["execution"]["results"] if x["tool"] == "subtitle/render"]
+        self.assertEqual(len(res), 1, "not retried: the same machine refuses the same burn")
+        err = res[0]["data"]["error"]
+        self.assertEqual((err["code"], err["details"], err["recovery_class"]), ("INVALID_INPUT", {"field": "fonts_dir"}, "FONTS_DIR_REQUIRED"))
+        said = json.dumps(out["execution"], ensure_ascii=False)
+        self.assertIn("supply a fonts directory", said); self.assertIn("subtitle.fonts_dir", said)
+        svc2 = pipeline_service(tempfile.mkdtemp(), caps=PipelineCaps())
+        r2 = plan_and_render(svc2, [self.a], {"subtitle": True, "subtitle.burn_in": True, "subtitle.fonts_dir": self._fonts(svc2)}, name="n2")
+        self.assertEqual(r2["out"]["execution"]["status"], "COMPLETED", r2["out"]["execution"])
 
     def test_publish_takes_srt_or_vtt_captions(self):
         svc = pipeline_service(self.tmp, caps=PipelineCaps(extra=["publish"]))

@@ -343,6 +343,10 @@ def lower_captions(tool: str, op: Dict[str, Any], current: Optional[str], out_id
     for k in ("placement", "regional_profile", "caption_profile"):   # ADR-101: the render options the user asked for
         if op.get(k):
             args[k] = op[k]
+    if op.get("fonts_dir"):   # ADR-107: the user's font files, for a burn only (the adapter sends the directory workspace-relative)
+        if op["type"] != "captions.burn":
+            raise CompileError(f"{op['type']} cannot take fonts_dir: the fonts are for a burn-in (a soft track is drawn by the player)")
+        args["fonts_dir"] = op["fonts_dir"]
     return args
 
 

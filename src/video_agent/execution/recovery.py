@@ -22,6 +22,11 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "ALPHA_NOT_KEPT": {"action": "BLOCK", "hint": "the grade did not keep the source's alpha as verified by ffmpeg-skill (alpha_lost / alpha_mismatch / "
                                                   "alpha_unverified); not retried -- export the source to ProRes 4444 / qtrle / PNG (a VP9 alpha is not "
                                                   "seen by the probe) or use an ffmpeg-skill whose color --keep-alpha check passes (3.2.3+)"},
+    # ADR-107 (subtitle-skill 0.9.0): a burn no installed font covers (INVALID_INPUT, details.field fonts_dir; never retryable): the same machine
+    # fails the same way until the user gives the fonts. The agent never downloads, picks or copies a font
+    "FONTS_DIR_REQUIRED": {"action": "BLOCK", "hint": "no installed font covers the subtitle text, so the burn-in was refused; not retried -- supply a fonts directory: "
+                                                      "put a font file (.ttf / .otf / .ttc) that covers the subtitle's script in a directory inside the workspace "
+                                                      "and set subtitle.fonts_dir to it (or install such a font), then re-run"},
     "ENCODER_FAILED": {"action": "RETRY_ALT", "hint": "retry once with frame-accurate mode", "alt_args": {"ffmpeg-skill/cut": {"accurate": True}}},
     "TIMEOUT":        {"action": "RETRY_LONGER", "hint": "retry once with a doubled timeout"},
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},

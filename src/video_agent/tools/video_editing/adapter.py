@@ -44,7 +44,7 @@ CONTRACT_SCHEMA = "video-editing/contract@1"
 REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"
 DOCTOR_SCHEMA = "video-editing/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.0 (contract_version 6.0, ADR-106): TRIM / CUT precision smart, opt-in. 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.")  # 0.6.1 / 0.6.2 (ADR-107): version-only, re-pinned from the v0.6.2 tag. 0.6.0 (contract_version 6.0, ADR-106): TRIM / CUT precision smart, opt-in. 0.2.0 (video-editing-skill PR #8): FILL.anchor (not
 # 0.4.2 (video-editing-skill #26): passes cut.py --no-keep-hevc where ffmpeg-skill 3.x offers it (engine.compatibility.detected gains that line); nothing else changed; re-pinned (ADR-083).
                                                # yet lowered here -- a real follow-up, not implemented by this
                                                # widening alone) and outputs[].encoding named directly in
@@ -187,7 +187,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # 0.6.0 (contract_version "6.0"): TRIM / CUT precision smart (opt-in; frame stays the default and auto never picks it), contract.smart_cut,
 # execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version, so the re-pin is required;
 # re-pinned from the v0.6.0 tag (ADR-106). The agent sends smart only when the user asked for it (edit.precision=smart).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.2.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
