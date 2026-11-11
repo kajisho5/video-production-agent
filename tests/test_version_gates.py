@@ -46,8 +46,8 @@ class VersionGateTests(unittest.TestCase):
 
     def test_qc_release_versions(self):
         """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
-        self.assertEqual(qc.pinned_contract()["version"], "1.0.0")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only
-        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.3"):
+        self.assertEqual(qc.pinned_contract()["version"], "1.0.1")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only
+        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.1", "1.0.3"):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
             self.assertEqual(qc.contract_breaking_drift(live), [], v)
@@ -98,6 +98,28 @@ class VersionGateTests(unittest.TestCase):
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
         for v in ("0.7.0", "1.0.0"):
             self.assertTrue(ve.check_contract(with_version(ve.pinned_contract(), v)), v)
+
+    def test_video_editing_release_label_in_response_shape_is_not_fatal(self):
+        """ADR-107 (review): a real video-editing contract writes its release version in five places (version, tools[].version, response_shape,
+        doctor_shape, versioning). An installed release inside the gate that differs from the pin only there (0.6.0, 0.6.1, a later 0.6.x) must not
+        become MISSING; the difference is still reported, and any other change to response_shape stays fatal."""
+        import json
+
+        def release(v):   # the pin as that release prints it: every place the version is written
+            c = with_version(json.loads(json.dumps(ve.pinned_contract())), v)
+            c["response_shape"]["skill"]["version"] = c["doctor_shape"]["skill"]["version"] = c["versioning"]["version"] = v
+            return c
+        for v in ("0.6.0", "0.6.1", "0.6.2", "0.6.3"):
+            live = release(v)
+            self.assertEqual(ve.check_contract(live), [], v)
+            self.assertEqual(ve.contract_breaking_drift(live), [], v)
+            self.assertEqual(bool(ve.contract_drift(live)), v != "0.6.2", "the full drift report still names the difference")
+        self.assertTrue(any(d.startswith("response_shape:") for d in ve.contract_drift(release("0.6.1"))))
+        for change in (lambda c: c["response_shape"].update(status="completed"), lambda c: c["response_shape"]["skill"].update(id="other"),
+                       lambda c: c["response_shape"].update(schema="video-editing/response@2"), lambda c: c["response_shape"].pop("execution")):
+            live = release("0.6.1")
+            change(live)
+            self.assertTrue(any(d.startswith("response_shape:") for d in ve.contract_breaking_drift(live)), live["response_shape"])
 
     def test_color_grading_versions(self):
         # ADR-097 addendum 6: color-grading-skill 0.5.0 (OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE, the alpha guard; pinned blocks unchanged)

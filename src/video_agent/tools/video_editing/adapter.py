@@ -185,7 +185,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # nothing else. The request this adapter builds and the response it verifies are unchanged, so the gate takes 0.5.x; re-pinned from the v0.5.0 tag
 # (ADR-097 addendum 6). ADR-099 lowers and plans them (max_size: lowered only).
 # 0.6.0 (contract_version "6.0"): TRIM / CUT precision smart (opt-in; frame stays the default and auto never picks it), contract.smart_cut,
-# execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version, so the re-pin is required;
+# execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version (fatal drift until ADR-107 left that label out of the fatal comparison), so the re-pin was required;
 # re-pinned from the v0.6.0 tag (ADR-106). The agent sends smart only when the user asked for it (edit.precision=smart).
 PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.6.2.json")
 
@@ -213,8 +213,18 @@ FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "operatio
 FATAL_DRIFT_TOOL_KEYS = tuple(k for k in DRIFT_TOOL_KEYS if k not in ("version", "parameters"))
 
 
+def _without_release_label(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """ADR-107 (review): `response_shape.skill.version` is the Skill's release version written a second time. Like the top-level `version`, it moves
+    inside the range check_contract() accepts and changes no call this adapter builds, so it is left out of the fatal comparison; every other field
+    of response_shape (schema, skill id, status, execution) stays fatal. contract_drift() still reports the difference."""
+    rs = contract.get("response_shape")
+    if not isinstance(rs, dict) or not isinstance(rs.get("skill"), dict):
+        return contract
+    return {**contract, "response_shape": {**rs, "skill": {k: v for k, v in rs["skill"].items() if k != "version"}}}
+
+
 def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
-    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "tools", "tool_id", FATAL_DRIFT_TOOL_KEYS)
+    return breaking_drift(_without_release_label(live), _without_release_label(pinned or pinned_contract()), FATAL_DRIFT_KEYS, "tools", "tool_id", FATAL_DRIFT_TOOL_KEYS)
 
 
 def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
