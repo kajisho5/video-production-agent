@@ -8,7 +8,7 @@ actual, merged `main` (2026-09-06) as literal fixtures -- no network access, mat
 this test suite's own existing convention (`tests/fake_qc.py` and friends) -- combined
 with this Agent's *real*, currently-registered `PACKAGE`/`default_registry()` data, so
 they double as regression tests for the real tool-id drift case (`qc-skill`; `subtitle-skill`'s
-was fixed by its #20 and is now read from the pinned contract as PROVIDES_VALID) and the
+was fixed by its #20 and its generate / render are now read from the pinned contract as PROVIDES_VALID) and the
 shared-tool-id granularity limit (`color-grading-skill`)
 found by `kajisho5/AI-video-production-OS`'s own exhaustive investigation
 (`docs/ecosystem/WORK_QUEUE.md` item 1, 2026-09-06).
@@ -154,21 +154,33 @@ class RealDataRegressionTests(unittest.TestCase):
         # confirms WORK_QUEUE item 1's finding: real tool_id is "qc/run" everywhere, never "qc/check"
         self.assertTrue(all(f.evidence.get("agent_tool_ids") == ["qc/check", "qc/inspect"] for f in findings if f.status == "PROVIDES_MISMATCH"))
 
-    def test_real_subtitle_skill_both_capabilities_are_valid(self):
-        """subtitle-skill #20 (0.2.1, its ADR-002) publishes provides[] tool ids as `subtitle/generate` / `subtitle/render`, the ids
-        this Agent's adapter registers: read from the pinned contract (re-pinned from subtitle-skill main), both are PROVIDES_VALID.
-        Before #20 the contract said `subtitle-skill/...` and both were PROVIDES_MISMATCH (the 2026-09-06 finding)."""
+    def test_real_subtitle_skill_generate_render_valid_translate_mux_not_registered(self):
+        """subtitle-skill #20 (0.2.1, its ADR-002) publishes provides[] tool ids as `subtitle/...`, the ids this Agent's adapter
+        registers (before #20 they were `subtitle-skill/...` and both were PROVIDES_MISMATCH, the 2026-09-06 finding). Since 0.3.0
+        (pinned from 0.4.0, ADR-078) the contract also publishes `subtitle.translate` (`subtitle/translate`) and `subtitle.mux`
+        (`subtitle/mux`, several language-tagged tracks in one call). The Agent registers neither tool id: it does not translate, and
+        its one-track soft subtitle (`subtitle_mux`, ADR-063) is the contract's `render` with `mode: "mux"`, i.e. `subtitle/render`.
+        Read from the pinned contract, generate / render are PROVIDES_VALID and translate / mux are PROVIDES_MISMATCH -- no more, no less."""
         from video_agent.skills import default_registry
         from video_agent.tools.subtitle import PACKAGE as SUBTITLE_PACKAGE
         from video_agent.tools.subtitle.adapter import pinned_contract
 
         contract = pinned_contract()
-        self.assertEqual(sorted((p["id"], p["tool_id"]) for p in contract["provides"]), [("subtitle.generate", "subtitle/generate"), ("subtitle.render", "subtitle/render")])
-        findings = check_provides(SUBTITLE_PACKAGE, contract, default_registry().all())
-        published = [f for f in findings if f.capability_id]
-        self.assertEqual({(f.capability_id, f.tool_id, f.status) for f in published},
-                         {("subtitle.generate", "subtitle/generate", "PROVIDES_VALID"), ("subtitle.render", "subtitle/render", "PROVIDES_VALID")})
-        self.assertFalse([f for f in findings if f.status in ("PROVIDES_MISMATCH", "CAPABILITY_MISSING")], findings)
+        self.assertEqual(sorted((p["id"], p["tool_id"]) for p in contract["provides"]),
+                         [("subtitle.generate", "subtitle/generate"), ("subtitle.mux", "subtitle/mux"),
+                          ("subtitle.render", "subtitle/render"), ("subtitle.translate", "subtitle/translate")])
+        self.assertEqual(sorted(t.tool_id for t in SUBTITLE_PACKAGE.tools), ["subtitle/generate", "subtitle/render"])
+        specs = default_registry().all()
+        self.assertEqual(next(s for s in specs if s.name == "subtitle_mux").tools, ["subtitle/render"])   # the soft track goes through render
+        findings = check_provides(SUBTITLE_PACKAGE, contract, specs)
+        self.assertEqual({(f.capability_id, f.tool_id, f.status) for f in findings},
+                         {("subtitle.generate", "subtitle/generate", "PROVIDES_VALID"), ("subtitle.render", "subtitle/render", "PROVIDES_VALID"),
+                          ("subtitle.translate", "subtitle/translate", "PROVIDES_MISMATCH"), ("subtitle.mux", "subtitle/mux", "PROVIDES_MISMATCH")})
+        self.assertEqual(len(findings), 4, findings)   # no CAPABILITY_MISSING / UNKNOWN: every SkillSpec tool id is published
+        for f in findings:
+            if f.status == "PROVIDES_MISMATCH":
+                self.assertEqual(f.evidence["agent_tool_ids"], ["subtitle/generate", "subtitle/render"])
+                self.assertNotIn("shared_tool_id_capabilities", f.evidence)
 
     def test_real_color_grading_skill_shared_tool_id_all_valid_but_annotated(self):
         """color-grading-skill really does publish all 5 Capability ids through the one generic
