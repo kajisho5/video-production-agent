@@ -41,11 +41,12 @@ class VersionGateTests(unittest.TestCase):
     def test_transcription_release_versions(self):
         # 0.8.0 (ADR-078): optional engine whisperx appended, nothing the adapter sends changed; 0.9.0 (ADR-107 addendum 2): word index,
         # optional dictionary words (pos / timing) and the opt-in word_segmentation input, all additions; 0.10.0 (ADR-107 addendum 7): new
-        # optional models and per-model language limits (a refusal reason), additive
-        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4"):
+        # optional models and per-model language limits (a refusal reason), additive; 0.11.0 (addendum 8): optional engine qwen3_asr added
+        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2"):
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
-        self.assertEqual(tr.pinned_contract()["version"], "0.10.0")
-        for v in ("0.1.0", "0.3.0", "0.11.0", "0.100.0", "1.0.0"):
+        self.assertEqual(tr.pinned_contract()["version"], "0.11.0")
+        self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")
+        for v in ("0.1.0", "0.3.0", "0.12.0", "0.110.0", "1.0.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
