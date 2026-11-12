@@ -2426,10 +2426,11 @@ class VideoEditingFeaturesRealTests(unittest.TestCase):
     def test_stinger_cut_point_checked_by_qc_on_the_delivered_file(self):
         """ADR-112 end to end on the real video-editing-skill, qc-skill and ffmpeg-skill. The stinger's stinger.json gives the plan its cut point
         and cover; `qc.stinger` with a limit runs qc-skill's three stinger checks on the delivered file, and they are QA items of the deliverable.
-        The cut time sent is video-editing's own report of the join (on a whole frame, not the plan's join time), mapped onto the delivered file:
-        measured on that file, it is a frame, the first frame of the second clip, and it shows the stinger's frame at its cut point, while 0.1 s
-        before the stinger starts the picture shows. Moved there, the same check on the same file FAILs with qc-skill's finding as a QA item.
-        (On ffmpeg-skill 2.x the composite shows the whole stinger opaque, its transparent frames too: that frame is outside it on both engines.)"""
+        The cut time sent is video-editing's own report of the join (on a whole frame, not the plan's join time), mapped onto the delivered file.
+        Measured on that file, it is a frame, every frame of the stated cover around it is the stinger's frame at its cut point, and 0.1 s before
+        the stinger starts the picture shows. Moved there, the same check on the same file FAILs with qc-skill's finding as a QA item. (On
+        ffmpeg-skill 2.x the composite shows the whole stinger opaque, its transparent frames too; both checks hold on both engines, and where
+        the alpha is kept the cover's fade edges sit exactly at its ends, so a cut time a frame off would put one of them inside.)"""
         from fractions import Fraction
         from video_agent.agent.editing import delivery_subjects
         from video_agent.models import ToolResult
@@ -2473,22 +2474,23 @@ class VideoEditingFeaturesRealTests(unittest.TestCase):
         frame_no = Fraction(rule["cut_at"][0]).limit_denominator(1000000) * fps
         self.assertAlmostEqual(float(frame_no), round(frame_no), places=3, msg="the cut time is a frame of the delivered file")
         n = int(round(frame_no))
-        first = out["paths"][next(s for s in d["plan"]["steps"] if s["tool"] == "video-editing/concat")["inputs"][0]]
-        counted = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", first],
-                                 capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(int(counted), n, "the cut frame is the first frame of the second clip: the first clip has exactly that many frames")
+        size = 64 * 36 * 3
 
-        def rgb(path, frame):   # one decoded frame, scaled down, as RGB bytes
-            return subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=eq(n\\,{int(frame)}),scale=64:36", "-frames:v", "1",
-                                   "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
+        def frames(path, first, last):   # decoded frames first..last (decode order from the first frame), scaled down, as RGB bytes
+            raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=between(n\\,{int(first)}\\,{int(last)}),scale=64:36",
+                                  "-fps_mode", "passthrough", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
+            self.assertEqual(len(raw), size * (last - first + 1), (path, first, last))
+            return [raw[i * size:(i + 1) * size] for i in range(last - first + 1)]
 
         def diff(x, y):
-            self.assertEqual((len(x), len(y)), (64 * 36 * 3, 64 * 36 * 3))
-            return sum(abs(p - q) for p, q in zip(x, y)) / len(x)
+            return sum(abs(p - q) for p, q in zip(x, y)) / size
+        [ref] = frames(self.stinger, made["cut_point"]["frame"], made["cut_point"]["frame"])
+        lead, tail = int(round((cut_point - cover["start"]) * fps)), int(round((cover["end"] - cut_point) * fps))
+        covered = {n - lead + i: diff(f, ref) for i, f in enumerate(frames(delivered, n - lead, n + tail))}
+        self.assertEqual({k: v for k, v in covered.items() if v > limit}, {}, "every frame of the stated cover around the cut time is the stinger's frame")
         outside = n - int(round((cut_point + 0.1) * fps))   # 0.1 s before the stinger starts
-        ref = rgb(self.stinger, made["cut_point"]["frame"])
-        self.assertLessEqual(diff(rgb(delivered, n), ref), limit, "the delivered cut frame is the stinger's frame at its cut point")
-        self.assertGreater(diff(rgb(delivered, outside), ref), 20 * limit, "outside the stinger the picture shows")
+        [before] = frames(delivered, outside, outside)
+        self.assertGreater(diff(before, ref), 20 * limit, "outside the stinger the picture shows")
         # moved there, the same check on the same file FAILs with qc-skill's finding, as a QA item (nothing is re-rendered)
         moved = json.loads(json.dumps(cat_res["data"]))
         moved["reported"]["stinger"]["joins"][0]["cut_at"] = {"seconds": f"{float(outside / fps):.6f}", "rational": str(Fraction(outside) / fps)}
