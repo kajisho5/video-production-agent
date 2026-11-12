@@ -42,11 +42,13 @@ from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepar
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
 from .dubbing import decide_dub
 from .publish import decide_publish
+from .word_cut import AI_INTENT as WORD_CUT_AI_INTENT, SUBJECT as WORD_CUT_SUBJECT, decide_word_cut
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
                    "delivery_export": ("delivery.",), "delivery_check": ("delivery.",),
-                   TAKE_AI_INTENT: (PICK_SUBJECT,)}   # ADR-053: an AI take preference is evidence on the pick of that take (or a review item)
+                   TAKE_AI_INTENT: (PICK_SUBJECT,),   # ADR-053: an AI take preference is evidence on the pick of that take (or a review item)
+                   WORD_CUT_AI_INTENT: (WORD_CUT_SUBJECT,)}   # ADR-109: the AI's word ranges are converted into the words.cut decision (or refused there)
 # user / profile intent (agent/intent.py vocabulary) → decision subjects that serve it (recorded in basis.intent)
 SERVING_SUBJECTS = {"clean_and_deliver": ("silence.leading", "silence.trailing", "silence.internal.", "audio.loudness", "delivery."),
                     "clean_only": ("silence.leading", "silence.trailing", "silence.internal.", "audio.loudness"),
@@ -774,6 +776,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
                        requirements=[targets], serves_intent=_serves(intent, f"delivery.{t['id']}"))
     # ---- publishing (ADR-087): after the QC gate and the delivery targets it names; always CONFIRM, the upload itself a human's separate command
     decide_publish(eng, m, decs, subjects, target_list, approval_for, probe_ids_of, cap_block)
+    # ---- word-index plans (ADR-109): `edit.word_cut` + the AI's word ranges → the derived cut on the source (CONFIRM), or the refusal recorded
+    decide_word_cut(eng, m, analysis, inferences, approval_for, AI_KIND_PREFIX)
     # ---- AI recommendations (provenance AI_GENERATED): proposals only. A recommendation that a measured decision already
     # covers becomes extra evidence on that decision (its confidence / risk / approval are untouched). Anything else is a
     # review item: approval from policy (default CONFIRM), risk from the skill registry, never executable by itself.
@@ -781,6 +785,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if not inf.kind.startswith(AI_KIND_PREFIX):
             continue
         ai_intent = str(inf.data.get("intent") or inf.kind[len(AI_KIND_PREFIX):])
+        if ai_intent == WORD_CUT_AI_INTENT:
+            continue   # ADR-109: decide_word_cut owns these (a cut, a refusal, or a BLOCK by policy); a recorded one without edit.word_cut is not used
         subjects = INTENT_SUBJECTS.get(ai_intent, ())
         covered_decs = [d for d in decs if d.status != "BLOCKED" and any(d.subject == sub or (sub.endswith(".") and d.subject.startswith(sub)) for sub in subjects)
                         and (d.params.get("asset_id") in (None, inf.asset_id))]

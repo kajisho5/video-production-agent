@@ -35,6 +35,7 @@ from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepar
 from .voice import OPERATIONS as VOICE_OPERATIONS, PER_INPUT as VOICE_PER_INPUT, ir_voice_operation
 from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_dub_operation
 from .publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
+from .word_cut import SUBJECT as WORD_CUT_SUBJECT
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -763,6 +764,11 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 removed += [r for r in ([0.0, round(start, 3)], [round(end, 3), round(dur, 3)]) if r[1] > r[0]]
         internal = sorted(([round(d.params["start"], 3), round(d.params["end"], 3)], d.id) for d in decisions
                           if d.params.get("asset_id") == asset.id and d.subject.startswith("silence.internal.") and d.decision.startswith("remove") and d.status != "REJECTED")
+        # ADR-109: the seconds the agent derived from the AI's word ranges (rule word_ranges@1, recorded on the decision) are cut the same way
+        word_cuts = sorted(([float(r[0]), float(r[1])], d.id) for d in decisions if d.subject == WORD_CUT_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"
+                           and d.params.get("asset_id") == asset.id for r in d.params.get("remove") or [])
+        n_pauses = len(internal)
+        internal = sorted(internal + word_cuts)
         # ADR-098: the editor's timeline read back -- this source is cut to exactly the editor's kept ranges, frame-accurate, instead of the
         # ranges the decisions above give (they stay in the plan, superseded for this source; rejecting the editor's cut restores them)
         editor_dec = next((d for d in decisions if d.subject == EDITOR_CUT_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"
@@ -794,7 +800,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                         nxt.append([re_, ke])
                 keep = nxt
                 removed.append([rs, re_])
-                dec_ids.append(did)
+                if did not in dec_ids:   # a word-cut decision removes several ranges
+                    dec_ids.append(did)
             keep = [k for k in keep if k[1] > k[0]]
             condensed: List[Dict[str, Any]] = []
             if cond_dec is not None:
@@ -819,7 +826,9 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 # a beat-snapped join must land on its frame, not a keyframe; a crossfaded pick's picture must start where its audio is cut
                 # ADR-062: the user's in / out points are cut where they were given (frame-accurate); one kept range is video-editing TRIM,
                 # several (internal pauses removed inside it) stay the multi-range cut of silence_cleanup
-                forced = bool(editor_dec is not None or cond_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                # ADR-109: a cut between words is far tighter than a pause, so a word cut is frame-accurate whatever precision is asked
+                forced = bool(editor_dec is not None or cond_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids)
+                              or any(did in dec_ids for _, did in word_cuts))
                 accurate = bool(frame_accurate or explicit_trim or forced)
                 trim_skill = TRIM_SKILL if (explicit_trim or editor_dec is not None) and len(keep) == 1 else "silence_cleanup"
                 rec: Dict[str, Any] = {"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids}
@@ -848,7 +857,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 summary.append(f"Cut the {len(cond_dec.params['spans'])} approved proposal(s) out of {asset.path.split('/')[-1]} ({sum(r['end'] - r['start'] for r in condensed):.2f}s, "
                                "video-editing CONDENSE; every other proposal is left in)")
             summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" as the editor's timeline" if editor_dec is not None else " outside the requested in / out range" if explicit_trim else " of silence")
-                           + (f", {len(internal)} internal pause(s) pending confirmation" if internal else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
+                           + (f", {n_pauses} internal pause(s) pending confirmation" if n_pauses and editor_dec is None else "")
+                           + (f", {len(word_cuts)} range(s) around the words the AI chose to cut, pending confirmation" if word_cuts and editor_dec is None else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
         fr_dec = next((d for d in decisions if d.subject == "audio.filler_remove" and d.type == "TRANSFORM" and d.status != "REJECTED" and d.params.get("asset_id") == asset.id), None) \
             if asset.id in audio_subjects else None
         if fr_dec is not None:

@@ -719,7 +719,8 @@ Observation → Event → Inference / Decision → ProductionPlan → Project IR
   step, delivery target → export + check steps, chained by `depends_on`. It never emits tool arguments or executes.
 - `validate_plan` (run by the IR validator): ids, project, status ↔ review state, unique steps, deterministic order,
   dependencies / cycles, inputs (assets or earlier outputs), decisions, evidence existence, domain parameters only,
-  credential / command / argv leaks, temporal scope within the asset, tool ∈ skill candidates, planned outputs.
+  credential / command / argv leaks, temporal scope within the asset, tool ∈ skill candidates, planned outputs, and (ADR-109) the
+  seconds of every `words.cut` decision derived again from its recorded word ranges.
 - `explain_step` / `video-agent explain --step`: decision → inference (AI provenance from `ai_calls` when
   AI_GENERATED) → event → observation → tool source.
 - `plan_hash` keeps its PR #3 meaning (assets / video / audio / delivery / qa); the plan section is not part of it.
@@ -1213,6 +1214,9 @@ AI ≠ Tool executor    AI ≠ Skill registry    AI ≠ Compiler    AI ≠ final
 AI → structured recommendation → Inference (AI_GENERATED) → Decision (policy / risk / approval) → SkillRegistry →
 Capability → Tool → Project IR → Compiler → ToolRouter → Adapter → Skill package → runtime → QA → provenance
 ```
+
+Times are never taken from an AI answer for a cut: with `edit.word_cut` the AI names word index ranges and the agent derives the
+seconds (rule `word_ranges@1`, ADR-109, "Word-index plans" below).
 
 Observations stay measurements: the validator rejects an observation whose source is not a tool id + version.
 A provider failure is an AI-domain failure (warning + `ai_calls[].error`), never a media-engine incident; the plan
@@ -1917,6 +1921,47 @@ Requirement (subtitle / thumbnail / color.* / motion.* / qc) → Decision (decis
 - **QC gate:** qc-skill's report is admitted only when its fingerprint equals the sha256 the agent computed itself; PASS → READY
   (stage approved), WARN → candidate unless policy `qc.warn.promotion` is AUTO, FAIL → working (never final). The agent's own QA stays.
 - **Not implemented:** camera switching on speaker change (needs a sync Skill, a switching operation and a `transition` → decision path).
+
+### Word-index plans: the AI never writes seconds (implemented, ADR-109)
+
+```
+Observation(transcript, word timings) → numbered words [index, text] → AI recommendation (intent word_cut,
+  params keep_words | cut_words = [[first_index, last_index], ...]) → `words.cut` decision (rule word_ranges@1: word ranges
+  + derived seconds + rolls + rule recorded) → removed ranges of the asset's trim step → Project IR → Compiler
+```
+
+- **Opt-in:** `--set edit.word_cut=true` (+ `edit.word_cut.pre_roll`, `edit.word_cut.post_roll`, 0..1 s). The system measures a
+  transcript with word timestamps for the requirement and offers the AI the extra intent `word_cut`; without the requirement a
+  `word_cut` recommendation is dropped like any unknown intent.
+- **Numbering** (`agent/word_cut.py::number_words`): 0-based over the whole transcript, segments in order and words in order within
+  them (time order; `check_transcript` refuses out-of-order segments). transcription-skill's own word `index` is used when every word
+  has one and they are exactly 0..N-1; with none it is derived from the order; a mix, a duplicate or a gap is refused. Optional word
+  fields of transcription-skill 0.9.0 (`pos`, `timing` measured | interpolated on dictionary words) are carried, never required. The AI context (`context.word_cut`) lists each
+  transcript's words as `[index, text]`, with the instructions and the rule version.
+- **Conversion** (`derive_ranges`, rule `word_ranges@1`): kept words = the union of `keep_words`, or every word not in `cut_words`;
+  each run of consecutive kept words [a, b] keeps `start(a) - pre_roll` .. `end(b) + post_roll` (defaults 0.10 s / 0.20 s), clamped
+  at the midpoint of the gap to a neighbouring word that is not kept and to 0 .. the media duration, rounded to the millisecond. `keep_words` removes everything outside the kept ranges; `cut_words`
+  removes only the gaps around the cut words (from 0 s / to the end when a cut reaches the first / last word).
+- **Refusals, never corrections:** ranges that are not two whole numbers, out of bounds, reversed or overlapping; params with any key
+  but one of `keep_words` / `cut_words` (no seconds); a boundary word or its neighbour without times; a word past the media; nothing
+  kept; derived ranges that overlap; a cut word that overlaps a kept word in time (never cut in part); a removal reaching speech
+  without word timings; transcript indices that are not 0..N-1 in word order; `keep_words` or a range past the words shown when the
+  AI saw a truncated index (more than 20 000 words); a take of a take assembly; kept words outside the in / out the other cuts keep;
+  two recommendations for one asset. A refused recommendation becomes a KEEP `words.cut` decision
+  with the reason (`params.refused`): nothing is cut and the plan still runs.
+- **Decision:** TRANSFORM, risk HIGH, approval from `edit.semantic_deletion.approval` (DEFAULT CONFIRM; conference: BLOCK) with a
+  CONFIRM floor; provenance AI_GENERATED; evidence = the AI inference, the transcript observation and the requirement. Params:
+  `mode`, `word_ranges`, `kept_words`, `keep`, `remove`, `words_removed`, `word_count`, `pre_roll` / `post_roll` (+ provenance),
+  `duration`, `index_source`, `transcript_id`, `inference_id`, `interpolated_boundaries`, `removed_words` ([first, last, text]), `rule`. Without any recommendation a KEEP
+  record says nothing is cut yet (host provider: answer the brief, then `revise --ai-recommendations`).
+- **Plan / determinism:** the planner subtracts `remove` from the asset's kept ranges like the internal-pause candidates (the
+  same trim step, on the video or the audio path), always frame-accurate. `validate_plan` runs `check_word_cuts`: the recorded seconds
+  must be what the rule derives again from the recorded transcript, word ranges and rolls, the rule must be this agent's, the trim
+  step must remove them and the executed `video.trim` keep must not overlap them (an editor's timeline, ADR-098, supersedes them). Revisions reuse the recorded AI inference (no AI call), so the same plan always gives the same cut list; a changed roll
+  derives new seconds from the same word ranges.
+- **Not here:** emphasis by word ranges (punch-in stays the user's explicit box and times), semantic deletion without an explicit
+  request (roadmap step 13), using `timing: interpolated` beyond reporting it at a range boundary, requesting dictionary word
+  segmentation (`word_segmentation`), and the contract re-pin to transcription-skill 0.9.0 (batched separately).
 
 ## 52. Architecture / Repository
 
