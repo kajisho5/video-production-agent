@@ -143,6 +143,9 @@ def main() -> int:
         return 1
     if MODE == "internal_error":
         return err("INTERNAL_ERROR", "TypeError: bug")
+    if MODE.startswith("refuse:"):   # refuse:<CODE>:<details.reason>: the Skill's refusal of a measured source (0.7.x stinger / whole-frame reasons)
+        _, code, reason = MODE.split(":", 2)
+        return err(code, f"refused ({reason})", {"reason": reason})
     if MODE == "unknown_code":
         emit({"ok": False, "error": {"code": "WEIRD", "message": "?", "retryable": True, "details": {}}})
         return 1

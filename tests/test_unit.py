@@ -4304,6 +4304,14 @@ class VideoEditingAdapterTests(unittest.TestCase):
             self.assertEqual(next_attempt(r, 1, 2, None)["action"], action, mode)
             self.assertIsNone(r.output, mode)
             self.assertFalse(os.path.exists(out), f"{mode}: a failed run never leaves a result at the output path")
+        # video-editing-skill 0.7.x: a measured source the Skill refuses (a stinger that does not cover, an input shorter than a frame) is
+        # UNSUPPORTED_MEDIA, not "input file disappeared" / "compiler bug"; the same codes with other reasons keep their class
+        for mode, cls in (("refuse:INVALID_INPUT:stinger_not_covering", "UNSUPPORTED_MEDIA"), ("refuse:INVALID_INPUT:stinger_cover_unmeasured", "UNSUPPORTED_MEDIA"),
+                          ("refuse:INVALID_INPUT:stinger_no_alpha", "UNSUPPORTED_MEDIA"), ("refuse:INVALID_TIME_RANGE:shorter_than_a_frame", "UNSUPPORTED_MEDIA"),
+                          ("refuse:INVALID_INPUT:odd_frame", "INPUT_MISSING"), ("refuse:INVALID_REQUEST:stinger_no_cut_point", "INVALID_ARGS")):
+            os.environ["FAKE_VE_MODE"] = mode
+            r = ad.run(self._op(), paths)
+            self.assertEqual((r.data["error"]["recovery_class"], classify_error(r), next_attempt(r, 1, 2, None)["action"]), (cls, cls, "BLOCK"), mode)
         os.environ["FAKE_VE_MODE"] = "tool_error"
         r = ad.run(self._op(), paths)
         self.assertEqual(r.data["error"]["recovery_class"], "UNKNOWN"); self.assertTrue(r.commands and "provenance only" in r.commands[0], "commands of a failed run are provenance too")
