@@ -2933,11 +2933,30 @@ class TranscriptionAdapterTests(unittest.TestCase):
         return make_service(self.tmp, caps=FakeCaps(extra=list(extra)), adapter=ToolRouter(adapters if adapters is not None else [FakeAdapter(), self._adapter(**kw)]))
 
     # 1. contract discovery, compatibility, package, tool ownership, engine contract
+    def test_word_segmentation_is_optional_and_checked(self):
+        """transcription-skill 0.9.0 (ADR-107 addendum 2): `word_segmentation` is sent only when asked for, only to a contract that declares it,
+        and dictionary words need ja + word timestamps; a contract without it (0.8.x) is still accepted and never gets it."""
+        from video_agent.tools.base import ToolError
+        from video_agent.tools.transcription.adapter import check_contract, pinned_contract
+        ad = self._adapter()
+        req = ad.build_request("transcription/transcribe", {"input": self.src, "asset_id": "a", "language": "ja", "word_timestamps": True, "word_segmentation": "dictionary"})
+        self.assertEqual(req["params"]["word_segmentation"], "dictionary")
+        self.assertNotIn("word_segmentation", ad.build_request("transcription/transcribe", {"input": self.src, "asset_id": "a"})["params"])
+        for bad in ({"language": "en", "word_timestamps": True, "word_segmentation": "dictionary"}, {"language": "ja", "word_segmentation": "dictionary"},
+                    {"word_segmentation": "morphemes"}):
+            with self.assertRaises(ToolError):
+                ad.build_request("transcription/transcribe", dict({"input": self.src, "asset_id": "a"}, **bad))
+        old = pinned_contract()
+        old["version"] = "0.8.0"
+        next(t for t in old["tools"] if t["name"] == "transcription/transcribe")["input"].pop("word_segmentation")
+        old["capabilities"] = [c for c in old["capabilities"] if c not in ("word_index", "dictionary_word_segmentation")]
+        self.assertEqual(check_contract(old), [])
+
     def test_contract_discovery_package_and_refusals(self):
         from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.8.0", "transcription-skill"))
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.9.0", "transcription-skill"))
         self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
@@ -3013,7 +3032,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
         t = obs["transcript"]
-        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.8.0", "transcription/transcribe", "transcription/transcribe@0.8.0"))
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.9.0", "transcription/transcribe", "transcription/transcribe@0.9.0"))
         self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
         self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
         self.assertEqual(t.fingerprint, res.assets[0].hash)
@@ -3109,7 +3128,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.8.0", "k", "transcription/transcribe")
         self.assertNotEqual(o.fingerprint, asset.hash)
         tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
-        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.8.0", ad.engines, ad.contract["schemas"])))
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.9.0", ad.engines, ad.contract["schemas"])))
 
     # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
     def test_cached_only_policy(self):
@@ -3164,7 +3183,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
-        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.8.0", ["speech_transcription"]))
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.9.0", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
         self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
@@ -3177,7 +3196,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         root = self._checkout()
         cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
         self.assertEqual(cap.status, "AVAILABLE", cap.detail)
-        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.8.0", "faster_whisper", "local", True))
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.9.0", "faster_whisper", "local", True))
         self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
         self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
         os.environ["FAKE_TS_MODE"] = "model_unavailable"
