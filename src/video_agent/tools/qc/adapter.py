@@ -37,6 +37,7 @@ Contract discrepancies absorbed here (documented, never patched):
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -70,7 +71,12 @@ DOCTOR_SCHEMA = "qc/doctor@1"
 # 1.1.0 (qc-skill #30): opt-in subtitle cue-text and subtitle-vs-speech checks (new optional rules.subtitle keys, checks, findings,
 # measurements, `subtitle_speech`); the request the adapter sends and the report it admits are unchanged, so the gate admits 1.1.x
 # (a later version-only 1.1.y is ADR-108 drift, not a re-pin). Re-pinned from the v1.1.0 tag's `contract --json` (ADR-107 addendum 2).
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.", "1.1.")
+# 1.2.0 (qc-skill ADR-024): opt-in stinger cut-point checks (rules.video.stinger, the nested video_stinger / video_stinger_cover rules, a
+# `stinger` block). 1.3.0 (qc-skill ADR-025): opt-in loop-seam checks (rules.audio.loop_seam, the nested audio_loop_seam rule, a `loop_seam`
+# block), and a NaN / Infinity anywhere in a request is INVALID_REQUEST (this adapter already refuses non-finite rule values and parameters,
+# and now a non-finite timeout, before any process starts). Every addition is optional; the request the adapter sends and the report it
+# admits are unchanged unless a caller names the new rules. Re-pinned from the v1.3.0 tag's `contract --json` (ADR-107 addendum 7).
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.", "1.1.", "1.2.", "1.3.")
 CANONICAL_INVOCATION = ["qc", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False}
 ALLOWED_EXECUTABLES = {"ffprobe", "ffmpeg"}
@@ -112,7 +118,7 @@ def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.3.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -492,7 +498,7 @@ class QcAdapter(ToolAdapter):
         if params:
             req["parameters"] = params
         if timeout is not None:
-            req["timeout"] = float(timeout)
+            req["timeout"] = self._timeout(timeout)
         hit = scan_forbidden(req, self.forbidden, "request")
         if hit:
             raise ToolError(f"qc: refusing to send a request carrying {hit}")
@@ -541,13 +547,20 @@ class QcAdapter(ToolAdapter):
         if params:
             req["parameters"] = params
         if timeout is not None:
-            req["timeout"] = float(timeout)
+            req["timeout"] = self._timeout(timeout)
         # every member's `path` is the one the adapter itself resolved under the path policy (the args carried artifact ids, scanned above)
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("path", "paths")), "request")
         if hit:
             raise ToolError(f"qc: refusing to send a request carrying {hit}")
         return {"request": req, "input": None, "members": {m["artifact_id"]: m["path"] for m in members}, "companions": {}, "operation": operation, "kind": kind, "tool": tool,
                 "workspace": self.workspace or str(Path(members[0]["path"]).parent), "cache": bool(self.workspace), "input_dirs": sorted({str(Path(m["path"]).parent) for m in members})}
+
+    @staticmethod
+    def _timeout(timeout: Any) -> float:
+        """The request's `timeout`: a positive finite number of seconds (qc-skill 1.3.0 refuses a NaN / Infinity anywhere in a request)."""
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ToolError(f"qc: timeout must be a positive finite number of seconds, got {timeout!r}")
+        return float(timeout)
 
     @staticmethod
     def _under(path: str, root: str) -> bool:

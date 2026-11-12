@@ -2956,7 +2956,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         from video_agent.tools.transcription import PACKAGE, ContractError, TranscriptionAdapter, check_contract, pinned_contract
         ad = self._adapter()
         self.assertEqual(check_contract(ad.contract), [])
-        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.9.0", "transcription-skill"))
+        self.assertEqual((ad.name, ad.version, ad.contract["id"]), ("transcription", "0.10.0", "transcription-skill"))
         self.assertEqual(ad.contract["schemas"], {"transcript": "transcription-skill/transcript/0.1", "speech_event": "transcription-skill/speech-event/0.1", "engine_spec": "transcription-skill/engine-spec/0.1"})
         pkg = ad.package()
         self.assertEqual(pkg.validate(), [])
@@ -3032,7 +3032,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         obs = {o.kind: o for o in res.observations}
         self.assertEqual(sorted(obs), ["loudness", "media_probe", "silence", "transcript"])
         t = obs["transcript"]
-        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.9.0", "transcription/transcribe", "transcription/transcribe@0.9.0"))
+        self.assertEqual((t.provenance, t.skill, t.skill_version, t.tool, t.source), ("OBSERVED", "transcription", "0.10.0", "transcription/transcribe", "transcription/transcribe@0.10.0"))
         self.assertTrue(t.external_id.startswith("tr_") and t.external_id == t.data["id"] and t.external_id != t.id)
         self.assertEqual(t.fingerprint, sha256_file(self.src), "shared asset identity: the Skill's fingerprint is the agent's asset hash")
         self.assertEqual(t.fingerprint, res.assets[0].hash)
@@ -3128,7 +3128,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         o = MediaAnalyzer._lift_transcript(ok, asset, AnalysisRequest(inputs=[self.src], kinds=["transcript"]), "transcription/transcribe@0.8.0", "k", "transcription/transcribe")
         self.assertNotEqual(o.fingerprint, asset.hash)
         tr = json.loads(json.dumps(ok["transcript"])); tr["provenance"]["tool"] = "transcription/export"
-        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.9.0", ad.engines, ad.contract["schemas"])))
+        self.assertTrue(any("provenance.tool" in e for e in check_transcript(tr, {"asset_id": "asset_1"}, "0.10.0", ad.engines, ad.contract["schemas"])))
 
     # 5. cache policy `only`: the Skill has no cache-only mode, so a dry run decides; nothing is recognised on a miss
     def test_cached_only_policy(self):
@@ -3183,7 +3183,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual(svc.registry.get("speech_transcription").required_capabilities, ["ffmpeg", "ffprobe", "transcription"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["transcription"]["implemented"] and rows["transcription"]["available"])
-        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.9.0", ["speech_transcription"]))
+        self.assertEqual((rows["transcription"]["version"], rows["transcription"]["used_by"]), ("0.10.0", ["speech_transcription"]))
         sk = {r["skill"]: r for r in svc.skills()}
         self.assertEqual((sk["speech_transcription"]["status"], sk["speech_transcription"]["approval"], sk["speech_transcription"]["risk"]), ("AVAILABLE", "AUTO", "LOW"))
         self.assertEqual(sk["subtitle_generation"]["status"], "UNAVAILABLE", "subtitles need subtitle-skill (ADR-031); recognition alone never subtitles")
@@ -3196,7 +3196,7 @@ class TranscriptionAdapterTests(unittest.TestCase):
         root = self._checkout()
         cap = CapabilityResolver(ffmpeg_skill_dir="/nonexistent", env={"PATH": os.environ.get("PATH", "")}, transcription_dir=root).resolve()["transcription"]
         self.assertEqual(cap.status, "AVAILABLE", cap.detail)
-        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.9.0", "faster_whisper", "local", True))
+        self.assertEqual((cap.evidence["version"], cap.evidence["engines"][0]["id"], cap.evidence["engines"][0]["execution_mode"], cap.evidence["doctor_ok"]), ("0.10.0", "faster_whisper", "local", True))
         self.assertEqual({m["model"]: m["availability"] for m in cap.evidence["engines"][0]["models"]}["base"], "MODEL_AVAILABLE")
         self.assertNotRegex(json.dumps(cap.to_dict()), r"(?i)(api[_-]?key|token|secret|password)")
         os.environ["FAKE_TS_MODE"] = "model_unavailable"
@@ -3216,6 +3216,42 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertTrue(ts.offline)
         r = ts.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "small"})
         self.assertEqual((r.data["error"]["code"], r.data["error"]["details"]["availability"], r.data["error"]["details"]["offline"]), ("MODEL_UNAVAILABLE", "MODEL_MISSING", True))
+
+    def test_model_language_limit_is_a_guided_block(self):
+        """transcription-skill 0.10.0 (ADR-107 addendum 7): a model limited to some languages refuses another language (language_unsupported) or a
+        request without one (language_detection_unsupported) with details.model / supported. The refusal keeps the Skill's code, message and
+        details, gains the LANGUAGE_UNSUPPORTED recovery class (BLOCK, never retried) and a hint naming the model and its languages; the agent
+        picks neither a language nor a model. Other INVALID_INPUT refusals are unchanged; the analysis row and the verify row carry the hint."""
+        from video_agent.execution.recovery import classify_error, next_attempt
+        from video_agent.media import AnalysisRequest, MediaAnalyzer
+        from video_agent.tools.transcription.adapter import LANGUAGE_RECOVERY_CLASS, language_hint
+        ad = self._adapter()
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "distil-large-v3.5", "language": "ja"})
+        err = r.data["error"]
+        self.assertEqual((r.ok, err["code"], err["details"]["reason"], err["details"]["model"], err["details"]["supported"]), (False, "INVALID_INPUT", "language_unsupported", "distil-large-v3.5", ["en"]))
+        self.assertEqual((err["recovery_class"], err["retryable"]), (LANGUAGE_RECOVERY_CLASS, False))
+        self.assertIn("model distil-large-v3.5 of engine faster_whisper recognises only en", err["hint"]); self.assertIn("does not recognize language 'ja'", err["message"])
+        self.assertEqual(classify_error(r), "LANGUAGE_UNSUPPORTED")
+        self.assertEqual(next_attempt(r, 1, 3, 60.0)["action"], "BLOCK")
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "distil-large-v3.5"})
+        self.assertEqual((r.data["error"]["details"]["reason"], r.data["error"]["recovery_class"]), ("language_detection_unsupported", LANGUAGE_RECOVERY_CLASS))
+        self.assertIn("does not detect the language", r.data["error"]["hint"])
+        self.assertTrue(ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "distil-large-v3.5", "language": "en"}).ok)
+        # not a language limit: unchanged (no class, no hint)
+        outside = Path(self.tmp) / "elsewhere"; outside.mkdir(); (outside / "x.wav").write_bytes(b"x")
+        r = self._adapter(allowed_inputs=[str(Path(self.tmp) / "src")]).measure("transcription/transcribe", {"input": str(outside / "x.wav"), "asset_id": "a"})
+        self.assertEqual(r.data["error"]["code"], "INVALID_INPUT"); self.assertNotIn("recovery_class", r.data["error"]); self.assertNotIn("hint", r.data["error"])
+        for e in ({"code": "INVALID_INPUT", "details": {"reason": "language_unsupported"}}, {"code": "TRANSCRIPTION_FAILED", "details": {"reason": "language_unsupported", "model": "m"}},
+                  {"code": "INVALID_INPUT", "details": {"reason": "word_timestamps_unsupported", "model": "m"}}, {"code": "INVALID_INPUT", "details": "x"}):
+            self.assertIsNone(language_hint(e), e)
+        many = language_hint({"code": "INVALID_INPUT", "details": {"reason": "language_unsupported", "model": "m", "engine": "speechcpp", "supported": [f"l{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(40)]}})
+        self.assertIn("and 10 more", many); self.assertIn("model m of engine speechcpp", many)
+        # through the analyzer: the row stays ANALYSIS_UNSUPPORTED with the Skill's code and details, and carries the class and the hint
+        svc = self._service()
+        res = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=None).run(AnalysisRequest(inputs=[self.src], kinds=["transcript"], params={"model": "distil-large-v3.5", "language": "ja"}))
+        row = next(x for x in res.analyses[0]["rows"] if x["kind"] == "transcript")
+        self.assertEqual((row["status"], row["error"]["kind"], row["error"]["skill_error"], row["error"]["recovery_class"]), ("FAILED", "ANALYSIS_UNSUPPORTED", "INVALID_INPUT", LANGUAGE_RECOVERY_CLASS))
+        self.assertEqual(row["error"]["skill_details"]["supported"], ["en"]); self.assertIn("recognises only en", row["error"]["hint"])
 
     # 8. Observation → SpeechEvent only: no inference, decision, plan step or command derives from a transcript; explain stops at facts
     def test_speech_events_never_become_commands_and_explain_chain(self):

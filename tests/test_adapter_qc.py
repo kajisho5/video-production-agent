@@ -78,13 +78,14 @@ class QcAdapterTests(unittest.TestCase):
     # ---- contract
     def test_contract_discovery_package_and_refusals(self):
         ad = self._adapter()
-        self.assertEqual(ad.version, "1.1.0"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
+        self.assertEqual(ad.version, "1.3.0"); self.assertEqual(ad.tools, {TOOL_CHECK, TOOL_INSPECT}); self.assertEqual(ad.drift(), [])
         self.assertEqual(ad.kinds, ["video", "audio", "subtitle", "delivery", "delivery_package"]); self.assertEqual(ad.statuses, ["PASS", "WARN", "FAIL", "UNKNOWN"]); self.assertEqual(len(ad.parameters), 14)
-        self.assertEqual(sorted(ad.rules), ["audio", "delivery", "delivery_package", "delivery_package_artifact", "delivery_package_cross_artifact", "delivery_package_dependency",
-                                            "delivery_package_duration_consistency", "subtitle", "subtitle_covered_interval", "text_region", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video"]); self.assertTrue(ad.owns_cache)
+        self.assertEqual(sorted(ad.rules), ["audio", "audio_loop_seam", "delivery", "delivery_package", "delivery_package_artifact", "delivery_package_cross_artifact", "delivery_package_dependency",
+                                            "delivery_package_duration_consistency", "subtitle", "subtitle_covered_interval", "text_region", "timeline_integrity", "timeline_segment", "timeline_source_cue", "video",
+                                            "video_stinger", "video_stinger_cover"]); self.assertTrue(ad.owns_cache)
         self.assertIn("qc/check", ad.describe()["tools"]); self.assertEqual(ad.describe()["drift"], [])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "1.1.0", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools], pk.repository), ("qc", "1.3.0", ["ffprobe", "qc"], [TOOL_CHECK, TOOL_INSPECT], "kajisho5/qc-skill"))
         self.assertEqual(pk.validate(), []); self.assertTrue(all(not t.produces_output and t.kind == "measure" for t in pk.tools)); self.assertIn("verdict", pk.tools[0].result_keys)
         self.assertEqual(PACKAGE.tool_ids(), [TOOL_CHECK, TOOL_INSPECT]); self.assertIn("never a production decision", PACKAGE.role)
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
@@ -120,7 +121,7 @@ class QcAdapterTests(unittest.TestCase):
         r = ad.run(self._op(), paths, timeout=120)
         self.assertTrue(r.ok, r.stderr_tail); self.assertEqual(r.exit_code, 0); self.assertIsNone(r.output); self.assertEqual(r.commands, []); self.assertEqual(r.tool, TOOL_CHECK)
         d = r.data
-        self.assertEqual(d["skill"], {"id": "qc", "version": "1.1.0"}); self.assertEqual((d["status"], d["operation_type"], d["kind"], d["verdict"]), ("completed", "check", "video", "PASS"))
+        self.assertEqual(d["skill"], {"id": "qc", "version": "1.3.0"}); self.assertEqual((d["status"], d["operation_type"], d["kind"], d["verdict"]), ("completed", "check", "video", "PASS"))
         self.assertTrue(d["report_id"].startswith("qcreport_")); self.assertTrue(d["admitted"]); self.assertEqual(d["fingerprint"], sha(self.src))
         self.assertEqual(sorted(d), sorted(["skill", "status", "operation_type", "kind", "verdict", "report_id", "checks", "findings", "measurements", "fingerprint", "companions", "provenance", "cache", "reused", "admitted", "commands", "warnings"]))
         self.assertTrue(d["checks"] and all(set(c) == {"check_id", "category", "status", "finding_codes", "measurement_ids"} for c in d["checks"]))
@@ -138,8 +139,8 @@ class QcAdapterTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.ws, ".qc-cache")), "the Skill's cache lives under the workspace")
         # lifting: the admitted report becomes an agent Observation (provenance only)
         obs = lift_report(r, "clip")
-        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.tool, obs.fingerprint, obs.asset_id), ("qc.report", "OBSERVED", "qc", "1.1.0", TOOL_CHECK, sha(self.src), "clip"))
-        self.assertEqual(obs.source, "qc/check@1.1.0"); self.assertEqual(obs.data["verdict"], "PASS"); self.assertEqual(obs.external_id, d["report_id"]); self.assertEqual(obs.parameters["kind"], "video")
+        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.tool, obs.fingerprint, obs.asset_id), ("qc.report", "OBSERVED", "qc", "1.3.0", TOOL_CHECK, sha(self.src), "clip"))
+        self.assertEqual(obs.source, "qc/check@1.3.0"); self.assertEqual(obs.data["verdict"], "PASS"); self.assertEqual(obs.external_id, d["report_id"]); self.assertEqual(obs.parameters["kind"], "video")
         # a FAIL or WARN verdict is a successful measurement (the gate decides, never the adapter)
         for mode, verdict, code in (("verdict_fail", "FAIL", "VIDEO_STREAM_MISSING"), ("verdict_warn", "WARN", "AUDIO_LEADING_SILENCE_EXCEEDED")):
             os.environ["FAKE_QC_MODE"] = mode
@@ -154,7 +155,7 @@ class QcAdapterTests(unittest.TestCase):
         ri = ad.run(self._op(TOOL_INSPECT, kind="audio", rules=None), paths)
         self.assertTrue(ri.ok, ri.data.get("error")); self.assertEqual((ri.data["operation_type"], ri.data["checks"], ri.data["verdict"]), ("inspect", [], "PASS"))
         self.assertTrue(all(m["id"].split(".")[0] in ("audio", "container") for m in ri.data["measurements"]), "kind audio measures audio only")
-        self.assertEqual(lift_report(ri).source, "qc/inspect@1.1.0")
+        self.assertEqual(lift_report(ri).source, "qc/inspect@1.3.0")
         # companions: subtitle kind with reference_video, delivery kind with a subtitle; their fingerprints are recomputed and reported
         rs = ad.run(self._op(input="sub", kind="subtitle", reference_video="clip", rules={"subtitle": {"max_line_length": 42, "min_coverage_ratio": 0.5}}), paths)
         self.assertTrue(rs.ok, rs.data.get("error")); self.assertEqual(rs.data["companions"], {"subtitle": None, "reference_video": sha(self.src)}); self.assertEqual(rs.data["fingerprint"], sha(self.srt))
@@ -308,7 +309,7 @@ class QcAdapterTests(unittest.TestCase):
         """The pin is qc-skill main after #23 (released 0.2.3): the reference-metric checks, rules, measurements, optional filters and the
         widened reference_video input are part of it, so a live 0.2.3 contract shows no drift."""
         c = pinned_contract()
-        self.assertEqual(c["version"], "1.1.0")
+        self.assertEqual(c["version"], "1.3.0")
         for cid in ("video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"):
             self.assertIn(cid, c["checks"])
         self.assertEqual({k: c["rules"]["video"][k]["type"] for k in ("reference_metrics", "min_vmaf", "min_ssim", "min_psnr_db")},
@@ -325,6 +326,34 @@ class QcAdapterTests(unittest.TestCase):
         for k in ("reference_metrics", "min_vmaf", "min_ssim", "min_psnr_db"):
             old["rules"]["video"].pop(k)
         self.assertTrue({d.split(":")[0] for d in contract_breaking_drift(c, old)} >= {"checks", "rules"})
+
+    def test_pin_1_3_0_stinger_and_loop_seam_rules(self):
+        """ADR-107 addendum 7: qc-skill 1.2.0 / 1.3.0's opt-in stinger cut-point and loop-seam rules are in the pin as nested typed rules; the
+        adapter types them like any other rule and sends them only when a caller names them; the 1.1.0 contract (without them) is fatal drift."""
+        c = pinned_contract()
+        self.assertEqual((c["rules"]["video"]["stinger"]["nested_rule"], c["rules"]["audio"]["loop_seam"]["nested_rule"]), ("video_stinger", "audio_loop_seam"))
+        self.assertEqual(sorted(c["rules"]["video_stinger"]), ["cover", "cut_at", "cut_point", "file", "max_cut_frame_difference"])
+        self.assertEqual(sorted(c["rules"]["audio_loop_seam"]), ["include_wrap", "max_band_diff_db", "max_click_ratio", "max_level_diff_db", "seams", "window_sec"])
+        self.assertTrue({"VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER", "VIDEO_STINGER_NOT_OPAQUE", "VIDEO_STINGER_CUT_FRAME_MISMATCH", "AUDIO_LOOP_SEAM_CLICK",
+                         "AUDIO_LOOP_SEAM_LEVEL_MISMATCH", "AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH"} <= {f["code"] for f in c["findings"]})
+        ad = self._adapter()
+        self.assertEqual(ad.rules_for({"video": {"stinger": {"cut_point": 1, "cover": {"start": 0.5, "end": 1.5}}}, "audio": {"loop_seam": {"seams": [8, 16], "max_click_ratio": 3}}}),
+                         {"video": {"stinger": {"cut_point": 1.0, "cover": {"start": 0.5, "end": 1.5}}}, "audio": {"loop_seam": {"seams": [8.0, 16.0], "max_click_ratio": 3.0}}})
+        for bad in ({"video": {"stinger": {"cut_point": float("nan")}}}, {"audio": {"loop_seam": {"seams": [float("inf")]}}}, {"video": {"stinger": {"cover": {"start": 0, "middle": 1}}}},
+                    {"audio": {"loop_seam": {"include_wrap": "yes"}}}):
+            with self.assertRaises(ToolError, msg=bad):
+                ad.rules_for(bad)
+        req = ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video"}, self._paths())["request"]
+        self.assertNotIn("rules", req, "nothing new is sent unless a caller names the rules")
+        for t in (float("nan"), float("inf"), 0, -1, True):
+            with self.assertRaises(ToolError, msg=t):   # 1.3.0 refuses a NaN / Infinity anywhere in a request: the adapter refuses it first
+                ad.build_request(TOOL_CHECK, {"input": "clip", "kind": "video"}, self._paths(), timeout=t)
+        old = json.loads(json.dumps(c)); old["version"] = "1.1.0"
+        for k in ("video_stinger", "video_stinger_cover", "audio_loop_seam"):
+            old["rules"].pop(k)
+        old["rules"]["video"].pop("stinger"); old["rules"]["audio"].pop("loop_seam")
+        from video_agent.tools.qc.adapter import contract_breaking_drift
+        self.assertIn("rules", {d.split(":")[0] for d in contract_breaking_drift(old)})
 
     # ---- security
     def test_list_and_map_rule_types(self):

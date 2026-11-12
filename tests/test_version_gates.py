@@ -40,21 +40,22 @@ class VersionGateTests(unittest.TestCase):
 
     def test_transcription_release_versions(self):
         # 0.8.0 (ADR-078): optional engine whisperx appended, nothing the adapter sends changed; 0.9.0 (ADR-107 addendum 2): word index,
-        # optional dictionary words (pos / timing) and the opt-in word_segmentation input, all additions
-        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.3"):
+        # optional dictionary words (pos / timing) and the opt-in word_segmentation input, all additions; 0.10.0 (ADR-107 addendum 7): new
+        # optional models and per-model language limits (a refusal reason), additive
+        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4"):
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
-        self.assertEqual(tr.pinned_contract()["version"], "0.9.0")
-        for v in ("0.3.0", "0.10.0", "1.0.0"):
+        self.assertEqual(tr.pinned_contract()["version"], "0.10.0")
+        for v in ("0.1.0", "0.3.0", "0.11.0", "0.100.0", "1.0.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
         """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
-        self.assertEqual(qc.pinned_contract()["version"], "1.1.0")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only; ADR-107 addendum 2: 1.1.0 adds opt-in subtitle checks
-        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.1", "1.0.3", "1.1.0", "1.1.1"):
+        self.assertEqual(qc.pinned_contract()["version"], "1.3.0")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only; ADR-107 addendum 2: 1.1.0 adds opt-in subtitle checks; addendum 7: 1.2.0 / 1.3.0 add opt-in stinger and loop-seam checks
+        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.1", "1.0.3", "1.1.0", "1.1.1", "1.2.0", "1.2.4", "1.3.0", "1.3.1"):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
             self.assertEqual(qc.contract_breaking_drift(live), [], v)
-        for v in ("0.3.0", "1.2.0", "2.0.0"):
+        for v in ("0.3.0", "0.10.0", "1.4.0", "1.10.0", "2.0.0"):
             self.assertTrue(qc.check_contract(with_version(qc.pinned_contract(), v)), v)
 
     def test_subtitle_release_versions(self):

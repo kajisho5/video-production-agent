@@ -312,7 +312,9 @@ class MediaAnalyzer(Analyzer):
                       "TRANSCRIPTION_FAILED": "ANALYZER_UNAVAILABLE", "UNSUPPORTED_MEDIA": "ANALYSIS_UNSUPPORTED", "FILE_NOT_FOUND": "ANALYSIS_UNSUPPORTED"}.get(ekind or "", None)
             row.update({"status": "FAILED", "error": {"kind": mapped or ("ANALYZER_TIMEOUT" if r.exit_code == 124 or "timeout" in (r.stderr_tail or "").lower() else "ANALYZER_UNAVAILABLE"),
                                                        "message": ((ext or {}).get("message") or r.stderr_tail or "")[:200], "skill_error": ekind,
-                                                       **({"skill_details": ext.get("details")} if isinstance((ext or {}).get("details"), dict) and ext.get("details") else {})}})
+                                                       **({"skill_details": ext.get("details")} if isinstance((ext or {}).get("details"), dict) and ext.get("details") else {}),
+                                                       # a guided refusal (e.g. ADR-107 addendum 7: a transcription model's language limit) keeps the adapter's hint
+                                                       **({"recovery_class": ext["recovery_class"], "hint": str(ext.get("hint") or "")[:600]} if (ext or {}).get("hint") and ext.get("recovery_class") else {})}})
             return None, row
         ext_obs = (r.data or {}).get("observation") if isinstance(r.data, dict) else None
         if kind == "transcript" and isinstance(r.data, dict) and isinstance(r.data.get("transcript"), dict):
