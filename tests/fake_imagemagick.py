@@ -1,6 +1,6 @@
 """Fake imagemagick-skill for the ADR-077 tests: `make_checkout(dir)` writes a checkout whose `scripts/_contract.py`, `resize.py`, `pad.py`
 and `strip.py` hand over to this file, so the agent launches it exactly as the real one (`python <dir>/scripts/<tool>.py ...`). It speaks
-the slice of imagemagick-skill 0.8.1 the agent uses: `_contract.py contract --json` (the pinned src/video_agent/tools/imagemagick/contract_0.8.1.json),
+the slice of imagemagick-skill 0.9.0 the agent uses: `_contract.py contract --json` (the pinned src/video_agent/tools/imagemagick/contract_0.9.0.json),
 `_contract.py doctor --json` (`tools.<name>.usable`), and resize / pad / strip with `--flag=value` options and the input after `--`, in the
 result shapes of its contract (`{"ok": true, ...}`, `{"ok": false, "reason"}` exit 1, the timeout shape exit 124). A fake image is the PNG
 signature followed by a JSON `{"w", "h"}` (a file without it counts as 400x300). Nothing runs ImageMagick.
@@ -8,8 +8,8 @@ Controlled via:
 
   FAKE_IM_MODE: ok | fail | timeout | wrong_size | wrong_output | bad_json | touch_input | gps | exit_nonzero
   FAKE_IM_BACKEND: magick (every tool usable, default) | sips (resize / pad only) | none
-  FAKE_IM_CONTRACT: pinned | drift_version (0.8.9: non-fatal) | drift_description (a description: non-fatal) | drift_flag (resize --width
-    renamed: fatal) | drift_enum (resize mode loses exact: fatal) | drift_required (pad requires --aspect: fatal) | incompatible (0.9.0)
+  FAKE_IM_CONTRACT: pinned | drift_version (0.9.9: non-fatal) | drift_description (a description: non-fatal) | drift_flag (resize --width
+    renamed: fatal) | drift_enum (resize mode loses exact: fatal) | drift_required (pad requires --aspect: fatal) | incompatible (0.10.0)
   FAKE_IM_CALLS: a file every invocation's argv is appended to (one JSON list per line, the script name first). Test double only."""
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "imagemagick" / "contract_0.8.1.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "imagemagick" / "contract_0.9.0.json"
 SIG = b"\x89PNG\r\n\x1a\n"
 STUB = "import runpy, sys\nsys.argv.insert(1, {name!r})\nrunpy.run_path({fake!r}, run_name='__main__')\n"
 
@@ -54,7 +54,7 @@ def _contract() -> dict:
     mode = os.environ.get("FAKE_IM_CONTRACT", "pinned")
     tools = {t["name"]: t for t in c["tools"]}
     if mode == "drift_version":
-        c["version"] = c["skill"]["version"] = "0.8.9"
+        c["version"] = c["skill"]["version"] = "0.9.9"
     elif mode == "drift_description":
         tools["resize"]["description"] = "Resize an image (reworded)."
     elif mode == "drift_flag":
@@ -64,7 +64,7 @@ def _contract() -> dict:
     elif mode == "drift_required":
         tools["pad"]["input_schema"]["required"] = list(tools["pad"]["input_schema"]["required"]) + ["aspect"]
     elif mode == "incompatible":
-        c["version"] = c["skill"]["version"] = "0.9.0"
+        c["version"] = c["skill"]["version"] = "0.10.0"
     return c
 
 

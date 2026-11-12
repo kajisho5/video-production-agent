@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.11.0",
+ "version": "0.11.3",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -24,7 +24,9 @@
   "custom_vocabulary",
   "speaker_merge",
   "word_index",
-  "dictionary_word_segmentation"
+  "dictionary_word_segmentation",
+  "follow_growing_files",
+  "chunked_long_recordings"
  ],
  "engine_contract": {
   "schema": "transcription-skill/engine-spec/0.1",
@@ -158,7 +160,10 @@
     "vad_filter": "bool",
     "vocabulary": "{written form: list[reading]} | null",
     "word_segmentation": "engine | dictionary (dictionary: language ja and word_timestamps true; needs the optional [ja] extra)",
-    "speaker_turns": "diarization-skill/turns@1 document | path | null (merged after recognition, never cached)"
+    "speaker_turns": "diarization-skill/turns@1 document | path | null (merged after recognition, never cached)",
+    "chunk_seconds": "30..3600 | null (chunked long recording, cut at pauses; needs language)",
+    "parallel": "1..8 (chunks recognized at a time; chunk_seconds only)",
+    "speech_regions": "media-analysis-skill speech_regions response | result | observation | path | null (chunk_seconds only)"
    },
    "output": {
     "transcript": "Transcript",
@@ -168,7 +173,8 @@
    },
    "deterministic": true,
    "side_effects": [
-    "writes cache under workspace"
+    "writes cache under workspace",
+    "writes per-chunk cache under workspace (chunk_seconds)"
    ]
   },
   {

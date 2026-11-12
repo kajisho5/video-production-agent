@@ -19,7 +19,7 @@ from fake_adapter import FakeAdapter  # noqa: E402
 from test_unit import FakeCaps, fake_media  # noqa: E402
 
 from video_agent.service import Service  # noqa: E402
-from video_agent.skills.handoff_contracts import PINS, check_pin_against, load_pin  # noqa: E402
+from video_agent.skills.handoff_contracts import PINS, HandoffParameterError, check_pin_against, load_pin, parse_param  # noqa: E402
 from video_agent.skills.registry import default_registry  # noqa: E402
 
 
@@ -49,14 +49,36 @@ class PinnedSkillSpecTests(unittest.TestCase):
 
     def test_pinned_vocabulary_is_read_from_the_pin(self):
         self.assertEqual(PINS["render_3d"].param("preset").choices(load_pin(PINS["render_3d"].pin_file)), ("thumbnail", "square", "720p", "1080p", "4k", "vertical"))
-        self.assertEqual(PINS["html_scene_render"].param("codec").choices(load_pin(PINS["html_scene_render"].pin_file)), ("h264", "vp9", "prores"))
+        self.assertEqual(PINS["html_scene_render"].param("codec").choices(load_pin(PINS["html_scene_render"].pin_file)), ("h264", "vp9", "prores", "png"))
 
-    def test_hyperframes_pin_is_0_6_2_with_the_argv_recorder(self):
-        """hyperframes-skill 0.6.2 renamed execution.argv_shims to execution.argv_recorder (its D10): the pin is that contract."""
-        ex = load_pin(PINS["html_scene_render"].pin_file)["execution"]
+    def test_hyperframes_pin_is_0_8_0_with_the_argv_recorder(self):
+        """hyperframes-skill 0.6.2 renamed execution.argv_shims to execution.argv_recorder (its D10); 0.7.0 / 0.8.0 (ADR-107 addendum 12)
+        add render --segments, --codec png and probe --alpha. The pin is the 0.8.0 contract."""
+        c = load_pin(PINS["html_scene_render"].pin_file)
+        self.assertEqual((c["version"], PINS["html_scene_render"].version), ("0.8.0", "0.8.0"))
+        ex = c["execution"]
         self.assertIn("argv_recorder", ex)
         self.assertNotIn("argv_shims", ex)
         self.assertIs(ex["shell"], False)
+        render = next(t for t in c["tools"] if t["id"] == "hyperframes-skill/render")
+        probe = next(t for t in c["tools"] if t["id"] == "hyperframes-skill/probe")
+        self.assertIn("segments", render["input_schema"]["properties"])
+        self.assertIn("alpha", probe["input_schema"]["properties"])
+
+    def test_png_is_pinned_but_not_handed_off(self):
+        """The 0.8.0 PNG sequence is in the pin (the live check compares every codec) but is withheld from job.html_scene_render.codec."""
+        p = PINS["html_scene_render"]
+        with self.assertRaisesRegex(HandoffParameterError, "codec=png is in the hyperframes-skill 0.8.0 contract but is not handed off"):
+            parse_param(p, "codec", "png")
+        with self.assertRaisesRegex(HandoffParameterError, "must be one of h264, vp9, prores \\("):
+            parse_param(p, "codec", "av1")
+        self.assertEqual(parse_param(p, "codec", "vp9"), "vp9")
+        live = json.loads(json.dumps(load_pin(p.pin_file)))
+        self.assertEqual(check_pin_against(live, p), [])
+        for t in live["tools"]:
+            if t.get("id") == p.tool:
+                t["input_schema"]["properties"]["codec"]["enum"] = ["h264", "vp9", "prores"]
+        self.assertTrue(any(e.startswith("codec: pinned") for e in check_pin_against(live, p)))
 
     def test_a_stale_pin_is_named(self):
         p = PINS["html_scene_render"]
@@ -143,7 +165,7 @@ class HtmlSceneHandoffTests(unittest.TestCase):
         ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.html_scene_render": True, "job.html_scene_render.scene": str(scene),
                                                                         "job.html_scene_render.codec": "prores"})
         k = _handoff(svc, ir, "html_scene_render")["contract"]
-        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.6.2", "hyperframes-skill/render"))
+        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.8.0", "hyperframes-skill/render"))
         self.assertEqual(k["args"], {"scene_dir": str(scene.resolve()), "codec": "prores"})
         self.assertEqual(k["missing"], [])
         self.assertIn("ffmpeg-skill/overlay", k["next"])

@@ -49,6 +49,7 @@ class HandoffParam:
     marker: Optional[str] = None                # dir: a file that must be inside it
     required: bool = False                      # the tool cannot run without it (the handoff lists it as missing when not given)
     doc: str = ""
+    withheld: Tuple[str, ...] = ()              # enum values the pinned contract declares but this agent does not hand off yet (refused, never guessed)
 
 
 @dataclass(frozen=True)
@@ -111,12 +112,13 @@ PINS: Dict[str, HandoffPin] = {p.skill: p for p in (
         next_step=_render_3d_next,
         note="needs Blender 4.2+ on the machine (the contract's external_tools.required); `python3 scripts/_contract.py doctor --json` says whether it is found"),
     HandoffPin(
-        skill="html_scene_render", package="hyperframes-skill", version="0.6.2", pin_file="hyperframes-skill_0.6.2.json",
-        source="kajisho5/hyperframes-skill main 9d16f7f (= v0.6.2; `node bin/hyperframes-skill.mjs contract --json`)",
+        skill="html_scene_render", package="hyperframes-skill", version="0.8.0", pin_file="hyperframes-skill_0.8.0.json",
+        source="kajisho5/hyperframes-skill main 3528095 (= v0.8.0; `node bin/hyperframes-skill.mjs contract --json`)",
         tool="hyperframes-skill/render",
         params=(
             HandoffParam("scene", "scene_dir", "dir", marker="index.html", required=True, doc="the scene directory with index.html"),
-            HandoffParam("codec", "codec", "enum", choices=_hyperframes_codecs, doc="h264 (.mp4), vp9 (.webm) or prores (.mov, ProRes 4444 with alpha)"),
+            HandoffParam("codec", "codec", "enum", choices=_hyperframes_codecs, doc="h264 (.mp4), vp9 (.webm) or prores (.mov, ProRes 4444 with alpha)",
+                         withheld=("png",)),   # 0.8.0's PNG sequence (ADR-107 addendum 12): pinned, not handed off yet
         ),
         next_step=_html_scene_next,
         note="needs Node.js 22+, HyperFrames and a headless Chromium (the contract's render capabilities); the render records the argv of every "
@@ -145,7 +147,10 @@ def parse_param(p: HandoffPin, name: str, value: Any) -> Any:
     if not isinstance(value, str) or not value.strip():
         raise HandoffParameterError(f"{key} must be a non-empty string, got {value!r}")
     if hp.kind == "enum":
-        choices = hp.choices(p.contract())
+        choices = tuple(c for c in hp.choices(p.contract()) if c not in hp.withheld)
+        if value in hp.withheld:
+            raise HandoffParameterError(f"{key}={value} is in the {p.package} {p.version} contract but is not handed off by this agent yet; "
+                                        f"use one of {', '.join(choices)}")
         if value not in choices:
             raise HandoffParameterError(f"{key} must be one of {', '.join(choices)} ({p.package} {p.version} contract), got {value!r}")
         return value

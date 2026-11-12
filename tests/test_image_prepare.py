@@ -1,6 +1,6 @@
 """ADR-077 (imagemagick-skill's roadmap step 4, agent side): an `edit.overlay` image prepared by imagemagick-skill -- GPS / EXIF stripped,
 resized to the user's box, padded to that canvas -- before video-editing composites it. Against a fake imagemagick-skill checkout
-(tests/fake_imagemagick.py, launched exactly as the real scripts are) that speaks the pinned 0.8.1 contract, its doctor and its result
+(tests/fake_imagemagick.py, launched exactly as the real scripts are) that speaks the pinned 0.9.0 contract, its doctor and its result
 shapes, with the fake media engine and the fake video-editing process. No ImageMagick, ffmpeg or network."""
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ class ContractTests(_Base):
         text = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         c = json.loads(text)
         self.assertEqual(text, json.dumps(c, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n", "one line, keys sorted (the ingest / voice-enhance pin format)")
-        self.assertEqual((c["skill"]["id"], c["skill"]["version"], c["contract_version"]), ("imagemagick-skill", "0.8.1", "1.0"))
+        self.assertEqual((c["skill"]["id"], c["skill"]["version"], c["contract_version"]), ("imagemagick-skill", "0.9.0", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(drift(c), [])
         self.assertEqual(breaking_drift(c), [])
@@ -104,8 +104,8 @@ class ContractTests(_Base):
         self.assertIn("execution", FATAL_DRIFT_KEYS)
 
     def test_drift_classification(self):
-        """A version inside 0.8.x or a reworded description is reported, not fatal; a renamed flag, a narrowed enum or a newly required
-        parameter the agent does not send is fatal (the tool would be refused by argparse or misread); 0.9.0 is refused outright."""
+        """A version inside 0.8.x / 0.9.x or a reworded description is reported, not fatal; a renamed flag, a narrowed enum or a newly required
+        parameter the agent does not send is fatal (the tool would be refused by argparse or misread); 0.10.0 is refused outright."""
         for mode, fatal in (("drift_version", False), ("drift_description", False), ("drift_flag", True), ("drift_enum", True), ("drift_required", True)):
             os.environ["FAKE_IM_CONTRACT"] = mode
             live = fim._contract()
@@ -225,7 +225,7 @@ class AdapterTests(_Base):
         self.assertEqual(r.data["parameters"], {"width": 320, "height": 320, "mode": "fit"})
         from video_agent.tools.imagemagick import lift_observation
         obs = lift_observation(r, "a")
-        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.fingerprint), ("image.resize", "OBSERVED", "imagemagick-skill", "0.8.1", r.data["output"]["sha256"]))
+        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.fingerprint), ("image.resize", "OBSERVED", "imagemagick-skill", "0.9.0", r.data["output"]["sha256"]))
         dry = self.run_op(TOOL_STRIP, {"input": "img", "output": "out2"}, dry_run=True)
         self.assertTrue(dry.ok and dry.dry_run)
         self.assertEqual(len(self.calls()), 1, "the dry run checks the request and runs nothing")
