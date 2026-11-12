@@ -1080,20 +1080,21 @@
     - unit `tests/test_version_gates.py`: transcription pin 0.11.0 with its five engines in the Skill's order; the gate takes 0.11.x and refuses 0.12 / 0.110 / 1.0.
     - unit `tests/test_unit.py` and evals 31 / 32: the version strings.
     - Locally on the real Skills (detection-skill 0ff0be3, transcription-skill v0.11.0, ffmpeg-skill main): `FaceRedactionRealTests.test_live_contract_and_doctor` and `TranscriptionRealTests` pass, and live == pin.
-- Addendum 9 (2026-11-12, detection-skill 0.2.1): a re-pin with no change to what the agent runs. detection-skill main moved after main's last green integration run, and every integration run then failed `FaceRedactionRealTests.test_live_contract_and_doctor` (seen on #146).
+- Addendum 9 (2026-11-12, detection-skill 0.2.1 and 0.2.2): a re-pin with no change to what the agent runs. detection-skill main moved after main's last green integration run, and every integration run then failed `FaceRedactionRealTests.test_live_contract_and_doctor` (seen on #146).
   - Facts (main d8862bf, #16, version 0.2.1 in pyproject, no tag):
     - It adds a manual heavy-tests workflow for the real models and fixes docs from #15.
     - Against the 0.2.0 pin, the contract differs in `version` and in two `dependencies[].get` lines. These are the PP-OCRv6 and RF-DETR install lines. `$DETECTION_MODELS_DIR` became `${DETECTION_MODELS_DIR:?set DETECTION_MODELS_DIR to the models directory}`, so a shell stops when the variable is unset.
     - Those models belong to the text / objects engines, which this adapter does not run. `faces` / `tracks`, the schemas, `execution` and `errors` are unchanged.
     - The version is inside the gate (`0.2.`), and the adapter's `breaking_drift` on the live contract is empty. The integration check fails only on the content drift in `dependencies` (ADR-108: only the release version may differ).
+    - While this PR waited, main moved again, to 0.2.2 (9e2f732, #17: real-model results and review follow-ups). Against 0.2.1 its contract differs only in `version` and one more `dependencies[].get` install line. Its doctor's `download` / `export` strings and the `MODEL_NOT_FOUND` detail also changed, which are not in the contract. The pin therefore follows 0.2.2.
   - Same window: transcription-skill v0.11.1 (50fa5a6). Its contract differs from the 0.11.0 pin only in `version`, in the pin's availability-free form, and the `0.11.` gate takes it. Integration checks only transcription's version range, so it needs no re-pin.
   - Decision:
-    - `detection/contract_0.2.1.json` is main's `contract --json` as one sorted, compact line. The same method gives the 0.2.0 pin from 0ff0be3 byte for byte.
+    - `detection/contract_0.2.2.json` is main's `contract --json` (9e2f732) as one sorted, compact line. The same method gives the 0.2.0 pin from 0ff0be3 byte for byte.
     - `PINNED_CONTRACT_PATH` and the fake read the new file. The gate and the adapter are unchanged.
   - Verification:
-    - unit `tests/test_face_redaction.py`: pin 0.2.1; the gate takes 0.1.0 / 0.2.0 / 0.2.1 / 0.2.4.
+    - unit `tests/test_face_redaction.py`: pin 0.2.2; the gate takes 0.1.0 / 0.2.0 / 0.2.1 / 0.2.2 / 0.2.4.
     - unit `tests/test_release_version.py` and `tests/test_version_gates.py`.
-    - Locally on detection-skill d8862bf: `FaceRedactionRealTests.test_live_contract_and_doctor` passes, and live == pin.
+    - Locally on detection-skill d8862bf (against the 0.2.1 pin) and 9e2f732 (against the 0.2.2 pin): `FaceRedactionRealTests.test_live_contract_and_doctor` passes, and live == pin.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。
