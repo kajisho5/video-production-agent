@@ -36,13 +36,15 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
                                              # contract, now reporting the release version instead of a stale "0.2.0"
                                              # 0.8.0 (ADR-078): optional engine whisperx appended to engines; the tools / schemas the adapter uses are unchanged
                                              # 0.9.0 (ADR-107 addendum 2): every word carries `index`; dictionary words (opt-in, ja) carry `pos` / `timing`;
                                              # transcribe takes `word_segmentation`; capabilities word_index / dictionary_word_segmentation. All additions
                                              # 0.10.0 (ADR-107 addendum 7): new optional models (speechcpp parakeet-tdt-0.6b-v3, faster_whisper
                                              # distil-large-v3.5, English only) and per-model language limits (LANGUAGE_REASONS below). Additive
+                                             # 0.11.0 (ADR-107 addendum 8): optional engine qwen3_asr added to engines (Qwen3-ASR-1.7B with
+                                             # forced-aligned word timestamps); the tools / schemas the adapter uses are unchanged
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
@@ -163,11 +165,11 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.10.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.11.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
-    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.10.0, engine availability
+    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.11.0, engine availability
     stripped: each engine entry is kept as the earlier pins wrote it). Used for the package identity when the Skill is not installed; a live installation always replaces it."""
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 

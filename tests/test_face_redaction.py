@@ -102,7 +102,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("detection", "0.1.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("detection", "0.2.0", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(drift(c), [])
         self.assertEqual(breaking_drift(c), [])
@@ -111,8 +111,18 @@ class ContractTests(_Base):
 
     def test_refused_contracts(self):
         c = pinned_contract()
-        bad = json.loads(json.dumps(c)); bad["version"] = "0.2.0"
-        self.assertTrue(any("supported range" in e for e in check_contract(bad)))
+        for v in ("0.3.0", "1.0.0"):
+            bad = json.loads(json.dumps(c)); bad["version"] = v
+            self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
+        for v in ("0.1.0", "0.2.0", "0.2.4"):   # ADR-107 addendum 8: 0.2.0 adds optional text / objects engines only
+            ok = json.loads(json.dumps(c)); ok["version"] = v
+            self.assertEqual((check_contract(ok), breaking_drift(ok)), ([], []), v)
+        # the 0.1.0 contract (text / objects without --engine, no optional engines) against this pin: reported drift, never fatal
+        old = json.loads(json.dumps(c)); old["version"] = "0.1.0"
+        for t in old["tools"]:
+            if t["tool_id"] in ("detection/text", "detection/objects"):
+                t["argv"] = [a for a in t["argv"] if "--engine" not in a]
+        self.assertTrue(drift(old)); self.assertEqual(breaking_drift(old), [], "text / objects are not tools this adapter runs")
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["tool_id"] == "detection/faces")["writes_media"] = True
         self.assertTrue(any("writes_media false" in e for e in check_contract(bad)))
         bad = json.loads(json.dumps(c)); bad["tracks"]["identity"] = True
@@ -126,7 +136,7 @@ class ContractTests(_Base):
         os.environ["FAKE_DET_CONTRACT"] = "drift_version"
         ad = det_adapter(self.tmp)
         self.assertTrue(ad.drift())
-        self.assertEqual(ad.breaking_drift(), [], "a version within 0.1.x is not fatal")
+        self.assertEqual(ad.breaking_drift(), [], "a version within the gate (0.1.x / 0.2.x) is not fatal")
         os.environ["FAKE_DET_CONTRACT"] = "drift_fatal"
         self.assertTrue(det_adapter(self.tmp).breaking_drift(), "the tracks argv changed: fatal")
         caps = det_capabilities(lambda: det_adapter(self.tmp))

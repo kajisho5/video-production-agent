@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.10.0",
+ "version": "0.11.0",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -77,6 +77,23 @@
    "supported_languages": [],
    "supported_models": [],
    "default_model": "Haas-ja-v1.0",
+   "models": []
+  },
+  {
+   "id": "qwen3_asr",
+   "version": null,
+   "execution_mode": "local",
+   "description": "Qwen3-ASR-1.7B with Qwen3-ForcedAligner-0.6B word timestamps (Apache-2.0), via qwen-asr on a CUDA GPU or the CPU. Optional engine: Python 3.10+; 11 languages with word timestamps; never downloads at run time.",
+   "available": false,
+   "unavailable_reason": "pinned snapshot: availability comes from the installed Skill's contract / doctor",
+   "requires_network": false,
+   "deterministic": false,
+   "capabilities": [
+    "local_execution"
+   ],
+   "supported_languages": [],
+   "supported_models": [],
+   "default_model": "Qwen3-ASR-1.7B",
    "models": []
   },
   {
