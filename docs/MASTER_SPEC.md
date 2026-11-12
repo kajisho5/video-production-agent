@@ -841,6 +841,40 @@ Feedback
 
 Do not silently rewrite permanent preferences from one feedback event.
 
+### Feedback scopes and the preference store (implemented, ADR-111)
+
+```text
+revise --feedback / --set [--scope this_video | channel | all_videos] [--scope-by user | ai]
+  → revision.feedback[] {scope, scope_source, scope_status, proposed_scope?}         (this video's next version, as before)
+  → preferences promote <project> --feedback ID [--confirm-scope S] --by NAME        (explicit, recorded: who / when / why)
+  → PreferenceStore channel:<id> | global: version N+1 {rules, action, by, at, source}
+  → next plan of the channel: PREFERENCE requirements (global < channel < brief < explicit) + request.args.preferences {stores: [{store, version, rules}], applied}
+```
+
+- **Scope** (`preferences.py::feedback_scope`): every feedback item records `scope`; the default is `this_video`. A wider scope is
+  never inferred: the caller states it; an AI-stated wider scope (`--scope-by ai`) is stored as `scope: this_video` with
+  `proposed_scope` and `scope_status: candidate` until a person confirms it at promotion. `channel` needs `project.channel_id` (a
+  channel / brand / series name: `plan --channel`, or named once at `revise --channel`; `request.channel` is the input channel, cli /
+  mcp, and unrelated).
+- **Promotion** (`Service.promote_feedback`): the only way into a store. A `channel` item goes to that channel's store, an
+  `all_videos` item to the global one; `this_video` items, free text without `--set` keys, keys a brief may not set (file paths,
+  jobs, providers, approval policies) and an item promoted before are refused. Each key is checked like `--set`. The item records
+  `promotion {store, version, by, at}`; a confirmed candidate records `confirmed_by` / `confirmed_at`.
+- **Store** (`<workspace>/preferences/global.json`, `<workspace>/preferences/channels/<channel_id>.json`;
+  `$VIDEO_AGENT_PREFERENCES_DIR` replaces `<workspace>/preferences`): schema `video-agent/preference-store@1`, every version kept
+  (0 is empty); a promotion or a rollback adds version N+1 with the full rule set, the action, who, when, why and its source; each
+  rule keeps the feedback / project it came from. `preferences list | show | diff | rollback` (CLI and the MCP `preferences` tool);
+  a rollback adds a version with the target's rules and deletes nothing. Writes are atomic (temporary file + rename).
+- **Plans:** a new plan applies the global store's current rules, then the channel's (channel wins), under the brief and explicit
+  `--set` (explicit wins), as Requirements with provenance PREFERENCE and source `preferences:<store>@v<N>`. A preference is not
+  the user's word for this video: it never waives a CONFIRM. A stored rule that no longer fits the request (or the `--set` gate) is
+  refused with the store versions named (`plan --no-preferences`, or roll back). The stores and versions used are recorded in
+  `request.args.preferences`; a revision re-uses them, so promotions and rollbacks change the next plan, never a recorded one.
+- **Corrections per minute** (`video-agent corrections <project>`, MCP `corrections`): feedback items given on each plan version ÷
+  that version's delivered minutes (the planned deliverable durations), with the change from the previous version and the
+  channel's recent average (the latest version of up to 10 other projects, `<channel_id>.corrections.json`, updated by revise and
+  by the report). A report only; nothing acts on it.
+
 ## 29. Plan Versioning and Diff
 
 Support plan versions:

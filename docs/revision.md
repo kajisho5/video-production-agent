@@ -38,3 +38,25 @@ video-agent render  project.json [--resume JOB|last]
 ```
 
 `revise` の自由文は Phase 1 と同じキーワード規則でしか解釈されない（AI 無し）。確実に効かせるには `--set`。
+
+## Feedback scopes and the preference store (ADR-111)
+
+```bash
+video-agent plan     input.mp4 --channel talks [--no-preferences]
+video-agent revise   project.json --feedback "..." --set key=value [--scope this_video|channel|all_videos] [--scope-by user|ai] [--channel NAME]
+video-agent preferences promote  project.json --feedback FB_ID [--confirm-scope channel|all_videos] --by NAME [--reason "..."]
+video-agent preferences list     [--channel NAME]
+video-agent preferences show     [--channel NAME] [--version N]
+video-agent preferences diff     [--channel NAME] --from N --to M
+video-agent preferences rollback [--channel NAME] --to N --by NAME [--reason "..."]
+video-agent corrections project.json
+```
+
+| Rule | Implementation |
+|---|---|
+| Feedback is about this video by default | `revision.feedback[].scope = this_video` unless `--scope` says otherwise |
+| An AI never widens a scope | `--scope-by ai` with a wider scope → `scope_status: candidate`, `proposed_scope`; promotion needs `--confirm-scope` |
+| One feedback event never rewrites a stored preference | only `preferences promote` writes a store; it records store / version / who / when on the feedback item |
+| Versioned, reversible | each promotion / rollback is a new version of `<workspace>/preferences/{global.json, channels/<channel>.json}`; nothing is deleted |
+| Plans are traceable | `request.args.preferences` records the store versions and rules used; a revision keeps them |
+| Corrections per minute | feedback per delivered minute per plan version, vs. the previous version and the channel's recent average (report only) |

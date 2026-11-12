@@ -27,6 +27,7 @@ from .agent.publish import check_publish_keys
 from .agent.slides import check_slide_keys, slide_kind
 from .agent.bgm import check_bgm_keys
 from .agent import transcript_verify as verify_task
+from . import preferences as prefs_task
 from .agent.remotion import check_remotion_keys
 from .agent.documents import SKILL as DOCUMENT_SKILL, check_document_keys
 from .agent.requirements import requirement_map
@@ -388,15 +389,34 @@ class Service:
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
              kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None,
-             brief: str = "", brief_answer: Any = None, ai_model: str = "host-chat") -> ProjectIR:
+             brief: str = "", brief_answer: Any = None, ai_model: str = "host-chat", channel: Optional[str] = None, use_preferences: bool = True) -> ProjectIR:
         """brief (ADR-061): the user's brief in their own words, read into `--set` keys by the AI provider (or the chat model's
-        answer `brief_answer`, host provider) or, with neither, by the rule-based reader; explicit `user_requirements` win."""
+        answer `brief_answer`, host provider) or, with neither, by the rule-based reader; explicit `user_requirements` win.
+        channel / use_preferences (ADR-111): the project's channel (brand / series) and whether the global and channel preference
+        stores' current rules apply (under the brief and explicit keys); the versions used are recorded in request.args.preferences."""
         explicit = dict(user_requirements or {})
         _check_requirement_keys(explicit)
         self._check_provider_requirements(explicit)
         self._ai_calls = []   # provenance.ai_calls of this project: the brief's call (if any) and the recommendation call share the budget
         brief_record = self.extract_brief(brief, explicit, profile_name, answer=brief_answer, ai_model=ai_model) if (brief or "").strip() else None
         user_requirements = {**brief_task.values_of(brief_record), **explicit}   # explicit wins (ADR-061)
+        channel_id = prefs_task.check_channel(channel) if channel is not None else None
+        prefs = prefs_task.snapshot(self.workspace, channel_id) if use_preferences else None
+        if prefs is not None and not channel_id and not any(s_["version"] for s_ in prefs["stores"]):
+            prefs = None   # nothing stored and no channel: nothing to record
+        if prefs is not None:
+            stored = {k: v for k, v in prefs["values"].items() if k not in user_requirements}
+            bad = sorted(k for k in stored if k not in BRIEF_REQUIREMENT_KEYS)
+            try:
+                if bad:
+                    raise ValueError(f"key(s) {', '.join(bad)} cannot be a stored preference")
+                _check_requirement_keys({**stored, **user_requirements})
+            except ValueError as e:
+                used = ", ".join("%s@v%s" % (s_["store"], s_["version"]) for s_ in prefs["stores"])
+                raise ValueError(f"the stored preferences ({used}) "
+                                 f"do not fit this request: {e}; plan with --no-preferences or roll the store back (video-agent preferences rollback)")
+            prefs["applied"] = sorted(stored)
+            user_requirements = {**stored, **user_requirements}   # ADR-111: global < channel < brief < explicit
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         if (user_requirements or {}).get("subtitle.caption_profile") is not None and _subtitles_requested(user_requirements or {}):
@@ -450,8 +470,11 @@ class Service:
                 params = dict(params or {}, beat_input=takes["music"])
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records, allowed_inputs=allowed)
-        request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {})})
+        request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {}),
+                                                   **({"preferences": prefs} if prefs is not None else {})})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
+        if channel_id:
+            ir.doc["project"]["channel_id"] = channel_id   # ADR-111: the channel / brand / series the channel-scoped preferences belong to
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
         return ir
 
@@ -888,7 +911,7 @@ class Service:
 
     def revise(self, ir: ProjectIR, ir_path: str, feedback: str = "", user_requirements: Optional[Dict[str, Any]] = None, who: Optional[str] = None,
                ai_recommendations: Optional[List[Dict[str, Any]]] = None, ai_model: str = "host-chat", editor_timeline: Optional[str] = None,
-               editor_subject: Optional[str] = None) -> Dict[str, Any]:
+               editor_subject: Optional[str] = None, scope: Optional[str] = None, scope_by: Optional[str] = None, channel: Optional[str] = None) -> Dict[str, Any]:
         """Plan v(n) → v(n+1): re-plan from the recorded analysis with the rejections and feedback applied. v(n) is snapshotted
         first and never modified; rejected decisions are carried into v(n+1) as history (status REJECTED, no operations).
         ai_recommendations (ADR-050): the answer of the chat model the agent runs in to the brief `plan --ai-brief` returned.
@@ -905,6 +928,18 @@ class Service:
             if is_noop(editor_obs.data):   # nothing recorded: the plan already has the editor's cuts
                 return {"version": ir.version, "created": False, "diff": plan_diff(ir.doc, ir.doc), "dropped_proposals": [], "feedback_ids": [],
                         "reason": "the editor's timeline has the plan's cuts (nothing to revise)", "editor": self._editor_report(editor_obs)}
+        # ADR-111: the feedback's scope (this_video by default; a wider one from an AI is a candidate) and the project's channel
+        channel_set = False
+        if channel is not None:
+            ch = prefs_task.check_channel(channel)
+            cur = ir.doc["project"].get("channel_id")
+            if cur and cur != ch:
+                raise ValueError(f"this project belongs to channel {cur!r}; its channel is not changed by a revision (plan the source again for {ch!r})")
+            channel_set = cur != ch
+            ir.doc["project"]["channel_id"] = ch
+        if (scope is not None or scope_by is not None) and not (feedback or user_requirements):
+            raise ValueError("--scope belongs to feedback: give --feedback and / or --set")
+        scope_fields = prefs_task.feedback_scope(scope, scope_by, ir.doc["project"].get("channel_id")) if (feedback or user_requirements) else {}
         old = json.loads(json.dumps(ir.doc))
         _check_requirement_keys(user_requirements or {})
         self._check_provider_requirements(user_requirements or {})
@@ -916,7 +951,8 @@ class Service:
                 duplicate_feedback = True   # identical feedback on the same version: recorded once, not twice
                 fb_ids = [same[-1]["id"]]
             else:
-                fb = {"id": new_id("fb"), "plan_version": ir.version, "target": "global", "text": feedback or "", "structured": user_requirements or None, "by": who, "at": now_iso()}
+                fb = {"id": new_id("fb"), "plan_version": ir.version, "target": "global", "text": feedback or "", "structured": user_requirements or None, "by": who, "at": now_iso(),
+                      **scope_fields}
                 ir.doc["revision"]["feedback"].append(fb)
                 fb_ids.append(fb["id"])
         # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
@@ -931,7 +967,9 @@ class Service:
         if feedback:
             raw = (raw + "\n" + feedback).strip()
         profile = load_profile(old["project"]["profile"]["name"])
-        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**brief_task.values_of(brief_record), **prev_req}))
+        recorded_prefs = (old["request"].get("args") or {}).get("preferences") or {}   # ADR-111: the versions the plan used, never the store's newer ones
+        pref_values = {k: (recorded_prefs.get("values") or {})[k] for k in recorded_prefs.get("applied") or [] if k in (recorded_prefs.get("values") or {})}
+        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**pref_values, **brief_task.values_of(brief_record), **prev_req}))
         analysis = AnalysisResult.from_ir(old)
         if verify_task.parse_verify_requirements({k: v for k, v in prev_req.items() if k.startswith(verify_task.PREFIX)}) and not any(
                 o.kind == "transcript" and any(isinstance(sg, dict) and isinstance(sg.get("words"), list) for sg in (o.data or {}).get("segments") or [])
@@ -990,8 +1028,9 @@ class Service:
         # a new version exists only when the plan actually changed or a new rejection was applied. Feedback that produces no
         # plan change is kept in revision.feedback (once) but never creates an empty version.
         if diff["empty"] and not new_rejections and ai_recommendations is None:   # an AI answer is always recorded as a version (ADR-050)
-            if fb_ids and not duplicate_feedback:
-                save_ir(ir, ir_path)   # persist the recorded feedback without a version bump
+            if (fb_ids and not duplicate_feedback) or channel_set:
+                save_ir(ir, ir_path)   # persist the recorded feedback (and a newly named channel) without a version bump
+                self._log_corrections(ir, ir_path)
             if editor_obs is not None:
                 return {"version": ir.version, "created": False, "diff": diff, "dropped_proposals": dropped, "feedback_ids": fb_ids,
                         "reason": "the editor's timeline has the plan's cuts (nothing to revise)", "editor": self._editor_report(editor_obs)}
@@ -1010,6 +1049,7 @@ class Service:
                                              if editor_obs is not None else {})})
         ir.doc = nd
         save_ir(ir, ir_path)
+        self._log_corrections(ir, ir_path)
         return {"version": new_version, "created": True, "snapshot": snap, "diff": diff, "dropped_proposals": dropped, "pending": [d["id"] for d in ir.pending_confirmations()],
                 "hint": "review the diff, then `video-agent approve <project> --decision all` before rendering", **({"ai": ai_report} if ai_report is not None else {}),
                 **({"editor": self._editor_report(editor_obs)} if editor_obs is not None else {})}
@@ -1295,6 +1335,100 @@ class Service:
             if failed:
                 res["status"] += "_PARTIAL"
         return res
+
+    # ---- feedback scopes and the preference store (ADR-111): promotion is an explicit, recorded step; stores are versioned
+    def promote_feedback(self, ir: ProjectIR, ir_path: str, feedback_id: str, who: Optional[str] = None, confirm_scope: Optional[str] = None,
+                         reason: str = "") -> Dict[str, Any]:
+        """One feedback item of this project → a new version of the channel's store (scope channel) or the global one (all_videos). Only its
+        structured --set keys become rules; a candidate scope (proposed by an AI) needs `confirm_scope` naming that scope; this_video items
+        and items promoted before are refused. The item records the store, version, who and when."""
+        who = who or _default_who()
+        fb = next((f for f in ir.doc["revision"]["feedback"] if f.get("id") == feedback_id), None)
+        if fb is None:
+            raise prefs_task.PreferenceError(f"no feedback {feedback_id!r} in this project (ids: {', '.join(f['id'] for f in ir.doc['revision']['feedback']) or 'none'})")
+        if fb.get("promotion"):
+            raise prefs_task.PreferenceError(f"feedback {feedback_id} was promoted already ({fb['promotion']['store']} v{fb['promotion']['version']})")
+        scope = fb.get("scope") or prefs_task.DEFAULT_SCOPE
+        if fb.get("scope_status") == "candidate":
+            if confirm_scope is None or prefs_task.check_scope(confirm_scope) != fb.get("proposed_scope"):
+                raise prefs_task.PreferenceError(f"feedback {feedback_id}'s scope {fb.get('proposed_scope')!r} was proposed by an AI: confirm it with --confirm-scope {fb.get('proposed_scope')}")
+            scope = fb["proposed_scope"]
+        elif confirm_scope is not None and prefs_task.check_scope(confirm_scope) != scope:
+            raise prefs_task.PreferenceError(f"feedback {feedback_id} has scope {scope!r}, not {confirm_scope!r}: a scope is not changed at promotion")
+        if scope == "this_video":
+            raise prefs_task.PreferenceError(f"feedback {feedback_id} is for this video only (scope this_video): it is not promoted")
+        values = dict(fb.get("structured") or {})
+        if not values:
+            raise prefs_task.PreferenceError(f"feedback {feedback_id} has no --set keys: free text has no rule to store (it stays in this project's feedback)")
+        bad = sorted(k for k in values if k not in BRIEF_REQUIREMENT_KEYS)
+        if bad:
+            raise prefs_task.PreferenceError(f"key(s) {', '.join(bad)} cannot be a stored preference (file paths, jobs, providers and approval policies stay per project)")
+        _check_requirement_keys(values)
+        channel = ir.doc["project"].get("channel_id")
+        if scope == "channel" and not channel:
+            raise prefs_task.PreferenceError("scope channel needs the project's channel (revise with --channel <name>)")
+        store = prefs_task.PreferenceStore(self.workspace, channel if scope == "channel" else None)
+        v = store.promote(values, who, reason or f"feedback {feedback_id} of {ir.doc['project']['name']} v{fb['plan_version']}",
+                          {"project_id": ir.doc["project"]["id"], "feedback_id": feedback_id, "plan_version": fb["plan_version"], "scope": scope})
+        if fb.get("scope_status") == "candidate":
+            fb.update(scope=scope, scope_status="confirmed", confirmed_by=who, confirmed_at=v["at"])
+        fb["promotion"] = {"store": store.name, "version": v["version"], "by": who, "at": v["at"]}
+        save_ir(ir, ir_path)
+        return {"feedback_id": feedback_id, "scope": scope, "store": store.name, "version": v["version"], "previous": v["previous"], "rules": sorted(v["rules"]),
+                "path": str(store.path), "note": "the next plan of this channel uses it; recorded plans keep the versions they used"}
+
+    def preference_history(self, channel: Optional[str] = None) -> Dict[str, Any]:
+        st = prefs_task.PreferenceStore(self.workspace, channel)
+        d = st.doc()
+        return {"store": st.name, "path": str(st.path), "current": d["current"], "versions": st.history()}
+
+    def preference_show(self, channel: Optional[str] = None, version: Optional[int] = None) -> Dict[str, Any]:
+        st = prefs_task.PreferenceStore(self.workspace, channel)
+        return {"store": st.name, **st.version(version)}
+
+    def preference_diff(self, channel: Optional[str], a: int, b: int) -> Dict[str, Any]:
+        return prefs_task.PreferenceStore(self.workspace, channel).diff(a, b)
+
+    def preference_rollback(self, channel: Optional[str], to: int, who: Optional[str] = None, reason: str = "") -> Dict[str, Any]:
+        st = prefs_task.PreferenceStore(self.workspace, channel)
+        v = st.rollback(to, who or _default_who(), reason)
+        return {"store": st.name, "version": v["version"], "rolled_back_to": int(to), "previous": v["previous"], "rules": sorted(v["rules"]), "path": str(st.path)}
+
+    def _log_corrections(self, ir: ProjectIR, ir_path: str) -> None:
+        """ADR-111: keep the channel's corrections log current after feedback (a report; a log that cannot be written never fails a revision)."""
+        if ir.doc["project"].get("channel_id"):
+            try:
+                self.corrections(ir, ir_path)
+            except (OSError, ValueError):
+                pass
+
+    def corrections(self, ir: ProjectIR, ir_path: str) -> Dict[str, Any]:
+        """Corrections per minute (ADR-111): feedback items given on each plan version ÷ that version's delivered minutes (the planned
+        deliverable durations), the change from the previous version and the channel's recent average. A report: nothing acts on it."""
+        docs: Dict[int, Dict[str, Any]] = {}
+        for h in ir.doc["revision"].get("history") or []:
+            snap = h.get("snapshot")
+            if snap and Path(snap).is_file():
+                try:
+                    docs[int(h["from_version"])] = json.loads(Path(snap).read_text(encoding="utf-8"))
+                except (OSError, ValueError, KeyError):
+                    pass
+        docs[ir.version] = ir.doc
+        rows: List[Dict[str, Any]] = []
+        for v in sorted(docs):
+            minutes = round(sum(float(sj.get("duration") or 0.0) for sj in delivery_subjects(docs[v])) / 60.0, 4)
+            n = sum(1 for f in ir.doc["revision"]["feedback"] if int(f.get("plan_version") or 0) == v)
+            rows.append({"plan_version": v, "feedback": n, "delivered_minutes": minutes, "cpm": round(n / minutes, 3) if minutes > 0 else None})
+        for prev, row in zip(rows, rows[1:]):
+            row["change_from_previous"] = round(row["cpm"] - prev["cpm"], 3) if row["cpm"] is not None and prev["cpm"] is not None else None
+        out: Dict[str, Any] = {"project_id": ir.doc["project"]["id"], "versions": rows, "channel": ir.doc["project"].get("channel_id"),
+                               "note": "corrections per minute = feedback items given on a version / its delivered minutes; a report, nothing acts on it"}
+        if out["channel"]:
+            log = prefs_task.record_corrections(self.workspace, out["channel"], ir.doc["project"]["id"], ir.doc["project"]["name"], rows)
+            out["channel_recent_average"] = prefs_task.recent_average(log, ir.doc["project"]["id"])
+            if out["channel_recent_average"] and rows and rows[-1]["cpm"] is not None:
+                out["change_from_channel_average"] = round(rows[-1]["cpm"] - out["channel_recent_average"]["cpm"], 3)
+        return out
 
     # ---- publishing (ADR-087): render prepares, a human confirms
     def _publish_prepare(self, ir: ProjectIR, adapter: Any, job: Job, artifacts: List[Dict[str, Any]]) -> Dict[str, Any]:

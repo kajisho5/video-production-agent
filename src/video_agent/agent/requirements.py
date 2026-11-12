@@ -40,6 +40,15 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
     # the brief's keys (ADR-061): validated like --set when the plan was made; an explicit --set key wins
     from .brief import requirements_of
     reqs += requirements_of(args.get("brief") or {}, (args.get("requirements") or {}).keys())
+    # ADR-111: the stored preferences this plan recorded (global < channel), under the brief and the explicit keys; never the user's word
+    # for this video (provenance PREFERENCE: a CONFIRM is not waived by them)
+    prefs = args.get("preferences") or {}
+    if prefs:
+        from ..preferences import source_of
+        taken = {r.key for r in reqs}
+        for key in prefs.get("applied") or []:
+            if key not in taken and key in (prefs.get("values") or {}):
+                reqs.append(Requirement(key=key, value=prefs["values"][key], provenance="PREFERENCE", source=source_of(prefs, key)))
     # keyword pass on the raw text (only unambiguous phrases)
     seen = {r.key for r in reqs}
     for rx, key, value in KEYWORDS:
