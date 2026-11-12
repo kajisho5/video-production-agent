@@ -7,7 +7,7 @@
          --ffmpeg-skill=<dir> --timeout=T`                                        (ACE-Step 1.5, optional install, never downloaded)
     → the WAV becomes one input of audio-production-skill's MIX (the bed; ducked under input 0 when the user asks)
 
-Protocol (sound-design-skill's own contract, `sound-design contract --json`, pinned from main in contract_0.2.0.json -- no release tag): each op
+Protocol (sound-design-skill's own contract, `sound-design contract --json`, pinned from main in contract_0.3.0.json -- no release tag): each op
 prints one ASCII JSON document (`sound-design/library-pick@1` / `sound-design/generate-bgm@1`: output {path, format, codec, sample_rate, channels,
 duration, sha256}, the request, the licence as declared or the engine's terms, provenance, warnings); failure {ok: false, error: {code, message,
 retryable, details}} with the code fixing the exit code. doctor → `checks.operations.{bgm, library}.ready`, never downloads.
@@ -42,7 +42,11 @@ RESULT_OP = {TOOL_LIBRARY_PICK: "library-pick", TOOL_GENERATE_BGM: "bgm"}
 COMMAND = {TOOL_LIBRARY_PICK: "library-pick", TOOL_GENERATE_BGM: "generate-bgm"}
 # 0.2.0 (sound-design-skill #18, main 1cfe830, no release tag; ADR-107 addendum 3): sfx-cues gains --min-reuse-spacing / --character and its
 # output substitutions / cues[].source / dropped[].by; library-pick and generate-bgm (the only tools this adapter runs) are unchanged
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
+# 0.3.0 (sound-design-skill #19, main e9494d6, no release tag; ADR-107 addendum 7): generate-bgm takes an opt-in `--model` (ACE-Step 1.5 XL turbo
+# next to the default acestep-v15-turbo): its argv changed, a fatal drift key, so 0.2.x is breaking drift against this pin. The new error
+# INSUFFICIENT_VRAM (exit 3) refuses a model the GPU cannot hold, and the result / provenance gain request.model / parameters.model. The adapter
+# sends no --model (a call without it gives the default model, as before), records request.model when the Skill reports it, and maps the new code
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.")
 # the per-operation capability `sound-design:<TYPE>` (resolver) ← the doctor's checks.operations.<op>.ready
 OPERATION_TYPES = {"library": "LIBRARY", "bgm": "BGM_GENERATE"}
 DURATION = (1.0, 3600.0)
@@ -57,13 +61,15 @@ ERROR_CLASSES: Dict[str, str] = {
     "TOOL_ERROR": "SKILL_ERROR", "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT", "INVALID_RESULT": "SKILL_ERROR", "NOT_IMPLEMENTED": "TOOL_MISSING",
     "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR", "CONFIRMATION_REQUIRED": "INVALID_ARGS", "LICENCE_REQUIRED": "INVALID_ARGS",
 }
+# codes a newer contract declares that check_contract() does not require (an older contract without them stays compatible); mapped all the same
+OPTIONAL_ERROR_CLASSES: Dict[str, str] = {"INSUFFICIENT_VRAM": "INSUFFICIENT_VRAM"}   # 0.3.0: a guided BLOCK naming the default model (recovery.py)
 AGENT_ERRORS: Dict[str, str] = {"INVALID_REQUEST": "INVALID_ARGS", "INVALID_OUTPUT": "SKILL_ERROR", "TIMEOUT": "TIMEOUT"}
 USED_TOOLS = (TOOL_LIBRARY_PICK, TOOL_GENERATE_BGM)
 DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependencies", "not_provided", "handoff", "engines", "policy", "provenance", "execution", "errors")
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv", "schema", "confirmation_required")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "mutates_input", "argv", "schema", "confirmation_required")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -71,7 +77,7 @@ def pinned_contract() -> Dict[str, Any]:
 
 
 def recovery_class(code: str) -> str:
-    return ERROR_CLASSES.get(code) or AGENT_ERRORS.get(code) or "SKILL_ERROR"
+    return ERROR_CLASSES.get(code) or OPTIONAL_ERROR_CLASSES.get(code) or AGENT_ERRORS.get(code) or "SKILL_ERROR"
 
 
 def _num(v: Any) -> bool:
@@ -375,7 +381,8 @@ class SoundDesignAdapter(ToolAdapter):
             e_doc = as_dict(doc.get("error"))
             ecode = str(e_doc.get("code") or "INTERNAL_ERROR")
             details = scrub(e_doc.get("details"), FORBIDDEN_ARG_KEYS)
-            retry = (bool(e_doc["retryable"]) if isinstance(e_doc.get("retryable"), bool) else self.retryable.get(ecode, False)) if ecode in ERROR_CLASSES else False
+            known = ecode in ERROR_CLASSES or ecode in OPTIONAL_ERROR_CLASSES
+            retry = (bool(e_doc["retryable"]) if isinstance(e_doc.get("retryable"), bool) else self.retryable.get(ecode, False)) if known else False
             self._remove_fresh(b["output"], t0)
             return self._fail(op, attempt, dry_run, t0, code if code else 1, ecode, str(e_doc.get("message") or tail or "")[:1200], retryable=retry, details=details)
         why = self._admit(op.tool, doc, b)
@@ -428,6 +435,8 @@ class SoundDesignAdapter(ToolAdapter):
         else:
             req = as_dict(doc.get("request"))
             base.update({"engine": as_dict(doc.get("engine")), "request": {k: req.get(k) for k in ("prompt", "duration", "seed", "seed_source")}})
+            if "model" in req:   # 0.3.0: the model that ran (null / the default when none was named), recorded as the Skill wrote it; never required
+                base["request"]["model"] = req.get("model")
         return base
 
 

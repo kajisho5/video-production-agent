@@ -36,11 +36,13 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
                                              # contract, now reporting the release version instead of a stale "0.2.0"
                                              # 0.8.0 (ADR-078): optional engine whisperx appended to engines; the tools / schemas the adapter uses are unchanged
                                              # 0.9.0 (ADR-107 addendum 2): every word carries `index`; dictionary words (opt-in, ja) carry `pos` / `timing`;
                                              # transcribe takes `word_segmentation`; capabilities word_index / dictionary_word_segmentation. All additions
+                                             # 0.10.0 (ADR-107 addendum 7): new optional models (speechcpp parakeet-tdt-0.6b-v3, faster_whisper
+                                             # distil-large-v3.5, English only) and per-model language limits (LANGUAGE_REASONS below). Additive
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
@@ -53,6 +55,13 @@ BUDGET_KEYS = ("timeout", "max_audio_seconds")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "args", "script", "binary", "executable", "executables", "env",
                       "environment", "api_key", "apikey", "token", "secret", "password", "credentials", "ffmpeg", "ffprobe")
 ADAPTER_OWNED_KEYS = ("workspace", "allowed_input_roots")   # pinned by the adapter; a caller cannot widen them
+# 0.10.0 (transcription-skill ADR-040): a model limited to some languages (an English-only checkpoint, one model of speechcpp) refuses a request
+# for another language (INVALID_INPUT, details.reason language_unsupported) or without one (language_detection_unsupported: the Skill never
+# supplies a language), before any audio work, with details.engine / model / supported. The agent never picks a language or a model for the
+# user: the refusal keeps the Skill's code, message and details, and gains the recovery class below with a hint naming what would work.
+LANGUAGE_REASONS = ("language_unsupported", "language_detection_unsupported")
+LANGUAGE_RECOVERY_CLASS = "LANGUAGE_UNSUPPORTED"
+MAX_HINT_LANGUAGES = 30
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _FP_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LANG_RE = re.compile(r"^[a-z]{2,3}$")
@@ -154,11 +163,11 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.9.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.10.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
-    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.9.0, engine availability
+    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.10.0, engine availability
     stripped: each engine entry is kept as the earlier pins wrote it). Used for the package identity when the Skill is not installed; a live installation always replaces it."""
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 
@@ -426,6 +435,9 @@ class TranscriptionAdapter(ToolAdapter):
             errc = str(err_doc.get("code") or "INVALID_RESULT")
             data = {"error": {"code": errc, "message": str(err_doc.get("message") or tail or "")[:500], "details": _scrub_details(err_doc.get("details")), "exit_code": code},
                     "skill": {"id": CONTRACT_ID, "version": self.version}}
+            hint = language_hint(data["error"])
+            if hint:   # a model's language limit: BLOCK with what would work, never retried (the same request fails the same way)
+                data["error"].update(recovery_class=LANGUAGE_RECOVERY_CLASS, retryable=False, hint=hint)
             return ToolResult(op.id, op.tool, False, code or 1, None, data, [], tail, secs, attempt, dry_run)
         errs = self._check_response(doc, req)
         if errs:
@@ -568,6 +580,25 @@ def check_transcript(tr: Dict[str, Any], params: Dict[str, Any], skill_version: 
     except (TypeError, ValueError):
         errs.append("transcript duration is not a number")
     return errs
+
+
+def language_hint(error: Dict[str, Any]) -> Optional[str]:
+    """The guidance for a model's language limit (LANGUAGE_REASONS with `details.model`), or None for any other error. It names the model, its
+    engine and the languages it recognises as the Skill reported them; the agent chooses nothing."""
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    reason, model = details.get("reason"), details.get("model")
+    if error.get("code") != "INVALID_INPUT" or reason not in LANGUAGE_REASONS or not isinstance(model, str) or not model:
+        return None
+    supported = [str(x) for x in details.get("supported") or [] if isinstance(x, str) and _LANG_RE.match(x)] if isinstance(details.get("supported"), list) else []
+    langs = ", ".join(supported[:MAX_HINT_LANGUAGES]) + (f" and {len(supported) - MAX_HINT_LANGUAGES} more" if len(supported) > MAX_HINT_LANGUAGES else "")
+    engine = details.get("engine") if isinstance(details.get("engine"), str) and _ENGINE_RE.match(details["engine"]) else None
+    who = f"model {model}" + (f" of engine {engine}" if engine else "")
+    only = f"recognises only {langs}" if langs else "recognises only some languages"
+    if reason == "language_detection_unsupported":
+        return (f"{who} {only} and does not detect the language; not retried -- name the language of the speech explicitly "
+                "(one the model recognises), or choose a model / engine that detects it")
+    return (f"{who} {only}, not the language requested; not retried -- request one of those languages if that is what is spoken, "
+            "or choose a model / engine that recognises the language spoken")
 
 
 def _scrub_details(details: Any) -> Dict[str, Any]:

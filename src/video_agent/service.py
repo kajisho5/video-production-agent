@@ -1319,8 +1319,11 @@ class Service:
                 if not row["ok"]:
                     err = data.get("error") or {}
                     row["error"] = {"code": err.get("code"), "message": str(err.get("message") or "")[:300]}
+                    if err.get("hint"):   # a guided refusal (ADR-107 addendum 7: the model's language limit): what would work, in the row and the warning
+                        row["error"].update(recovery_class=err.get("recovery_class"), hint=str(err["hint"])[:600])
                     res["measurements"].append(row)
-                    res["warnings"].append(f"{logical}: re-transcription failed ({err.get('code')}: {str(err.get('message') or '')[:200]}); not compared")
+                    res["warnings"].append(f"{logical}: re-transcription failed ({err.get('code')}: {str(err.get('message') or '')[:200]}); not compared"
+                                           + (f" -- {str(err['hint'])[:400]}" if err.get("hint") else ""))
                     failed += 1
                     continue
                 res["measurements"].append(row)

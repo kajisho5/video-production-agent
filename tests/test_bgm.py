@@ -23,7 +23,8 @@ from video_agent.tools.discovery import MODULE_BOOTSTRAP  # noqa: E402
 from video_agent.tools.skill_process import CliSkill  # noqa: E402
 from video_agent.tools.sound_design import (ERROR_CLASSES, SoundDesignAdapter, breaking_drift, check_contract, drift, locate_sound_design,  # noqa: E402
                                             pinned_contract, recovery_class)
-from video_agent.tools.sound_design.adapter import PINNED_CONTRACT_PATH  # noqa: E402
+from video_agent.execution.recovery import classify_error, next_attempt  # noqa: E402
+from video_agent.tools.sound_design.adapter import OPTIONAL_ERROR_CLASSES, PINNED_CONTRACT_PATH  # noqa: E402
 
 FAKE = str(Path(__file__).resolve().parent / "fake_sound_design.py")
 MODES = ("FAKE_SD_MODE", "FAKE_SD_READY", "FAKE_SD_CALLS", "VIDEO_AGENT_SOUND_DESIGN_DIR")
@@ -107,19 +108,28 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("sound-design", "0.2.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("sound-design", "0.3.0", "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
-        self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every sound-design code has a recovery class")
+        self.assertEqual(set(ERROR_CLASSES) | set(OPTIONAL_ERROR_CLASSES), set(c["errors"]), "every sound-design code has a recovery class")
+        self.assertEqual(c["errors"]["INSUFFICIENT_VRAM"], {"exit_code": 3, "retryable": False})
+        gen = next(t for t in c["tools"] if t["tool_id"] == "sound-design/generate-bgm")
+        self.assertIn("[--model acestep-v15-turbo|acestep-v15-xl-turbo]", gen["argv"]); self.assertEqual(gen["models"]["default"], "acestep-v15-turbo")
         self.assertEqual((recovery_class("LICENCE_REQUIRED"), recovery_class("ENGINE_UNAVAILABLE"), recovery_class("NEW")), ("INVALID_ARGS", "TOOL_MISSING", "SKILL_ERROR"))
 
     def test_refused_contracts(self):
         c = pinned_contract()
-        for v in ("0.1.0", "0.2.0", "0.2.3"):   # ADR-107 addendum 3: 0.2.0 adds sfx-cues options only
+        for v in ("0.1.0", "0.2.0", "0.2.3", "0.3.0", "0.3.2"):   # ADR-107 addendum 3: 0.2.0 adds sfx-cues options only; addendum 7: 0.3.0 adds generate-bgm --model
             ok = json.loads(json.dumps(c)); ok["version"] = v
             self.assertEqual(check_contract(ok), [], v)
-        for v in ("0.3.0", "1.0.0"):
+        for v in ("0.4.0", "1.0.0"):
             bad = json.loads(json.dumps(c)); bad["version"] = v
             self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
+        # ADR-107 addendum 7: a 0.2.x contract (generate-bgm without --model, no INSUFFICIENT_VRAM) still passes check_contract (the new code is
+        # not required), but against this pin its generate-bgm argv and the missing error are fatal drift: 0.3.0 or later is needed
+        v2 = json.loads(json.dumps(c)); v2["version"] = "0.2.0"; v2["errors"].pop("INSUFFICIENT_VRAM")
+        g2 = next(t for t in v2["tools"] if t["tool_id"] == "sound-design/generate-bgm"); g2["argv"] = [a for a in g2["argv"] if "--model" not in a]; g2.pop("models")
+        self.assertEqual(check_contract(v2), [])
+        self.assertEqual(sorted(d.split(":")[0] for d in breaking_drift(v2)), ["errors INSUFFICIENT_VRAM", "tools sound-design/generate-bgm.argv"])
         old = json.loads(json.dumps(c)); sfx = next(t for t in old["tools"] if t["tool_id"] == "sound-design/sfx-cues")
         sfx["argv"] = [a for a in sfx["argv"] if "min-reuse-spacing" not in a and "--character" not in a]
         sfx.pop("reuse"); sfx.pop("character")
@@ -173,6 +183,8 @@ class AdapterTests(_Base):
         self.assertEqual(self.sd_calls("generate-bgm"), [["generate-bgm", "--json", f"--output={out}", "--prompt=calm piano bed", "--tags=ambient", "--duration=30", "--seed=42", "--offline",
                                                           f"--ffmpeg-skill={self.tmp}", "--timeout=3600"]])
         self.assertEqual((r.data["engine"]["id"], r.data["request"]["seed"], r.data["ai_generated"]), ("acestep", 42, True))
+        self.assertNotIn("--model", " ".join(self.sd_calls("generate-bgm")[0]), "ADR-107 addendum 7: no --model is sent; the Skill's default runs")
+        self.assertEqual(r.data["request"]["model"], "acestep-v15-turbo", "0.3.0's request.model is recorded as the Skill wrote it")
 
     def test_requests_refused_before_a_process(self):
         library(self.tmp)
@@ -199,6 +211,20 @@ class AdapterTests(_Base):
         _, _, r = self.run_op("sound-design/generate-bgm", {"prompt": "x", "duration": 10})
         self.assertEqual((r.ok, r.data["error"]["code"], r.data["error"]["recovery_class"], r.exit_code), (False, "ENGINE_UNAVAILABLE", "TOOL_MISSING", 3))
         self.assertIn("ACE-Step", r.data["error"]["details"]["install"])
+
+    def test_insufficient_vram_is_a_guided_block(self):
+        """ADR-107 addendum 7: sound-design-skill 0.3.0's INSUFFICIENT_VRAM (exit 3, not retryable) keeps its code, message and details
+        (details.default_model, the fallback) and blocks with a hint naming the default model; it is never retried."""
+        os.environ["FAKE_SD_READY"] = "all"; os.environ["FAKE_SD_MODE"] = "fail:INSUFFICIENT_VRAM"
+        _, out, r = self.run_op("sound-design/generate-bgm", {"prompt": "x", "duration": 10})
+        err = r.data["error"]
+        self.assertEqual((r.ok, err["code"], err["recovery_class"], err["retryable"], r.exit_code), (False, "INSUFFICIENT_VRAM", "INSUFFICIENT_VRAM", False, 3))
+        self.assertEqual(err["details"]["default_model"], "acestep-v15-turbo"); self.assertIn("acestep-v15-turbo", err["message"])
+        self.assertEqual(classify_error(r), "INSUFFICIENT_VRAM")
+        nxt = next_attempt(r, 1, 3, 60.0)
+        self.assertEqual(nxt["action"], "BLOCK"); self.assertIn("default model", nxt["reason"]); self.assertIn("acestep-v15-turbo", nxt["reason"])
+        self.assertFalse(os.path.exists(out))
+        self.assertEqual(recovery_class("INSUFFICIENT_VRAM"), "INSUFFICIENT_VRAM")
 
     def test_never_a_measurement(self):
         r = sd_adapter(self.tmp).measure("sound-design/library-pick", {})

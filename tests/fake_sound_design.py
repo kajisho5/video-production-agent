@@ -1,5 +1,5 @@
 """Fake sound-design-skill process for the ADR-092 tests: speaks the slice of the real `sound-design` CLI the agent uses -- `contract --json` (the pinned
-src/video_agent/tools/sound_design/contract_0.2.0.json), `doctor --json --offline` (status, checks.operations.{bgm, library}.ready with the engine's
+src/video_agent/tools/sound_design/contract_0.3.0.json), `doctor --json --offline` (status, checks.operations.{bgm, library}.ready with the engine's
 install line), `library-pick --json --output=F --kind=bgm [--tags=..] [--mood=..] [--file=..] [--crossfade=S] --duration=D ... -- <library>` and
 `generate-bgm --json --output=F --prompt=P [--tags=..] --duration=D [--seed=N] --offline ...` in the result shapes of sound-design-skill main
 (sound-design/library-pick@1, sound-design/generate-bgm@1). The WAV written is a self-describing fake media file (tests/pipeline_harness.py) of the
@@ -20,7 +20,7 @@ from pathlib import Path
 MODE = os.environ.get("FAKE_SD_MODE", "ok")
 READY = os.environ.get("FAKE_SD_READY", "library")
 CALLS_LOG = os.environ.get("FAKE_SD_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "sound_design" / "contract_0.2.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "sound_design" / "contract_0.3.0.json"
 
 
 def _emit(doc) -> None:
@@ -108,12 +108,17 @@ def _generate(argv) -> int:
     opts, _ = _opts(argv)
     if READY != "all":
         return _fail("ENGINE_UNAVAILABLE", "ACE-Step is not installed (fake)", {"install": "git clone https://github.com/ace-step/ACE-Step-1.5 ... (fake)"})
+    if MODE == "fail:INSUFFICIENT_VRAM":   # 0.3.0 (its ADR-016): a model the GPU cannot hold, refused before any work, with the fallback named
+        return _fail("INSUFFICIENT_VRAM", "model acestep-v15-xl-turbo needs at least 20 GB of GPU memory; measured 12.0 GB; use the default model "
+                     "acestep-v15-turbo (fake)", {"model": "acestep-v15-xl-turbo", "min_vram_gb": 20, "measured_gb": 12.0, "default_model": "acestep-v15-turbo"})
     if MODE.startswith("fail:"):
         return _fail(MODE.split(":", 1)[1], "refused (fake)")
     dur = float(opts["duration"])
     seed = int(opts.get("seed", 1234))
+    model = opts.get("model") or "acestep-v15-turbo"   # 0.3.0: request.model names the model that ran (the default when none is named)
     doc = _result("sound-design/generate-bgm@1", "bgm", opts["output"], dur,
-                  {"capability": "audio.bgm_generate", "request": {"prompt": opts.get("prompt"), "duration": dur, "seed": seed, "seed_source": "given" if "seed" in opts else "drawn"},
+                  {"capability": "audio.bgm_generate", "request": {"prompt": opts.get("prompt"), "duration": dur, "seed": seed, "seed_source": "given" if "seed" in opts else "drawn",
+                                                                  "model": model},
                    "engine": {"id": "acestep", "version": "1.5", "model": "acestep-v15-turbo", "code_license": "MIT", "weights_license": "MIT", "output_use": "commercial use allowed (vendor claim)",
                               "lm_status": "off"}})
     _emit(doc)

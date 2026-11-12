@@ -2,7 +2,8 @@
 `run -` with {"tool","params"} on stdin → {"ok","tool","result"} on stdout) with canned data, and misbehaves on request via
 FAKE_TS_MODE = ok | empty | text | two_docs | wrong_schema | wrong_skill | wrong_version | wrong_engine | wrong_asset |
 bad_source | no_transcript | invalid_provenance | speaker_set | timeout_error | hang | crash | nonzero | model_unavailable |
-engine_unavailable | bad_segments | speaker_unknown | speaker_mismatch. FAKE_TS_CACHE=hit reports a cache hit. FAKE_TS_RENDERED (JSON segments / words)
+engine_unavailable | bad_segments | speaker_unknown | speaker_mismatch. FAKE_TS_CACHE=hit reports a cache hit. Model distil-large-v3.5 is
+English only, as in transcription-skill 0.10.0: another language or none is refused (language_unsupported / language_detection_unsupported). FAKE_TS_RENDERED (JSON segments / words)
 is what a rendered fake file (which carries no speech) is heard to say (ADR-110). With `speaker_turns` (a
 diarization-skill/turns@1 document, ADR-096) the segments get speaker_id by the Skill's own ASSIGN rule (longest overlap with the exclusive
 turns; none or a tie: null) and the transcript a `speaker_assignment` record, as transcription-skill 0.8.0 merges after recognition.
@@ -17,7 +18,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "transcription" / "contract_0.9.0.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "transcription" / "contract_0.10.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_TS_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_TS_CALLS")
 ENGINE = {"id": "faster_whisper", "version": "1.2.1-fake", "execution_mode": "local", "requires_network": False, "deterministic": True, "available": True,
@@ -32,6 +33,10 @@ def log(kind: str) -> None:
     if CALLS_LOG:
         with open(CALLS_LOG, "a", encoding="utf-8") as fh:
             fh.write(kind + "\n")
+
+
+# transcription-skill 0.10.0: models limited to some languages (faster_whisper's English-only distil-large-v3.5)
+MODEL_LANGUAGES = {"distil-large-v3.5": ("en",)}
 
 
 def _err(code: str, message: str, details: dict = None) -> int:
@@ -160,6 +165,14 @@ def main() -> int:
             return _err("ENGINE_UNAVAILABLE", "faster-whisper is not installed", {"engine": "faster_whisper", "reason": "engine_not_installed"})
         if MODE == "model_unavailable" or (p.get("offline") and p.get("model") not in (None, "base")):
             return _err("MODEL_UNAVAILABLE", "model not on this machine and cannot be fetched (offline)", {"engine": "faster_whisper", "model": p.get("model") or "base", "availability": "MODEL_MISSING", "offline": bool(p.get("offline"))})
+        if p.get("model") in MODEL_LANGUAGES:   # 0.10.0 (its ADR-040): a model limited to some languages, refused before any audio work
+            langs, lang = MODEL_LANGUAGES[p["model"]], p.get("language")
+            if lang is None:
+                return _err("INVALID_INPUT", f"model {p['model']} of engine faster_whisper recognizes only {', '.join(langs)} and does not detect the language; pass 'language' explicitly",
+                            {"engine": "faster_whisper", "model": p["model"], "reason": "language_detection_unsupported", "supported": list(langs)})
+            if lang not in langs:
+                return _err("INVALID_INPUT", f"model {p['model']} of engine faster_whisper does not recognize language {lang!r}",
+                            {"engine": "faster_whisper", "model": p["model"], "reason": "language_unsupported", "supported": list(langs)})
         if MODE == "nonzero":
             return _err("TRANSCRIPTION_FAILED", "engine crashed", {"exit": 1})
         if MODE == "timeout_error":

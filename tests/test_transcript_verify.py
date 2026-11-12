@@ -226,6 +226,17 @@ class RenderTests(unittest.TestCase):
         self.assertIn("re-transcription failed", tv["warnings"][0])
         self.assertEqual(out["status"], "COMPLETED")
 
+    def test_a_model_language_limit_is_a_guided_warning(self):
+        """ADR-107 addendum 7: transcription-skill 0.10.0 refuses a model limited to other languages; the row and the warning carry the
+        guidance (the model, its languages, what would work), the deliverable is not compared and the job completes."""
+        out, _, _ = self.render({"verify.transcript": True, "verify.transcript.model": "distil-large-v3.5", "verify.transcript.language": "ja"}, heard=self.HEARD)
+        tv = out["qa"]["transcript_verification"]
+        (row,) = tv["measurements"]
+        self.assertEqual((tv["status"], row["ok"], row["error"]["code"], row["error"]["recovery_class"]), ("NOT_RUN", False, "INVALID_INPUT", "LANGUAGE_UNSUPPORTED"))
+        self.assertIn("model distil-large-v3.5 of engine faster_whisper recognises only en", row["error"]["hint"])
+        self.assertIn("recognises only en", tv["warnings"][0]); self.assertIn("not compared", tv["warnings"][0])
+        self.assertEqual(out["status"], "COMPLETED")
+
     def test_heard_text_without_word_timings_is_not_compared(self):
         from video_agent.agent.transcript_verify import verify_deliverable
         doc = {"assets": {"a": {"technical": {"duration": 6.0}}}, "video": {"operations": []}, "audio": {"operations": []},

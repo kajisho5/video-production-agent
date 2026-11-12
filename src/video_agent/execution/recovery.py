@@ -27,6 +27,16 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "FONTS_DIR_REQUIRED": {"action": "BLOCK", "hint": "no installed font covers the subtitle text, so the burn-in was refused; not retried -- supply a fonts directory: "
                                                       "put a font file (.ttf / .otf / .ttc) that covers the subtitle's script in a directory inside the workspace "
                                                       "and set subtitle.fonts_dir to it (or install such a font), then re-run"},
+    # ADR-107 addendum 7 (transcription-skill 0.10.0): a model limited to some languages refuses another language or a request without one
+    # (INVALID_INPUT, details.reason language_unsupported / language_detection_unsupported, details.model / supported; never retryable)
+    "LANGUAGE_UNSUPPORTED": {"action": "BLOCK", "hint": "the transcription model recognises only the languages in the error's details.supported (or does not detect "
+                                                        "the language); not retried -- name the language spoken, if it is one of them, or choose a model / engine "
+                                                        "that recognises it"},
+    # ADR-107 addendum 7 (sound-design-skill 0.3.0): generate-bgm refuses a model the GPU cannot hold before any work (INSUFFICIENT_VRAM, exit 3, not
+    # retryable); the same machine fails the same way, and the agent never switches the model by itself
+    "INSUFFICIENT_VRAM": {"action": "BLOCK", "hint": "the GPU has less memory than the music model needs (see the error's message); not retried -- generate the bed "
+                                                     "with the Skill's default model (details.default_model, acestep-v15-turbo in sound-design-skill 0.3.0) by not "
+                                                     "naming a model, or on a GPU with enough memory"},
     "ENCODER_FAILED": {"action": "RETRY_ALT", "hint": "retry once with frame-accurate mode", "alt_args": {"ffmpeg-skill/cut": {"accurate": True}}},
     "TIMEOUT":        {"action": "RETRY_LONGER", "hint": "retry once with a doubled timeout"},
     "DISK_FULL":      {"action": "BLOCK", "hint": "free disk space in the workspace"},
