@@ -471,14 +471,24 @@ def loop_seam_items(art: str, paths: Dict[str, str], results: List[ToolResult], 
         bed = paths.get(BGM_OUTPUT)
         res = next((r for r in results or [] if r.ok and r.output and bed and os.path.realpath(str(r.output)) == os.path.realpath(bed)
                     and isinstance(r.data, dict) and r.data.get("op") == "library-pick"), None)
-        seams = qc_checks.loop_seams((res.data or {}).get("fit"), ((res.data.get("outputs") or [{}])[0] or {}).get("duration")) if res is not None else None
+        fit = ((res.data or {}).get("fit") or {}) if res is not None else {}
+        try:
+            seams = qc_checks.loop_seams(fit, ((res.data.get("outputs") or [{}])[0] or {}).get("duration")) if res is not None else None
+            bed_sha = _sha256(bed) if seams else ""
+        except (ValueError, OSError) as e:   # a loop whose seams are unknown, or a bed that cannot be read: not checked, and said so
+            seams, why_not = None, str(getattr(e, "strerror", None) or e)
+        else:
+            why_not = ""
         if res is None:
             memo["result"] = ("WARN", "not checked: no library-pick result for the bed (the step was reused or did not run)", None)
+        elif why_not:
+            memo["result"] = ("WARN", f"not checked: {why_not}", None)
         elif seams is None:
-            fit = (res.data or {}).get("fit") or {}
             memo["result"] = ("SKIP", f"no seam: library-pick did not loop the bed (fit {fit.get('mode')!r})", None)
+        elif not seams:
+            memo["result"] = ("SKIP", "no seam: the looped bed is shorter than one loop period", None)
         else:
-            data, why = _qc_check_run(tools, measure, {"input": bed, "kind": "audio", "rules": qc_checks.loop_rules(seams, cfg)}, _sha256(bed), "audio")
+            data, why = _qc_check_run(tools, measure, {"input": bed, "kind": "audio", "rules": qc_checks.loop_rules(seams, cfg)}, bed_sha, "audio")
             memo["result"] = ("WARN", f"not checked: {why}", None) if data is None else (None, "", (data, seams))
     status, observed, payload = memo["result"]
     if payload is None:

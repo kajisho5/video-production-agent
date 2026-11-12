@@ -108,8 +108,12 @@ class RequirementTests(_Base):
         self.assertEqual(qc_checks.loop_seams(fit), [5.5, 11.0, 16.5])
         self.assertEqual(qc_checks.loop_seams(dict(fit, target=11.0)), [5.5], "a seam at the bed's very end is not inside it")
         self.assertEqual(qc_checks.loop_seams(dict(fit, crossfade=0.0, repeats=2, target=None), 12.0), [6.0])
-        for bad in ({"mode": "trim", "source": 30.0, "target": 16.0}, {"mode": "none"}, dict(fit, repeats=1), dict(fit, crossfade=6.0), None, dict(fit, source=None)):
-            self.assertIsNone(qc_checks.loop_seams(bad), bad)
+        self.assertEqual(qc_checks.loop_seams(dict(fit, target=5.0)), [], "a loop shorter than one period has no seam inside it")
+        for not_looped in ({"mode": "trim", "source": 30.0, "target": 16.0}, {"mode": "none"}, None):
+            self.assertIsNone(qc_checks.loop_seams(not_looped), not_looped)
+        for unreadable in (dict(fit, repeats=1), dict(fit, crossfade=6.0), dict(fit, source=None), dict(fit, repeats="3"), dict(fit, target=None)):
+            with self.assertRaises(ValueError, msg=unreadable):   # the seams are unknown, which is not "no seam"
+                qc_checks.loop_seams(unreadable)
         self.assertEqual(qc_checks.loop_rules([5.5], {"max_click_ratio": 3, "rule": "qc_loop_seam@1"}),
                          {"audio": {"loop_seam": {"seams": [5.5], "include_wrap": False, "max_click_ratio": 3.0}}})
 
@@ -357,8 +361,16 @@ class LoopSeamPipelineTests(_Base):
         from video_agent.models import ToolResult
         bed = str(Path(self.tmp) / "bed.wav"); Path(bed).write_bytes(b"x")
         r = ToolResult("op", "sound-design/library-pick", True, 0, bed, {"op": "library-pick", "fit": {"mode": "trim", "source": 30.0, "target": 16.0}, "outputs": [{"duration": 16.0}]}, [], "", 0.1)
-        [item] = loop_seam_items("art", {"bgm_bed": bed}, [r], {"rule": "qc_loop_seam@1", "max_click_ratio": 3.0}, {"qc_check": "qc/check"}, None, {})
+        cfg = {"rule": "qc_loop_seam@1", "max_click_ratio": 3.0}
+        [item] = loop_seam_items("art", {"bgm_bed": bed}, [r], cfg, {"qc_check": "qc/check"}, None, {})
         self.assertEqual((item.status, item.name), ("SKIP", "loop_seam")); self.assertIn("did not loop", item.observed)
+        r.data["fit"] = {"mode": "loop", "source": 6.0, "repeats": "many"}
+        [item] = loop_seam_items("art", {"bgm_bed": bed}, [r], cfg, {"qc_check": "qc/check"}, None, {})
+        self.assertEqual(item.status, "WARN", "a loop whose fit cannot be read is not checked, and says so"); self.assertIn("cannot be read", item.observed)
+        r.data["fit"] = {"mode": "loop", "source": 6.0, "crossfade": 0.5, "repeats": 3, "target": 16.0}
+        os.remove(bed)
+        [item] = loop_seam_items("art", {"bgm_bed": bed}, [r], cfg, {"qc_check": "qc/check"}, None, {})
+        self.assertEqual(item.status, "WARN", "a bed that cannot be read is a WARN, never a crash of QA"); self.assertIn("not checked", item.observed)
         _svc, _ir, out = self.render({"qc.loop_seam.max_click_ratio": 3}, qc=False, name="noqc")
         [item] = self.qc_items(out, "loop_seam")
         self.assertEqual(item["status"], "WARN"); self.assertIn("not installed", item["observed"])

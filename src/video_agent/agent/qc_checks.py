@@ -198,19 +198,18 @@ def bed_mix_subject(doc: Dict[str, Any]) -> Optional[str]:
 
 
 def loop_seams(fit: Any, duration: Optional[float] = None) -> Optional[List[float]]:
-    """Every multiple of the loop period (`source - crossfade`) inside the bed when library-pick looped it, or None when it did not loop
-    (trimmed or used whole) or the fit is unreadable. The bed is `target` (or `duration`) seconds long."""
+    """Every multiple of the loop period (`source - crossfade`) inside the bed when library-pick looped it ([] when the bed is shorter than one
+    period), or None when it did not loop (trimmed or used whole). A loop whose fit cannot be read raises ValueError: the seams are unknown, which
+    is not the same as having none. The bed is `target` (or `duration`) seconds long."""
     if not isinstance(fit, dict) or fit.get("mode") != "loop":
         return None
     source, xfade, repeats = seconds_of(fit.get("source")), seconds_of(fit.get("crossfade") or 0.0), fit.get("repeats")
     length = seconds_of(fit.get("target")) or (float(duration) if isinstance(duration, (int, float)) and duration > 0 else None)
-    if source is None or xfade is None or length is None or isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 2:
-        return None
+    if source is None or xfade is None or length is None or isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 2 or source - xfade <= 0:
+        raise ValueError(f"library-pick reported a loop whose fit cannot be read (source {fit.get('source')!r}, crossfade {fit.get('crossfade')!r}, "
+                         f"repeats {fit.get('repeats')!r}, length {fit.get('target', duration)!r})")
     period = source - xfade
-    if period <= 0:
-        return None
-    seams = [round(k * period, 6) for k in range(1, repeats) if k * period < length - 1e-6]
-    return seams[:MAX_SEAMS] or None
+    return [round(k * period, 6) for k in range(1, repeats) if k * period < length - 1e-6][:MAX_SEAMS]
 
 
 def loop_rules(seams: List[float], cfg: Dict[str, Any]) -> Dict[str, Any]:
