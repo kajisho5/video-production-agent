@@ -26,6 +26,7 @@ from .agent.dubbing import check_dub_keys, user_files as dub_user_files
 from .agent.publish import check_publish_keys
 from .agent.slides import check_slide_keys, slide_kind
 from .agent.bgm import check_bgm_keys
+from .agent import transcript_verify as verify_task
 from .agent.remotion import check_remotion_keys
 from .agent.documents import SKILL as DOCUMENT_SKILL, check_document_keys
 from .agent.requirements import requirement_map
@@ -400,6 +401,10 @@ class Service:
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         if (user_requirements or {}).get("subtitle.caption_profile") is not None and _subtitles_requested(user_requirements or {}):
             params = dict(params or {}, word_timestamps=True)   # ADR-101: shorts captions split cues by recognised word timings, measured for the requirement
+        if verify_task.parse_verify_requirements(user_requirements or {}):
+            # ADR-110: what the delivered file is compared with after the render: the source's words with their timings, measured for the requirement
+            kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
+            params = dict(params or {}, word_timestamps=True)
         if word_cut_task.requested(user_requirements or {}):
             # ADR-109: the AI names words to keep / cut by their number in a transcript with word timings, measured for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
@@ -831,6 +836,11 @@ class Service:
             d["qa"]["documents"] = plan["documents"]
         else:
             d["qa"].pop("documents", None)
+        tv = verify_task.parse_verify_requirements({r.key: r.value for r in reqs if r.key.startswith(verify_task.PREFIX) and r.provenance == "USER"})
+        if tv:   # ADR-110: the post-render transcript check; written only when asked for, so an unchanged request keeps its plan hash
+            d["qa"]["transcript_verify"] = tv
+        else:
+            d["qa"].pop("transcript_verify", None)
         # allowed input roots: the media inputs' directories and, for an overlay / LUT / graphics image or clip / QC reference, the file's directory (all named by the user)
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
         images += [op["stinger"] for op in plan["video_ops"] if op.get("type") == "video.concat" and op.get("stinger")]   # ADR-099: the stinger file
@@ -923,6 +933,12 @@ class Service:
         profile = load_profile(old["project"]["profile"]["name"])
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**brief_task.values_of(brief_record), **prev_req}))
         analysis = AnalysisResult.from_ir(old)
+        if verify_task.parse_verify_requirements({k: v for k, v in prev_req.items() if k.startswith(verify_task.PREFIX)}) and not any(
+                o.kind == "transcript" and any(isinstance(sg, dict) and isinstance(sg.get("words"), list) for sg in (o.data or {}).get("segments") or [])
+                for o in analysis.observations):
+            # ADR-110: a revision re-uses the recorded analysis, so the timed words the check compares with must already be there
+            raise ValueError(f"{verify_task.KEY} compares the render with the source's words and their timings, which this plan did not measure: "
+                             f"plan again with --set {verify_task.KEY}=true")
         if editor_obs is not None:
             analysis.observations.append(editor_obs)
         rejected = [d for d in old["decisions"] if d["status"] == "REJECTED"]
@@ -1176,6 +1192,9 @@ class Service:
                 return out
             job.artifacts = [a.to_dict() for a in artifacts]
             out["artifacts"] = job.artifacts
+            if ((ir.doc.get("qa") or {}).get("transcript_verify") or {}).get("enabled"):
+                # ADR-110: re-transcribe the deliverables and list where to listen; never a QA status, a stage or an edit
+                out["qa"]["transcript_verification"] = self._verify_transcripts(ir, adapter, paths, qa_reqs)
             if (ir.doc.get("delivery") or {}).get("publish"):   # ADR-087: the offline plan + dry run of the approved upload; nothing is uploaded here
                 out["publish"] = self._publish_prepare(ir, adapter, job, job.artifacts)
             job.transition("COMPLETED" if qa.status != "FAIL" else "REVIEW", f"qa {qa.status}")
@@ -1185,11 +1204,15 @@ class Service:
         prov["skill_observations"] = self._skill_observations(ops, result.results)
         prov["resume"] = resume_note
         prov["skipped"] = result.skipped
+        tvr = (out.get("qa") or {}).get("transcript_verification")
+        if tvr is not None:   # ADR-110: every re-transcription (or why there was none) is a provenance row
+            prov["transcript_verification"] = {k: tvr.get(k) for k in ("rule", "status", "measurements", "warnings")}
         prov["reused"] = result.reused
         prov["plan_version"] = ir.version
         prov["reviews"] = ir.doc["execution"].get("reviews", {})
         ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash, "plan_version": ir.version,
-                                             "resumed_from": job.resumed_from, "skipped": result.skipped})
+                                             "resumed_from": job.resumed_from, "skipped": result.skipped,
+                                             **({"transcript_verification": {"status": tvr.get("status"), "counts": tvr.get("counts"), "warnings": tvr.get("warnings")}} if tvr is not None else {})})
         ir.doc["provenance"]["recovery"] = result.recovery
         save_ir(ir, ir_path)
         save_ir(ir, str(job.dir / "ir.json"))
@@ -1218,6 +1241,60 @@ class Service:
         out["job"] = job.to_dict()
         out["report"] = str(job.dir / "report.md")
         return out
+
+    # ---- post-render transcript check (ADR-110): a list of places for a person to listen to, never a verdict
+    def _verify_transcripts(self, ir: ProjectIR, adapter: Any, paths: Dict[str, str], reqs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Each deliverable re-transcribed by the registry-selected `speech_transcription` tool (word timestamps; the plan's language /
+        engine / model unless `verify.transcript.*` names others) and compared with the words the plan kept (agent/transcript_verify.py).
+        A missing tool, a Skill failure or a deliverable that cannot be compared is a warning and a measurement row, never an exception."""
+        doc = ir.doc
+        cfg = dict((doc.get("qa") or {}).get("transcript_verify") or {})
+        res: Dict[str, Any] = {"rule": verify_task.RULE_VERSION, "config": cfg, "status": "NOT_RUN", "deliverables": [], "warnings": [], "measurements": [],
+                               "counts": {k: 0 for k in verify_task.KINDS},
+                               "note": "a list of places to listen to; it never fails the job, changes a QA status or edits anything: the judgement is a person's"}
+        tool = self.tools_for(adapter, reqs).get(verify_task.SKILL)
+        if not tool:
+            res["warnings"].append(f"{verify_task.KEY}: no tool for {verify_task.SKILL} here (transcription-skill is not installed or not usable), so the delivered files were not re-transcribed")
+            res["measurements"].append({"skill": verify_task.SKILL, "tool": None, "ok": False, "reason": "no tool selected"})
+            return res
+        obs = (doc.get("analysis") or {}).get("observations") or []
+        failed = 0
+        for subject in delivery_subjects(doc):
+            src_tr = next((o for o in obs if o.get("kind") == "transcript" and o.get("asset_id") in subject["sources"]), None)
+            src_params = (src_tr or {}).get("parameters") or {}
+            params: Dict[str, Any] = {"word_timestamps": True}
+            for k in ("language", "engine", "model"):
+                v = cfg.get(k) or (((src_tr or {}).get("data") or {}).get("language") if k == "language" else src_params.get(k))
+                if v:
+                    params[k] = v
+            for t in doc["delivery"]["targets"]:
+                logical = f"{subject['id']}_delivery_{t['id']}"
+                if logical not in paths:
+                    continue
+                budget = {"timeout": round(max(600.0, 3.0 * float(subject.get("duration") or 0.0)), 1)}   # long files: three times real time, at least 10 minutes
+                r = adapter.measure(tool, {"input": paths[logical], "asset_id": logical[:120], "parameters": params, "budget": budget})
+                data = r.data if isinstance(r.data, dict) else {}
+                row = {"skill": verify_task.SKILL, "tool": tool, "subject": subject["id"], "artifact": logical, "ok": bool(r.ok and data.get("transcript")), "seconds": r.seconds,
+                       "parameters": params, "engine": data.get("engine"), "cache": data.get("cache")}
+                if not row["ok"]:
+                    err = data.get("error") or {}
+                    row["error"] = {"code": err.get("code"), "message": str(err.get("message") or "")[:300]}
+                    res["measurements"].append(row)
+                    res["warnings"].append(f"{logical}: re-transcription failed ({err.get('code')}: {str(err.get('message') or '')[:200]}); not compared")
+                    failed += 1
+                    continue
+                res["measurements"].append(row)
+                rep = verify_task.verify_deliverable(doc, subject, data["transcript"], cfg)
+                rep["artifact"] = logical
+                res["deliverables"].append(rep)
+                for k in verify_task.KINDS:
+                    res["counts"][k] += int((rep.get("counts") or {}).get(k, 0))
+        statuses = {d["status"] for d in res["deliverables"]}
+        if res["deliverables"]:
+            res["status"] = "CHECK_HERE" if "CHECK_HERE" in statuses else ("NOT_COMPARED" if statuses == {"NOT_COMPARED"} else "CLEAN")
+            if failed:
+                res["status"] += "_PARTIAL"
+        return res
 
     # ---- publishing (ADR-087): render prepares, a human confirms
     def _publish_prepare(self, ir: ProjectIR, adapter: Any, job: Job, artifacts: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1718,7 +1795,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", "document.")
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", "document.", verify_task.PREFIX)
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -1852,6 +1929,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_document_keys(user_requirements)   # ADR-095: document.verify an existing non-caption file, the preset one of artifacts-skill's names
     check_remotion_keys(user_requirements)   # ADR-093: remotion.* keys known, a composition that keeps the clock, the user's project and files exist
     check_bgm_keys(user_requirements)   # ADR-092: bgm.* keys known, one mode, a library folder that is a sound-design library, with audio.production + audio.mix
+    verify_task.parse_verify_requirements(user_requirements)   # ADR-110: verify.* keys known, a switch, in range
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 
@@ -1906,6 +1984,17 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
             lines.append(f"  - {inc['type']} [{inc['severity']}] {inc['possible_cause']} → {inc['recommended_action']}")
         for s in qa.get("sheets", []):
             lines.append(f"- Look: {s}")
+    tv = (qa or {}).get("transcript_verification")
+    if tv:   # ADR-110: where a person should listen; never a verdict
+        lines += ["", f"## Listen and check — {tv['status']} (re-transcribed, {tv['rule']})", f"- {tv['note']}"]
+        lines += [f"- warning: {w}" for w in tv.get("warnings") or []]
+        for dv in tv.get("deliverables") or []:
+            lines.append(f"- {dv.get('artifact')} — {verify_task.summary_line(dv)}" + (f" ({dv.get('language')}, {dv.get('engine')})" if dv.get("engine") else ""))
+            lines += [f"  - note: {n}" for n in dv.get("notes") or []]
+            for it in dv.get("items") or []:
+                src = it.get("source") or {}
+                lines.append(f"  - {it['kind']} at {it['output']['start']:.2f}-{it['output']['end']:.2f}s: {it['text']!r}"
+                             + (f" (source {src.get('asset_id')} {src.get('start'):.2f}-{src.get('end'):.2f}s)" if src.get("start") is not None else ""))
     if out.get("artifacts"):
         lines += ["", "## Artifacts"]
         for a in out["artifacts"]:

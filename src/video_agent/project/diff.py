@@ -51,15 +51,19 @@ def plan_diff(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
         fin[sec] = _diff_map(o_, n_, _op_view)
     oq = {"qc": (old.get("qa") or {}).get("qc")} if (old.get("qa") or {}).get("qc", {}).get("enabled") else {}
     nq = {"qc": (new.get("qa") or {}).get("qc")} if (new.get("qa") or {}).get("qc", {}).get("enabled") else {}
+    # ADR-110: the post-render transcript check (written only when asked for)
+    ov_ = {"transcript": (old.get("qa") or {}).get("transcript_verify")} if (old.get("qa") or {}).get("transcript_verify") else {}
+    nv_ = {"transcript": (new.get("qa") or {}).get("transcript_verify")} if (new.get("qa") or {}).get("transcript_verify") else {}
     out: Dict[str, Any] = {
         "from_version": old["plan"]["version"], "to_version": new["plan"]["version"],
         "decisions": _diff_map(od, nd, _decision_view),
         "video": _diff_map(ov, nv, _op_view), "audio": _diff_map(oa, na, _op_view),
         "delivery": _diff_map(ot, nt, lambda t: {k: v for k, v in t.items() if k != "decision_ids"}),
         **fin, "qc": _diff_map(oq, nq, lambda q: {k: v for k, v in q.items() if k != "decision_ids"}),
+        "verify": _diff_map(ov_, nv_, lambda q: dict(q)),
     }
     out["summary"] = summarize(out)
-    out["empty"] = not any(sec[k] for sec in (out["decisions"], out["video"], out["audio"], out["delivery"], out["captions"], out["graphics"], out["color"], out["speech"], out["qc"]) for k in ("added", "removed", "changed"))
+    out["empty"] = not any(sec[k] for sec in (out["decisions"], out["video"], out["audio"], out["delivery"], out["captions"], out["graphics"], out["color"], out["speech"], out["qc"], out["verify"]) for k in ("added", "removed", "changed"))
     return out
 
 
@@ -104,6 +108,9 @@ def summarize(diff: Dict[str, Any]) -> List[str]:
         lines.append("QC gate: added")
     for k in (diff.get("qc") or {}).get("changed", {}):
         lines.append("QC gate: rules changed")
+    for verb in ("removed", "added", "changed"):   # ADR-110
+        for k in (diff.get("verify") or {}).get(verb, {}):
+            lines.append(f"VERIFY {k}: {verb}")
     for k, v in diff["decisions"]["removed"].items():
         lines.append(f"DECISION {k}: {v['decision']} → dropped")
     for k, v in diff["decisions"]["added"].items():

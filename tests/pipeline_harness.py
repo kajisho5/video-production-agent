@@ -28,7 +28,7 @@ HERE = Path(__file__).resolve().parent
 FAKES = {"subtitle": HERE / "fake_subtitle.py", "thumbnail": HERE / "fake_thumbnail.py", "color-grading": HERE / "fake_color_grading.py",
          "motion-graphics": HERE / "fake_motion_graphics.py", "qc": HERE / "fake_qc.py", "transcription": HERE / "fake_transcription.py", "video-editing": HERE / "fake_video_editing.py",
          "audio-production": HERE / "fake_audio_production.py"}
-MODE_VARS = ("FAKE_SUBTITLE_MODE", "FAKE_THUMBNAIL_MODE", "FAKE_CG_MODE", "FAKE_MG_MODE", "FAKE_QC_MODE", "FAKE_TS_MODE", "FAKE_TS_SEGMENTS", "FAKE_VE_MODE",
+MODE_VARS = ("FAKE_SUBTITLE_MODE", "FAKE_THUMBNAIL_MODE", "FAKE_CG_MODE", "FAKE_MG_MODE", "FAKE_QC_MODE", "FAKE_TS_MODE", "FAKE_TS_SEGMENTS", "FAKE_TS_RENDERED", "FAKE_VE_MODE",
              "FAKE_SUBTITLE_CALLS", "FAKE_THUMBNAIL_CALLS", "FAKE_CG_CALLS", "FAKE_MG_CALLS", "FAKE_QC_CALLS", "FAKE_TS_CALLS", "FAKE_VE_CALLS", "FAKE_AP_MODE", "FAKE_AP_CALLS")
 BASE_CAPS = ["python", "ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:libx264", "encoder:libx265", "encoder:prores_ks", "encoder:aac", "filter:loudnorm", "filter:subtitles", "font:cjk-ja"]
 FINISHING_CAPS = ["subtitle", "thumbnail", "color-grading", "motion-graphics", "qc", "transcription", "video-editing", "filter:xfade", "filter:acrossfade"] \

@@ -443,6 +443,15 @@ def cmd_render(args, svc: Service) -> int:
             print(f"  {a['type']}: {a['path']}  qa={a['qa_status']} stage={a['stage']}")
         if out.get("qa"):
             print(f"  QA {out['qa']['status']}: {sum(1 for i in out['qa']['items'] if i['status'] == 'PASS')} pass, {len(out['qa']['incidents'])} incident(s)")
+            tv = out["qa"].get("transcript_verification")
+            if tv:   # ADR-110: where to listen (never a verdict)
+                print(f"  listen and check ({tv['status']}): " + ", ".join(f"{v} {k}" for k, v in tv["counts"].items()))
+                for w in tv.get("warnings") or []:
+                    print(f"    warning: {w}")
+                for dv in tv.get("deliverables") or []:
+                    print(f"    {dv.get('artifact')}: {dv.get('status')}" + "".join(f"\n      note: {n}" for n in dv.get("notes") or []))
+                    for it in dv.get("items") or []:
+                        print(f"    {it['kind']:<14} {it['output']['start']:8.2f}-{it['output']['end']:.2f}s  {it['text']}")
         if out.get("report"):
             print("  report:", out["report"])
         ex = out.get("execution") or {}

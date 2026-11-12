@@ -1963,6 +1963,42 @@ Observation(transcript, word timings) → numbered words [index, text] → AI re
   request (roadmap step 13), using `timing: interpolated` beyond reporting it at a range boundary, requesting dictionary word
   segmentation (`word_segmentation`), and the contract re-pin to transcription-skill 0.9.0 (batched separately).
 
+### Post-render transcript check: listen and check here (implemented, ADR-110)
+
+```
+plan: verify.transcript=true → IR qa.transcript_verify (rule transcript_verify@1, unit, min_confidence, language / engine / model)
+render: … → QA → artifacts → speech_transcription (registry-selected) on each deliverable, word timestamps
+        → heard words aligned to the planned words → report qa.transcript_verification (+ provenance rows, report.md, CLI / MCP)
+```
+
+- **Opt-in, off by default:** `--set verify.transcript=true` (+ `verify.transcript.language`, `.engine`, `.model`, `.min_confidence`
+  (0..1, default 0.5), `.unit` = `word` (default) | `char`). The plan also measures the source transcript with word timestamps,
+  because the planned words are what the delivered file is compared with. Language / engine / model default to the source
+  transcript's.
+- **Planned words** (`agent/transcript_verify.py`): the ADR-109-numbered words of each source's transcript that lie wholly in one
+  kept range (IR `video.trim` keep, or the complement of `audio.cut` remove), mapped onto the delivered timeline like the subtitle
+  cues (trim → concat offset → speed, plus a still joined before the picture). Each keeps its source asset, word index and times.
+- **Normalisation:** NFKC → case fold → characters of the Unicode categories P* (punctuation), Z* (separators) and C* (control /
+  format) removed; words empty after it are left out on both sides. Unit `word`: one token per recognised word. Unit `char`
+  (opt-in, for scripts without spaces such as Japanese, where two recognitions split the same speech differently): one token per
+  character of the normalised word.
+- **Alignment / report:** `difflib.SequenceMatcher` (autojunk off). Every non-equal opcode is one item with delivered seconds and,
+  where mappable, source seconds: `missing` (planned, not heard; with the word indices), `duplicated` (heard, not planned, every
+  token heard more often in the file than planned), `unexpected` (any other heard, not planned), and `low_confidence` spans
+  (consecutive heard words below `min_confidence`). Per deliverable: status CHECK_HERE / CLEAN / NOT_COMPARED, counts, notes
+  (filler removal ran, a switch / grid / mix programme, a different recognised language), at most 200 items (counts complete).
+- **Edge rules:** source seconds only when both ends map into one kept range; heard words numbered by order; speech heard without
+  word timings → NOT_COMPARED; a source that could not be compared → CHECK_HERE; `revise` refuses to switch the check on without a
+  recorded timed transcript; `qa.transcript_verify` is part of the plan diff (`VERIFY`).
+- **Never a verdict:** the result is stored as `qa.transcript_verification` in the render result / `report.json` (a key beside
+  `items`, so the QA status, the artifact stages and the job status are untouched), as a "Listen and check" section in
+  `report.md`, in the CLI output, in `provenance.json` (`transcript_verification`: rule, status, measurements, warnings) and in the
+  IR's `provenance.runs[]` (status, counts, warnings). Nothing is edited; the judgement is a person's.
+- **Failure domain:** no tool for `speech_transcription` → status NOT_RUN, a warning and a measurement row; a Skill failure or
+  timeout → that deliverable is not compared, with the Skill's code in the row (status `…_PARTIAL` when others were); a source
+  without word timings → NOT_COMPARED with the reason. The re-transcription's budget is three times the delivered duration, at least
+  10 minutes.
+
 ## 52. Architecture / Repository
 
 A possible structure:
