@@ -3564,7 +3564,7 @@ def _mean_abs_diff(a: bytes, b: bytes, w: int, rect=None, outside: bool = False)
 
 
 class FaceRedactionRealTests(unittest.TestCase):
-    """ADR-090 on the real detection-skill (main, contract 0.2.0) and the real ffmpeg-skill: the live contract equals the pin, its doctor says
+    """ADR-090 on the real detection-skill (main, contract 0.2.2) and the real ffmpeg-skill: the live contract equals the pin, its doctor says
     whether FACES can run (YuNet needs opencv and the model file in DETECTION_MODELS_DIR; ffmpeg-skill is the agent's own checkout), and a face
     that is on screen only from 2 s to 5 s is blurred during its measured span and nowhere else, after the user's approval. Runs whenever a
     detection-skill checkout is installed (the CI integration job installs it with `[faces]` and fetches the YuNet file pinned by sha256)."""
