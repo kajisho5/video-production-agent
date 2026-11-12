@@ -20,9 +20,10 @@ import unittest
 MODULE = "tests.test_integration"
 
 # Measured seconds per class on the slower engine leg (ffmpeg-skill v2.24.1, ubuntu-latest). Balance only.
+# VideoEditingFeaturesRealTests: 222 measured, plus about 64 estimated for ADR-112's end-to-end stinger case (its local time at the class's CI / local ratio).
 SECONDS = {
     "RealMediaTests": 758, "IntegratedPipelineRealTests": 710, "AudioProductionRealTests": 309,
-    "VideoEditingFeaturesRealTests": 222, "VideoEditingOperationsRealTests": 192, "MediaAnalysisRealTests": 191,
+    "VideoEditingFeaturesRealTests": 286, "VideoEditingOperationsRealTests": 192, "MediaAnalysisRealTests": 191,
     "SubtitleFeaturesRealTests": 127, "VoiceEnhanceRealTests": 108, "SubtitleMuxRealTests": 96,
     "ThumbnailFeaturesRealTests": 83, "MotionGraphicsFeaturesRealTests": 82, "NleBridgeRealTests": 69,
     "PriorityAToolsRealTests": 68, "VideoEditingRealTests": 66, "DocumentVerifyRealTests": 57,
