@@ -26,7 +26,7 @@ from fractions import Fraction
 from typing import Any, Dict, List, Optional
 
 from .bgm import BGM_INPUT
-from .editing import EditRequirementError, _bool, _number
+from .editing import PROGRAMME, EditRequirementError, _bool, _number
 
 STINGER_KEY = "qc.stinger"
 STINGER_MAX_KEY = "qc.stinger.max_cut_frame_difference"
@@ -142,7 +142,7 @@ def stinger_concat(doc: Dict[str, Any], subject_id: str) -> Optional[Dict[str, A
     """The CONCAT with a stinger transition whose output is `subject_id` (the programme), or None."""
     return next((op for op in (doc.get("video") or {}).get("operations") or []
                  if op.get("type") == "video.concat" and op.get("stinger") and (op.get("transition") or {}).get("type") == "stinger"
-                 and (op.get("output") or "programme") == subject_id), None)
+                 and (op.get("output") or PROGRAMME) == subject_id), None)
 
 
 def seconds_of(v: Any) -> Optional[float]:

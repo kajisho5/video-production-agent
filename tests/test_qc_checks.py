@@ -151,6 +151,8 @@ class AdapterTests(_Base):
             self.assertEqual((r.ok, r.data["error"]["code"]), (False, "INVALID_REQUEST")); self.assertIn(msg, r.data["error"]["message"])
         r = self.run_check({"video": {"stinger": {"cut_point": 0.5, "file": "st"}}}, kind="audio")
         self.assertIn("own video rule", r.data["error"]["message"])
+        r = self.run_check({"delivery": {"video": {"stinger": {"cut_point": 0.5, "file": "st"}}}}, kind="video")
+        self.assertIn("own video rule", r.data["error"]["message"], "a stinger file the Skill would not read is never sent unresolved")
         with self.assertRaises(ToolError):
             self.ad.build_request("qc/check", {"kind": "delivery_package", "artifacts": [{"artifact_id": "v", "artifact_type": "video", "input": "v"}],
                                                "rules": {"delivery_package": {"artifacts": [{"artifact_id": "v", "video": {"stinger": {"cut_point": 0.5, "file": "st"}}}]}}},

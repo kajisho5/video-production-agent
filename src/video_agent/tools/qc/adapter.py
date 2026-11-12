@@ -518,17 +518,19 @@ class QcAdapter(ToolAdapter):
         written back into the rules as the resolved absolute path; {companion name: path}. A stinger rule elsewhere than the kind's video rule
         is refused (the Skill would read a file the adapter has not resolved)."""
         out: Dict[str, str] = {}
-        for where, name in RULE_FILE_FIELDS.get(kind, {}).items():
-            holder: Any = rules
-            for k in where[:-1]:
-                holder = holder.get(k) if isinstance(holder, dict) else None
-            if not isinstance(holder, dict) or holder.get(where[-1]) is None:
-                continue
-            path = self._resolve_input("rules." + ".".join(where), holder[where[-1]], paths)
-            holder[where[-1]] = path
-            out[name] = path
-        if kind != "video" and as_dict(as_dict(rules.get("video")).get("stinger")).get("file") is not None:
-            raise ToolError("qc: a stinger file goes in the kind's own video rule (rules.video with kind video, rules.delivery.video with kind delivery)")
+        own = RULE_FILE_FIELDS.get(kind, {})
+        for fields in RULE_FILE_FIELDS.values():
+            for where, name in fields.items():
+                holder: Any = rules
+                for k in where[:-1]:
+                    holder = holder.get(k) if isinstance(holder, dict) else None
+                if not isinstance(holder, dict) or holder.get(where[-1]) is None:
+                    continue
+                if where not in own:   # the Skill reads only the kind's own rule: a file anywhere else would cross the boundary unresolved
+                    raise ToolError("qc: a stinger file goes in the kind's own video rule (rules.video with kind video, rules.delivery.video with kind delivery)")
+                path = self._resolve_input("rules." + ".".join(where), holder[where[-1]], paths)
+                holder[where[-1]] = path
+                out[name] = path
         return out
 
     def _package_request(self, tool: str, operation: str, kind: str, args: Dict[str, Any], paths: Dict[str, str], op_id: str, timeout: Optional[float]) -> Dict[str, Any]:
