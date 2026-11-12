@@ -1062,6 +1062,24 @@
     - unit `tests/test_transcript_verify.py`: the verify row and its warning.
     - unit `tests/test_release_version.py` and evals 31 / 32.
     - Locally on the real Skills (qc-skill v1.3.0, transcription-skill v0.10.0 with its local base model offline, sound-design-skill e9494d6 with audio-production-skill and ffmpeg-skill main): `QcRealSkillTests`, `TranscriptionRealTests`, `SpeechToPlanRealTests` and `SoundDesignBgmRealTests` pass, the live contracts == the pins. CI runs every integration shard against each main.
+- Addendum 8 (2026-11-12, detection-skill 0.2.0, transcription-skill v0.11.0): the same day's batch, released after addendum 7 merged (#143).
+  - Facts, detection-skill (main 0ff0be3, #15, its roadmap step 13; version 0.2.0 in pyproject, no tag):
+    - It adds optional engines for the tools this adapter does not run: `text --engine tesseract|ppocrv6` (PP-OCRv6) and `objects --engine yolox|rfdetr` (RF-DETR S / M).
+    - Against the 0.1.0 pin, the contract differs in `version`, `dependencies`, `not_provided`, `engines` (`by_kind` / `optional`) and the text / objects `argv` and descriptions.
+    - `faces` / `tracks` (the tools this adapter runs), `detections`, `tracks`, `execution` and `errors` are unchanged. `MODEL_NOT_FOUND` was already in 0.1.0 (exit 3, not retryable) and is already mapped (TOOL_MISSING; the capability evidence names it with the doctor's install line).
+    - The adapter's `breaking_drift` on the live contract is empty; the rest is reported drift. The version was outside the gate (`0.1.`).
+  - Facts, transcription-skill (v0.11.0 7f88611, #53, its ADR-041): an optional local engine `qwen3_asr` (Qwen3-ASR-1.7B with Qwen3-ForcedAligner-0.6B word timestamps), listed after `haas_ja`. In the pin's availability-free form, the contract differs from the 0.10.0 pin in `version` and that one engine entry only. Tools, schemas, capabilities and `contract_version` 1.0 are unchanged. The version was outside the gate (`0.10.`).
+  - Decision:
+    - The pins are re-taken the same way as before:
+      - `detection/contract_0.2.0.json` is main's `contract --json` as one sorted, compact line (the method gives the 0.1.0 pin from c46c91a byte for byte);
+      - `transcription/contract_0.11.0.json` is the tag's `skill --json` with the engines in the availability-free form (the 0.10.0 method).
+    - The gates take `0.2.` for detection and `0.11.` for transcription.
+    - Nothing else changes: the agent runs neither text / objects nor the new engine, and wiring `qwen3_asr` into plans is not part of this re-pin.
+  - Verification:
+    - unit `tests/test_face_redaction.py`: pin 0.2.0; the gate takes 0.1.x / 0.2.x and refuses 0.3 / 1.0; a 0.1.0 contract (text / objects without `--engine`) is drift, never fatal.
+    - unit `tests/test_version_gates.py`: transcription pin 0.11.0 with its five engines in the Skill's order; the gate takes 0.11.x and refuses 0.12 / 0.110 / 1.0.
+    - unit `tests/test_unit.py` and evals 31 / 32: the version strings.
+    - Locally on the real Skills (detection-skill 0ff0be3, transcription-skill v0.11.0, ffmpeg-skill main): `FaceRedactionRealTests.test_live_contract_and_doctor` and `TranscriptionRealTests` pass, and live == pin.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

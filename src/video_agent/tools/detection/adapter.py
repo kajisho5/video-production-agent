@@ -6,7 +6,7 @@
         `detection tracks --json --overwrite --output=<workspace>/cache/detection/<asset>.tracks.json [--window=S] -- <faces.json>`
                                                               (boxes linked over time into redact-ready rectangles, a documented heuristic)
 
-Protocol (detection-skill's own contract, `detection contract --json`, pinned from main in contract_0.1.0.json -- the repository has no
+Protocol (detection-skill's own contract, `detection contract --json`, pinned from main in contract_0.2.0.json -- the repository has no
 release tag, so the pin follows main as diarization / ingest / voice-enhance do):
     contract → `detection contract --json`
     doctor   → `detection doctor --json` (ok, ready.{faces, text, objects, video_frames, tracks, check}, checks with install lines,
@@ -48,7 +48,10 @@ TOOL_FACES = "detection/faces"
 TOOL_TRACKS = "detection/tracks"
 DETECTIONS_SCHEMA = "detection-skill/detections@1"
 TRACKS_SCHEMA = "detection-skill/tracks@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 0.2.0 (detection-skill #15, main 0ff0be3, no release tag; ADR-107 addendum 8): optional engines for text (`--engine ppocrv6`) and objects
+# (`--engine rfdetr`), with their dependencies, `engines.by_kind` / `engines.optional` and not_provided wording. faces / tracks (the only tools this
+# adapter runs), detections, tracks, execution and the errors are unchanged: the differences are non-fatal drift; re-pinned from main
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
 KIND = "face_tracks"                            # the analysis kind (media/analysis.py) this adapter measures
 # ADR-104: faces with their measured attributes (`detection faces --attributes`, no tracks): what thumbnail-skill's choose_frame ranks.
 # Its sampling parameters carry their own names in the analysis request (`frame_every` / `frame_min_score`), so a plan that also blurs
@@ -80,7 +83,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "tracks", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

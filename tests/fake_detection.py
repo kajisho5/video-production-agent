@@ -1,5 +1,5 @@
 """Fake detection-skill process for the ADR-090 tests: speaks the slice of the real `detection` CLI the agent uses -- `contract --json`
-(the pinned src/video_agent/tools/detection/contract_0.1.0.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok),
+(the pinned src/video_agent/tools/detection/contract_0.2.0.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok),
 `faces --json --overwrite --output=F --every=S [--min-score=X] [--ffmpeg-skill=D] --timeout=T -- <video>` (detection-skill/detections@1 with
 the sha256 of the input, printed with ok / detections_file and written to --output) and `tracks --json --overwrite --output=F [--window=S]
 -- <faces.json>` (detection-skill/tracks@1 made from that file, with its sha256). The media are the self-describing fake files of
@@ -11,7 +11,7 @@ Controlled via:
   FAKE_DET_READY: all (default) | model (the YuNet file missing) | frames (ffmpeg-skill unusable)
   FAKE_DET_MODE: ok | fail:<CODE> | bad_fingerprint | label | wrong_every | odd_rect | tracks_other_file | not_written | no_attributes
   `faces --attributes` (ADR-104) adds each face's attributes: the face fact's own "attributes" over an open-eyed frontal default.
-  FAKE_DET_CONTRACT: pinned | drift_version (0.1.9: non-fatal) | drift_fatal (tracks argv changed) | incompatible (0.2.0)
+  FAKE_DET_CONTRACT: pinned | drift_version (0.2.9: non-fatal) | drift_fatal (tracks argv changed) | incompatible (0.3.0)
   FAKE_DET_CALLS: a file every invocation's argv is appended to (one JSON list per line). Test double only."""
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ MODE = os.environ.get("FAKE_DET_MODE", "ok")
 READY = os.environ.get("FAKE_DET_READY", "all")
 CONTRACT_MODE = os.environ.get("FAKE_DET_CONTRACT", "pinned")
 CALLS_LOG = os.environ.get("FAKE_DET_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "detection" / "contract_0.1.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "detection" / "contract_0.2.0.json"
 W, H = 1280, 720
 
 
@@ -36,11 +36,11 @@ def _emit(doc) -> None:
 def _contract() -> dict:
     c = json.loads(PINNED.read_text(encoding="utf-8"))
     if CONTRACT_MODE == "drift_version":
-        c["version"] = "0.1.9"
+        c["version"] = "0.2.9"
     elif CONTRACT_MODE == "drift_fatal":
         next(t for t in c["tools"] if t["tool_id"] == "detection/tracks")["argv"].append("--strict")
     elif CONTRACT_MODE == "incompatible":
-        c["version"] = "0.2.0"
+        c["version"] = "0.3.0"
     return c
 
 
