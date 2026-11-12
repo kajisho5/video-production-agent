@@ -1161,6 +1161,22 @@
     - unit `tests/test_image_prepare.py`: pin 0.10.0; a 0.10.9 version is reported, not fatal; 0.11.0 is refused.
     - unit `tests/test_documents.py`: pin 0.4.0; 0.4.9 is drift, not breaking; 0.5.0 is outside the supported range.
     - Locally on the real Skills (imagemagick-skill v0.10.0, artifacts-skill v0.4.0): `ImagePrepareRealTests` and `DocumentVerifyRealTests` pass, and live == pin.
+- Addendum 14 (2026-11-12, remotion-ffmpeg-skill v0.13.0, dubbing-skill 0.2.1): a re-pin and one widened gate, after #152.
+  - Facts, remotion-ffmpeg-skill (v0.13.0 d135b3b, after #18 5ebd4cc): Emphasis captions. `analyze` gains `--emphasis` (words to emphasise, each a whole, timed word of a caption cue; needs `--words`) and `--emphasis-auto` (the captions' own numbers and/or names), its summary gains `emphasis`, and the composition list in the `comp` descriptions of `pipeline` / `render` / `still` gains `Emphasis`. Compared field by field with the 0.12.1 pin, nothing else changed besides `version` / `skill.version`. `analyze` is not a tool the adapter checks for drift (it checks `pipeline` and `doctor`), and the `pipeline` change is one description in `inputSchema`, which is not fatal. The version was outside the gate (`0.12.`), so `RemotionRealTests` failed against main.
+  - Facts, dubbing-skill (main f929f4a, #21, version 0.2.1, no tag): `terms` gains `[--transcript <transcript.json>]` and a longer description; its result reports `heard` (whether a transcription-skill Transcript of the output contains each term as written or as its reading). Compared with the 0.2.0 pin, only `version` and the `dubbing/terms` tool changed. `terms` is not an op tool of this adapter (`TOOLS` is `dubbing/dub`), so a 0.2.0 install has no drift outside the version. The version is inside the gate (`0.2.`), but live != pin outside the version fields, so `DubbingRealTests` failed against main.
+  - Decision, pins (each method reproduces the previous pin byte for byte):
+    - `remotion/contract_0.13.0.json` is the v0.13.0 tag's `python scripts/_contract.py --json` as one sorted, compact line. The method gives the 0.12.1 pin from v0.12.1 (209474d).
+    - `dubbing/contract_0.2.1.json` is main f929f4a's `contract --json` as one sorted, compact line. The method gives the 0.2.0 pin from 979dc1a.
+    - Each contract is read from a full tree of the commit: the version comes from the package metadata, so the scripts alone report `0.0.0` (`0.0.0+unknown` for dubbing).
+    - The adapters' `PINNED_CONTRACT_PATH`, `agent/dubbing.py` and the fakes read the new files.
+  - Decision, gates: the remotion gate takes `0.13.` (with `0.12.`). The dubbing gate (`0.1.` / `0.2.`) already takes 0.2.1. No major version enters either gate.
+  - Consequences: installs of remotion-ffmpeg-skill 0.12.x and dubbing-skill 0.2.0 keep working (inside the gates, with no fatal drift on what the adapters run). Requests, plans and admitted results are unchanged.
+  - Not done: the Emphasis composition (not in `COMPOSITIONS`, so `remotion.comp=Emphasis` is refused at the request and in the adapter), `analyze --emphasis` / `--emphasis-auto` (the adapter never sends an `emphasis` key), and `dubbing/terms --transcript` with its `heard` result (the agent does not run `terms`).
+  - Verification:
+    - unit `tests/test_remotion.py`: pin 0.13.0; 0.14.0 / 0.130.0 / 1.0.0 are outside the gate; a 0.12.1 contract without Emphasis is drift, not breaking; the analyze options are pinned; `remotion.comp=Emphasis` and an `emphasis` argument are refused before any process.
+    - unit `tests/test_dubbing.py`: pin 0.2.1; `terms --transcript` is pinned and `terms` is not in `TOOLS`; a 0.2.0 contract is not breaking drift.
+    - unit `tests/test_release_version.py` and `tests/test_version_gates.py`.
+    - Locally on the real Skills (remotion-ffmpeg-skill v0.13.0, dubbing-skill f929f4a, ffmpeg-skill main): `RemotionRealTests` and `DubbingRealTests` pass, and live == pin.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

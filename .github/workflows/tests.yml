@@ -110,7 +110,7 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/slide-sync-skill ../slide-sync-skill
       # sound-design-skill (ADR-092): main (no release tag); run from the checkout, stdlib only. Library mode only in CI (no ACE-Step): the bed is the user's licensed file
       - run: git clone --depth 1 https://github.com/kajisho5/sound-design-skill ../sound-design-skill
-      # remotion-ffmpeg-skill (ADR-093): main (= v0.12.1); its scripts run from the checkout. No npm install / Remotion render in CI: contract, doctor, the project check
+      # remotion-ffmpeg-skill (ADR-093): main (= v0.13.0); its scripts run from the checkout. No npm install / Remotion render in CI: contract, doctor, the project check
       - run: git clone --depth 1 https://github.com/kajisho5/remotion-ffmpeg-skill ../remotion-ffmpeg-skill
       # artifacts-skill (ADR-095): main (contract 0.4.0, = the v0.4.0 tag); run from the checkout (Python 3.10+). Markdown verification needs only the standard library: no extra installed
       - run: git clone --depth 1 https://github.com/kajisho5/artifacts-skill ../artifacts-skill

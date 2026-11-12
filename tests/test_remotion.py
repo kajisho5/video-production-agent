@@ -1,5 +1,5 @@
 """ADR-093 (remotion-ffmpeg-skill roadmap step 4, agent side: SkillSpec measured_motion -> pipeline, CONFIRM): one Remotion composition over the edited
-picture by remotion-ffmpeg-skill's pipeline, against a fake checkout (tests/fake_remotion.py) that speaks its v0.12.1 contract, doctor and pipeline
+picture by remotion-ffmpeg-skill's pipeline, against a fake checkout (tests/fake_remotion.py) that speaks its v0.13.0 contract, doctor and pipeline
 result, with the fake media engine. No Node, Remotion, ffmpeg or network."""
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from video_agent.project import load_ir, save_ir  # noqa: E402
 from video_agent.service import _check_requirement_keys  # noqa: E402
 from video_agent.tools.remotion import (RemotionAdapter, RemotionSkill, breaking_drift, check_contract, drift, locate_remotion, pinned_contract,  # noqa: E402
                                         recovery_class, render_name)
-from video_agent.tools.remotion.adapter import PINNED_CONTRACT_PATH  # noqa: E402
+from video_agent.tools.remotion.adapter import COMPOSITIONS, PINNED_CONTRACT_PATH, SENT  # noqa: E402
 
 FAKE = Path(__file__).resolve().parent / "fake_remotion.py"
 MODES = ("FAKE_RF_MODE", "FAKE_RF_READY", "FAKE_RF_CALLS", "FAKE_RF_PIN", "VIDEO_AGENT_REMOTION_DIR")
@@ -105,15 +105,29 @@ class _Base(unittest.TestCase):
 class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
-        self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.12.1 tag")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("remotion-ffmpeg-skill", "0.12.1", "1.0"))
+        self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.13.0 tag")
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("remotion-ffmpeg-skill", "0.13.0", "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
         self.assertEqual((recovery_class("missing_tool"), recovery_class("timeout"), recovery_class("other")), ("TOOL_MISSING", "TIMEOUT", "SKILL_ERROR"))
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["name"] == "pipeline")["flags"].pop("out_dir")
         self.assertTrue(any("out_dir" in e for e in check_contract(bad)))
         self.assertTrue(breaking_drift(bad))
-        bad = json.loads(json.dumps(c)); bad["version"] = "0.13.0"
-        self.assertTrue(any("supported range" in e for e in check_contract(bad)))
+        for v in ("0.14.0", "0.130.0", "1.0.0"):
+            bad = json.loads(json.dumps(c)); bad["version"] = bad["skill"]["version"] = v
+            self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
+        # ADR-107 addendum 14: a 0.12.x install (no Emphasis in the comp descriptions) is inside the gate and is drift, not breaking drift
+        old = json.loads(json.dumps(c)); old["version"] = old["skill"]["version"] = "0.12.1"
+        for t in old["tools"]:
+            comp = t["inputSchema"]["properties"].get("comp")
+            if comp:
+                comp["description"] = comp["description"].replace(", Emphasis", "")
+        self.assertEqual((check_contract(old), breaking_drift(old)), ([], []))
+        self.assertTrue(drift(old))
+        analyze = next(t for t in c["tools"] if t["name"] == "analyze")
+        self.assertEqual((analyze["flags"]["emphasis"], analyze["flags"]["emphasis_auto"]), ("--emphasis", "--emphasis-auto"), "0.13.0's analyze options")
+        self.assertIn("Emphasis", next(t for t in c["tools"] if t["name"] == "pipeline")["inputSchema"]["properties"]["comp"]["description"])
+        self.assertNotIn("Emphasis", COMPOSITIONS, "the Emphasis composition is pinned, not planned")
+        self.assertNotIn("emphasis", SENT)
 
     def test_locate_needs_the_scripts(self):
         sk = fake_checkout(self.tmp)
@@ -148,7 +162,7 @@ class AdapterTests(_Base):
         self.assertEqual((r.data["verified"], r.data["comp"], [s["step"] for s in r.data["steps"]]), (True, "Captioned", ["measure", "draw"]))
 
     def test_refused_before_a_process(self):
-        for args in ({"comp": "Jumpcut"}, {"comp": "Nope"}, {"platform": "youtube"}, {"aspect": "9:16"}, {"brand": "b.json"}, {"captions": "/etc/passwd"}):
+        for args in ({"comp": "Jumpcut"}, {"comp": "Nope"}, {"comp": "Emphasis"}, {"emphasis": "[\"x\"]"}, {"platform": "youtube"}, {"aspect": "9:16"}, {"brand": "b.json"}, {"captions": "/etc/passwd"}):
             with self.subTest(args=args):
                 _, _, _, r = self.run_op(args)
                 self.assertEqual((r.ok, r.data["error"]["code"]), (False, "INVALID_REQUEST"))
@@ -171,6 +185,7 @@ class RequirementTests(_Base):
         p = project(self.tmp)
         self.assertEqual(parse_remotion_requirements({"remotion.comp": "PeakPulse", "remotion.project": p, "remotion.beats": "true"}), {"comp": "PeakPulse", "project": p, "beats": True})
         for reqs, why in (({"remotion.project": p}, "not set"), ({"remotion.comp": "Jumpcut", "remotion.project": p}, "cuts the picture"),
+                          ({"remotion.comp": "Emphasis", "remotion.project": p}, "must be one of"),
                           ({"remotion.comp": "Captioned", "remotion.project": self.tmp}, "package.json"), ({"remotion.comp": "Captioned", "remotion.project": p, "remotion.aspect": "9:16"}, "own frame"),
                           ({"remotion.comp": "Captioned", "remotion.project": p, "remotion.captions": "/nope.srt"}, "existing file"),
                           ({"remotion.comp": "Captioned", "remotion.project": p, "remotion.platform": "youtube"}, "unknown requirement key")):

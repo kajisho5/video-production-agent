@@ -119,8 +119,16 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("dubbing", "0.2.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("dubbing", "0.2.1", "1.0"))
         self.assertEqual(check_contract(c), [])
+        # ADR-107 addendum 14: 0.2.1's `terms --transcript` is pinned; `terms` is not a tool the adapter runs, and a 0.2.0 install is not breaking drift
+        from video_agent.tools.dubbing.adapter import TOOLS
+        terms = next(t for t in c["tools"] if t["tool_id"] == "dubbing/terms")
+        self.assertIn("[--transcript <transcript.json>]", terms["argv"])
+        self.assertNotIn("dubbing/terms", TOOLS)
+        old = json.loads(json.dumps(c)); old["version"] = "0.2.0"
+        old_terms = next(t for t in old["tools"] if t["tool_id"] == "dubbing/terms"); old_terms["argv"].remove("[--transcript <transcript.json>]")
+        self.assertEqual((check_contract(old), breaking_drift(old)), ([], []))
         self.assertEqual({p["id"]: p["lifecycle"] for p in c["provides"]}["speech.dub"], "EXPERIMENTAL")
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every dubbing error code has a recovery class")
         self.assertEqual(recovery_class("CONSENT_REQUIRED"), "CONSENT_REQUIRED")
@@ -169,7 +177,7 @@ class CapabilityTests(_Base):
         self.assertEqual(caps["dubbing:DUB"].evidence["lifecycle"], "EXPERIMENTAL")
         self.assertEqual(set(caps["dubbing:DUB"].evidence["engines"]), {"chatterbox", "style_bert_vits2"}, "the engines DUB takes, from the contract")
         from video_agent.tools.dubbing.adapter import dub_tool, engines, pinned_contract
-        self.assertIn("qwen3_tts", dub_tool(pinned_contract())["engines"], "0.2.0 lists the experimental engine for DUB")
+        self.assertIn("qwen3_tts", dub_tool(pinned_contract())["engines"], "0.2.0+ lists the experimental engine for DUB")
         self.assertEqual((pinned_contract()["engines"]["experimental"], engines()), (["qwen3_tts"], ("chatterbox", "style_bert_vits2")),
                          "an experimental engine is left out of what the agent plans and sends")
         os.environ["FAKE_DUB_ENGINES"] = "chatterbox"
