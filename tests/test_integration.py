@@ -4028,7 +4028,7 @@ class SlideSyncRealTests(unittest.TestCase):
 
 
 class SoundDesignBgmRealTests(unittest.TestCase):
-    """ADR-092 on the real sound-design-skill (main, contract 0.1.0), the real audio-production-skill and the real ffmpeg-skill: the live contract equals
+    """ADR-092 on the real sound-design-skill (main, contract 0.2.0), the real audio-production-skill and the real ffmpeg-skill: the live contract equals
     the pin, its doctor reports library mode ready, and a voice recording mixed with a bed picked from a library of the user's own licensed file (looped
     to the voice's length by library-pick) is rendered after approval, as long as the voice. Runs whenever sound-design-skill and audio-production-skill
     checkouts are installed (the CI integration job clones both; library mode needs no engine)."""

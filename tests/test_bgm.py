@@ -107,15 +107,24 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("sound-design", "0.1.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("sound-design", "0.2.0", "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every sound-design code has a recovery class")
         self.assertEqual((recovery_class("LICENCE_REQUIRED"), recovery_class("ENGINE_UNAVAILABLE"), recovery_class("NEW")), ("INVALID_ARGS", "TOOL_MISSING", "SKILL_ERROR"))
 
     def test_refused_contracts(self):
         c = pinned_contract()
-        bad = json.loads(json.dumps(c)); bad["version"] = "0.2.0"
-        self.assertTrue(any("supported range" in e for e in check_contract(bad)))
+        for v in ("0.1.0", "0.2.0", "0.2.3"):   # ADR-107 addendum 3: 0.2.0 adds sfx-cues options only
+            ok = json.loads(json.dumps(c)); ok["version"] = v
+            self.assertEqual(check_contract(ok), [], v)
+        for v in ("0.3.0", "1.0.0"):
+            bad = json.loads(json.dumps(c)); bad["version"] = v
+            self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
+        old = json.loads(json.dumps(c)); sfx = next(t for t in old["tools"] if t["tool_id"] == "sound-design/sfx-cues")
+        sfx["argv"] = [a for a in sfx["argv"] if "min-reuse-spacing" not in a and "--character" not in a]
+        sfx.pop("reuse"); sfx.pop("character")
+        self.assertEqual(breaking_drift(old), [], "sfx-cues is not a tool this adapter runs: its argv change is reported, never fatal")
+        self.assertTrue(drift(old))
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["tool_id"] == "sound-design/generate-bgm")["confirmation_required"] = True
         self.assertTrue(any("no confirmation" in e for e in check_contract(bad)))
         self.assertTrue(breaking_drift(bad), "a confirmation the agent would not ask for is fatal")
