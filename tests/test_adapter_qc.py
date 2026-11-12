@@ -515,6 +515,40 @@ class QcRealSkillTests(unittest.TestCase):
         failed = [c for c in r2.data["checks"] if c["status"] == "FAIL"]
         self.assertEqual([(c["check_id"], c.get("artifact_id")) for c in failed], [("delivery_package.artifact_extension_matches_expected", "thumb")])
 
+    def test_real_stinger_and_loop_seam(self):
+        """ADR-112 on the real Skill (qc-skill 1.2.0 / 1.3.0): a stinger file (opaque red, qtrle argb) checked against the delivered fixture
+        -- admitted with the stinger's own sha256; the cover and opacity pass, and a cut frame that shows the picture, not the stinger, fails
+        the limit; a stinger outside the allowed roots is refused before the Skill runs. A 2 s 500 Hz tone repeated three times passes the
+        click limit at its two seams; a tone cut 3 ms off a whole cycle and repeated clicks there."""
+        ad = self._adapter()
+        stinger = str(Path(self.src_dir) / "stinger.mov")
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x36:r=25:d=1", "-c:v", "qtrle", "-pix_fmt", "argb", stinger], check=True)
+        paths = {"clip": self.src, "st": stinger}
+        rule = {"cut_point": 0.4, "cover": {"start": 0.2, "end": 0.8}, "file": "st", "cut_at": [1.0], "max_cut_frame_difference": 5.0}
+        r = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"stinger": rule}}}, inputs=["clip"], outputs=[], kind="qa", id="op_st"), paths)
+        self.assertTrue(r.ok, r.data.get("error")); self.assertTrue(r.data["admitted"]); self.assertEqual(r.data["companions"]["stinger"], sha(stinger))
+        st = {c["check_id"]: c["status"] for c in r.data["checks"] if c["check_id"].startswith("video.stinger_")}
+        self.assertEqual(st, {"video.stinger_cut_point_in_cover": "PASS", "video.stinger_opaque_at_cut_point": "PASS", "video.stinger_cut_frame_matches": "FAIL"}, r.data["findings"])
+        self.assertIn("VIDEO_STINGER_CUT_FRAME_MISMATCH", [f["code"] for f in r.data["findings"]])
+        r = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"stinger": {"cut_point": 0.4, "file": "st"}}}}, inputs=["clip"], outputs=[], kind="qa", id="op_st2"), paths)
+        self.assertTrue(r.ok, r.data.get("error"))
+        self.assertNotIn("video.stinger_cut_frame_matches", {c["check_id"] for c in r.data["checks"]}, "no cut_at, no limit: the sub-check does not run")
+        outside = Path(self.tmp) / "elsewhere"; outside.mkdir(exist_ok=True); shutil.copy(stinger, outside / "stinger.mov")
+        r = ad.run(Operation(tool=TOOL_CHECK, args={"input": "clip", "kind": "video", "rules": {"video": {"stinger": dict(rule, file=str(outside / "stinger.mov"))}}},
+                             inputs=["clip"], outputs=[], kind="qa", id="op_st3"), paths)
+        self.assertEqual((r.ok, r.data["error"]["code"]), (False, "INVALID_REQUEST")); self.assertIn("outside the allowed roots", r.data["error"]["message"])
+        for name, seconds, status in (("loop_ok", "2", "PASS"), ("loop_off", "2.003", "FAIL")):
+            one, bed = str(Path(self.src_dir) / f"{name}_1.wav"), str(Path(self.src_dir) / f"{name}.wav")
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=500:sample_rate=48000:duration={seconds}", "-c:a", "pcm_s16le", one], check=True)
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-stream_loop", "2", "-i", one, "-c:a", "pcm_s16le", bed], check=True)
+            period = float(seconds)
+            r = ad.run(Operation(tool=TOOL_CHECK, args={"input": "bed", "kind": "audio", "rules": {"audio": {"loop_seam": {"seams": [period, 2 * period], "include_wrap": False,
+                                                                                                                         "max_click_ratio": 3.0}}}},
+                                 inputs=["bed"], outputs=[], kind="qa", id=f"op_{name}"), {"bed": bed})
+            self.assertTrue(r.ok, r.data.get("error"))
+            c = next(c for c in r.data["checks"] if c["check_id"] == "audio.loop_seam_click_within_limit")
+            self.assertEqual(c["status"], status, (name, r.data["findings"], [m for m in r.data["measurements"] if m["id"] == "audio.loop_seams"]))
+
 
 if __name__ == "__main__":
     unittest.main()

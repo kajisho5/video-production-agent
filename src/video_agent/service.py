@@ -26,6 +26,7 @@ from .agent.dubbing import check_dub_keys, user_files as dub_user_files
 from .agent.publish import check_publish_keys
 from .agent.slides import check_slide_keys, slide_kind
 from .agent.bgm import check_bgm_keys
+from .agent import qc_checks as qc_checks_task
 from .agent import transcript_verify as verify_task
 from . import preferences as prefs_task
 from .agent.remotion import check_remotion_keys
@@ -417,6 +418,7 @@ class Service:
                                  f"do not fit this request: {e}; plan with --no-preferences or roll the store back (video-agent preferences rollback)")
             prefs["applied"] = sorted(stored)
             user_requirements = {**stored, **user_requirements}   # ADR-111: global < channel < brief < explicit
+        qc_checks_task.parse_qc_check_requirements(user_requirements)   # ADR-112: the stinger / loop-seam checks with something to check, before any analysis
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         if (user_requirements or {}).get("subtitle.caption_profile") is not None and _subtitles_requested(user_requirements or {}):
@@ -859,6 +861,12 @@ class Service:
             d["qa"]["documents"] = plan["documents"]
         else:
             d["qa"].pop("documents", None)
+        qcc = qc_checks_task.parse_qc_check_requirements({r.key: r.value for r in reqs if r.provenance == "USER"})
+        for key, rec in (("stinger_check", qcc["stinger"]), ("loop_seam_check", qcc["loop_seam"])):   # ADR-112: written only when asked, so an unchanged request keeps its plan hash
+            if rec:
+                d["qa"][key] = rec
+            else:
+                d["qa"].pop(key, None)
         tv = verify_task.parse_verify_requirements({r.key: r.value for r in reqs if r.key.startswith(verify_task.PREFIX) and r.provenance == "USER"})
         if tv:   # ADR-110: the post-render transcript check; written only when asked for, so an unchanged request keeps its plan hash
             d["qa"]["transcript_verify"] = tv
@@ -963,6 +971,7 @@ class Service:
         if brief_record and rejected_brief and not brief_record.get("rejected"):
             brief_record = {**brief_record, "rejected": True}   # ADR-061: a rejected reading of the brief contributes no keys from v(n+1) on
         _check_precision_conflict({**brief_task.values_of(brief_record), **prev_req})   # ADR-106: the effective keys (brief + explicit), not only the new ones
+        qc_checks_task.parse_qc_check_requirements(prev_req)   # ADR-112: a revised limit goes with the switch / window / stinger / bed the plan already has
         raw = (old["request"].get("raw") or "")
         if feedback:
             raw = (raw + "\n" + feedback).strip()
@@ -1977,7 +1986,10 @@ _SWITCH_REQUIREMENT_KEYS = frozenset(   # surface (1): what a request asks for
     | set(word_cut_task.REQUIREMENT_KEYS)   # ADR-109: edit.word_cut and its pre / post roll
     | set(_FACE_REQUIREMENT_KEYS)   # ADR-090: edit.redact_faces and its refinements
 )
-_FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
+# ADR-112: the opt-in qc-skill checks of a stinger join and a looped bed. Known keys, but not a brief's (or a stored preference's): the limits are
+# QA policy, which only an explicit --set states
+_QC_CHECK_KEYS = frozenset(qc_checks_task.REQUIREMENT_KEYS)
+_FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS | _QC_CHECK_KEYS
 # ADR-061: the keys a brief (`plan --brief`) may yield, derived from the --set vocabulary above rather than listed by hand: every key
 # `_check_edit_requirements` recognises as a switch / refinement (surface (1)), plus delivery.timeline -- so not (1') the policy-default
 # surface (approval policies, qc.warn.promotion, tolerance / ratio defaults: a brief never sets how much review a decision gets) -- minus (2) keys whose value
@@ -2053,6 +2065,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     parse_thumbnail_requirements(rm)
     qc_requested(rm)
     parse_qc_reference(rm)   # ADR-058: the master file exists, metrics are named, thresholds in range, the qc gate is on
+    qc_checks_task.check_qc_check_values(user_requirements)   # ADR-112: qc.stinger / qc.loop_seam.* each in range (how they go together: on the effective keys)
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
     word_cut_task.parse_word_cut_requirements(rm)   # ADR-109: edit.word_cut / its rolls, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch

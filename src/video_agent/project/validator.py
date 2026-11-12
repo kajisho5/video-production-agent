@@ -19,6 +19,7 @@ from ..agent.takes import BEAT_KIND, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJE
 from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
 from ..agent.documents import SKILL as DOCUMENT_SKILL, document_problems
+from ..agent.qc_checks import check_problems as qc_check_problems
 from ..agent.remotion import SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT, remotion_problems
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
 from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
@@ -1263,6 +1264,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
                 if not any((s.get("params") or {}).get("asset") == subj and (s.get("params") or {}).get("target") == target and (s.get("params") or {}).get("kind") == "delivery_package"
                            for s in qc_steps):
                     rep.errors.append(f"qa.qc: package {subj}/{target} has no qc_check step")
+    rep.errors.extend(qc_check_problems(d))   # ADR-112: the opt-in stinger / loop-seam checks: their vocabulary, and a join in the plan to check
     for doc in (d.get("qa") or {}).get("documents") or []:   # ADR-095: each verified document has its step, by id
         rep.errors.extend(document_problems(doc))
         if not any(s["skill"] == DOCUMENT_SKILL and (s.get("params") or {}).get("document") == doc.get("id") for s in d["plan"]["steps"]):
