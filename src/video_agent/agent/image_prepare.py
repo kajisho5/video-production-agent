@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "imagemagick" / "contract_0.8.1.json"
+CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "imagemagick" / "contract_0.9.0.json"
 _CONTRACT: Dict[str, Any] = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
 _TOOLS: Dict[str, Dict[str, Any]] = {str(t.get("name")): t for t in _CONTRACT.get("tools") or [] if isinstance(t, dict)}
 PACKAGE = str((_CONTRACT.get("skill") or {}).get("id"))   # imagemagick-skill
