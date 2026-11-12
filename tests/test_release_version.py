@@ -106,7 +106,7 @@ class VersionOnlyDriftTests(unittest.TestCase):
         """video-editing 0.6.0 -> 0.6.2 (2026-11-11) moved version, every tools[].version, response_shape.skill.version,
         doctor_shape.skill.version and versioning.version; color-grading 1.0.0 -> 1.0.1 moved version and tools[0].version."""
         pinned = adapter("video-editing-skill")[0]
-        c = compare_to_pin("video-editing-skill", by_hand(pinned, "0.6.3"), pinned, *adapter("video-editing-skill")[1:])
+        c = compare_to_pin("video-editing-skill", by_hand(pinned, "0.7.3"), pinned, *adapter("video-editing-skill")[1:])
         self.assertEqual(sorted(c.restated), sorted(["version", "response_shape.skill.version", "doctor_shape.skill.version", "versioning.version"]
                                                      + [f"tools[{i}].version" for i in range(len(pinned["tools"]))]))
         pinned = adapter("color-grading-skill")[0]
@@ -156,7 +156,7 @@ class VersionOnlyDriftTests(unittest.TestCase):
         self.assertTrue(compare_to_pin("video-editing-skill", live, pinned, supported, drift).content_drift)
 
     def test_version_outside_the_gate_fails(self):
-        for skill, new in (("video-editing-skill", "0.7.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.1.0"),
+        for skill, new in (("video-editing-skill", "0.8.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.1.0"),
                            ("color-grading-skill", "2.0.0"), ("subtitle-skill", "0.10.0"), ("qc-skill", "1.2.0"), ("thumbnail-skill", "0.2.0")):
             pinned, supported, drift = adapter(skill)
             with self.subTest(skill=skill, version=new):
@@ -172,8 +172,8 @@ class VersionOnlyDriftTests(unittest.TestCase):
 
     def test_restate_leaves_the_input_alone(self):
         pinned = adapter("video-editing-skill")[0]
-        live = by_hand(pinned, "0.6.3"); before = copy.deepcopy(live)
-        out, changed = restate_release_version(live, "0.6.2")
+        live = by_hand(pinned, "0.7.3"); before = copy.deepcopy(live)
+        out, changed = restate_release_version(live, "0.7.0")
         self.assertEqual(live, before); self.assertEqual(out, pinned); self.assertTrue(changed)
         self.assertEqual(restate_release_version({"name": "x"}, "1.0.0"), ({"name": "x"}, []))
 

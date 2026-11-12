@@ -3,7 +3,7 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "contract_version": "6.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
@@ -175,7 +175,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -229,7 +229,7 @@
     {
       "tool_id": "video-editing/condense",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "CONDENSE",
       "capability": "video.condense",
       "description": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved proposals (retakes, silences, static spans) become segments here",
@@ -280,7 +280,7 @@
     {
       "tool_id": "video-editing/crop",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "CROP",
       "capability": "video.crop",
       "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
@@ -331,7 +331,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -379,7 +379,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -429,7 +429,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -479,7 +479,7 @@
     {
       "tool_id": "video-editing/freeze",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "FREEZE",
       "capability": "video.freeze",
       "description": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end",
@@ -528,7 +528,7 @@
     {
       "tool_id": "video-editing/image_insert",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "IMAGE_INSERT",
       "capability": "video.image_insert",
       "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
@@ -578,7 +578,7 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
       "description": "composite a still image (logo, lower-third PNG) at a named position for a time range",
@@ -632,7 +632,7 @@
     {
       "tool_id": "video-editing/punch_in",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "PUNCH_IN",
       "capability": "video.punch_in",
       "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
@@ -683,7 +683,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -731,7 +731,7 @@
     {
       "tool_id": "video-editing/reverse",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "REVERSE",
       "capability": "video.reverse",
       "description": "play the input backwards, picture and audio",
@@ -777,7 +777,7 @@
     {
       "tool_id": "video-editing/rotate",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "ROTATE",
       "capability": "video.rotate",
       "description": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)",
@@ -825,7 +825,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -874,7 +874,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -1095,7 +1095,8 @@
       "ffmpeg-skill/audio",
       "ffmpeg-skill/silence",
       "ffmpeg-skill/scenes",
-      "ffmpeg-skill/export"
+      "ffmpeg-skill/export",
+      "ffmpeg-skill/look"
     ],
     "tools_optional": [
       "ffmpeg-skill/freeze",
@@ -1106,7 +1107,8 @@
       "ffmpeg-skill/audio",
       "ffmpeg-skill/silence",
       "ffmpeg-skill/scenes",
-      "ffmpeg-skill/export"
+      "ffmpeg-skill/export",
+      "ffmpeg-skill/look"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
     "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
@@ -1316,7 +1318,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.6.2"
+      "version": "0.7.0"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1775,7 +1777,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.6.2"
+      "version": "0.7.0"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1795,7 +1797,7 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.6.2",
+    "version": "0.7.0",
     "contract_version": "6.0",
     "pinned_blocks": [
       "schema",
@@ -1971,21 +1973,24 @@
     "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: cut_point and cover come from it (the caller reads it and passes them)",
     "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its frame at cut_point lies on the cut frame; a clip at the edit's frame rate takes its length rounded down to whole frames, so every cut is on a frame",
     "engine_calls": [
+      "ffmpeg-skill/look <stinger> --at <a quarter frame before cut_point> --width <its width> --no-timecode -o <png>, once before anything runs: the stinger's frame at cut_point, written with its alpha (cover_check)",
       "ffmpeg-skill/cut --start 0 --end <whole frames> --accurate, only for a clip whose measured length is not that (a stream-copied segment, as a rule)",
       "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)",
       "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join (alpha respected)",
       "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then ffmpeg-skill/audio --replace (that mix onto the composite)"
     ],
     "refused": [
-      "no cut_point or no cover, or cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
+      "no cut_point (INVALID_REQUEST stinger_no_cut_point) or no cover (INVALID_REQUEST stinger_no_cover)",
+      "cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
       "cut_point not on a frame of the stinger (INVALID_REQUEST cut_point_not_on_frame)",
+      "a stinger whose frame at cut_point is not opaque in every pixel, measured (INVALID_INPUT stinger_not_covering, details.measured), or whose alpha there cannot be read (INVALID_INPUT stinger_cover_unmeasured); before anything runs",
       "a stinger without an alpha plane (INVALID_INPUT stinger_no_alpha), of another aspect (stinger_aspect) or frame rate (stinger_fps)",
       "an input shorter than the stinger's lead-in (before the join) or tail (after it) (INVALID_TIME_RANGE)",
       "a stinger that is an operation, not a source (DEPENDENCY_ERROR kind_mismatch)",
-      "an ffmpeg-skill without overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"
+      "an ffmpeg-skill without look.py --at / --no-timecode or overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"
     ],
-    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, stinger_end}]}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
-    "cover_check": "declared: the cover window is the stinger maker's statement and is checked against cut_point; the pixels are not measured here (qc-skill's stinger cut-point check is the measurement)"
+    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, stinger_end}], cover_check, cover_measured: {tool, frame, at, measured, covered, pixels, pixels_below, min_alpha, threshold, opaque_within, frame_size, provenance: OBSERVED} (in a plan: measured false, measured when the request runs)}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
+    "cover_check": "declared and measured: the cover window (the stinger maker's statement) must contain cut_point, and the stinger's own frame at cut_point is measured before anything runs: ffmpeg-skill/look writes it as a PNG with its alpha, this Skill reads every pixel's alpha, and the frame covers when none is under 253 of 255 (ffmpeg-skill's alpha tolerance, 2 of 255); the same stinger and cut point are measured once per request"
   },
   "ai_generated": {
     "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",

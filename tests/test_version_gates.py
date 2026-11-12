@@ -93,13 +93,14 @@ class VersionGateTests(unittest.TestCase):
         # the request the adapter builds is unchanged, so the gate takes 0.5.x besides 0.1.x .. 0.4.x
         # ADR-106: 0.6.0 bumps contract_version to "6.0" for TRIM / CUT precision smart (opt-in); the gate takes 0.6.x, 0.7.0 stays out
         # ADR-107: 0.6.1 / 0.6.2 are version-only (the version is also in response_shape / doctor_shape / versioning, so the pin is re-taken from the tag)
-        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), ("0.6.2", "6.0"))
-        self.assertEqual({ve.pinned_contract()[k]["skill"]["version"] for k in ("response_shape", "doctor_shape")} | {ve.pinned_contract()["versioning"]["version"]}, {"0.6.2"})
-        for v in ("0.4.0", "0.4.18", "0.5.0", "0.5.3", "0.6.0", "0.6.1", "0.6.2", "0.6.4"):
+        # ADR-107 addendum 4: 0.7.0 (contract_version still 6.0) measures the stinger's cover at its cut point; the request is unchanged
+        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), ("0.7.0", "6.0"))
+        self.assertEqual({ve.pinned_contract()[k]["skill"]["version"] for k in ("response_shape", "doctor_shape")} | {ve.pinned_contract()["versioning"]["version"]}, {"0.7.0"})
+        for v in ("0.4.0", "0.4.18", "0.5.0", "0.5.3", "0.6.0", "0.6.1", "0.6.2", "0.6.4", "0.7.0", "0.7.2"):
             live = with_version(ve.pinned_contract(), v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
-        for v in ("0.7.0", "1.0.0"):
+        for v in ("0.8.0", "1.0.0"):
             self.assertTrue(ve.check_contract(with_version(ve.pinned_contract(), v)), v)
 
     def test_video_editing_release_label_in_response_shape_is_not_fatal(self):
@@ -112,11 +113,11 @@ class VersionGateTests(unittest.TestCase):
             c = with_version(json.loads(json.dumps(ve.pinned_contract())), v)
             c["response_shape"]["skill"]["version"] = c["doctor_shape"]["skill"]["version"] = c["versioning"]["version"] = v
             return c
-        for v in ("0.6.0", "0.6.1", "0.6.2", "0.6.3"):
+        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1"):
             live = release(v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
-            self.assertEqual(bool(ve.contract_drift(live)), v != "0.6.2", "the full drift report still names the difference")
+            self.assertEqual(bool(ve.contract_drift(live)), v != "0.7.0", "the full drift report still names the difference")
         self.assertTrue(any(d.startswith("response_shape:") for d in ve.contract_drift(release("0.6.1"))))
         for change in (lambda c: c["response_shape"].update(status="completed"), lambda c: c["response_shape"]["skill"].update(id="other"),
                        lambda c: c["response_shape"].update(schema="video-editing/response@2"), lambda c: c["response_shape"].pop("execution")):
