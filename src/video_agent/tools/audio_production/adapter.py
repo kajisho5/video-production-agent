@@ -46,7 +46,7 @@ CONTRACT_SCHEMA = "audio-production/contract@1"
 REQUEST_SCHEMA = "audio-production/request@1"
 RESPONSE_SCHEMA = "audio-production/response@1"
 DOCTOR_SCHEMA = "audio-production/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "1.0.")  # 1.0.0 (ADR-107): an unintended version number for the 0.4 line (the 0.4.10 contract, version only). ADR-107 addendum 1: the 1.0 line is kept (1.0.1, version only); 1.0.x and 0.4.x are both taken, 1.0 is not a new contract generation. 0.4.9 / 0.4.10 (audio-production-skill #28 / #29): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097). 0.4.8: ffmpeg-skill range <3.0 (audio-production-skill #27; ADR-084), not read by the agent. 0.4.7: version-only (audio-production-skill #26, roadmap docs; ADR-081). 0.4.6: FILLER_REMOVE and MIX.duck (additive; pinned in ADR-071, planned and lowered since ADR-072). 0.4.5: NOISE_REDUCTION strength_db min 10 -> 20 (what afftdn accepts; audio ADR-17, pinned again in ADR-069). 0.4.4: version-only. 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "1.0.", "1.1.", "1.2.")  # 1.1.0 / 1.2.0 (ADR-107 addendum 12): LOUDNESS_SET and STEMS (additive operations) and the optional ffmpeg-skill flag audio `replace` (STEMS only); the agent plans neither operation. 1.0.0 (ADR-107): an unintended version number for the 0.4 line (the 0.4.10 contract, version only). ADR-107 addendum 1: the 1.0 line is kept (1.0.1, version only); 1.0.x and 0.4.x are both taken, 1.0 is not a new contract generation. 0.4.9 / 0.4.10 (audio-production-skill #28 / #29): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097). 0.4.8: ffmpeg-skill range <3.0 (audio-production-skill #27; ADR-084), not read by the agent. 0.4.7: version-only (audio-production-skill #26, roadmap docs; ADR-081). 0.4.6: FILLER_REMOVE and MIX.duck (additive; pinned in ADR-071, planned and lowered since ADR-072). 0.4.5: NOISE_REDUCTION strength_db min 10 -> 20 (what afftdn accepts; audio ADR-17, pinned again in ADR-069). 0.4.4: version-only. 0.4.3: VOICE_CLEANUP (additive, ADR-068). 0.4.0: engine compatibility by capability detection (no
                                                # version window, ADR-048); operations/request/response unchanged.
                                                # 0.3.0 (audio-production-skill #8): audio_stream added to
                                                # GAIN/FADE_IN/FADE_OUT/MONO/STEREO/DOWNMIX/NOISE_REDUCTION/DYNAMICS.
@@ -181,7 +181,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic audio production (typed operation graph, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

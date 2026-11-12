@@ -41,10 +41,12 @@ class VersionGateTests(unittest.TestCase):
     def test_transcription_release_versions(self):
         # 0.8.0 (ADR-078): optional engine whisperx appended, nothing the adapter sends changed; 0.9.0 (ADR-107 addendum 2): word index,
         # optional dictionary words (pos / timing) and the opt-in word_segmentation input, all additions; 0.10.0 (ADR-107 addendum 7): new
-        # optional models and per-model language limits (a refusal reason), additive; 0.11.0 (addendum 8): optional engine qwen3_asr added
-        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2"):
+        # optional models and per-model language limits (a refusal reason), additive; 0.11.0 (addendum 8): optional engine qwen3_asr added;
+        # 0.11.2 / 0.11.3 (addendum 12): opt-in chunk_seconds / parallel / speech_regions and transcribe --follow, additive
+        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2", "0.11.3", "0.11.9"):
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
-        self.assertEqual(tr.pinned_contract()["version"], "0.11.0")
+        self.assertEqual(tr.pinned_contract()["version"], "0.11.3")
+        self.assertTrue({"follow_growing_files", "chunked_long_recordings"} <= set(tr.pinned_contract()["capabilities"]))
         self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")
         for v in ("0.1.0", "0.3.0", "0.12.0", "0.110.0", "1.0.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
@@ -144,14 +146,21 @@ class VersionGateTests(unittest.TestCase):
 
     def test_audio_production_versions(self):
         # ADR-107: 1.0.0 was an unintended version number for the 0.4 line (the 0.4.10 contract, version only), so the gate takes 1.0.x and 0.4.x of the
-        # same contract; 1.0 is not a new contract generation, and 0.5 / 1.1 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only
-        self.assertEqual(ap.pinned_contract()["version"], "1.0.1")
-        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1"):
+        # same contract; 1.0 is not a new contract generation, and 0.5 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only.
+        # Addendum 12: 1.1.0 / 1.2.0 add LOUDNESS_SET and STEMS (operations, a fatal drift key: re-pinned); the gate takes 1.1.x / 1.2.x
+        self.assertEqual(ap.pinned_contract()["version"], "1.2.0")
+        self.assertTrue({"LOUDNESS_SET", "STEMS"} <= {o["type"] for o in ap.pinned_contract()["operations"]})
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5"):
             live = with_version(ap.pinned_contract(), v)
             self.assertEqual(ap.check_contract(live), [], v)
             self.assertEqual(ap.contract_breaking_drift(live), [], v)
-        for v in ("0.5.0", "1.1.0", "2.0.0", "10.0.0"):
+        for v in ("0.5.0", "1.3.0", "1.10.0", "2.0.0", "10.0.0"):
             self.assertTrue(ap.check_contract(with_version(ap.pinned_contract(), v)), v)
+        # a 1.0.x install (no LOUDNESS_SET / STEMS) is drift against the 1.2.0 pin, and fatal, as after every content re-pin
+        old = with_version(ap.pinned_contract(), "1.0.1")
+        old["operations"] = [o for o in old["operations"] if o["type"] not in ("LOUDNESS_SET", "STEMS")]
+        self.assertEqual(sorted(ap.contract_breaking_drift(old)), ["operations LOUDNESS_SET: pinned but not in the installed contract",
+                                                                   "operations STEMS: pinned but not in the installed contract"])
 
 
 if __name__ == "__main__":

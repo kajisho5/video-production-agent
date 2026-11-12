@@ -45,6 +45,8 @@ SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.")  #
                                              # distil-large-v3.5, English only) and per-model language limits (LANGUAGE_REASONS below). Additive
                                              # 0.11.0 (ADR-107 addendum 8): optional engine qwen3_asr added to engines (Qwen3-ASR-1.7B with
                                              # forced-aligned word timestamps); the tools / schemas the adapter uses are unchanged
+                                             # 0.11.2 / 0.11.3 (ADR-107 addendum 12): opt-in chunk_seconds / parallel / speech_regions inputs and
+                                             # `transcribe --follow`; the agent sends none of them
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
@@ -168,7 +170,7 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.11.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.11.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

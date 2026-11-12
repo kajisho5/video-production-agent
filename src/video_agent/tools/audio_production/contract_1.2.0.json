@@ -4,10 +4,10 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
-  "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
+  "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, several delivery loudness versions in one run, stems (dialogue / music / effects files that sum to the mix), mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
   "repository": "https://github.com/kajisho5/audio-production-skill",
   "not_provided": [
     "AI reasoning",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "1.0.1",
+      "version": "1.2.0",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -44,11 +44,13 @@
         "FADE_OUT",
         "FILLER_REMOVE",
         "GAIN",
+        "LOUDNESS_SET",
         "MIX",
         "MONO",
         "NOISE_REDUCTION",
         "NORMALIZE",
         "SILENCE_REMOVE",
+        "STEMS",
         "STEREO",
         "TRIM",
         "VOICE_CLEANUP"
@@ -59,7 +61,7 @@
         "cancel": true,
         "validate": true
       },
-      "verification": "every artifact is probed (audio stream, duration, channels, sample rate, codec, sha256); NORMALIZE is re-measured",
+      "verification": "every artifact is probed (audio stream, duration, channels, sample rate, codec, sha256); NORMALIZE is re-measured; every LOUDNESS_SET version and its delivered outputs are re-measured against tolerance and ceiling",
       "provenance": "OBSERVED",
       "mutates_input": false,
       "delegates_to": [
@@ -121,6 +123,12 @@
       "operation": "GAIN"
     },
     {
+      "id": "audio.loudness_set",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "LOUDNESS_SET"
+    },
+    {
       "id": "audio.mix",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
@@ -149,6 +157,12 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "SILENCE_REMOVE"
+    },
+    {
+      "id": "audio.stems",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "STEMS"
     },
     {
       "id": "audio.stereo",
@@ -1010,6 +1024,187 @@
       "deterministic": "content_equivalent"
     },
     {
+      "type": "LOUDNESS_SET",
+      "description": "One master into several delivery loudness versions in one run: each version is a two-pass loudnorm (true-peak ceiling) of the same input, re-measured and refused unless within tolerance_lufs of its target and at or under its true-peak ceiling; each delivered output is measured again. A version is referenced as op:<op_id>.<version_id> (the set itself is not an artifact)",
+      "inputs": {
+        "min": 1,
+        "max": 1
+      },
+      "parameters": {
+        "versions": {
+          "type": "array",
+          "required": true,
+          "description": "1..8 versions: {version_id, profile | target_lufs + true_peak_db, loudness_range_lu?, sample_rate?}; profiles ['arib_tr_b32', 'atsc_a85', 'ebu_r128'] (none is a default)",
+          "min_items": 1,
+          "max_items": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "version_id": {
+                "type": "string",
+                "required": true,
+                "description": "id of the version; the version is referenced as op:<op_id>.<version_id>"
+              },
+              "profile": {
+                "type": "string",
+                "required": false,
+                "enum": [
+                  "arib_tr_b32",
+                  "atsc_a85",
+                  "ebu_r128"
+                ],
+                "description": "a delivery profile (sets target_lufs and true_peak_db); exactly one of profile / target_lufs + true_peak_db"
+              },
+              "target_lufs": {
+                "type": "number",
+                "required": false,
+                "min": -70.0,
+                "max": -5.0,
+                "description": "stated integrated loudness target in LUFS (with true_peak_db; e.g. a streaming platform's own value)"
+              },
+              "true_peak_db": {
+                "type": "number",
+                "required": false,
+                "min": -20.0,
+                "max": 0.0,
+                "description": "stated true-peak ceiling in dBTP (with target_lufs)"
+              },
+              "loudness_range_lu": {
+                "type": "number",
+                "required": false,
+                "min": 1.0,
+                "max": 50.0,
+                "description": "loudness range target in LU (omit: ffmpeg-skill default 11)"
+              },
+              "sample_rate": {
+                "type": "integer",
+                "required": false,
+                "enum": [
+                  8000,
+                  11025,
+                  16000,
+                  22050,
+                  24000,
+                  32000,
+                  44100,
+                  48000,
+                  88200,
+                  96000
+                ],
+                "description": "output sample rate of this version (omit: keep the input's)"
+              }
+            },
+            "required": [
+              "version_id"
+            ],
+            "one_of": [
+              [
+                "profile"
+              ],
+              [
+                "target_lufs",
+                "true_peak_db"
+              ]
+            ],
+            "additionalProperties": false
+          }
+        },
+        "tolerance_lufs": {
+          "type": "number",
+          "required": true,
+          "min": 0.0,
+          "max": 10.0,
+          "description": "every version's measured integrated loudness must be within this of its target (LU), else VALIDATION_ERROR"
+        }
+      },
+      "tool": "ffmpeg-skill/loudness",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "encoder:pcm_s16le",
+        "filter:loudnorm"
+      ],
+      "keeps_timeline": true,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "STEMS",
+      "description": "Write the inputs of a mix as separate stem files (e.g. dialogue, music, effects), each the programme's length (input 0's duration, as MIX) and aligned to its first sample; every input belongs to exactly one stem, so the stems summed equal a MIX of the same inputs and levels. A stem is referenced as op:<op_id>.<stem_id> (the set itself is not an artifact)",
+      "inputs": {
+        "min": 2,
+        "max": 8
+      },
+      "parameters": {
+        "stems": {
+          "type": "array",
+          "required": true,
+          "description": "1..8 stems: {stem_id, inputs: [input index], role?: ['dialogue', 'music', 'effects', 'other']}; every input index in exactly one stem",
+          "min_items": 1,
+          "max_items": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "stem_id": {
+                "type": "string"
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "min": 0
+                }
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "dialogue",
+                  "music",
+                  "effects",
+                  "other"
+                ]
+              }
+            },
+            "required": [
+              "stem_id",
+              "inputs"
+            ],
+            "additionalProperties": false,
+            "rule": "every input index in exactly one stem"
+          }
+        },
+        "levels": {
+          "type": "array",
+          "required": false,
+          "description": "per-input {gain_db}, aligned with inputs, as the MIX they sum to (omit: 0 dB); mute is not accepted (a muted input belongs to no stem: leave it out of the inputs)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "gain_db": {
+                "type": "number",
+                "min": -60,
+                "max": 60
+              },
+              "mute": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "tool": "ffmpeg-skill/audio",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "encoder:pcm_s16le",
+        "filter:amix"
+      ],
+      "keeps_timeline": false,
+      "deterministic": "content_equivalent"
+    },
+    {
       "type": "CONCAT",
       "description": "Concatenate 2..32 inputs in order (ffmpeg concat), optional equal-power crossfade",
       "inputs": {
@@ -1200,7 +1395,29 @@
       "profile"
     ],
     "defaults": "none for target / true peak: the caller or profile decides",
-    "measurement_for_decisions": "media-analysis-skill (loudness kind); this skill only verifies its own output"
+    "measurement_for_decisions": "media-analysis-skill (loudness kind); this skill only verifies its own output",
+    "profiles": {
+      "ebu_r128": {
+        "target_lufs": -23.0,
+        "true_peak_db": -1.0,
+        "scope": "international",
+        "description": "EBU R128 broadcast: -23 LUFS, -1 dBTP"
+      },
+      "atsc_a85": {
+        "target_lufs": -24.0,
+        "true_peak_db": -2.0,
+        "scope": "international",
+        "description": "ATSC A/85 broadcast: -24 LKFS, -2 dBTP"
+      },
+      "arib_tr_b32": {
+        "target_lufs": -24.0,
+        "true_peak_db": -1.0,
+        "scope": "regional:JP",
+        "description": "ARIB TR-B32 broadcast (Japan): -24 LKFS, -1 dBTP"
+      }
+    },
+    "default_profile": null,
+    "loudness_set": "LOUDNESS_SET writes several versions of one input in one run; each version must measure within tolerance_lufs of its target and at or under its true-peak ceiling (no slack), on the intermediate and on every delivered output; response key loudness_sets"
   },
   "execution": {
     "mode": "local",
@@ -1308,7 +1525,8 @@
         "duck_amount",
         "duck_threshold",
         "duck_attack",
-        "duck_release"
+        "duck_release",
+        "replace"
       ],
       "cut": [
         "declick_ms"
