@@ -71,13 +71,13 @@ class ColorGradingAdapterTests(unittest.TestCase):
         ad = self._adapter()
         # 0.5.0: OCIO_TRANSFORM / MATCH_CAMERA / LEGALIZE are in the contract; the agent does not plan them (finishing.COLOR_OPERATIONS, ADR-097 addendum 6)
         self.assertEqual((ad.version, ad.tools, ad.drift(), sorted(ad.operations)),
-                         ("1.0.1", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
+                         ("1.1.0", {"color-grading/run"}, [], ["HDR_TO_SDR", "LEGALIZE", "LUT_APPLY", "MATCH_CAMERA", "OCIO_TRANSFORM", "PRIMARY_CORRECTION", "RETAG", "STRIP_DOVI"]))
         # color-grading-skill #23: WHITE_BALANCE is no longer an unsupported type but an `operation_aliases` entry (temperature / tint of
         # PRIMARY_CORRECTION); the agent lowers only declared operation types, so it keeps sending PRIMARY_CORRECTION itself
         self.assertEqual(ad.unsupported, []); self.assertEqual(ad.formats, ["m4v", "mkv", "mov", "mp4"])
         self.assertEqual([(a["type"], a["alias_of"]) for a in ad.contract["operation_aliases"]], [("WHITE_BALANCE", "PRIMARY_CORRECTION")])
         pk = ad.package()
-        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "1.0.1", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
+        self.assertEqual((pk.skill_id, pk.version, pk.capabilities, pk.tool_ids(), pk.validate()), ("color-grading", "1.1.0", ["ffmpeg", "ffprobe", "ffmpeg-skill", "color-grading"], ["color-grading/run"], []))
         self.assertEqual((PACKAGE.skill_id, PACKAGE.repository), ("color-grading", "kajisho5/color-grading-skill"))
         self.assertEqual(check_contract(pinned_contract()), []); self.assertEqual(contract_drift(pinned_contract()), [])
         for mode, msg in (("wrong_schema", "contract schema"), ("wrong_skill", "skill_id"), ("wrong_version", "version"), ("bad_contract", "execution.shell"), ("contract_fail", "failed")):
@@ -242,6 +242,12 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertEqual(r.data["alpha"], {"kept": True, "alpha_codec": "prores4444", "alpha_mode": "straight", "precision_bits": 8})
         self.assertTrue(r.data["operation"]["alpha"]["verification"]["ok"])
         self.assertEqual(r.data["artifact"]["pix_fmt"], "yuva444p12le")
+        # ADR-107 addendum 5: 1.1.0's alpha_mode_selection is recorded as the Skill wrote it, not required, never a reason to refuse
+        self.assertEqual(r.data["operation"]["alpha"]["alpha_mode_selection"]["rule"], "assumed")
+        c = pinned_contract()
+        self.assertEqual((c["version"], c["alpha"]["drop_alpha"]["request_field"], c["alpha"]["alpha_mode"]["when_omitted"]["otherwise"]),
+                         ("1.1.0", "project.source.drop_alpha", "straight"), "a request without alpha_mode is graded as straight, as before")
+        self.assertIn("ffmpeg-skill/color:drop-alpha", c["optional_capabilities"])
         # LUT_APPLY keeps it too (the other keep_alpha operation)
         lut = Path(self.tmp) / "src" / "look.cube"; lut.write_text("TITLE fake\n")
         lout = str(Path(self.ws) / "ops" / "01_lut" / "alpha_lut.mov")
