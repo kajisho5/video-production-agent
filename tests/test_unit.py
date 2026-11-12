@@ -3253,6 +3253,41 @@ class TranscriptionAdapterTests(unittest.TestCase):
         self.assertEqual((row["status"], row["error"]["kind"], row["error"]["skill_error"], row["error"]["recovery_class"]), ("FAILED", "ANALYSIS_UNSUPPORTED", "INVALID_INPUT", LANGUAGE_RECOVERY_CLASS))
         self.assertEqual(row["error"]["skill_details"]["supported"], ["en"]); self.assertIn("recognises only en", row["error"]["hint"])
 
+    def test_cache_only_keeps_the_language_refusal_guidance(self):
+        """Cache policy `only` asks the Skill's dry run whether a transcript is cached. The dry run checks a model's language limit before any audio
+        work, so it can refuse the request itself. The CACHE_MISS it becomes keeps the Skill's details, the LANGUAGE_UNSUPPORTED class (BLOCK, never
+        retried) and the hint, and nothing is recognised. A plain miss still carries no class (#143 review)."""
+        from video_agent.execution.recovery import classify_error, next_attempt
+        from video_agent.media import AnalysisRequest, MediaAnalyzer
+        from video_agent.tools.transcription.adapter import LANGUAGE_RECOVERY_CLASS
+        ad = self._adapter()
+        calls = ad.calls
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "distil-large-v3.5", "language": "ja", "cache_policy": "only"})
+        err = r.data["error"]
+        self.assertEqual(ad.calls - calls, 1, "the dry run only: nothing is recognised")
+        self.assertEqual((r.ok, err["code"], err["recovery_class"], err["retryable"]), (False, "CACHE_MISS", LANGUAGE_RECOVERY_CLASS, False))
+        self.assertEqual((err["details"]["reason"], err["details"]["model"], err["details"]["supported"]), ("language_unsupported", "distil-large-v3.5", ["en"]))
+        self.assertIn("does not recognize language 'ja'", err["message"]); self.assertIn("model distil-large-v3.5 of engine faster_whisper recognises only en", err["hint"])
+        self.assertEqual(classify_error(r), "LANGUAGE_UNSUPPORTED")
+        self.assertEqual(next_attempt(r, 1, 3, 60.0)["action"], "BLOCK")
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "distil-large-v3.5", "cache_policy": "only"})
+        self.assertEqual((r.data["error"]["code"], r.data["error"]["details"]["reason"], r.data["error"]["recovery_class"]),
+                         ("CACHE_MISS", "language_detection_unsupported", LANGUAGE_RECOVERY_CLASS))
+        self.assertIn("does not detect the language", r.data["error"]["hint"])
+        # a plain miss (the request is fine, nothing is cached): unchanged, no class and no hint
+        r = ad.measure("transcription/transcribe", {"input": self.src, "asset_id": "a", "model": "distil-large-v3.5", "language": "en", "cache_policy": "only"})
+        self.assertEqual(r.data["error"], {"code": "CACHE_MISS", "message": "CACHED_ONLY: no cached transcript for this request"})
+        # through the analyzer (the probe and the core kinds cached by a first run): the CACHED_ONLY row carries the class and the hint, like the
+        # row of a run that is not cache-only
+        svc = self._service()
+        cache = str(Path(self.tmp) / "observations")
+        MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=cache).run(AnalysisRequest(inputs=[self.src], kinds=["transcript"]))
+        res = MediaAnalyzer(svc.adapter([]), tools=svc.tools_for(), cache_dir=cache).run(
+            AnalysisRequest(inputs=[self.src], kinds=["transcript"], cache_policy="only", params={"model": "distil-large-v3.5", "language": "ja"}))
+        row = next(x for x in res.analyses[0]["rows"] if x["kind"] == "transcript")
+        self.assertEqual((row["status"], row["error"]["kind"], row["error"]["skill_error"], row["error"]["recovery_class"]), ("FAILED", "ANALYZER_UNAVAILABLE", "CACHE_MISS", LANGUAGE_RECOVERY_CLASS))
+        self.assertEqual(row["error"]["skill_details"]["supported"], ["en"]); self.assertIn("recognises only en", row["error"]["hint"])
+
     # 8. Observation → SpeechEvent only: no inference, decision, plan step or command derives from a transcript; explain stops at facts
     def test_speech_events_never_become_commands_and_explain_chain(self):
         from video_agent.tools import ToolRouter
