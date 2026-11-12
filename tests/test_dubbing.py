@@ -119,7 +119,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("dubbing", "0.1.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("dubbing", "0.2.0", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual({p["id"]: p["lifecycle"] for p in c["provides"]}["speech.dub"], "EXPERIMENTAL")
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every dubbing error code has a recovery class")
@@ -127,7 +127,7 @@ class ContractTests(_Base):
         self.assertEqual(RECOVERY_TABLE["CONSENT_REQUIRED"]["action"], "BLOCK")
         self.assertEqual(recovery_class("SOMETHING_NEW"), "SKILL_ERROR")
         self.assertEqual(parameters(c), {"duck": (0.0, 40.0), "voice_gain": (-20.0, 20.0), "max_overrun": (0.0, 5.0)}, "ranges read from the contract's limits")
-        for bad, msg in ((dict(c, version="0.2.0"), "supported range"), (dict(c, skill_id="x"), "skill_id"),
+        for bad, msg in ((dict(c, version="0.3.0"), "supported range"), (dict(c, version="1.0.0"), "supported range"), (dict(c, skill_id="x"), "skill_id"),
                          (dict(c, execution=dict(c["execution"], shell=True)), "shell false"),
                          (dict(c, tools=[t for t in c["tools"] if t["tool_id"] != "dubbing/dub"]), "lacks tool dubbing/dub"),
                          (dict(c, policy=dict(c["policy"], consent_record=dict(c["policy"]["consent_record"], bypass="--force"))), "bypass null"),
@@ -168,6 +168,10 @@ class CapabilityTests(_Base):
         self.assertEqual((caps["dubbing"].status, caps["dubbing:DUB"].status), ("AVAILABLE", "AVAILABLE"))
         self.assertEqual(caps["dubbing:DUB"].evidence["lifecycle"], "EXPERIMENTAL")
         self.assertEqual(set(caps["dubbing:DUB"].evidence["engines"]), {"chatterbox", "style_bert_vits2"}, "the engines DUB takes, from the contract")
+        from video_agent.tools.dubbing.adapter import dub_tool, engines, pinned_contract
+        self.assertIn("qwen3_tts", dub_tool(pinned_contract())["engines"], "0.2.0 lists the experimental engine for DUB")
+        self.assertEqual((pinned_contract()["engines"]["experimental"], engines()), (["qwen3_tts"], ("chatterbox", "style_bert_vits2")),
+                         "an experimental engine is left out of what the agent plans and sends")
         os.environ["FAKE_DUB_ENGINES"] = "chatterbox"
         caps = dub_capabilities(lambda: dub_adapter(self.tmp))
         ev = caps["dubbing:DUB"].evidence
@@ -256,6 +260,8 @@ class RequirementTests(_Base):
                            ({"dub.cues": self.cues, "dub.lang": "en", "dub.consent": self.consent}, "needs dub.consent"),
                            ({"dub.cues": self.cues, "dub.lang": "en", "dub.speed": 2}, "unknown requirement key"),
                            ({"dub.cues": self.cues, "dub.lang": "en", "dub.engine": "voicevox"}, "chatterbox, style_bert_vits2"),
+                           # ADR-107 addendum 10: dubbing-skill 0.2.0's experimental qwen3_tts is in the contract, never in a plan
+                           ({"dub.cues": self.cues, "dub.lang": "en", "dub.engine": "qwen3_tts"}, "chatterbox, style_bert_vits2"),
                            ({"dub.cues": self.cues, "dub.lang": "en", "dub.voice_gain": 25}, "within [-20, 20]"),
                            ({"dub.cues": self.cues + ".txt", "dub.lang": "en"}, "must be one of .json, .srt, .vtt"),
                            ({"dub.cues": str(Path(self.tmp) / "src" / "missing.srt"), "dub.lang": "en"}, "no such file")):
