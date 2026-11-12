@@ -1,5 +1,5 @@
 """Fake sound-design-skill process for the ADR-092 tests: speaks the slice of the real `sound-design` CLI the agent uses -- `contract --json` (the pinned
-src/video_agent/tools/sound_design/contract_0.1.0.json), `doctor --json --offline` (status, checks.operations.{bgm, library}.ready with the engine's
+src/video_agent/tools/sound_design/contract_0.2.0.json), `doctor --json --offline` (status, checks.operations.{bgm, library}.ready with the engine's
 install line), `library-pick --json --output=F --kind=bgm [--tags=..] [--mood=..] [--file=..] [--crossfade=S] --duration=D ... -- <library>` and
 `generate-bgm --json --output=F --prompt=P [--tags=..] --duration=D [--seed=N] --offline ...` in the result shapes of sound-design-skill main
 (sound-design/library-pick@1, sound-design/generate-bgm@1). The WAV written is a self-describing fake media file (tests/pipeline_harness.py) of the
@@ -20,7 +20,7 @@ from pathlib import Path
 MODE = os.environ.get("FAKE_SD_MODE", "ok")
 READY = os.environ.get("FAKE_SD_READY", "library")
 CALLS_LOG = os.environ.get("FAKE_SD_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "sound_design" / "contract_0.1.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "sound_design" / "contract_0.2.0.json"
 
 
 def _emit(doc) -> None:

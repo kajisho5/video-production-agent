@@ -7,7 +7,7 @@
          --ffmpeg-skill=<dir> --timeout=T`                                        (ACE-Step 1.5, optional install, never downloaded)
     → the WAV becomes one input of audio-production-skill's MIX (the bed; ducked under input 0 when the user asks)
 
-Protocol (sound-design-skill's own contract, `sound-design contract --json`, pinned from main in contract_0.1.0.json -- no release tag): each op
+Protocol (sound-design-skill's own contract, `sound-design contract --json`, pinned from main in contract_0.2.0.json -- no release tag): each op
 prints one ASCII JSON document (`sound-design/library-pick@1` / `sound-design/generate-bgm@1`: output {path, format, codec, sample_rate, channels,
 duration, sha256}, the request, the licence as declared or the engine's terms, provenance, warnings); failure {ok: false, error: {code, message,
 retryable, details}} with the code fixing the exit code. doctor → `checks.operations.{bgm, library}.ready`, never downloads.
@@ -40,7 +40,9 @@ TOOL_LIBRARY_PICK, TOOL_GENERATE_BGM = "sound-design/library-pick", "sound-desig
 SCHEMAS = {TOOL_LIBRARY_PICK: "sound-design/library-pick@1", TOOL_GENERATE_BGM: "sound-design/generate-bgm@1"}
 RESULT_OP = {TOOL_LIBRARY_PICK: "library-pick", TOOL_GENERATE_BGM: "bgm"}
 COMMAND = {TOOL_LIBRARY_PICK: "library-pick", TOOL_GENERATE_BGM: "generate-bgm"}
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 0.2.0 (sound-design-skill #18, main 1cfe830, no release tag; ADR-107 addendum 3): sfx-cues gains --min-reuse-spacing / --character and its
+# output substitutions / cues[].source / dropped[].by; library-pick and generate-bgm (the only tools this adapter runs) are unchanged
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
 # the per-operation capability `sound-design:<TYPE>` (resolver) ← the doctor's checks.operations.<op>.ready
 OPERATION_TYPES = {"library": "LIBRARY", "bgm": "BGM_GENERATE"}
 DURATION = (1.0, 3600.0)
@@ -61,7 +63,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv", "schema", "confirmation_required")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "mutates_input", "argv", "schema", "confirmation_required")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
