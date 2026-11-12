@@ -4,7 +4,7 @@
         `dubbing dub --json --offline --overwrite --ffmpeg-skill=<dir> --output=<out.mp4> --lang=L [--k=v ...] -- <programme> <translated cues>`
           ─(its own engine worker; every media step through ffmpeg-skill)─→ the programme with its dialogue replaced
 
-Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_0.1.0.json -- the repository has no
+Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_0.2.0.json -- the repository has no
 release tag, so the pin follows main as voice-enhance-skill's does, ADR-073):
     contract → `dubbing contract --json`
     doctor   → `dubbing doctor --json --offline --ffmpeg-skill=<dir>` (dubbing/doctor@1: python / ffmpeg_skill / engines /
@@ -58,7 +58,9 @@ RESULT_OP = {TOOL_DUB: "dub"}
 OPERATION_TYPES = {"dub": "DUB"}
 CAPABILITY_IDS = {"DUB": "speech.dub"}
 TOOL_OF_TYPE = {"DUB": TOOL_DUB}
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")   # 0.2.0 (dubbing-skill #20, main 979dc1a; ADR-107 addendum 10): the optional, experimental
+                                              # qwen3_tts engine (engines.experimental, engine.revision / engine.experimental in provenance). Additive;
+                                              # the agent does not wire qwen3_tts into plans
 DOCTOR_SCHEMA = "dubbing/doctor@1"
 DOCTOR_CODES = ("ENGINE_UNAVAILABLE", "MODEL_NOT_FOUND", "FFMPEG_SKILL_UNAVAILABLE")
 VIDEO_OUTPUTS = (".mp4", ".mov", ".mkv")   # the contract's `-o <out.mp4|out.mov|out.mkv|out.wav>`: the agent keeps the picture, so never .wav
@@ -91,7 +93,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "im
 # policy is fatal: the consent gate (`policy.consent_record.bypass: null`) is what lets the agent pass a reference at all.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "error_shape", "policy")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv", "schema", "limits")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -120,8 +122,11 @@ def parameters(contract: Optional[Dict[str, Any]] = None) -> Dict[str, Tuple[flo
 
 
 def engines(contract: Optional[Dict[str, Any]] = None) -> Tuple[str, ...]:
-    """The engines DUB takes (`tools[dubbing/dub].engines`): chatterbox and style_bert_vits2 at 0.1.0."""
-    return tuple(str(e) for e in dub_tool(contract).get("engines") or [])
+    """The engines DUB takes (`tools[dubbing/dub].engines`) that this agent uses: chatterbox and style_bert_vits2. An engine the contract lists as
+    experimental (`engines.experimental`: qwen3_tts at 0.2.0) is left out, so a plan can neither name it nor send it (ADR-107 addendum 10)."""
+    c = contract or pinned_contract()
+    experimental = {str(e) for e in ((c.get("engines") or {}).get("experimental") or [])} if isinstance(c.get("engines"), dict) else set()
+    return tuple(str(e) for e in dub_tool(c).get("engines") or [] if str(e) not in experimental)
 
 
 def unfit_policies(contract: Optional[Dict[str, Any]] = None) -> Tuple[str, ...]:

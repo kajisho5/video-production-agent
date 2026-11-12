@@ -102,7 +102,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("detection", "0.2.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("detection", "0.2.2", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(drift(c), [])
         self.assertEqual(breaking_drift(c), [])
@@ -114,7 +114,7 @@ class ContractTests(_Base):
         for v in ("0.3.0", "1.0.0"):
             bad = json.loads(json.dumps(c)); bad["version"] = v
             self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
-        for v in ("0.1.0", "0.2.0", "0.2.4"):   # ADR-107 addendum 8: 0.2.0 adds optional text / objects engines only
+        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.2", "0.2.4"):   # ADR-107 addendum 8: 0.2.0 adds optional text / objects engines only; addendum 9: 0.2.1 / 0.2.2 reword their install lines
             ok = json.loads(json.dumps(c)); ok["version"] = v
             self.assertEqual((check_contract(ok), breaking_drift(ok)), ([], []), v)
         # the 0.1.0 contract (text / objects without --engine, no optional engines) against this pin: reported drift, never fatal
