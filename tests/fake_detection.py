@@ -1,5 +1,5 @@
 """Fake detection-skill process for the ADR-090 tests: speaks the slice of the real `detection` CLI the agent uses -- `contract --json`
-(the pinned src/video_agent/tools/detection/contract_0.2.0.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok),
+(the pinned src/video_agent/tools/detection/contract_0.2.1.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok),
 `faces --json --overwrite --output=F --every=S [--min-score=X] [--ffmpeg-skill=D] --timeout=T -- <video>` (detection-skill/detections@1 with
 the sha256 of the input, printed with ok / detections_file and written to --output) and `tracks --json --overwrite --output=F [--window=S]
 -- <faces.json>` (detection-skill/tracks@1 made from that file, with its sha256). The media are the self-describing fake files of
@@ -25,7 +25,7 @@ MODE = os.environ.get("FAKE_DET_MODE", "ok")
 READY = os.environ.get("FAKE_DET_READY", "all")
 CONTRACT_MODE = os.environ.get("FAKE_DET_CONTRACT", "pinned")
 CALLS_LOG = os.environ.get("FAKE_DET_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "detection" / "contract_0.2.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "detection" / "contract_0.2.1.json"
 W, H = 1280, 720
 
 
