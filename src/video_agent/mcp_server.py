@@ -51,7 +51,9 @@ TOOLS: List[Dict[str, Any]] = [
          "ai_brief": {"type": "boolean", "description": "return the brief for the chat model (default true)"},
          "ai_model": {"type": "string", "description": "name of the chat model, recorded in provenance"},
          "brief": {"type": "string", "description": "the user's brief in their own words, read into requirement keys (explicit `set` wins)"},
-         "brief_requirements": {"type": ["object", "array"], "description": "your answer to the brief's host_request: {\"requirements\": [{key, value, phrase, confidence}], \"unmapped\": [...]}"}}}},
+         "brief_requirements": {"type": ["object", "array"], "description": "your answer to the brief's host_request: {\"requirements\": [{key, value, phrase, confidence}], \"unmapped\": [...]}"},
+         "channel": {"type": "string", "description": "the channel / brand / series this video belongs to: its stored preferences apply (ADR-111)"},
+         "no_preferences": {"type": "boolean", "description": "plan without the stored preferences"}}}},
     {"name": "brief", "description": (
         "Read the user's brief (e.g. \"60 s vertical, captions, -14 LUFS\") into the agent's requirement keys without analysing media. "
         "Without brief_requirements the result has `host_request`: answer it with keys from its allowed_keys only, each quoting the "
@@ -69,7 +71,21 @@ TOOLS: List[Dict[str, Any]] = [
      "inputSchema": {"type": "object", "required": ["project"], "properties": {
          "project": _PROJECT, "feedback": {"type": "string"}, "set": {"type": "object"}, "by": _STR,
          "ai_recommendations": {"type": ["object", "array"], "description": "the answer to the ai_brief"},
-         "ai_model": {"type": "string", "description": "name of the chat model that answered"}}}},
+         "ai_model": {"type": "string", "description": "name of the chat model that answered"},
+         "scope": {"type": "string", "enum": ["this_video", "channel", "all_videos"], "description": "what the feedback is about (default this_video). Say a wider scope only when the user said it"},
+         "scope_by": {"type": "string", "enum": ["user", "ai"], "description": "ai when you chose the wider scope yourself: it is then only a candidate the user confirms at promotion"},
+         "channel": {"type": "string", "description": "name the project's channel (once; needed for scope channel)"}}}},
+    {"name": "preferences", "description": (
+        "The versioned preference stores (ADR-111). action promote stores one feedback item's --set keys in the channel's store (scope channel) or the "
+        "global one (all_videos): call it only after the user asked for this preference to be kept for future videos. list / show / diff / rollback "
+        "read or restore versions (a rollback adds a new version)."),
+     "inputSchema": {"type": "object", "required": ["action"], "properties": {
+         "action": {"type": "string", "enum": ["promote", "list", "show", "diff", "rollback"]}, "project": _PROJECT,
+         "feedback": {"type": "string", "description": "promote: the feedback id"}, "confirm_scope": {"type": "string", "enum": ["channel", "all_videos"]},
+         "channel": {"type": "string", "description": "the channel's store (default global)"}, "version": {"type": "integer"},
+         "from": {"type": "integer"}, "to": {"type": "integer"}, "by": _STR, "reason": _STR}}},
+    {"name": "corrections", "description": "Corrections per minute of a project per plan version, vs. the previous version and the channel's recent average. A report only.",
+     "inputSchema": {"type": "object", "required": ["project"], "properties": {"project": _PROJECT}}},
     {"name": "validate", "description": "Validate a Project IR (schema, semantics, capabilities).",
      "inputSchema": {"type": "object", "required": ["project"], "properties": {"project": _PROJECT}}},
     {"name": "explain", "description": "Why was this decided: reason, evidence, alternatives, AI provenance. Without decision: every decision.",
@@ -143,7 +159,7 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         options += [f"--kind={k}" for k in a.get("kinds") or []]
         if a.get("ai_brief", True):
             options += ["--ai-brief", *opt("--ai-model", "ai_model")]
-        options += [*opt("--brief", "brief"), *_brief_file(a, tmpdir)]
+        options += [*opt("--brief", "brief"), *_brief_file(a, tmpdir), *opt("--channel", "channel"), *(["--no-preferences"] if a.get("no_preferences") else [])]
         if a.get("brief_requirements") is not None and not any(o.startswith("--ai-model=") for o in options):
             options += opt("--ai-model", "ai_model")
         return cmd("plan", options, [str(i) for i in inputs])
@@ -152,13 +168,26 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         options += opt("--ai-model", "ai_model") if a.get("brief_requirements") is not None else ["--ai-brief"]
         return cmd("brief", options, [need("text")])
     if name == "revise":
-        options = [*opt("--feedback", "feedback"), *opt("--by", "by"), *_sets(a.get("set"))]
+        options = [*opt("--feedback", "feedback"), *opt("--by", "by"), *_sets(a.get("set")), *opt("--scope", "scope"), *opt("--scope-by", "scope_by"), *opt("--channel", "channel")]
         if a.get("ai_recommendations") is not None:
             path = os.path.join(tmpdir, "ai_recommendations.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(a["ai_recommendations"], f, ensure_ascii=False)
             options += [f"--ai-recommendations={path}", *opt("--ai-model", "ai_model")]
         return cmd("revise", options, [need("project")])
+    if name == "preferences":
+        act = a.get("action") or "list"   # read-only by default
+        if act == "promote":
+            return ["preferences", "promote", f"--feedback={need('feedback')}", *opt("--confirm-scope", "confirm_scope"), *opt("--by", "by"), *opt("--reason", "reason"), "--", need("project")]
+        if act in ("list", "show"):
+            return ["preferences", act, *opt("--channel", "channel"), *(opt("--version", "version") if act == "show" else [])]
+        if act == "diff":
+            return ["preferences", "diff", *opt("--channel", "channel"), f"--from={need('from')}", f"--to={need('to')}"]
+        if act == "rollback":
+            return ["preferences", "rollback", *opt("--channel", "channel"), f"--to={need('to')}", *opt("--by", "by"), *opt("--reason", "reason")]
+        raise ValueError("preferences: 'action' must be promote, list, show, diff or rollback")
+    if name == "corrections":
+        return cmd("corrections", [], [need("project")])
     if name in ("validate", "diff"):
         return cmd(name, [], [need("project")])
     if name == "explain":

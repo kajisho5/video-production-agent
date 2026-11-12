@@ -136,7 +136,8 @@
        "DEFAULT",
        "OBSERVED",
        "INFERRED",
-       "AI_GENERATED"
+       "AI_GENERATED",
+       "PREFERENCE"
       ]
      },
      "source": {

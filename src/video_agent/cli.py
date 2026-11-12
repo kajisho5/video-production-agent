@@ -283,7 +283,8 @@ def cmd_plan(args, svc: Service) -> int:
     answer = _brief_answer(args)
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
                   strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
-                  ingest_records=ingest, brief=args.brief or "", brief_answer=answer, ai_model=args.ai_model or "host-chat")
+                  ingest_records=ingest, brief=args.brief or "", brief_answer=answer, ai_model=args.ai_model or "host-chat",
+                  channel=getattr(args, "channel", None), use_preferences=not getattr(args, "no_preferences", False))
     brief = (ir.doc["request"].get("args") or {}).get("brief")
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
@@ -509,7 +510,8 @@ def cmd_revise(args, svc: Service) -> int:
             from .providers.host import load_recommendations
             recs = load_recommendations(json.loads(Path(args.ai_recommendations).read_text(encoding="utf-8")))
         out = svc.revise(ir, args.project, feedback=args.feedback or "", user_requirements=_kv(args.set), who=args.by,
-                         ai_recommendations=recs, ai_model=args.ai_model or "host-chat", editor_timeline=args.editor_timeline, editor_subject=args.subject)
+                         ai_recommendations=recs, ai_model=args.ai_model or "host-chat", editor_timeline=args.editor_timeline, editor_subject=args.subject,
+                         scope=args.scope, scope_by=args.scope_by, channel=args.channel)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -534,6 +536,68 @@ def cmd_revise(args, svc: Service) -> int:
     if out.get("dropped_proposals"):
         print("suppressed (rejected earlier):", "; ".join(f"{d['subject']}@{d['asset_id']}: {d['decision']}" for d in out["dropped_proposals"]))
     print(out["hint"])
+    return 0
+
+
+def cmd_preferences(args, svc: Service) -> int:
+    """ADR-111: the preference stores. A refusal (PreferenceError, ValueError) is exit 2 with the reason."""
+    try:
+        if args.pref_cmd == "promote":
+            out = svc.promote_feedback(load_ir(args.project), args.project, args.feedback, who=args.by, confirm_scope=args.confirm_scope, reason=args.reason)
+        elif args.pref_cmd == "list":
+            out = svc.preference_history(args.channel)
+        elif args.pref_cmd == "show":
+            out = svc.preference_show(args.channel, args.version)
+        elif args.pref_cmd == "diff":
+            out = svc.preference_diff(args.channel, args.from_v, args.to_v)
+        else:
+            out = svc.preference_rollback(args.channel, args.to_v, who=args.by, reason=args.reason)
+    except ValueError as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(out, True)
+        return 0
+    if args.pref_cmd == "promote":
+        print(f"feedback {out['feedback_id']} ({out['scope']}) → {out['store']} v{out['version']} (was v{out['previous']}): {', '.join(out['rules'])}")
+    elif args.pref_cmd == "list":
+        print(f"{out['store']} ({out['path']}), current v{out['current']}:")
+        for v in out["versions"]:
+            print(f"  {'*' if v['current'] else ' '} v{v['version']} {v['action']:<8} {v['at'] or '':<26} {v['by'] or '':<12} {', '.join(v['keys']) or '-'}  {v.get('reason') or ''}")
+    elif args.pref_cmd == "show":
+        print(f"{out['store']} v{out['version']} ({out['action']}):")
+        for k, r in sorted(out["rules"].items()):
+            print(f"  {k} = {json.dumps(r['value'], ensure_ascii=False)}  (by {r.get('by')}, feedback {r.get('feedback_id')})")
+    elif args.pref_cmd == "diff":
+        print(f"{out['store']} v{out['from']} → v{out['to']}:")
+        for k, v in out["added"].items():
+            print(f"  + {k} = {json.dumps(v, ensure_ascii=False)}")
+        for k, v in out["removed"].items():
+            print(f"  - {k} = {json.dumps(v, ensure_ascii=False)}")
+        for k, v in out["changed"].items():
+            print(f"  ~ {k}: {json.dumps(v['before'], ensure_ascii=False)} → {json.dumps(v['after'], ensure_ascii=False)}")
+    else:
+        print(f"{out['store']} v{out['version']}: the rules of v{out['rolled_back_to']} (was v{out['previous']})")
+    return 0
+
+
+def cmd_corrections(args, svc: Service) -> int:
+    out = svc.corrections(load_ir(args.project), args.project)
+    if args.json:
+        _print(out, True)
+        return 0
+    for r in out["versions"]:
+        ch = r.get("change_from_previous")
+        print(f"  v{r['plan_version']}: {r['feedback']} correction(s) / {r['delivered_minutes']:.2f} min = {r['cpm'] if r['cpm'] is not None else '-'} per minute"
+              + (f" ({ch:+.3f} from the previous version)" if ch is not None else ""))
+    if out.get("channel_recent_average"):
+        a = out["channel_recent_average"]
+        print(f"  channel {out['channel']}: recent average {a['cpm']} per minute over {a['projects']} project(s)"
+              + (f"; this project {out['change_from_channel_average']:+.3f}" if out.get("change_from_channel_average") is not None else ""))
+    print("  " + out["note"])
     return 0
 
 
@@ -944,6 +1008,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ai-model", help="name of the chat model, recorded in provenance (default host-chat)")
     p.add_argument("--brief", help="the brief in the user's own words, read into --set keys (AI provider, else rule-based; explicit --set wins; ADR-061)")
     p.add_argument("--brief-requirements", metavar="FILE", help="the chat model's JSON answer to the brief (host provider, ADR-061)")
+    p.add_argument("--channel", help="the channel / brand / series this video belongs to: its stored preferences apply, and channel-scoped feedback goes there (ADR-111)")
+    p.add_argument("--no-preferences", action="store_true", help="plan without the stored preferences (global and channel)")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("brief", help="read a brief into --set keys (no media analysed): what plan --brief would apply (ADR-061)")
     p.add_argument("text"); p.add_argument("--profile", default="generic")
@@ -974,7 +1040,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--editor-timeline", metavar="FILE", help="the timeline an NLE gave back (.otio / FCP7 .xml / .edl): its changed cuts become CONFIRM decisions "
                                                              "of the next version (nle-bridge diff, ADR-098)")
     p.add_argument("--subject", help="which timeline of the plan the returned file is (default: the plan's only one)")
+    p.add_argument("--scope", choices=["this_video", "channel", "all_videos"], help="what the feedback is about (default this_video); a wider scope is stored only by `preferences promote` (ADR-111)")
+    p.add_argument("--scope-by", choices=["user", "ai"], help="who chose the scope (default user); an AI's wider scope is a candidate a person confirms at promotion")
+    p.add_argument("--channel", help="name the project's channel / brand / series (once; needed for --scope channel)")
     p.set_defaults(fn=cmd_revise)
+    p = sub.add_parser("preferences", help="the versioned preference stores (global, per channel): promote feedback, list, show, diff, roll back (ADR-111)")
+    psub = p.add_subparsers(dest="pref_cmd", required=True)
+    q = psub.add_parser("promote", help="store a feedback item's --set keys (scope channel → the channel's store, all_videos → global); a new store version")
+    q.add_argument("project"); q.add_argument("--feedback", required=True, help="feedback id (revision.feedback[].id)"); q.add_argument("--by")
+    q.add_argument("--confirm-scope", choices=["channel", "all_videos"], help="confirm the wider scope an AI proposed"); q.add_argument("--reason", default="")
+    for name, hlp in (("list", "the store's versions"), ("show", "one version's rules (default current)")):
+        q = psub.add_parser(name, help=hlp); q.add_argument("--channel", help="the channel's store (default: global)")
+        if name == "show":
+            q.add_argument("--version", type=int)
+    q = psub.add_parser("diff", help="rules added / removed / changed between two versions"); q.add_argument("--channel")
+    q.add_argument("--from", type=int, dest="from_v", required=True); q.add_argument("--to", type=int, dest="to_v", required=True)
+    q = psub.add_parser("rollback", help="a new version whose rules are those of an earlier one (nothing is deleted)"); q.add_argument("--channel")
+    q.add_argument("--to", type=int, dest="to_v", required=True); q.add_argument("--by"); q.add_argument("--reason", default="")
+    p.set_defaults(fn=cmd_preferences)
+    p = sub.add_parser("corrections", help="corrections per minute of a project: feedback per delivered minute per plan version, vs. the previous and the channel's recent average (report only)")
+    p.add_argument("project"); p.set_defaults(fn=cmd_corrections)
     p = sub.add_parser("diff", help="show the PlanDiff between two plan versions (default: previous → current)")
     p.add_argument("project"); p.add_argument("--from", type=int, dest="from"); p.add_argument("--to", type=int)
     p.set_defaults(fn=cmd_diff)

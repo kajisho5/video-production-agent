@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-PROVENANCE = ("USER", "SYSTEM", "PROFILE", "DEFAULT", "OBSERVED", "INFERRED", "AI_GENERATED")
+PROVENANCE = ("USER", "SYSTEM", "PROFILE", "DEFAULT", "OBSERVED", "INFERRED", "AI_GENERATED", "PREFERENCE")   # PREFERENCE: a promoted, stored preference (ADR-111)
 APPROVALS = ("AUTO", "CONFIRM", "BLOCK")
 RISKS = ("LOW", "MEDIUM", "HIGH")
 CAPABILITY_STATUS = ("AVAILABLE", "MISSING", "DEGRADED", "UNKNOWN")
