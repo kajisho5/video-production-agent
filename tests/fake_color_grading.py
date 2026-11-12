@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_1.0.1.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "color_grading" / "contract_1.1.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_CG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_CG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]
@@ -257,7 +257,9 @@ def main() -> int:
             extra["tonemap_selection"] = {"tonemap": params["tonemap"], "rule": rule, "input_transfer": transfer}
         if alpha and re.match(alpha["pix_fmt_pattern"], str(meta.get("pix_fmt") or "")) and t in ((alpha.get("keep_alpha") or {}).get("operations") or []):
             extra["alpha"] = {"kept": True, "precision_bits": 8, "alpha_codec": line, "alpha_mode": "straight", "source_colour": "taken as straight (not un-premultiplied)",
-                              "tool": "ffmpeg-skill/color --keep-alpha", "verification": {"step": "alpha", "ok": True}}
+                              "tool": "ffmpeg-skill/color --keep-alpha", "verification": {"step": "alpha", "ok": True},
+                              # 1.1.0 (its ADR-33): how the alpha mode was chosen; the agent sends no alpha_mode, so it is assumed straight
+                              "alpha_mode_selection": {"alpha_mode": "straight", "rule": "assumed", "format_states": False, "codec": str(meta.get("codec") or "")}}
         results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t, **extra,
                         "tool": OPS[t]["tool"], "required_capabilities": OPS[t]["required_capabilities"], "input": op["input"], "parameters": params,
                         "status": "reused" if MODE == "reused" else "completed", "input_hash": sha(src), "seconds": 0.01, "tool_commands_observed": ["fake ffmpeg -i in -vf x out"], "measurements": {}})

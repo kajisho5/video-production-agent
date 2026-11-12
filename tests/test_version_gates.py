@@ -131,12 +131,13 @@ class VersionGateTests(unittest.TestCase):
         # ADR-106 addendum 1: 0.6.1 rewords hdr_sdr.tone_mapping_selection (the transfer-based default of 0.5.1, written down); re-pinned
         # ADR-107: 1.0.0 was an unintended version number for the 0.6 line (the 0.6.1 contract, version only), so the gate takes 1.0.x and 0.6.x of the
         # same contract; 1.0 is not a new contract generation, and 0.7 / 1.1 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only
-        self.assertEqual(cg.pinned_contract()["version"], "1.0.1")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
-        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1"):
+        # ADR-107 addendum 5: 1.1.0 adds opt-in alpha_mode / drop_alpha (the alpha block changed: re-pinned); the gate takes 1.1.x, 1.2 / 2.0 stay out
+        self.assertEqual(cg.pinned_contract()["version"], "1.1.0")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
+        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1", "1.1.0", "1.1.2"):
             live = with_version(cg.pinned_contract(), v)
             self.assertEqual(cg.check_contract(live), [], v)
             self.assertEqual(cg.contract_breaking_drift(live), [], v)
-        for v in ("0.7.0", "1.1.0", "2.0.0", "10.0.0"):
+        for v in ("0.7.0", "1.2.0", "2.0.0", "10.0.0"):
             self.assertTrue(cg.check_contract(with_version(cg.pinned_contract(), v)), v)
 
     def test_audio_production_versions(self):

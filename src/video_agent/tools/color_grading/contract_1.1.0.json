@@ -4,7 +4,7 @@
   "id": "color-grading",
   "name": "color-grading-skill",
   "package": "color-grading-skill",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "contract_version": 1,
   "kind": "execution",
   "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
@@ -30,7 +30,7 @@
     {
       "tool_id": "color-grading/run",
       "skill_id": "color-grading",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "role": "execution",
       "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
       "inputs": [
@@ -988,7 +988,7 @@
       "LEGALIZE"
     ],
     "pix_fmt_pattern": "^(yuva|gbrap|ya(8|16)|rgba|bgra|argb|abgr)",
-    "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; docs/decisions.md ADR-25, ADR-30)",
+    "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; docs/decisions.md ADR-25, ADR-30). The request says how the colour is stored (alpha_mode) and whether an opaque result is wanted instead (drop_alpha); a premultiplied source is refused for a grade that keeps the alpha (ADR-33)",
     "keep_alpha": {
       "operations": [
         "LUT_APPLY",
@@ -1034,11 +1034,46 @@
       "precision_bits": 8,
       "precision": "ffmpeg-skill/color keeps the alpha at 8 bits: a deeper source alpha comes back within one 8-bit code (a warning says so); an 8-bit alpha is bit-identical",
       "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without --keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
-      "premultiplied_source": "not un-premultiplied: the source's colour is taken as straight, as ffmpeg-skill/color takes it",
+      "premultiplied_source": "refused (UNSUPPORTED_FORMAT, reason alpha_premultiplied): ffmpeg-skill/color --keep-alpha grades the colour as stored and has no un-premultiply step (alpha_mode, ADR-33)",
       "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
       "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
-      "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification} in results and provenance"
-    }
+      "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification, alpha_mode_selection} in results and provenance"
+    },
+    "alpha_mode": {
+      "request_field": "project.source.alpha_mode",
+      "values": [
+        "straight",
+        "premultiplied"
+      ],
+      "default": null,
+      "when_omitted": {
+        "by_codec": {
+          "png": "straight"
+        },
+        "otherwise": "straight",
+        "warning": true
+      },
+      "rules": {
+        "request": "the request named it (project.source.alpha_mode, always wins)",
+        "format": "not in the request; the source's format fixes it (PNG stores straight, unassociated alpha)",
+        "assumed": "not in the request and the source's format does not state it: taken as straight, with a warning"
+      },
+      "detection": "an alpha plane is read from ffprobe's pix_fmt through ffmpeg-skill/probe (pix_fmt_pattern); no format field that probe reports says whether the colour is premultiplied, so only a format whose specification fixes it (PNG: straight) gives a default",
+      "straight": "LUT_APPLY / PRIMARY_CORRECTION grade the colour with the alpha kept (keep_alpha)",
+      "premultiplied": "refused for LUT_APPLY / PRIMARY_CORRECTION while the alpha is kept (alpha_premultiplied); RETAG / STRIP_DOVI copy it unchanged; drop_alpha flattens it",
+      "recorded_as": "alpha_mode_selection {alpha_mode, rule, format_states, codec} in plan.alpha, plan steps, and the alpha record of results and provenance"
+    },
+    "drop_alpha": {
+      "request_field": "project.source.drop_alpha",
+      "type": "boolean",
+      "default": false,
+      "effect": "every re-encoding operation on an alpha input writes the opaque H.264 line on purpose (none is refused for the alpha); RETAG / STRIP_DOVI still copy the stream and must keep the alpha",
+      "verification": "the written file must store no alpha plane (alpha_not_dropped); color's alpha step may report alpha_dropped, any other failure is a VALIDATION_ERROR",
+      "colour": "kept as stored: a premultiplied source reads as composited over black, a straight one shows the colour its transparent pixels hold",
+      "uses": "ffmpeg-skill/color --drop-alpha where detected (ffmpeg-skill/color:drop-alpha); without it the same opaque line is written and color's alpha step reporting alpha_dropped is expected",
+      "recorded_as": "alpha {kept: false, dropped: true, requested_by, tool, reported_dropped, verification, alpha_mode_selection}"
+    },
+    "output_settings": "an output that keeps the alpha with an expect.pix_fmt that has no alpha plane is refused before anything runs (alpha_not_preserved); the alpha line must fit the source's container (containers)"
   },
   "legalize": {
     "clamp": {
@@ -1071,7 +1106,8 @@
   "optional_capabilities": [
     "ffmpeg-skill/check:levels",
     "ffmpeg-skill/color:legalize",
-    "ffmpeg-skill/color:keep-alpha"
+    "ffmpeg-skill/color:keep-alpha",
+    "ffmpeg-skill/color:drop-alpha"
   ],
   "x264": {
     "crf_range": [
@@ -1170,7 +1206,8 @@
         "legalize",
         "keep_alpha",
         "alpha_codec",
-        "alpha_mode"
+        "alpha_mode",
+        "drop_alpha"
       ],
       "look": [
         "input",
@@ -1242,6 +1279,9 @@
           "keep_alpha",
           "alpha_codec",
           "alpha_mode"
+        ],
+        "color_drop_alpha": [
+          "drop_alpha"
         ]
       }
     },
@@ -1365,10 +1405,17 @@
       "reference (MATCH_CAMERA)",
       "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
       "legalize (LEGALIZE: profile, limits, knee, lut_sha256, clamp {applied, tool, standard, verification, residual} or {applied: false, reason}, out_of_range_share {measured, tool, standard, unit, before, after} or {measured: false, reason})",
-      "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification)",
+      "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification, alpha_mode_selection; a re-encode under drop_alpha: kept false, dropped true, requested_by, tool, reported_dropped, verification)",
       "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"
     ],
-    "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp)"
+    "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp); a re-encode of an alpha input: alpha_handling {alpha_line, drop_alpha}"
+  },
+  "request_extensions": {
+    "project.source": {
+      "alpha_mode?": "straight|premultiplied",
+      "drop_alpha?": false
+    },
+    "note": "request.shape is the 0.4.0 shape consumers pin; these optional fields are accepted beside it (alpha)"
   },
   "request_types": {
     "operation_types": [
