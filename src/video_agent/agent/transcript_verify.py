@@ -188,15 +188,25 @@ def _to_output(t: float, keep: List[List[float]], offset: float, speed: float, l
 
 
 def to_source(t_out: float, tl: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """A delivered time back onto a source (asset, seconds), or None (inside a still, past the end, between inputs)."""
+    """A delivered time back onto a source (asset, seconds, kept range), or None (inside a still, past the end, between inputs)."""
     x = (float(t_out) - tl["lead"]) * tl["speed"]
     for src, m in tl["inputs"].items():
         acc = m["offset"]
-        for s, e in m["keep"]:
+        for n, (s, e) in enumerate(m["keep"]):
             if acc - 1e-9 <= x <= acc + (e - s) + 1e-9:
-                return {"asset_id": src, "seconds": round(s + (x - acc), 3)}
+                return {"asset_id": src, "seconds": round(s + (x - acc), 3), "range": n}
             acc += e - s
     return None
+
+
+def source_span(span: Dict[str, float], tl: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """A delivered span back onto one source, only when both ends lie in the same kept range (a span across a cut is not one place)."""
+    if tl is None:
+        return None
+    a, b = to_source(span["start"], tl), to_source(span["end"], tl)
+    if not a or not b or a["asset_id"] != b["asset_id"] or a["range"] != b["range"]:
+        return None
+    return {"asset_id": a["asset_id"], "start": a["seconds"], "end": b["seconds"]}
 
 
 def planned_words(doc: Dict[str, Any], subject: Dict[str, Any], observations: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[str]]:
@@ -230,8 +240,10 @@ def planned_words(doc: Dict[str, Any], subject: Dict[str, Any], observations: Se
 
 
 def heard_words(transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The re-transcription's timed words (numbered like ADR-109), sorted by time."""
-    words, _ = number_words((transcript or {}).get("segments") or [])
+    """The re-transcription's timed words, numbered by their order (the Skill's own `index` is not needed here and never fails the check)."""
+    segs = [dict(s, words=[{k: v for k, v in w.items() if k != "index"} for w in s["words"] if isinstance(w, dict)]) if isinstance(s, dict) and isinstance(s.get("words"), list) else s
+            for s in (transcript or {}).get("segments") or []]
+    words, _ = number_words(segs)
     return [w for w in words if w["start"] is not None and w["end"] is not None]
 
 
@@ -270,11 +282,7 @@ def compare(planned: Sequence[Dict[str, Any]], heard: Sequence[Dict[str, Any]], 
             toks = h[j1:j2]
             dup = all(pc[t["norm"]] > 0 and hc[t["norm"]] > pc[t["norm"]] for t in toks)
             span = _span(toks)
-            src = None
-            if timeline is not None:
-                a, b = to_source(span["start"], timeline), to_source(span["end"], timeline)
-                if a and b and a["asset_id"] == b["asset_id"]:
-                    src = {"asset_id": a["asset_id"], "start": a["seconds"], "end": b["seconds"]}
+            src = source_span(span, timeline)
             items.append({"kind": "duplicated" if dup else "unexpected", "text": _text(toks, unit), "output": span, "source": src,
                           "heard_word_indices": sorted({t["w"]["index"] for t in toks})})
     low: List[List[Dict[str, Any]]] = []
@@ -287,11 +295,7 @@ def compare(planned: Sequence[Dict[str, Any]], heard: Sequence[Dict[str, Any]], 
                 low.append([w])
     for run in low:
         span = {"start": run[0]["start"], "end": run[-1]["end"]}
-        src = None
-        if timeline is not None:
-            a, b = to_source(span["start"], timeline), to_source(span["end"], timeline)
-            if a and b and a["asset_id"] == b["asset_id"]:
-                src = {"asset_id": a["asset_id"], "start": a["seconds"], "end": b["seconds"]}
+        src = source_span(span, timeline)
         items.append({"kind": "low_confidence", "text": " ".join(str(w.get("text") or "").strip() for w in run), "output": span, "source": src,
                       "confidence": round(min(float(w["confidence"]) for w in run), 3), "heard_word_indices": [w["index"] for w in run]})
     items.sort(key=lambda it: (it["output"]["start"], KINDS.index(it["kind"])))
@@ -314,9 +318,14 @@ def verify_deliverable(doc: Dict[str, Any], subject: Dict[str, Any], transcript:
     if not planned and problems:
         rep.update(status="NOT_COMPARED", counts={k: 0 for k in KINDS}, items=[])
         return rep
+    if not heard and any(isinstance(s, dict) and str(s.get("text") or "").strip() for s in transcript.get("segments") or []):
+        rep["notes"].append("the delivered file's speech was recognised without word timings, so nothing could be compared word by word")
+        rep.update(status="NOT_COMPARED", counts={k: 0 for k in KINDS}, items=[])
+        return rep
     res = compare(planned, heard, rep["unit"], float(rep["min_confidence"]), tl)
     items = res["items"]
-    rep.update(status="CHECK_HERE" if items else "CLEAN", counts=res["counts"], matched_tokens=res["matched"], planned_tokens=res["planned_tokens"],
+    # a source that could not be compared is a place to check too
+    rep.update(status="CHECK_HERE" if items or problems else "CLEAN", counts=res["counts"], matched_tokens=res["matched"], planned_tokens=res["planned_tokens"],
                heard_tokens=res["heard_tokens"], items=items[:MAX_ITEMS])
     if len(items) > MAX_ITEMS:
         rep["truncated"] = {"shown": MAX_ITEMS, "total": len(items)}

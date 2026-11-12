@@ -1987,6 +1987,9 @@ render: … → QA → artifacts → speech_transcription (registry-selected) on
   token heard more often in the file than planned), `unexpected` (any other heard, not planned), and `low_confidence` spans
   (consecutive heard words below `min_confidence`). Per deliverable: status CHECK_HERE / CLEAN / NOT_COMPARED, counts, notes
   (filler removal ran, a switch / grid / mix programme, a different recognised language), at most 200 items (counts complete).
+- **Edge rules:** source seconds only when both ends map into one kept range; heard words numbered by order; speech heard without
+  word timings → NOT_COMPARED; a source that could not be compared → CHECK_HERE; `revise` refuses to switch the check on without a
+  recorded timed transcript; `qa.transcript_verify` is part of the plan diff (`VERIFY`).
 - **Never a verdict:** the result is stored as `qa.transcript_verification` in the render result / `report.json` (a key beside
   `items`, so the QA status, the artifact stages and the job status are untouched), as a "Listen and check" section in
   `report.md`, in the CLI output, in `provenance.json` (`transcript_verification`: rule, status, measurements, warnings) and in the

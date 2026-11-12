@@ -933,6 +933,12 @@ class Service:
         profile = load_profile(old["project"]["profile"]["name"])
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**brief_task.values_of(brief_record), **prev_req}))
         analysis = AnalysisResult.from_ir(old)
+        if verify_task.parse_verify_requirements({k: v for k, v in prev_req.items() if k.startswith(verify_task.PREFIX)}) and not any(
+                o.kind == "transcript" and any(isinstance(sg, dict) and isinstance(sg.get("words"), list) for sg in (o.data or {}).get("segments") or [])
+                for o in analysis.observations):
+            # ADR-110: a revision re-uses the recorded analysis, so the timed words the check compares with must already be there
+            raise ValueError(f"{verify_task.KEY} compares the render with the source's words and their timings, which this plan did not measure: "
+                             f"plan again with --set {verify_task.KEY}=true")
         if editor_obs is not None:
             analysis.observations.append(editor_obs)
         rejected = [d for d in old["decisions"] if d["status"] == "REJECTED"]
@@ -1983,7 +1989,7 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
         lines += ["", f"## Listen and check — {tv['status']} (re-transcribed, {tv['rule']})", f"- {tv['note']}"]
         lines += [f"- warning: {w}" for w in tv.get("warnings") or []]
         for dv in tv.get("deliverables") or []:
-            lines.append(f"- {verify_task.summary_line(dv)}" + (f" ({dv.get('language')}, {dv.get('engine')})" if dv.get("engine") else ""))
+            lines.append(f"- {dv.get('artifact')} — {verify_task.summary_line(dv)}" + (f" ({dv.get('language')}, {dv.get('engine')})" if dv.get("engine") else ""))
             lines += [f"  - note: {n}" for n in dv.get("notes") or []]
             for it in dv.get("items") or []:
                 src = it.get("source") or {}

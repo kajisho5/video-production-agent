@@ -104,8 +104,11 @@ class TimelineTests(unittest.TestCase):
         doc = self.doc(ops)
         tl = timeline_of(doc, {"id": "programme", "sources": ["a", "b"]})
         self.assertEqual((tl["speed"], tl["lead"], tl["inputs"]["b"]["offset"]), (2.0, 1.0, 6.0))
-        self.assertEqual(to_source(1.0 + 3.5 / 2.0, tl), {"asset_id": "a", "seconds": 6.5})
-        self.assertEqual(to_source(1.0 + 7.0 / 2.0, tl), {"asset_id": "b", "seconds": 1.0})
+        self.assertEqual(to_source(1.0 + 3.5 / 2.0, tl), {"asset_id": "a", "seconds": 6.5, "range": 1})
+        self.assertEqual(to_source(1.0 + 7.0 / 2.0, tl), {"asset_id": "b", "seconds": 1.0, "range": 0})
+        from video_agent.agent.transcript_verify import source_span
+        self.assertIsNone(source_span({"start": 1.0 + 1.8 / 2.0, "end": 1.0 + 2.2 / 2.0}, tl), "a span across a cut is not one place on the source")
+        self.assertEqual(source_span({"start": 1.0 + 2.2 / 2.0, "end": 1.0 + 3.0 / 2.0}, tl), {"asset_id": "a", "start": 5.2, "end": 6.0})
         self.assertIsNone(to_source(0.5, tl), "inside the still")
         obs = [{"id": "ta", "kind": "transcript", "asset_id": "a", "data": {"segments": [{"id": "s", "words": [{"start": 1.5, "end": 2.0, "text": "kept"},
                                                                                                                      {"start": 3.2, "end": 3.8, "text": "cut"},
@@ -222,6 +225,36 @@ class RenderTests(unittest.TestCase):
         self.assertEqual((tv["status"], tv["measurements"][0]["ok"]), ("NOT_RUN", False))
         self.assertIn("re-transcription failed", tv["warnings"][0])
         self.assertEqual(out["status"], "COMPLETED")
+
+    def test_heard_text_without_word_timings_is_not_compared(self):
+        from video_agent.agent.transcript_verify import verify_deliverable
+        doc = {"assets": {"a": {"technical": {"duration": 6.0}}}, "video": {"operations": []}, "audio": {"operations": []},
+               "analysis": {"observations": [{"id": "t", "kind": "transcript", "asset_id": "a", "data": {"segments": [{"id": "s", "words": [{"start": 0.5, "end": 0.8, "text": "hi"}]}]}}]}}
+        cfg = parse_verify_requirements({"verify.transcript": True})
+        rep = verify_deliverable(doc, {"id": "a", "sources": ["a"]}, {"segments": [{"id": "s", "text": "hi", "words": None}]}, cfg)
+        self.assertEqual(rep["status"], "NOT_COMPARED")
+        rep = verify_deliverable(doc, {"id": "a", "sources": ["a"]}, {"segments": [{"id": "s", "text": "hi", "words": [{"start": 0.5, "end": 0.8, "text": "hi", "index": 7}]}]}, cfg)
+        self.assertEqual(rep["status"], "CLEAN", "the Skill's own index on heard words never fails the check")
+        rep = verify_deliverable(doc, {"id": "a", "sources": ["a"]}, {"segments": []}, cfg)
+        self.assertEqual((rep["status"], rep["counts"]["missing"]), ("CHECK_HERE", 1), "nothing heard at all: every planned word is missing")
+
+    def test_revise_cannot_enable_the_check_without_timed_source_words(self):
+        svc = pipeline_service(self.tmp)
+        ir = svc.plan([self.src], "youtube", user_requirements={}, params={"language": "en"})
+        path = str(Path(svc.workspace) / "plans" / "r.project.json")
+        save_ir(ir, path)
+        with self.assertRaisesRegex(ValueError, "plan again"):
+            svc.revise(load_ir(path), path, user_requirements={"verify.transcript": True})
+
+    def test_revise_records_a_changed_setting(self):
+        svc = pipeline_service(self.tmp)
+        ir = svc.plan([self.src], "youtube", user_requirements={"verify.transcript": True}, params={"language": "en"})
+        path = str(Path(svc.workspace) / "plans" / "v.project.json")
+        save_ir(ir, path)
+        out = svc.revise(load_ir(path), path, user_requirements={"verify.transcript": True, "verify.transcript.unit": "char"})
+        self.assertTrue(out["created"])
+        self.assertEqual(load_ir(path).doc["qa"]["transcript_verify"]["unit"], "char")
+        self.assertTrue(any(line.startswith("VERIFY") for line in out["diff"]["summary"]))
 
     def test_another_language_is_named(self):
         out, _, _ = self.render({"verify.transcript": True, "verify.transcript.language": "ja"}, heard=self.HEARD)

@@ -449,6 +449,7 @@ def cmd_render(args, svc: Service) -> int:
                 for w in tv.get("warnings") or []:
                     print(f"    warning: {w}")
                 for dv in tv.get("deliverables") or []:
+                    print(f"    {dv.get('artifact')}: {dv.get('status')}" + "".join(f"\n      note: {n}" for n in dv.get("notes") or []))
                     for it in dv.get("items") or []:
                         print(f"    {it['kind']:<14} {it['output']['start']:8.2f}-{it['output']['end']:.2f}s  {it['text']}")
         if out.get("report"):
