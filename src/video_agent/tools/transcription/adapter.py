@@ -64,6 +64,9 @@ ADAPTER_OWNED_KEYS = ("workspace", "allowed_input_roots")   # pinned by the adap
 LANGUAGE_REASONS = ("language_unsupported", "language_detection_unsupported")
 LANGUAGE_RECOVERY_CLASS = "LANGUAGE_UNSUPPORTED"
 MAX_HINT_LANGUAGES = 30
+# cache policy `only`: the dry run that decides a hit can itself be refused (a model's language limit is checked before any audio work). The
+# CACHE_MISS it becomes keeps the refusal's details and guidance, so the recovery class (BLOCK, never retried) and the hint still reach the row
+PREFLIGHT_KEPT_KEYS = ("details", "recovery_class", "retryable", "hint")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _FP_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LANG_RE = re.compile(r"^[a-z]{2,3}$")
@@ -418,7 +421,11 @@ class TranscriptionAdapter(ToolAdapter):
             status = ((probe.data or {}).get("result") or {}).get("cache", {}).get("status") if probe.ok else None
             if status != "hit":
                 msg = "CACHED_ONLY: no cached transcript for this request" if probe.ok else (probe.data or {}).get("error", {}).get("message", "")
-                return ToolResult(op.id, op.tool, False, 1, None, {"error": {"code": "CACHE_MISS", "message": msg}}, [], probe.stderr_tail, round(time.time() - t0, 3), attempt, dry_run)
+                error = {"code": "CACHE_MISS", "message": msg}
+                if not probe.ok:   # the Skill refused the request itself (e.g. a model's language limit): its details and guidance stay with the miss
+                    perr = (probe.data or {}).get("error") or {}
+                    error.update({k: perr[k] for k in PREFLIGHT_KEPT_KEYS if k in perr})
+                return ToolResult(op.id, op.tool, False, 1, None, {"error": error}, [], probe.stderr_tail, round(time.time() - t0, 3), attempt, dry_run)
         return self._call(req, timeout, op, attempt, dry_run, t0)
 
     def _call(self, req: Dict[str, Any], timeout: Optional[float], op: Operation, attempt: int, dry_run: bool, t0: float) -> ToolResult:
