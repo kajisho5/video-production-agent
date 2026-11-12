@@ -1147,6 +1147,20 @@
     - unit `tests/test_image_prepare.py`: pin 0.9.0; a 0.9.9 version is reported, not fatal; 0.10.0 is refused.
     - unit `tests/test_unit.py`, `tests/test_satellite_params.py` and `tests/test_transcribe_options.py`, and evals 24 / 31 / 32: the version strings, and 18 audio operation types.
     - Locally on the real Skills (media-analysis-skill v0.1.16, audio-production-skill v1.2.0, transcription-skill v0.11.3, hyperframes-skill v0.8.0, imagemagick-skill v0.9.0, ffmpeg-skill main): `MediaAnalysisRealTests`, `ImagePrepareRealTests`, `TranscriptionRealTests`, `AudioProductionRealTests` and `HandoffPinLiveTests.test_hyperframes_skill` pass, and live == pin. `MediaAnalysisRealTests` now counts 12 tools (`media-analysis/vad`). CI runs every integration shard against each main.
+- Addendum 13 (2026-11-12, imagemagick-skill v0.10.0, artifacts-skill v0.4.0): a re-pin and two widened gates, after #151. Each pin is taken from the release tag.
+  - Facts, imagemagick-skill (v0.10.0 ab89bf9): a new `brandkit` tool (logo variants for a brand kit from one cut-out logo: color, mono, white, black and clearspace at the given long edges, with a palette report) and the provides entry `image.brandkit` (EXPERIMENTAL). Compared by tool id, every other tool and provides entry is unchanged, `resize` / `pad` / `strip` included; the top level differs only in the version fields. The version was outside the gate (`0.8.` / `0.9.`).
+  - Facts, artifacts-skill (v0.4.0 ae039d3): the contract differs from the 0.3.0 pin only in `version` and `tool_version` (0.3.0 → 0.4.0). The version was outside the gate (`0.3.`). The 0.3.0 pin was taken from main aea2499, not from the v0.3.0 tag (953373b), which predates `skill_id`, `provides` and `not_provided`.
+  - Decision, pins (each method reproduces the previous pin byte for byte):
+    - `imagemagick/contract_0.10.0.json` is the v0.10.0 tag's `contract --json` as one sorted, compact line. The method gives the 0.9.0 pin from v0.9.0. `agent/image_prepare.py` reads it too.
+    - `artifacts/contract_0.4.0.json` is the v0.4.0 tag's `contract --json` as one sorted, compact line. The method gives the 0.3.0 pin from aea2499.
+    - The adapters' `PINNED_CONTRACT_PATH` and the fakes read the new files.
+  - Decision, gates: the imagemagick gate takes `0.10.` (with `0.8.` / `0.9.`), and the artifacts gate takes `0.4.` (with `0.3.`). No major version enters either gate.
+  - Consequences: installs of imagemagick-skill 0.8.x / 0.9.x and artifacts-skill 0.3.x keep working (inside the gates, with no fatal drift on what the adapters run). Requests, plans and admitted results are unchanged.
+  - Not done: imagemagick-skill's `alpha` and `brandkit` tools are not wired into plans.
+  - Verification:
+    - unit `tests/test_image_prepare.py`: pin 0.10.0; a 0.10.9 version is reported, not fatal; 0.11.0 is refused.
+    - unit `tests/test_documents.py`: pin 0.4.0; 0.4.9 is drift, not breaking; 0.5.0 is outside the supported range.
+    - Locally on the real Skills (imagemagick-skill v0.10.0, artifacts-skill v0.4.0): `ImagePrepareRealTests` and `DocumentVerifyRealTests` pass, and live == pin.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

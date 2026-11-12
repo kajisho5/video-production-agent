@@ -3,8 +3,8 @@
     video-production-agent ─(plan step document_verify, QA)─→ ArtifactsAdapter ─(argv lists, never a shell)─→
         `artifacts-skill verify --json --policy={"forbid_placeholder_text": true} [--policy-preset=NAME] -- <document>`
 
-Protocol (artifacts-skill's own contract, `artifacts-skill contract --json`, pinned from main in contract_0.3.0.json -- the repository has no
-release tag):
+Protocol (artifacts-skill's own contract, `artifacts-skill contract --json`, pinned in contract_0.4.0.json = the v0.4.0
+release tag ae039d3; it differs from the 0.3.0 pin, taken from main aea2499, only in `version` / `tool_version`):
     contract → `artifacts-skill contract --json` (skill_id artifacts-skill, contract_version 1.x, tools[] by `name`, provides[] by tool_id,
                exit_codes {ok 0, fail 1, input 2, capability 3, security 4, internal 5}, input_mutation_policy never)
     doctor   → `artifacts-skill doctor --json` ({tool_version, capabilities: {<id>: {status available | missing | not_required, detail}}})
@@ -35,7 +35,7 @@ from .locate import PACKAGE_ID, locate_artifacts  # noqa: F401  (re-exported)
 SKILL_ID = PACKAGE_ID
 PREFIX = SKILL_ID + "/"
 TOOL_VERIFY = "artifacts-skill/verify"
-SUPPORTED_SKILL_VERSIONS = ("0.3.",)
+SUPPORTED_SKILL_VERSIONS = ("0.3.", "0.4.")   # 0.4.0 (ADR-107 addendum 13): only the contract version changed
 STATUSES = ("pass", "warn", "fail", "unknown", "not_checked", "skipped")
 PLACEHOLDER_CHECK = "leftover_placeholder_text"
 POLICY = {"forbid_placeholder_text": True}
@@ -53,7 +53,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "not_provid
 DRIFT_TOOL_KEYS = ("input_schema", "output_schema", "side_effects", "errors", "artifact_types")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "exit_codes", "input_mutation_policy")
 FATAL_DRIFT_TOOL_KEYS = ("input_schema", "side_effects")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

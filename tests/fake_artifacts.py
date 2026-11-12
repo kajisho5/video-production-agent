@@ -1,5 +1,5 @@
 """Fake artifacts-skill process for the ADR-095 tests: speaks the slice of the real `artifacts-skill` CLI the agent uses -- `contract --json`
-(the pinned src/video_agent/tools/artifacts/contract_0.3.0.json), `doctor --json` ({tool_version, capabilities: {<format>.structural: {status,
+(the pinned src/video_agent/tools/artifacts/contract_0.4.0.json), `doctor --json` ({tool_version, capabilities: {<format>.structural: {status,
 detail}}}) and `verify --json --policy=<json> [--policy-preset=NAME] -- <document>` ({kind structural, status, checks}; exit 0 pass / warn,
 1 fail, 3 unknown; an error as {"error": {code, category, message, remediation}} with its category's exit code). The document's text is read:
 "TODO", "Lorem ipsum" or "Click to add" makes `leftover_placeholder_text` fail when the policy forbids placeholders; a `.bin` file is
@@ -18,7 +18,7 @@ from pathlib import Path
 MODE = os.environ.get("FAKE_AF_MODE", "ok")
 READY = os.environ.get("FAKE_AF_READY", "all")
 CALLS_LOG = os.environ.get("FAKE_AF_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "artifacts" / "contract_0.3.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "artifacts" / "contract_0.4.0.json"
 EXIT = {"input": 2, "capability": 3, "security": 4, "execution": 1, "verification": 1, "internal": 5}
 MARKERS = ("todo", "lorem ipsum", "click to add")
 
@@ -34,7 +34,7 @@ def _error(code: str, category: str, message: str) -> int:
 
 def _doctor() -> int:
     st = "available" if READY == "all" else "missing"
-    _emit({"tool_version": "0.3.0", "capabilities": {f"{f}.structural": {"id": f"{f}.structural", "status": st, "detail": "fake"} for f in ("markdown", "pdf", "docx")}
+    _emit({"tool_version": "0.4.0", "capabilities": {f"{f}.structural": {"id": f"{f}.structural", "status": st, "detail": "fake"} for f in ("markdown", "pdf", "docx")}
            | {"backend.ffmpeg": {"id": "backend.ffmpeg", "status": "available", "detail": "fake"}}})
     return 0
 

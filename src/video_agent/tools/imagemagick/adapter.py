@@ -6,8 +6,8 @@
         `python <checkout>/scripts/strip.py --output=<out.png> --overwrite --json --timeout=T -- <image>`
           ─(ImageMagick 7 `magick` / ImageMagick 6 `convert`, or macOS `sips` for resize / pad)─→ a new image file
 
-Protocol (imagemagick-skill's own contract, `python scripts/_contract.py contract --json`, pinned in contract_0.9.0.json = the v0.9.0
-release, = main 7617163; 0.9.0 adds the `alpha` tool, which this adapter does not run):
+Protocol (imagemagick-skill's own contract, `python scripts/_contract.py contract --json`, pinned in contract_0.10.0.json = the v0.10.0
+release, = main ab89bf9; 0.9.0 added the `alpha` tool and 0.10.0 the `brandkit` tool, neither of which this adapter runs):
     contract → `_contract.py contract --json` (contract_version 1.0; each tool's input_schema is derived from its own argparse parser)
     doctor   → `_contract.py doctor --json` (backends found, `tools.<name>.usable` per tool; never downloads anything)
     a tool   → exactly one JSON object: `{"ok": true, ...output_schema}`, or `{"ok": false, "reason": ...}` (exit 1), or the timeout shape
@@ -47,7 +47,8 @@ SCRIPT = {TOOL_RESIZE: "resize", TOOL_PAD: "pad", TOOL_STRIP: "strip"}
 OPERATION_TYPES = {"resize": "RESIZE", "pad": "PAD", "strip": "STRIP"}
 CAPABILITY_IDS = {"RESIZE": "image.resize", "PAD": "image.pad", "STRIP": "image.strip"}
 TOOL_OF_TYPE = {"RESIZE": TOOL_RESIZE, "PAD": TOOL_PAD, "STRIP": TOOL_STRIP}
-SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.")   # 0.9.0 (ADR-107 addendum 12): + tool alpha (image.alpha), additive; resize / pad / strip unchanged
+SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.", "0.10.")   # 0.9.0 (ADR-107 addendum 12): + tool alpha (image.alpha); 0.10.0 (addendum 13): + tool
+# brandkit (image.brandkit); both additive, resize / pad / strip unchanged
 # the parameters the adapter sends per tool (input_schema property names), besides the references and the boundary flags below. Their type /
 # enum / flag spelling are read from the live contract on every call; the pinned contract fixes what the agent's vocabulary was written for.
 PARAMETERS: Dict[str, Tuple[str, ...]] = {TOOL_RESIZE: ("width", "height", "mode"), TOOL_PAD: ("width", "height", "color", "gravity"), TOOL_STRIP: ()}
@@ -74,7 +75,7 @@ DRIFT_TOOL_KEYS = ("id", "script", "description", "role", "backends", "requires_
 # three tools' script / output / input-mutation flags, and (parameter_drift) every parameter the adapter sends and every result key it reads.
 FATAL_DRIFT_KEYS = ("contract_version", "execution", "result_shapes")
 FATAL_DRIFT_TOOL_KEYS = ("id", "script", "writes_output", "supports_json", "mutates_input")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.9.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.10.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -156,12 +157,12 @@ def check_contract(contract: Any) -> List[str]:
 
 
 def lifecycle(contract: Dict[str, Any]) -> Dict[str, str]:
-    """capability id → lifecycle (EXPERIMENTAL in 0.9.0) from the contract's `provides`."""
+    """capability id → lifecycle (EXPERIMENTAL in 0.10.0) from the contract's `provides`."""
     return {str(p.get("id")): str(p.get("lifecycle")) for p in contract.get("provides") or [] if isinstance(p, dict)}
 
 
 def _op_tools(c: Dict[str, Any]) -> Dict[str, Any]:
-    """The contract with only the tools this adapter runs (the other 17 tools are not called)."""
+    """The contract with only the tools this adapter runs (the other 18 tools are not called)."""
     return dict(c, tools=[t for t in c.get("tools") or [] if isinstance(t, dict) and t.get("id") in TOOLS])
 
 
