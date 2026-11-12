@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-Python orchestrator (`video-agent`). 22 adapters (ffmpeg-skill, video-editing, audio-production, color-grading, motion-graphics, subtitle, thumbnail, qc, media-analysis, transcription, ingest, voice-enhance, imagemagick-skill, dubbing, diarization, publish, nle-bridge, detection, slide-sync, sound-design, remotion-ffmpeg-skill, artifacts-skill). Brain: deterministic rules + optional AI (Claude API, ADR-049; the chat model through MCP, ADR-050). Handoffs for steps no installed skill can run (ADR-051). 405 unit + 53 integration tests.
+Python orchestrator (`video-agent`). 22 adapters (ffmpeg-skill, video-editing, audio-production, color-grading, motion-graphics, subtitle, thumbnail, qc, media-analysis, transcription, ingest, voice-enhance, imagemagick-skill, dubbing, diarization, publish, nle-bridge, detection, slide-sync, sound-design, remotion-ffmpeg-skill, artifacts-skill). Brain: deterministic rules + optional AI (Claude API, ADR-049; the chat model through MCP, ADR-050). Handoffs for steps no installed skill can run (ADR-051). 405 unit + 53 integration tests. Pinned contracts on 2026-11-12: audio-production 1.2.0, artifacts 0.4.0, color-grading 1.1.0, detection 0.2.2, diarization 0.3.0, dubbing 0.2.1, imagemagick 0.10.0, media-analysis 0.1.16, motion-graphics 0.2.19, qc 1.3.0, remotion-ffmpeg 0.13.0, sound-design 0.3.0, subtitle 0.9.1, thumbnail 0.1.16, transcription 0.11.3, video-editing 0.7.0, and hyperframes 0.8.0 / blender 0.31.0 for handoffs; ingest, nle-bridge, publish, slide-sync and voice-enhance at 0.1.0 from main (no release tag).
 
 ## What this repository owns
 
@@ -16,6 +16,7 @@ Python orchestrator (`video-agent`). 22 adapters (ffmpeg-skill, video-editing, a
 | 制作計画 | done | plan / revise / approve / render |
 | スキルの呼び分け | partial | every ecosystem job has a SkillSpec, so a handoff names its package (ADR-057); 15 of them have no adapter yet (step 9; ingest has one, ADR-066; voice-enhance, ADR-073; dubbing's DUB, ADR-085); imagemagick-skill prepares overlay images (ADR-077) while `still_image_edit` stays a handoff |
 | 制作記録(ProductionReceipt) | done | ADR-040 |
+| 言い直し・重複の候補の提示と承認 | partial | candidates are computed by video-editing-skill `propose` (its `言い直し・重複の候補計算`); the agent presents them and records the approval (step 35). Renamed from `言い直し・重複の候補提示` by the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md) |
 
 ## Wiring
 
@@ -170,6 +171,24 @@ Uses 17 of ffmpeg-skill's 42 tools directly (3.x, contract_version 2.0 read like
   - なぜ要るか：台本どおりに並べる荒編を自動にし、撮り直しが要る箇所を収録当日に洗い出せる
   - Needs: transcription-skill script alignment
   - Done when: a fixture with three takes of five lines assembles the five lines in script order, flags one line with a changed word, and reports one missing line
+- [ ] **29. Run hyperframes-skill and pass its output to `motion.layer`** — animated overlays: hyperframes-skill makes the material (segments, alpha) and motion-graphics-skill `rendered_layer` places it ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md)). Today `html_scene_render` is a handoff only (`skills/registry.py:242`), and `rendered_layer` is wired (`agent/finishing.py:137`) but takes a file the user made. Add the one path between them: run `hyperframes-skill render` (pinned 0.8.0) to ProRes 4444 with alpha (`rendered_layer` refuses VP9 alpha) and give the file to `motion.layer`. ffmpeg-skill #425 (typed keyframes on `overlay`) is not needed for this
+  - Done when: a plan asking for an animated lower third renders it through hyperframes-skill and places it with `rendered_layer`, with no file supplied by the user; without hyperframes-skill installed, the handoff is as today
+- [ ] **30. One disc SkillSpec** — keep `disc_author` (oncemore) and drop `bluray_authoring`, `dvd_authoring`, `disc_image` and `dvd_line21_captions` (`skills/registry.py:244-256`) and their Components in `skills/ecosystem.py`: they name tool ids that do not exist. `ecosystem.json` keeps the five disc repositories ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md))
+  - Done when: a disc request hands off to oncemore only, and no SkillSpec names a tool id its package does not have
+- [ ] **31. Preset and platform names from ffmpeg-skill's contract** — `project/validator.py:1165-1166` holds a hand copy (7 presets, 9 platforms); ffmpeg-skill 3.6.5 has 20 presets and 12 platforms, so `preset: "tiktok"` or `platform: "facebook"` is refused here although the engine knows it. Read the names from ffmpeg-skill's contract (or `export --list`) at locate time, as the catalog check does (ADR-056). If the contract does not carry the names, that is a new request to ffmpeg-skill
+  - Done when: every preset and platform name ffmpeg-skill publishes passes the validator, an unknown name is still refused, and `validator.py` holds no name list
+- [ ] **32. `skills/ecosystem.py` follows `ecosystem.json`** — nle-bridge is still `planned` there (`skills/ecosystem.py:108-110`) and ingest `scaffold` (:75), while `ecosystem.json` says `active`; voice-enhance, dubbing, sound-design and publish become `active` by the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md), with one definition of `status` (`active`: ships working operations, released or not; `scaffold`: no operation works yet; `planned`: no repository yet). The marketplace name is `ai-video-production-os` (:16) but the marketplace is `velisa`; draft [#105](https://github.com/kajisho5/video-production-agent/pull/105) already prints `/plugin install <repo>@velisa` and covers that part
+  - Done when: every status and the marketplace name match Velisa's `ecosystem.json`, checked by a test (or the file is generated from it with a `--check`), and #105 is merged or folded in
+- [ ] **33. SkillSpecs the ownership audit found unwired** — each one runs a skill that already ships ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md)):
+  - [ ] `speech_region_analysis` → media-analysis-skill `speech_regions` (pinned 0.1.16; media-analysis owns `発話区間`): for a long input, plan `speech_regions` → `transcribe(speech_regions=...)`
+  - [ ] `text_detection` → `detection/text` (pinned 0.2.2), replacing the `visual_detection` handoff (`skills/registry.py:233`); its text goes to diarization `name` and to transcription vocabulary
+  - [ ] `shot_detection` → `detection/shots` (detection-skill owns `ショット検出`), the frame-accurate shot table for the edit view (step 14). ffmpeg-skill `scenes` stays the fast list; default providers stay as they are
+  - [ ] `transcript_search` → `transcription find` once transcription-skill ships it (its step 16)
+  - Done when: a plan that needs each one runs it through an adapter, and no `visual_detection` handoff is printed for text
+- [ ] **34. Loudness routing unchanged until measured** — audio-production-skill owns loudness and ffmpeg-skill is the engine ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md)). The video path keeps `ffmpeg-skill/loudness`. A change of routing needs a measured comparison of `loudnorm` and `ebur128` first
+  - Done when: a comparison on the same fixtures (integrated loudness, true peak and loudness range against the target, and run time) is committed; only then is a routing change proposed
+- [ ] **35. Retake candidates: presented and approved here, computed in video-editing-skill** — video-editing-skill `propose` computes repeats, restarts and fillers (`service.py:254-258` calls it); this repository presents each candidate and records the approval ([Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/blob/main/docs/ecosystem/DECISION_LOG.md)). No candidate is computed here
+  - Done when: every candidate in a plan comes from `propose`, each is a CONFIRM decision with the quoted words, and an approved candidate becomes the cut
 
 ## Boundaries
 
