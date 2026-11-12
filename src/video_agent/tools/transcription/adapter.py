@@ -36,13 +36,19 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
                                              # contract, now reporting the release version instead of a stale "0.2.0"
                                              # 0.8.0 (ADR-078): optional engine whisperx appended to engines; the tools / schemas the adapter uses are unchanged
+                                             # 0.9.0 (ADR-107 addendum 2): every word carries `index`; dictionary words (opt-in, ja) carry `pos` / `timing`;
+                                             # transcribe takes `word_segmentation`; capabilities word_index / dictionary_word_segmentation. All additions
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
 PARAMETER_KEYS = ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline")
+# 0.9.0: optional inputs a contract may declare (not required by check_contract); sent only when asked for and only to a contract that declares them
+OPTIONAL_PARAMETER_KEYS = ("word_segmentation",)
+REQUEST_PARAMETER_KEYS = PARAMETER_KEYS + OPTIONAL_PARAMETER_KEYS
+WORD_SEGMENTATIONS = ("engine", "dictionary")
 BUDGET_KEYS = ("timeout", "max_audio_seconds")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "args", "script", "binary", "executable", "executables", "env",
                       "environment", "api_key", "apikey", "token", "secret", "password", "credentials", "ffmpeg", "ffprobe")
@@ -148,12 +154,12 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.8.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.9.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
-    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.7.4, engine availability
-    stripped). Used for the package identity when the Skill is not installed; a live installation always replaces it."""
+    """The contract this adapter was verified against (snapshot of `transcription skill --json`, 0.9.0, engine availability
+    stripped: each engine entry is kept as the earlier pins wrote it). Used for the package identity when the Skill is not installed; a live installation always replaces it."""
     return json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
 
 
@@ -261,7 +267,7 @@ class TranscriptionAdapter(ToolAdapter):
 
     def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
         declared = (self.tools.get(tool) or {}).get("input") or {}
-        params = {k: v for k, v in (parameters or {}).items() if k in PARAMETER_KEYS and k in declared}
+        params = {k: v for k, v in (parameters or {}).items() if k in REQUEST_PARAMETER_KEYS and k in declared}
         budget = {k: v for k, v in (parameters or {}).items() if k in BUDGET_KEYS}
         out = {"input": path, "asset_id": asset_id, "kind": kind, "parameters": params, "budget": budget, "analysis_id": analysis_id, "cache_policy": cache_policy}
         if (parameters or {}).get("speaker_turns") is not None:   # ADR-096: the measured turns of the same asset, merged by the Skill after recognition
@@ -301,10 +307,10 @@ class TranscriptionAdapter(ToolAdapter):
             raise ToolError(f"transcription: invalid asset id {asset_id!r}")
         params: Dict[str, Any] = {"input": resolved, "asset_id": asset_id}
         given = dict(args.get("parameters") or {})
-        given.update({k: v for k, v in args.items() if k in PARAMETER_KEYS})
+        given.update({k: v for k, v in args.items() if k in REQUEST_PARAMETER_KEYS})
         declared = (self.tools[tool].get("input") or {})
         for k, v in given.items():
-            if k not in PARAMETER_KEYS or k not in declared or v is None:
+            if k not in REQUEST_PARAMETER_KEYS or k not in declared or v is None:
                 continue
             if k == "language":
                 v = str(v).strip().lower()
@@ -329,6 +335,11 @@ class TranscriptionAdapter(ToolAdapter):
             elif k == "temperature":
                 if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.0 <= float(v) <= 1.0:
                     raise ToolError("transcription: temperature must be a number in [0, 1]")
+            elif k == "word_segmentation":
+                if v not in WORD_SEGMENTATIONS:
+                    raise ToolError(f"transcription: word_segmentation must be one of {WORD_SEGMENTATIONS}, got {v!r}")
+                if v == "dictionary" and (given.get("word_timestamps") is not True or str(given.get("language") or "").strip().lower() != "ja"):
+                    raise ToolError("transcription: word_segmentation dictionary needs language ja and word_timestamps true (the Skill refuses it otherwise)")
             elif k == "initial_prompt":
                 if not isinstance(v, str) or "\x00" in v or len(v) > 500:
                     raise ToolError("transcription: initial_prompt must be a short string (vocabulary hint)")

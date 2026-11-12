@@ -67,7 +67,10 @@ DOCTOR_SCHEMA = "qc/doctor@1"
 # 0.2.6 (qc-skill #26, roadmap docs only): version-only; the pin is re-taken from main (ADR-081).
 # 1.0.0 (qc-skill #27, Dependabot release-drafter 6.4.0 -> 7.10.0; its release resolved a major bump): the contract differs from 0.2.6
 # only in `version` (contract_version, operations, schemas, errors unchanged), so the gate admits 1.0.x and nothing later (ADR-097).
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.")
+# 1.1.0 (qc-skill #30): opt-in subtitle cue-text and subtitle-vs-speech checks (new optional rules.subtitle keys, checks, findings,
+# measurements, `subtitle_speech`); the request the adapter sends and the report it admits are unchanged, so the gate admits 1.1.x
+# (a later version-only 1.1.y is ADR-108 drift, not a re-pin). Re-pinned from the v1.1.0 tag's `contract --json` (ADR-107 addendum 2).
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.", "1.1.")
 CANONICAL_INVOCATION = ["qc", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False}
 ALLOWED_EXECUTABLES = {"ffprobe", "ffmpeg"}
@@ -109,7 +112,7 @@ def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
