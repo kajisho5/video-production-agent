@@ -294,6 +294,8 @@ def validate_plan(doc: Dict[str, Any], registry=None, supports=None) -> List[str
         for s in steps:
             if s.get("skill") in registry.names() and s.get("tool") and s["tool"] not in registry.get(s["skill"]).tools:
                 errs.append(f"step {s['id']}: tool {s['tool']} does not belong to skill {s['skill']}")
+    from .word_cut import check_word_cuts   # ADR-109: the recorded seconds of the AI's word ranges are what the rule derives, and the trim removes them
+    errs += check_word_cuts(doc)
     return errs
 
 

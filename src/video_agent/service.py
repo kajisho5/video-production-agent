@@ -87,6 +87,7 @@ from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS, THUM
 from .agent.thumbnail_features import PATH_KEYS as _THUMBNAIL_PATH_KEYS, thumbnail_faces_kinds   # ADR-104
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
+from .agent import word_cut as word_cut_task
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
 from .agent.qc import WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY, qc_verdict_of, stage_for
@@ -399,6 +400,10 @@ class Service:
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
         if (user_requirements or {}).get("subtitle.caption_profile") is not None and _subtitles_requested(user_requirements or {}):
             params = dict(params or {}, word_timestamps=True)   # ADR-101: shorts captions split cues by recognised word timings, measured for the requirement
+        if word_cut_task.requested(user_requirements or {}):
+            # ADR-109: the AI names words to keep / cut by their number in a transcript with word timings, measured for the requirement
+            kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
+            params = dict(params or {}, word_timestamps=True)
         if _filler_removal_requested(user_requirements or {}):
             # ADR-072: filler words are removed at recognised word timings: a transcript with word timestamps, chosen by the system for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
@@ -728,7 +733,10 @@ class Service:
         contexts = build_contexts(analysis.timeline.events, analysis.assets, analysis.observations, inferences)
         inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
         inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary,
-                                          extra_intents=[TAKE_AI_INTENT] if parse_takes_requirements(rm) is not None else [])
+                                          extra_intents=([TAKE_AI_INTENT] if parse_takes_requirements(rm) is not None else [])
+                                          + ([word_cut_task.AI_INTENT] if word_cut_task.parse_word_cut_requirements(rm) is not None else []),
+                                          # ADR-109: the numbered words the AI names ranges of (indices and text, never times to write back)
+                                          extra_context=word_cut_task.ai_context(analysis) if word_cut_task.parse_word_cut_requirements(rm) is not None else None)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
@@ -749,7 +757,8 @@ class Service:
                           audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
 
-    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "", extra_intents: Optional[List[str]] = None) -> List[Inference]:
+    def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "", extra_intents: Optional[List[str]] = None,
+                       extra_context: Optional[Dict[str, Any]] = None) -> List[Inference]:
         """AI reasoning boundary. Recorded AI inferences (a revision) are reused: revising never spends AI calls. A provider
         failure is an AI-domain incident recorded in analysis.warnings and provenance.ai_calls; the plan stays deterministic.
         The user's own request text and the resolved intent go along as context (ADR-049) so the provider can weigh what
@@ -762,7 +771,7 @@ class Service:
         intents += [x for x in (extra_intents or []) if x not in intents]   # ADR-053: `take_selection` (prefer one take of a line) while takes are being picked
         reasoner = AIReasoner(self.provider, max_calls=int(rules.get("analysis.budget.max_ai_calls", DEFAULT_MAX_AI_CALLS)), calls=self._ai_calls)
         try:
-            ctx = {"strategy": analysis.strategy, "intent": intent, "request_text": (request_text or "")[:2000]}
+            ctx = {"strategy": analysis.strategy, "intent": intent, "request_text": (request_text or "")[:2000], **(extra_context or {})}
             resp = reasoner.ask(build_request(analysis, intents, ctx))
         except AIProviderError as e:
             analysis.warnings.append(f"ai: provider {self.provider.name} failed ({e.kind}); plan is deterministic only")
@@ -1751,6 +1760,7 @@ _SWITCH_REQUIREMENT_KEYS = frozenset(   # surface (1): what a request asks for
     | {"qc"}
     | set(QC_REFERENCE_KEYS)   # ADR-058: qc.reference_video / qc.reference_metrics / qc.min_*
     | set(_TAKES_REQUIREMENT_KEYS)
+    | set(word_cut_task.REQUIREMENT_KEYS)   # ADR-109: edit.word_cut and its pre / post roll
     | set(_FACE_REQUIREMENT_KEYS)   # ADR-090: edit.redact_faces and its refinements
 )
 _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS
@@ -1830,6 +1840,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     qc_requested(rm)
     parse_qc_reference(rm)   # ADR-058: the master file exists, metrics are named, thresholds in range, the qc gate is on
     parse_takes_requirements(rm)   # ADR-053: edit.takes / its refinements, range-checked before any analysis runs
+    word_cut_task.parse_word_cut_requirements(rm)   # ADR-109: edit.word_cut / its rolls, range-checked before any analysis runs
     check_job_keys(user_requirements)   # ADR-057: job.<skill> names a declared ecosystem job and is a plain switch
     check_nle_keys(user_requirements)   # ADR-089: delivery.nle export | conform, formats from the nle-bridge contract
     check_voice_keys(user_requirements)   # ADR-073: voice.* keys known, in range, with audio.production (and audio.mix for bleed reduction)
