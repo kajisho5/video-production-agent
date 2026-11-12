@@ -3485,7 +3485,7 @@ def _png(path: str, w: int, h: int) -> str:
 
 
 class ImagePrepareRealTests(unittest.TestCase):
-    """ADR-077 on the real imagemagick-skill (main, contract 0.8.1): the live contract equals the pin, its doctor finds a backend, and an
+    """ADR-077 on the real imagemagick-skill (main, contract 0.10.0): the live contract equals the pin, its doctor finds a backend, and an
     `edit.overlay` asked at a size is stripped / resized / padded by imagemagick-skill/strip / resize / pad before the real video-editing-skill
     composites it. Runs whenever an imagemagick-skill checkout and ImageMagick are installed (the CI integration job installs both)."""
 
@@ -4255,7 +4255,7 @@ class RemotionRealTests(unittest.TestCase):
 
 
 class DocumentVerifyRealTests(unittest.TestCase):
-    """ADR-095 on the real artifacts-skill (main, contract 0.3.0) run from its checkout: the live contract equals the pin, its doctor has a format's
+    """ADR-095 on the real artifacts-skill (main, contract 0.4.0) run from its checkout: the live contract equals the pin, its doctor has a format's
     structural verification ready (Markdown needs only the standard library), and a video rendered with a Markdown script beside it ends COMPLETED when
     the script is clean and in REVIEW (QA FAIL, `leftover_placeholder_text`) when it still carries a TODO -- the roadmap's done-when."""
 

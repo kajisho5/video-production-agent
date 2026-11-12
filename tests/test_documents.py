@@ -1,6 +1,6 @@
 """ADR-095 (artifacts-skill roadmap step 5, agent side: adapter + SkillSpec document_verify): a document that goes out with the video verified by
 artifacts-skill's structural checks, its verdict a QA gate -- a leftover placeholder fails QA -- against a fake `artifacts-skill` process
-(tests/fake_artifacts.py) that speaks its 0.3.0 contract, doctor and verify result, with the fake media engine. No backend or network."""
+(tests/fake_artifacts.py) that speaks its 0.4.0 contract, doctor and verify result, with the fake media engine. No backend or network."""
 from __future__ import annotations
 
 import json
@@ -97,14 +97,14 @@ class _Base(unittest.TestCase):
 class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
-        self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from main")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("artifacts-skill", "0.3.0", "1.0"))
+        self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.4.0 tag, one sorted compact line")
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("artifacts-skill", "0.4.0", "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
 
     def test_refused_contracts(self):
         c = pinned_contract()
         v = next(t for t in c["tools"] if t["name"] == "verify")
-        for mutate, why in ((lambda x: x.update(skill_id="artifacts"), "skill_id"), (lambda x: x.update(version="0.4.0"), "supported range"),
+        for mutate, why in ((lambda x: x.update(skill_id="artifacts"), "skill_id"), (lambda x: x.update(version="0.5.0"), "supported range"),
                             (lambda x: x.update(input_mutation_policy="allowed"), "never"), (lambda x: x["exit_codes"].update(fail=2), "exit_codes")):
             with self.subTest(why=why):
                 d = json.loads(json.dumps(c))
@@ -115,7 +115,7 @@ class ContractTests(_Base):
         self.assertTrue(any("side_effects" in e for e in check_contract(d)))
         self.assertTrue(breaking_drift(d))
         d = json.loads(json.dumps(c))
-        d["version"] = "0.3.9"
+        d["version"] = "0.4.9"
         self.assertEqual((check_contract(d), breaking_drift(d)), ([], []))
         self.assertTrue(drift(d), "a version change is drift, not breaking")
         self.assertIn("policy", v["input_schema"]["properties"])

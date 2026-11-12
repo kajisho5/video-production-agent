@@ -86,7 +86,7 @@ jobs:
       # voice-enhance-skill (ADR-073): main (no release tag); run from the checkout. No engine in CI: the tests stand in a deep-filter that copies its input
       # and a nara_wpe whose wpe_v8 is the identity (as voice-enhance-skill's own tests do); numpy is for those engines' STFT and the real crosstalk engine
       - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill
-      # imagemagick-skill (ADR-077): main (contract 0.8.1, = the v0.8.1 tag but for CI files); its scripts run from the checkout, standard library only
+      # imagemagick-skill (ADR-077): main (contract 0.10.0, = the v0.10.0 tag); its scripts run from the checkout, standard library only
       - run: git clone --depth 1 https://github.com/kajisho5/imagemagick-skill ../imagemagick-skill
       # detection-skill (ADR-090): main (no release tag); run from the checkout, its `faces` extra installs opencv-python-headless + numpy. The YuNet model file is
       # fetched here, pinned by sha256, the way detection-skill's own CI does (the Skill never downloads anything); its fixture astronaut.jpg is the face filmed
@@ -112,7 +112,7 @@ jobs:
       - run: git clone --depth 1 https://github.com/kajisho5/sound-design-skill ../sound-design-skill
       # remotion-ffmpeg-skill (ADR-093): main (= v0.12.1); its scripts run from the checkout. No npm install / Remotion render in CI: contract, doctor, the project check
       - run: git clone --depth 1 https://github.com/kajisho5/remotion-ffmpeg-skill ../remotion-ffmpeg-skill
-      # artifacts-skill (ADR-095): main (no release tag); run from the checkout (Python 3.10+). Markdown verification needs only the standard library: no extra installed
+      # artifacts-skill (ADR-095): main (contract 0.4.0, = the v0.4.0 tag); run from the checkout (Python 3.10+). Markdown verification needs only the standard library: no extra installed
       - run: git clone --depth 1 https://github.com/kajisho5/artifacts-skill ../artifacts-skill
       - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]" -e "../detection-skill[faces]" -e "../slide-sync-skill[pdf]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS"
