@@ -11,17 +11,22 @@ Everything here is vocabulary and arithmetic over recorded observations, no exec
   order within a segment; `check_transcript` refuses out-of-order segments, so this is time order). transcription-skill may write
   each word's own `index`: when every word has one and they are exactly 0..N-1, that numbering is used (ordered by it); when no
   word has one the same numbering is derived from the order; a mix, a duplicate or a gap is refused (the indices the AI read would
-  not be the ones the agent converts). Extra word fields (`pos`, an interpolated-timing flag) are carried, never required.
+  not be the ones the agent converts). transcription-skill 0.9.0's optional word fields (`pos`, and `timing` measured | interpolated on
+  dictionary words) are carried, never required: transcripts older than 0.9.0 have none of them.
 - **Conversion** (`derive_ranges`, rule `word_ranges@1`): the kept words are the union of `keep_words`, or every word not in
   `cut_words`; consecutive kept indices form runs. A run [a, b] keeps `start(a) - pre_roll` .. `end(b) + post_roll`, clamped
-  (1) at the midpoint of the gap to a neighbouring word that is not kept (where the two words overlap in time: at the kept
-  word's own boundary), so a kept range never takes in a word that was not kept, and (2) to the media, 0 .. duration. Seconds
+  (1) at the midpoint of the gap to a neighbouring word that is not kept, so a kept range never takes in a word that was not kept
+  (a word that is not kept but overlaps a kept word in time is refused: it is never cut in part), and (2) to the media, 0 .. duration. Seconds
   are rounded to the millisecond. `keep_words`: everything outside the kept ranges is removed (lead-in and tail included).
   `cut_words`: only the gaps around the cut words are removed (a cut that starts at word 0 removes from 0 s, one that ends at the
   last word removes to the end); the lead-in and the tail stay otherwise.
 - **Refusals** (`WordRangeError`, never corrected): a range that is not two whole numbers, out of 0..N-1, reversed or overlapping
   another, a word at a range boundary (or its neighbour) without times, a word that ends after the media, nothing left to keep,
-  and derived ranges that overlap (word timings that run into each other). An AI recommendation that is refused becomes a KEEP
+  derived ranges that overlap (word timings that run into each other), a cut word that overlaps a kept word in time, a removal that
+  reaches speech without word timings (a segment whose `words` is null: no index names it). `decide_word_cut` also refuses
+  `keep_words` (or a range past what was shown) when the AI was shown only the first MAX_CONTEXT_WORDS words, a word cut on a take
+  of a take assembly (its join crossfades cut the audio from the pick's own span), and kept words that all lie outside the in / out
+  the other decisions keep (explicit trim, leading / trailing silence). An AI recommendation that is refused becomes a KEEP
   decision carrying the reason: nothing is cut, the plan still runs, and the refusal is visible in the IR.
 - **Determinism**: the decision records the word ranges, the derived keep / remove seconds, pre / post roll with their provenance,
   the duration, the numbering source and `rule`; `check_word_cuts` (run by `validate_plan`) derives the seconds again from the
@@ -39,7 +44,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..media.analysis import _scrub
 from ..models import Requirement
-from .editing import EditRequirementError, _bool, _number
+from .editing import TRIM_OP, EditRequirementError, _bool, _number
+from .takes import PICK_SUBJECT
+from .editor_timeline import SUBJECT as EDITOR_CUT_SUBJECT
 
 RULE_VERSION = "word_ranges@1"
 KEY = "edit.word_cut"
@@ -55,8 +62,8 @@ AI_INTENT = "word_cut"
 APPROVAL_KEY = ("edit.semantic_deletion.approval", "CONFIRM")
 RISK = "HIGH"
 MODES = {"keep_words": "keep", "cut_words": "cut"}
-# word fields transcription-skill may add that mark a timing it interpolated rather than measured (carried as `interpolated`)
-INTERPOLATED_KEYS = ("interpolated",)
+# transcription-skill 0.9.0: `timing` on dictionary words is "measured" or "interpolated" (a character-share estimate); no key: the engine's own time
+INTERPOLATED_TIMING = "interpolated"
 MAX_CONTEXT_WORDS = 20000   # the most words one asset's index sent to the AI may hold (a longer transcript is sent cut off, and said so)
 
 
@@ -96,7 +103,7 @@ def requested(user_requirements: Dict[str, Any]) -> bool:
 # ---- numbering ---------------------------------------------------------------------------------------------------------
 def number_words(segments: Sequence[Any]) -> Tuple[List[Dict[str, Any]], str]:
     """The words of a transcript, numbered → (words, index_source "transcript" | "derived"). Each word: index, start, end (None when the
-    transcript gives no number), text, segment_id, and confidence / pos / interpolated when present. A segment whose `words` is null
+    transcript gives no number), text, segment_id, and confidence / pos / timing (+ interpolated: true) when present. A segment whose `words` is null
     has no numbered words (no word timestamps). Raises WordRangeError for word indices that are not exactly 0..N-1 on every word."""
     words: List[Dict[str, Any]] = []
     given: List[Any] = []
@@ -113,17 +120,33 @@ def number_words(segments: Sequence[Any]) -> Tuple[List[Dict[str, Any]], str]:
                 rec["confidence"] = c
             if isinstance(w.get("pos"), str):
                 rec["pos"] = w["pos"]
-            if any(w.get(k) is True for k in INTERPOLATED_KEYS):
-                rec["interpolated"] = True
+            if isinstance(w.get("timing"), str):
+                rec["timing"] = w["timing"]
+                if w["timing"] == INTERPOLATED_TIMING:
+                    rec["interpolated"] = True
             words.append(rec)
-            given.append(w.get("index"))
-    have = [isinstance(g, int) and not isinstance(g, bool) for g in given]
-    if not any(have):
+            given.append(w["index"] if "index" in w else _ABSENT)
+    if all(g is _ABSENT for g in given):
         return words, "derived"
-    if not all(have) or sorted(given) != list(range(len(words))):
-        raise WordRangeError("the transcript's word indices are not exactly 0..N-1 on every word (missing on some words, duplicated or with a gap)")
-    by_index = sorted(zip(given, words), key=lambda p: p[0])
-    return [dict(w, index=i) for i, w in by_index], "transcript"
+    # transcription-skill 0.9.0 numbers every word 0..N-1 in transcript order; any other numbering (missing on some words, not a whole
+    # number, duplicated, a gap, or out of the words' order) would make the indices the AI read differ from the words converted
+    if any(g is _ABSENT or not isinstance(g, int) or isinstance(g, bool) for g in given) or given != list(range(len(words))):
+        raise WordRangeError("the transcript's word indices are not exactly 0, 1, ..., N-1 in word order on every word")
+    return words, "transcript"
+
+
+def untimed_speech(segments: Sequence[Any]) -> List[List[float]]:
+    """[start, end] of every segment with recognised text but no word timings (`words` null): speech the AI cannot name by index."""
+    out: List[List[float]] = []
+    for seg in segments or []:
+        if isinstance(seg, dict) and not isinstance(seg.get("words"), list) and str(seg.get("text") or "").strip():
+            a, b = _num(seg.get("start")), _num(seg.get("end"))
+            if a is not None and b is not None and b > a:
+                out.append([a, b])
+    return out
+
+
+_ABSENT = object()
 
 
 def word_index_of(observation_data: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
@@ -173,7 +196,7 @@ def _timed(w: Dict[str, Any], why: str) -> Tuple[float, float]:
 
 
 def derive_ranges(words: List[Dict[str, Any]], word_ranges: Any, mode: str, duration: float, pre_roll: float = PRE_ROLL_DEFAULT,
-                  post_roll: float = POST_ROLL_DEFAULT) -> Dict[str, Any]:
+                  post_roll: float = POST_ROLL_DEFAULT, untimed: Sequence[Sequence[float]] = ()) -> Dict[str, Any]:
     """Word ranges → time ranges on the source (rule word_ranges@1, see the module doc). Returns {rule, mode, word_ranges (sorted),
     word_count, kept_words (runs), keep, remove, words_removed, pre_roll, post_roll, duration, interpolated_boundaries}."""
     if mode not in ("keep", "cut"):
@@ -227,12 +250,22 @@ def derive_ranges(words: List[Dict[str, Any]], word_ranges: Any, mode: str, dura
         if runs[-1][1] < n - 1:
             remove.append([keep[-1][1], d3])
     remove = [[round(s, 3), round(e, 3)] for s, e in remove if e - s > 1e-9]
+    kept_set = set(kept)
+    for w in words:   # a word that is not kept but overlaps a kept word in time cannot be cut whole: refused, never cut in part
+        if w["index"] in kept_set or w["start"] is None or w["end"] is None or not w["end"] > w["start"]:
+            continue
+        if not any(a <= w["start"] + 1e-6 and w["end"] <= b + 1e-6 for a, b in remove):
+            raise WordRangeError(f"word {w['index']} ({w.get('text')!r}, {w['start']}..{w['end']}s) overlaps a kept word in time: it cannot be cut without cutting into that word")
+    for a, b in untimed:   # speech without word timings is never removed: the AI could not name it
+        if any(r[0] < b - 1e-6 and a + 1e-6 < r[1] for r in remove):
+            raise WordRangeError(f"the cut would remove speech at {a}..{b}s that has no word timings (no index names it)")
     if mode == "cut":   # what stays is the media less the removed gaps (the lead-in and tail too, unless a cut reaches them)
         edges = [0.0] + [x for r in remove for x in r] + [d3]
         keep = [[edges[i], edges[i + 1]] for i in range(0, len(edges), 2) if edges[i + 1] - edges[i] > 1e-9]
     return {"rule": RULE_VERSION, "mode": mode, "word_ranges": ranges, "word_count": n, "kept_words": runs, "keep": keep, "remove": remove,
             "words_removed": n - len(kept), "pre_roll": float(pre_roll), "post_roll": float(post_roll), "duration": d3,
-            "interpolated_boundaries": sorted(set(interpolated))}
+            "interpolated_boundaries": sorted(set(interpolated)),
+            "removed_words": [[a, b, " ".join(words[i]["text"].strip() for i in range(a, b + 1))[:200]] for a, b in _runs([i for i in range(n) if i not in kept_set])]}
 
 
 def recommendation_ranges(params: Any) -> Tuple[str, Any]:
@@ -316,12 +349,21 @@ def decide_word_cut(eng: Any, m: Dict[str, Requirement], analysis: Any, inferenc
             why = f"{len(infs)} word_cut recommendations for {asset_id}: which one is meant is not guessed"
         elif tr is None:
             why = f"no transcript of {asset_id} with word timings: word ranges cannot be converted"
+        elif any(d.subject == PICK_SUBJECT and d.params.get("asset_id") == asset_id and d.type == "TRANSFORM" for d in eng.decisions):
+            why = f"{asset_id} is a take of a take assembly (edit.takes), whose join crossfades cut the audio from the pick's own span: a word cut inside it is not supported"
         else:
             try:
                 mode, raw = recommendation_ranges((infs[0].data or {}).get("params"))
                 words, index_source = word_index_of(tr.data or {})
+                if len(words) > MAX_CONTEXT_WORDS and (mode == "keep" or any(x >= MAX_CONTEXT_WORDS for r in raw if isinstance(r, (list, tuple)) for x in r
+                                                                             if isinstance(x, int))):
+                    raise WordRangeError(f"the AI was shown only words 0..{MAX_CONTEXT_WORDS - 1} of {len(words)}: keep_words, or a range past them, would decide about words it did not see")
                 duration = durations.get(asset_id)
-                derived = derive_ranges(words, raw, mode, duration if duration is not None else (tr.data or {}).get("duration"), req["pre_roll"], req["post_roll"])
+                derived = derive_ranges(words, raw, mode, duration if duration is not None else (tr.data or {}).get("duration"), req["pre_roll"], req["post_roll"],
+                                        untimed=untimed_speech((tr.data or {}).get("segments") or []))
+                window = _kept_window(eng.decisions, asset_id, derived["duration"])
+                if window is not None and not any(k[0] < window[1] - 1e-6 and window[0] + 1e-6 < k[1] for k in derived["keep"]):
+                    raise WordRangeError(f"the words kept ({derived['keep']}) lie outside the range the other cuts keep ({window[0]}..{window[1]}s): nothing would be left")
             except WordRangeError as e:
                 why = str(e)
         if why is not None:
@@ -341,6 +383,21 @@ def decide_word_cut(eng: Any, m: Dict[str, Requirement], analysis: Any, inferenc
                    confidence=inf.confidence, evidence=ev, risk=RISK, approval=approval_for(SUBJECT, floor="CONFIRM", keys={SUBJECT: APPROVAL_KEY}),
                    provenance="AI_GENERATED", params={**base, "transcript_id": tr.id, "index_source": index_source, "inference_id": inf.id, **derived}, requirements=reqs)
     return req
+
+
+def _kept_window(decisions: List[Any], asset_id: str, duration: float) -> Optional[List[float]]:
+    """The in / out the other decisions give this asset (explicit trim, leading / trailing silence), as the planner applies them; None: whole."""
+    start, end, touched = 0.0, float(duration), False
+    for d in decisions:
+        if d.params.get("asset_id") != asset_id or d.status == "REJECTED":
+            continue
+        if d.subject == TRIM_OP and d.type == "TRANSFORM":
+            start, end, touched = max(start, float(d.params["start"])), min(end, float(d.params["end"])), True
+        elif d.subject == "silence.leading" and d.params.get("end") is not None:
+            start, touched = max(start, float(d.params["end"])), True
+        elif d.subject == "silence.trailing" and d.params.get("start") is not None:
+            end, touched = min(end, float(d.params["start"])), True
+    return [start, end] if touched else None
 
 
 # ---- validation ------------------------------------------------------------------------------------------------------------
@@ -363,7 +420,8 @@ def check_word_cuts(doc: Dict[str, Any]) -> List[str]:
             continue
         try:
             words, _ = word_index_of(tr.get("data") or {})
-            again = derive_ranges(words, p.get("word_ranges"), p.get("mode"), p.get("duration"), p.get("pre_roll"), p.get("post_roll"))
+            again = derive_ranges(words, p.get("word_ranges"), p.get("mode"), p.get("duration"), p.get("pre_roll"), p.get("post_roll"),
+                                  untimed=untimed_speech((tr.get("data") or {}).get("segments") or []))
         except WordRangeError as e:
             errs.append(f"decision {d['id']}: recorded word ranges are refused by {RULE_VERSION}: {e}")
             continue
@@ -372,6 +430,15 @@ def check_word_cuts(doc: Dict[str, Any]) -> List[str]:
             continue
         if d.get("status") == "REJECTED":
             continue
+        if any(x.get("subject") == EDITOR_CUT_SUBJECT and x.get("type") == "TRANSFORM" and x.get("status") != "REJECTED" and (x.get("params") or {}).get("asset_id") == p.get("asset_id")
+               for x in doc.get("decisions") or []):
+            continue   # ADR-098: the editor's timeline supersedes every other cut of this source (the decision stays in the plan, not executed)
+        trim = next((o for o in (doc.get("video") or {}).get("operations") or [] if o.get("type") == "video.trim" and o.get("asset") == p.get("asset_id")), None)
+        if trim is not None:
+            inside = [r for r in p["remove"] for k in trim.get("keep") or [] if float(k[0]) < r[1] - 1e-6 and r[0] + 1e-6 < float(k[1])]
+            if inside:
+                errs.append(f"decision {d['id']}: the trim of {p.get('asset_id')} keeps {inside}, which the word cut removes")
+                continue
         st = next((s for s in steps if d["id"] in (s.get("decision_ids") or [])), None)
         if st is None:
             errs.append(f"decision {d['id']}: no plan step cuts the word ranges")

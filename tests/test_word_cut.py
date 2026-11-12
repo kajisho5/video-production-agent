@@ -65,9 +65,9 @@ class NumberingTests(unittest.TestCase):
             w["index"] = i
         words, src = number_words(s)
         self.assertEqual((src, [w["index"] for w in words]), ("transcript", list(range(7))))
-        s[0]["words"][0]["index"], s[0]["words"][1]["index"] = 1, 0   # the Skill's order wins: words are ordered by their index
-        words, _ = number_words(s)
-        self.assertEqual([w["text"] for w in words[:2]], ["um", "Hello"])
+        s[0]["words"][0]["index"], s[0]["words"][1]["index"] = 1, 0   # indices out of the words' order: the AI would read other words than are cut
+        with self.assertRaises(WordRangeError):
+            number_words(s)
 
     def test_indices_on_some_words_only_or_with_a_gap_are_refused(self):
         s = segs(EN)
@@ -78,16 +78,33 @@ class NumberingTests(unittest.TestCase):
             w["index"] = i * 2
         with self.assertRaises(WordRangeError):
             number_words(s)
-        for w in s[0]["words"]:
-            w["index"] = True   # a bool is not an index
-        words, src = number_words(s)
-        self.assertEqual(src, "derived")
+        for i, w in enumerate(s[0]["words"]):
+            w["index"] = True if i == 0 else i   # present but not a whole number: refused, not silently re-derived
+        with self.assertRaises(WordRangeError):
+            number_words(s)
+        for i, w in enumerate(s[0]["words"]):
+            w["index"] = str(i)
+        with self.assertRaises(WordRangeError):
+            number_words(s)
 
     def test_new_optional_word_fields_are_carried_and_not_required(self):
-        s = segs(JA, pos="noun", interpolated=True)
+        s = segs(JA, pos="noun", timing="interpolated")   # transcription-skill 0.9.0 dictionary words
         words, _ = number_words(s)
-        self.assertTrue(all(w["pos"] == "noun" and w["interpolated"] for w in words))
-        self.assertNotIn("interpolated", number_words(segs(JA))[0][0])
+        self.assertTrue(all(w["pos"] == "noun" and w["timing"] == "interpolated" and w["interpolated"] for w in words))
+        measured, _ = number_words(segs(JA, timing="measured"))
+        self.assertNotIn("interpolated", measured[0])
+        self.assertNotIn("timing", number_words(segs(JA))[0][0], "a transcript older than 0.9.0 has no timing key")
+
+    def test_a_0_9_0_transcript_with_null_word_segments_numbers_contiguously(self):
+        s = segs(EN, split=[3])
+        s.insert(1, {"id": "seg_x", "start": 1.8, "end": 2.4, "text": "untimed", "words": None})
+        n = 0
+        for seg in s:
+            for x in seg["words"] or []:
+                x["index"] = n
+                n += 1
+        words, src = number_words(s)
+        self.assertEqual((src, [x["index"] for x in words]), ("transcript", list(range(7))), "segments with words: null consume no numbers")
 
 
 class ConversionTests(unittest.TestCase):
@@ -112,10 +129,26 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(r["keep"], [[0.0, 0.85], [1.25, 6.0]], "cut mode keeps the lead-in and the tail")
         self.assertEqual(r["words_removed"], 1)
 
-    def test_overlapping_word_timings_clamp_to_the_kept_words_own_boundary(self):
-        words = words_of([[0.5, 1.0, "a"], [0.9, 1.4, "b"], [1.3, 2.0, "c"]])
-        r = derive_ranges(words, [[1, 1]], "cut", 3.0)
-        self.assertEqual(r["remove"], [[1.0, 1.3]], "no roll into an overlapping neighbour: the cut runs from a's end to c's start")
+    def test_overlapping_word_timings_are_never_cut_in_part(self):
+        words = words_of([[0.5, 1.0, "a"], [0.9, 1.4, "b"], [1.3, 2.0, "c"], [2.5, 3.0, "d"]])
+        r = derive_ranges(words, [[3, 3]], "cut", 4.0)
+        self.assertEqual(r["remove"], [[2.2, 4.0]])
+        with self.assertRaisesRegex(WordRangeError, "overlaps a kept word"):
+            derive_ranges(words, [[0, 1]], "keep", 4.0)   # c (cut) overlaps b (kept) in time
+        with self.assertRaisesRegex(WordRangeError, "overlaps a kept word"):
+            derive_ranges(words, [[1, 1]], "cut", 4.0)   # b overlaps both a and c: it cannot be cut whole, and it is never cut in part
+
+    def test_speech_without_word_timings_is_never_removed(self):
+        words = words_of([[0.5, 0.8, "Hello"], [2.0, 2.3, "world"]])
+        with self.assertRaisesRegex(WordRangeError, "no word timings"):
+            derive_ranges(words, [[0, 0]], "cut", 3.0, untimed=[[0.9, 1.6]])
+        with self.assertRaisesRegex(WordRangeError, "no word timings"):
+            derive_ranges(words, [[1, 1]], "cut", 3.0, untimed=[[0.9, 1.6]])   # the gap clamp does not see untimed speech: refused, not cut into
+        self.assertEqual(derive_ranges(words, [[1, 1]], "cut", 3.0, untimed=[[0.1, 0.3]])["remove"], [[1.0, 3.0]])
+
+    def test_removed_words_carry_their_text(self):
+        r = derive_ranges(words_of(EN), [[1, 1], [5, 6]], "cut", 6.0)
+        self.assertEqual(r["removed_words"], [[1, 1, "um"], [5, 6, "a test"]])
 
     def test_media_bounds_clamp_the_rolls(self):
         words = words_of([[0.05, 0.5, "a"], [0.6, 0.95, "b"]])
@@ -345,10 +378,42 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("no AI word-range recommendation", d["decision"])
         self.assertEqual(svc.validate(ir).errors, [])
 
+    def test_a_kept_range_outside_the_other_cuts_is_refused(self):
+        _, ir, _ = self.plan(_WordRanges({"keep_words": [[0, 0]]}), reqs={"edit.trim": "2-5"})
+        (d,) = self.word_cuts(ir.doc)
+        self.assertEqual(d["type"], "KEEP")
+        self.assertIn("outside the range the other cuts keep", d["params"]["refused"])
+
+    def test_words_the_ai_was_not_shown_are_not_decided_about(self):
+        from video_agent.agent import word_cut
+        old = word_cut.MAX_CONTEXT_WORDS
+        word_cut.MAX_CONTEXT_WORDS = 3
+        try:
+            for params in ({"keep_words": [[0, 2]]}, {"cut_words": [[4, 4]]}):
+                with self.subTest(params=params):
+                    prov = _WordRanges(params)
+                    _, ir, _ = self.plan(prov)
+                    self.assertEqual(prov.requests[0].context["word_cut"]["transcripts"][0]["truncated_after"], 3)
+                    (d,) = self.word_cuts(ir.doc)
+                    self.assertEqual(d["type"], "KEEP")
+                    self.assertIn("shown only words", d["params"]["refused"])
+            _, ir, _ = self.plan(_WordRanges({"cut_words": [[1, 1]]}))
+            self.assertEqual(self.word_cuts(ir.doc)[0]["type"], "TRANSFORM", "a cut among the words it saw stands")
+        finally:
+            word_cut.MAX_CONTEXT_WORDS = old
+
+    def test_the_trim_is_frame_accurate_and_the_validator_reads_the_executed_keep(self):
+        svc, ir, _ = self.plan(_WordRanges({"cut_words": [[1, 1]]}))
+        self.assertTrue(self.trim(ir.doc)["params"]["accurate"])
+        op = next(o for o in ir.doc["video"]["operations"] if o["type"] == "video.trim")
+        op["keep"] = [[0.0, 4.95]]   # an IR whose executed trim keeps the cut words
+        self.assertTrue(any("keeps" in e for e in check_word_cuts(ir.doc)))
+
     def test_conference_policy_blocks_an_ai_chosen_deletion(self):
         _, ir, _ = self.plan(_WordRanges({"cut_words": [[1, 1]]}), profile="conference")
         d = next(x for x in self.word_cuts(ir.doc) if x["type"] == "TRANSFORM")
         self.assertEqual((d["approval"], d["status"]), ("BLOCK", "BLOCKED"))
+        self.assertFalse([x for x in ir.doc["decisions"] if x["subject"] == "ai.word_cut"], "the blocked cut is the only record of the recommendation")
 
     def test_without_the_requirement_a_word_cut_recommendation_is_dropped(self):
         svc = pipeline_service(self.tmp)

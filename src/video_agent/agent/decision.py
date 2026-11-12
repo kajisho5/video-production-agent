@@ -785,6 +785,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if not inf.kind.startswith(AI_KIND_PREFIX):
             continue
         ai_intent = str(inf.data.get("intent") or inf.kind[len(AI_KIND_PREFIX):])
+        if ai_intent == WORD_CUT_AI_INTENT:
+            continue   # ADR-109: decide_word_cut owns these (a cut, a refusal, or a BLOCK by policy); a recorded one without edit.word_cut is not used
         subjects = INTENT_SUBJECTS.get(ai_intent, ())
         covered_decs = [d for d in decs if d.status != "BLOCKED" and any(d.subject == sub or (sub.endswith(".") and d.subject.startswith(sub)) for sub in subjects)
                         and (d.params.get("asset_id") in (None, inf.asset_id))]

@@ -1936,29 +1936,32 @@ Observation(transcript, word timings) → numbered words [index, text] → AI re
 - **Numbering** (`agent/word_cut.py::number_words`): 0-based over the whole transcript, segments in order and words in order within
   them (time order; `check_transcript` refuses out-of-order segments). transcription-skill's own word `index` is used when every word
   has one and they are exactly 0..N-1; with none it is derived from the order; a mix, a duplicate or a gap is refused. Optional word
-  fields (`pos`, an interpolated-timing flag) are carried, never required. The AI context (`context.word_cut`) lists each
+  fields of transcription-skill 0.9.0 (`pos`, `timing` measured | interpolated on dictionary words) are carried, never required. The AI context (`context.word_cut`) lists each
   transcript's words as `[index, text]`, with the instructions and the rule version.
 - **Conversion** (`derive_ranges`, rule `word_ranges@1`): kept words = the union of `keep_words`, or every word not in `cut_words`;
   each run of consecutive kept words [a, b] keeps `start(a) - pre_roll` .. `end(b) + post_roll` (defaults 0.10 s / 0.20 s), clamped
-  at the midpoint of the gap to a neighbouring word that is not kept (where they overlap in time: at the kept word's own boundary)
-  and to 0 .. the media duration, rounded to the millisecond. `keep_words` removes everything outside the kept ranges; `cut_words`
+  at the midpoint of the gap to a neighbouring word that is not kept and to 0 .. the media duration, rounded to the millisecond. `keep_words` removes everything outside the kept ranges; `cut_words`
   removes only the gaps around the cut words (from 0 s / to the end when a cut reaches the first / last word).
 - **Refusals, never corrections:** ranges that are not two whole numbers, out of bounds, reversed or overlapping; params with any key
   but one of `keep_words` / `cut_words` (no seconds); a boundary word or its neighbour without times; a word past the media; nothing
-  kept; derived ranges that overlap; two recommendations for one asset. A refused recommendation becomes a KEEP `words.cut` decision
+  kept; derived ranges that overlap; a cut word that overlaps a kept word in time (never cut in part); a removal reaching speech
+  without word timings; transcript indices that are not 0..N-1 in word order; `keep_words` or a range past the words shown when the
+  AI saw a truncated index (more than 20 000 words); a take of a take assembly; kept words outside the in / out the other cuts keep;
+  two recommendations for one asset. A refused recommendation becomes a KEEP `words.cut` decision
   with the reason (`params.refused`): nothing is cut and the plan still runs.
 - **Decision:** TRANSFORM, risk HIGH, approval from `edit.semantic_deletion.approval` (DEFAULT CONFIRM; conference: BLOCK) with a
   CONFIRM floor; provenance AI_GENERATED; evidence = the AI inference, the transcript observation and the requirement. Params:
   `mode`, `word_ranges`, `kept_words`, `keep`, `remove`, `words_removed`, `word_count`, `pre_roll` / `post_roll` (+ provenance),
-  `duration`, `index_source`, `transcript_id`, `inference_id`, `interpolated_boundaries`, `rule`. Without any recommendation a KEEP
+  `duration`, `index_source`, `transcript_id`, `inference_id`, `interpolated_boundaries`, `removed_words` ([first, last, text]), `rule`. Without any recommendation a KEEP
   record says nothing is cut yet (host provider: answer the brief, then `revise --ai-recommendations`).
 - **Plan / determinism:** the planner subtracts `remove` from the asset's kept ranges like the internal-pause candidates (the
-  same trim step, on the video or the audio path). `validate_plan` runs `check_word_cuts`: the recorded seconds must be what the rule
-  derives again from the recorded transcript, word ranges and rolls, the rule must be this agent's, and the trim step must remove
-  them. Revisions reuse the recorded AI inference (no AI call), so the same plan always gives the same cut list; a changed roll
+  same trim step, on the video or the audio path), always frame-accurate. `validate_plan` runs `check_word_cuts`: the recorded seconds
+  must be what the rule derives again from the recorded transcript, word ranges and rolls, the rule must be this agent's, the trim
+  step must remove them and the executed `video.trim` keep must not overlap them (an editor's timeline, ADR-098, supersedes them). Revisions reuse the recorded AI inference (no AI call), so the same plan always gives the same cut list; a changed roll
   derives new seconds from the same word ranges.
 - **Not here:** emphasis by word ranges (punch-in stays the user's explicit box and times), semantic deletion without an explicit
-  request (roadmap step 13), wiring transcription-skill's interpolated-timing flag beyond reporting it at a range boundary.
+  request (roadmap step 13), using `timing: interpolated` beyond reporting it at a range boundary, requesting dictionary word
+  segmentation (`word_segmentation`), and the contract re-pin to transcription-skill 0.9.0 (batched separately).
 
 ## 52. Architecture / Repository
 

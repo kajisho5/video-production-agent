@@ -826,7 +826,9 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 # a beat-snapped join must land on its frame, not a keyframe; a crossfaded pick's picture must start where its audio is cut
                 # ADR-062: the user's in / out points are cut where they were given (frame-accurate); one kept range is video-editing TRIM,
                 # several (internal pauses removed inside it) stay the multi-range cut of silence_cleanup
-                forced = bool(editor_dec is not None or cond_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids))
+                # ADR-109: a cut between words is far tighter than a pause, so a word cut is frame-accurate whatever precision is asked
+                forced = bool(editor_dec is not None or cond_dec is not None or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids)
+                              or any(did in dec_ids for _, did in word_cuts))
                 accurate = bool(frame_accurate or explicit_trim or forced)
                 trim_skill = TRIM_SKILL if (explicit_trim or editor_dec is not None) and len(keep) == 1 else "silence_cleanup"
                 rec: Dict[str, Any] = {"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids}
