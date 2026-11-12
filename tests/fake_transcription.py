@@ -2,7 +2,8 @@
 `run -` with {"tool","params"} on stdin → {"ok","tool","result"} on stdout) with canned data, and misbehaves on request via
 FAKE_TS_MODE = ok | empty | text | two_docs | wrong_schema | wrong_skill | wrong_version | wrong_engine | wrong_asset |
 bad_source | no_transcript | invalid_provenance | speaker_set | timeout_error | hang | crash | nonzero | model_unavailable |
-engine_unavailable | bad_segments | speaker_unknown | speaker_mismatch. FAKE_TS_CACHE=hit reports a cache hit. With `speaker_turns` (a
+engine_unavailable | bad_segments | speaker_unknown | speaker_mismatch. FAKE_TS_CACHE=hit reports a cache hit. FAKE_TS_RENDERED (JSON segments / words)
+is what a rendered fake file (which carries no speech) is heard to say (ADR-110). With `speaker_turns` (a
 diarization-skill/turns@1 document, ADR-096) the segments get speaker_id by the Skill's own ASSIGN rule (longest overlap with the exclusive
 turns; none or a tie: null) and the transcript a `speaker_assignment` record, as transcription-skill 0.8.0 merges after recognition.
 Never runs an ASR engine or ffmpeg. Test double only."""
@@ -64,11 +65,15 @@ def transcript(params: dict, fp: str) -> dict:
     words_side = Path(str(params["input"]) + ".words.json")   # word timings [[start, end, text], ...] for a real media file (ADR-072 filler removal)
     if isinstance(meta, dict) and words_side.is_file():
         meta = dict(meta, words=json.loads(words_side.read_text(encoding="utf-8")))
+    if isinstance(meta, dict) and meta.get("fake") and not isinstance(meta.get("segments"), list) and os.environ.get("FAKE_TS_RENDERED"):
+        # ADR-110: what is "heard" in a rendered file (the fake engine writes no speech): {"segments": [[start, end, text]], "words": [[start, end, text(, confidence)]]}
+        meta = dict(meta, **json.loads(os.environ["FAKE_TS_RENDERED"]))
     if isinstance(meta, dict) and meta.get("fake") and isinstance(meta.get("segments"), list):
         # ADR-072: with word timestamps requested, a segment carries the words of `words` [[start, end, text], ...] that fall inside it (none → null)
         timed = meta.get("words") if params.get("word_timestamps") and isinstance(meta.get("words"), list) else None
         segs = [{"id": f"seg_{i:04d}", "start": float(a), "end": float(b), "text": t, "raw_text": t, "confidence": 0.7,
-                 "words": ([{"start": float(ws), "end": float(we), "text": wt, "confidence": 0.9} for ws, we, wt in timed if float(a) <= float(ws) and float(we) <= float(b)] or None)
+                 "words": ([{"start": float(w[0]), "end": float(w[1]), "text": w[2], "confidence": float(w[3]) if len(w) > 3 else 0.9} for w in timed
+                            if float(a) <= float(w[0]) and float(w[1]) <= float(b)] or None)
                  if timed is not None else None, "speaker_id": None}
                 for i, (a, b, t) in enumerate(meta["segments"], 1)]
     tid = "tr_" + hashlib.sha256((fp + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:12]
