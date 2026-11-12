@@ -1080,6 +1080,16 @@
     - unit `tests/test_version_gates.py`: transcription pin 0.11.0 with its five engines in the Skill's order; the gate takes 0.11.x and refuses 0.12 / 0.110 / 1.0.
     - unit `tests/test_unit.py` and evals 31 / 32: the version strings.
     - Locally on the real Skills (detection-skill 0ff0be3, transcription-skill v0.11.0, ffmpeg-skill main): `FaceRedactionRealTests.test_live_contract_and_doctor` and `TranscriptionRealTests` pass, and live == pin.
+- Addendum 10 (2026-11-12, dubbing-skill 0.2.0): a re-pin and a widened gate. dubbing-skill main moved to 0.2.0 (979dc1a, #20, its ADR-018), outside the gate (`0.1.`), so `DubbingRealTests` fails on any integration run.
+  - Facts: 0.2.0 adds `qwen3_tts`, an optional, experimental TTS engine. It is never a default, every op that uses it warns, and provenance records `engine.experimental`. The contract change is additive: `engines.experimental` / `experimental_policy`, `experimental` / `experimental_reason` on every registered engine, the `qwen3_tts` entry, `engine.revision` in `provenance.fields`, and `qwen3_tts` in the `--engine` choices of the tools' argv and in `tools[dubbing/dub].engines`. The `dub` argv is a fatal drift key of this adapter, so a re-pin is needed, not only the gate.
+  - Decision:
+    - `dubbing/contract_0.2.0.json` is main's `contract --json` as one sorted, compact line. The same method gives the 0.1.0 pin from 1c55039 byte for byte. The adapter, `agent/dubbing.py` and the fake read the new file.
+    - The gate takes `0.1.` and `0.2.`. A 0.1.x install is fatal drift against the new pin (its `dub` argv), as after every content re-pin.
+    - `qwen3_tts` is not wired into plans: `engines()` leaves out every engine the contract lists in `engines.experimental`. So `dub.engine=qwen3_tts` is refused at the `--set` gate, the validator refuses it in an IR, and the adapter never sends it. The capability evidence lists chatterbox / style_bert_vits2 as before.
+  - Verification:
+    - unit `tests/test_dubbing.py`: pin 0.2.0; 0.3.0 / 1.0.0 outside the gate; `qwen3_tts` in the contract's DUB engines but not in `engines()`; `dub.engine=qwen3_tts` refused.
+    - unit `tests/test_release_version.py` and `tests/test_version_gates.py`, and the evals.
+    - Locally on dubbing-skill 979dc1a: `DubbingRealTests` passes, and live == pin.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

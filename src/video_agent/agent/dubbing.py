@@ -12,7 +12,7 @@ Vocabulary, decisions and checks only, no execution:
   by the Skill to be the same segments), `dub.engine` / `dub.voice`, `dub.duck` / `dub.voice_gain` / `dub.max_overrun` (the contract's
   limits), `dub.on_unfit` (fail | keep), and `dub.reference` + `dub.consent` (a reference voice, only together with its owner's consent
   record -- both files the user names; the agent never writes, edits or signs a record, and a reference without one is refused here).
-  Every range and enum is read from the pinned dubbing contract (tools/dubbing/contract_0.1.0.json), never copied.
+  Every range and enum is read from the pinned dubbing contract (tools/dubbing/contract_0.2.0.json), never copied.
 - **Where in the chain**: on the subject's picture after its edits (trim / concat / speed / ... -- the cues are on that timeline) and
   before colour / graphics / subtitles, a joined still, loudness and the deliverables: the dub output is the programme with its audio
   replaced (video stream-copied), so everything after it -- the loudness normalisation included -- works on the dubbed sound, and a
