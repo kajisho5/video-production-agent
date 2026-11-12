@@ -462,6 +462,12 @@ class TranscriptionAdapter(ToolAdapter):
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         return self.run(Operation(tool=tool, args=args, inputs=[], outputs=[], kind="measure"), paths or {}, timeout=timeout)
 
+    def preflight(self, args: Dict[str, Any], timeout: float = 600.0) -> ToolResult:
+        """ADR-113: the Skill's own dry run of a transcribe request. It makes every check a run makes before any audio work (a model's language
+        limit, word segmentation, engine and model availability, the input path policy) and recognises nothing. The adapter's own refusals come
+        first, before any process, as in run()."""
+        return self.run(Operation(tool=TRANSCRIBE_TOOL, args=args, inputs=[], outputs=[], kind="measure"), {}, timeout=timeout, dry_run=True)
+
     # ---- response validation: the document must be the Skill's, about this asset, produced by a declared engine, and a recognition fact
     def _check_response(self, doc: Dict[str, Any], req: Dict[str, Any]) -> List[str]:
         errs: List[str] = []

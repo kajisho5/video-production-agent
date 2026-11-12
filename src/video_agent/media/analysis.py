@@ -43,8 +43,10 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     "edit_style": {"skill": "edit_style_analysis", "needs_audio": False,
                    "params": ("video_stream", "audio_stream", "threshold", "min_shot_duration", "silence_threshold_db", "silence_min_duration", "burned_in_interval")},
     # speech recognition (transcription-skill, ADR-024): a Transcript is a recognition fact; parameters are the Skill's own typed request keys
+    # (ADR-113: word_segmentation, sent only when a plan's transcribe.word_segmentation names it and the contract declares it)
     "transcript": {"skill": "speech_transcription", "needs_audio": True,
-                   "params": ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline", "timeout", "max_audio_seconds")},
+                   "params": ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline", "timeout", "max_audio_seconds",
+                              "word_segmentation")},
     # multi-source sync (ADR-035): the time offset (and clock drift) of every other input relative to the FIRST input, measured by
     # the registry-selected sync tool (audio cross-correlation in the Skill). Pairwise: one observation per (reference, target); the agent never correlates itself.
     # `max_offset` / `analyze_seconds` / `fix_drift` go to the tool; `min_confidence` is the agent's gate for applying the result to the TimelineMap

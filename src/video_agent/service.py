@@ -28,6 +28,7 @@ from .agent.slides import check_slide_keys, slide_kind
 from .agent.bgm import check_bgm_keys
 from .agent import qc_checks as qc_checks_task
 from .agent import transcript_verify as verify_task
+from .agent import transcribe_options as transcribe_task
 from . import preferences as prefs_task
 from .agent.remotion import check_remotion_keys
 from .agent.documents import SKILL as DOCUMENT_SKILL, check_document_keys
@@ -60,7 +61,7 @@ from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
 from .tools.ffmpeg_skill.adapter import PathPolicy
 from .tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from .tools.media_analysis import PACKAGE as MEDIA_ANALYSIS_PACKAGE, MediaAnalysisAdapter, locate_media_analysis
-from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, TranscriptionAdapter, locate_transcription
+from .tools.transcription import PACKAGE as TRANSCRIPTION_PACKAGE, TRANSCRIBE_TOOL, TranscriptionAdapter, locate_transcription
 from .tools.video_editing import PACKAGE as VIDEO_EDITING_PACKAGE, VideoEditingAdapter, lift_observation, locate_video_editing
 from .tools.audio_production import PACKAGE as AUDIO_PRODUCTION_PACKAGE, AudioProductionAdapter, locate_audio_production
 from .tools.audio_production import lift_measurement as lift_audio_measurement, lift_observation as lift_audio_observation
@@ -470,6 +471,10 @@ class Service:
             kinds = list(kinds or []) + [k for k in ("transcript",) + ((BEAT_KIND,) if takes["music"] is not None else ()) if k not in (kinds or [])]
             if takes["music"] is not None:
                 params = dict(params or {}, beat_input=takes["music"])
+        topts = transcribe_task.parse_transcribe_requirements(explicit)   # ADR-113: explicit --set only (never a brief's or a stored preference's)
+        t_record = self._check_transcribe_options(inputs, topts, kinds or [], params or {}, allowed, user_requirements) if topts else None
+        if topts:
+            params = dict(params or {}, **topts)   # the transcript kind's parameters (media/analysis.py): no other kind reads them
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records, allowed_inputs=allowed)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {}),
@@ -478,7 +483,46 @@ class Service:
         if channel_id:
             ir.doc["project"]["channel_id"] = channel_id   # ADR-111: the channel / brand / series the channel-scoped preferences belong to
         self._fill(ir, request, profile, rules, analysis, plan_version=1)
+        if t_record is not None:   # ADR-113: written only when the options were given, so an unchanged request records nothing new
+            t_record["measured"] = transcribe_task.measured([r for a in analysis.analyses for r in a.get("rows") or []], analysis.observations, topts)
+            ir.doc["provenance"]["transcription_options"] = t_record
+            ir.finalize_hash()
         return ir
+
+    def _check_transcribe_options(self, inputs: List[str], opts: Dict[str, str], kinds: List[str], params: Dict[str, Any], allowed: Optional[List[str]],
+                                  user_requirements: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """ADR-113: the transcribe.* options, checked before any analysis (agent/transcribe_options.py): the plan measures a transcript, dictionary
+        segmentation's rule, the installed contract declares each option, and the Skill's own dry run of the request the analysis will send.
+        Returns the provenance record. The installed contract is checked whenever transcription-skill is installed; the dry run only when the
+        registry selects its tool, since without one the analysis refuses the plan itself (with the registry's reason)."""
+        transcribe_task.check_plan(opts, kinds, params)
+        record: Dict[str, Any] = {"rule": transcribe_task.RULE, "requested": dict(opts), "source": "--set", "checked": {"status": "not_checked"}}
+        router = self.adapter(list(allowed) if allowed else [str(Path(p).resolve().parent) for p in inputs])
+        ad = router.adapter_for(TRANSCRIBE_TOOL)
+        if not isinstance(ad, TranscriptionAdapter):
+            record["checked"]["reason"] = "transcription-skill is not installed here"
+            return record
+        transcribe_task.check_contract_declares(opts, ad.contract, TRANSCRIBE_TOOL)
+        record.update(skill="transcription-skill", skill_version=ad.version)
+        if self.tools_for(router, user_requirements).get(transcribe_task.SKILL) != TRANSCRIBE_TOOL:
+            record["checked"]["reason"] = f"no tool for {transcribe_task.SKILL} here (the analysis says why)"
+            return record
+        Path(self.workspace).mkdir(parents=True, exist_ok=True)   # one of the allowed roots the dry run is given, as the analysis gives it
+        kp = {k: v for k, v in {**params, **opts}.items() if k in ANALYSIS_KINDS["transcript"]["params"] and v is not None}
+        left: List[str] = []
+        for p in inputs:
+            r = ad.preflight({"input": p, "asset_id": "preflight", "parameters": kp})
+            if r.ok:
+                record["checked"] = {"status": "accepted", "by": "the Skill's dry run", "input": Path(p).name, "parameters": kp,
+                                     "cache": ((r.data or {}).get("cache") or {}).get("status")}
+                return record
+            err = (r.data or {}).get("error") or {}
+            why = transcribe_task.preflight_refusal(err)
+            if why:
+                raise ValueError(f"{', '.join(transcribe_task.PREFIX + k for k in opts)}: {why}")
+            left.append(f"{Path(p).name}: {err.get('code')}: {str(err.get('message') or '')[:200]}")
+        record["checked"] = {"status": "left_to_the_analysis", "by": "the Skill's dry run", "parameters": kp, "reasons": left}
+        return record
 
     # ---- card offload (ADR-066): plan → CONFIRM → render → the verified copies become assets
     def plan_offload(self, source: str, user_requirements: Optional[Dict[str, Any]] = None, project_name: Optional[str] = None) -> ProjectIR:
@@ -951,6 +995,7 @@ class Service:
         old = json.loads(json.dumps(ir.doc))
         _check_requirement_keys(user_requirements or {})
         self._check_provider_requirements(user_requirements or {})
+        transcribe_task.check_revision((old["request"].get("args") or {}).get("requirements") or {}, user_requirements or {})   # ADR-113: recognition is the plan's
         fb_ids: List[str] = []
         duplicate_feedback = False
         if feedback or user_requirements:
@@ -1025,6 +1070,8 @@ class Service:
         nd["revision"] = {"feedback": list(ir.doc["revision"]["feedback"]), "history": list(old["revision"]["history"]), "approved_plan_version": None}
         nd["provenance"]["runs"] = list(old["provenance"].get("runs") or [])
         nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
+        if old["provenance"].get("transcription_options"):   # ADR-113: the same recorded analysis, so the same record
+            nd["provenance"]["transcription_options"] = old["provenance"]["transcription_options"]
         nd["analysis"] = {**old["analysis"], "inferences": nd["analysis"]["inferences"], "contexts": nd["analysis"].get("contexts") or []}   # same observations / analyses; the re-plan's inferences (AI ones reused) and contexts
         if editor_obs is not None:   # ADR-098: the read-back is evidence of v(n+1) (v(n) and its snapshot stay as they were)
             nd["analysis"]["observations"] = list(old["analysis"]["observations"]) + [editor_obs.to_dict()]
@@ -1316,6 +1363,8 @@ class Service:
                 v = cfg.get(k) or (((src_tr or {}).get("data") or {}).get("language") if k == "language" else src_params.get(k))
                 if v:
                     params[k] = v
+            if src_params.get("word_segmentation") == transcribe_task.DICTIONARY and params.get("language") == transcribe_task.DICTIONARY_LANGUAGE:
+                params["word_segmentation"] = transcribe_task.DICTIONARY   # ADR-113: the delivered words segmented as the planned words were
             for t in doc["delivery"]["targets"]:
                 logical = f"{subject['id']}_delivery_{t['id']}"
                 if logical not in paths:
@@ -1941,7 +1990,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", "document.", verify_task.PREFIX)
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", "document.", verify_task.PREFIX, transcribe_task.PREFIX)
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -2080,6 +2129,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_remotion_keys(user_requirements)   # ADR-093: remotion.* keys known, a composition that keeps the clock, the user's project and files exist
     check_bgm_keys(user_requirements)   # ADR-092: bgm.* keys known, one mode, a library folder that is a sound-design library, with audio.production + audio.mix
     verify_task.parse_verify_requirements(user_requirements)   # ADR-110: verify.* keys known, a switch, in range
+    transcribe_task.parse_transcribe_requirements(user_requirements)   # ADR-113: transcribe.* keys known, an engine id / a model name / a segmentation mode
     if TIMELINE_KEY in user_requirements:   # ADR-052: none | otio | fcpxml | edl, refused before any analysis runs
         parse_timeline_requirement(requirement_map([Requirement(key=TIMELINE_KEY, value=user_requirements[TIMELINE_KEY], provenance="USER", source="cli")]))
 

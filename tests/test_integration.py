@@ -1071,6 +1071,41 @@ class TranscriptionRealTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "video_agent.cli", "--json", "doctor"], capture_output=True, text=True, env=env)
         self.assertEqual(json.loads(r.stdout)["transcription"]["status"], "AVAILABLE")
 
+    def test_plan_options_checked_against_the_installed_skill(self):
+        """ADR-113 on the real transcription-skill, offline (nothing is ever downloaded). Before any analysis, an engine the installed contract
+        does not declare and dictionary segmentation without word timings are refused with no recognition. The Skill's own dry run decides
+        the rest. Where faster_whisper is installed, the English-only distil-large-v3.5 with Japanese is refused with the Skill's
+        language_unsupported and the adapter's hint. A declared engine that is not installed (qwen3_asr) is the Skill's ENGINE_UNAVAILABLE, left
+        to the analysis and recorded. Where no engine is installed (CI), the Skill's dry run reaches its engine check first: ENGINE_UNAVAILABLE,
+        which is not a refusal of the options."""
+        from video_agent.agent.transcribe_options import preflight_refusal
+        ws = str(Path(self.tmp) / "ws_options")
+        svc = Service(workspace=ws, offline=True)
+
+        def plan(reqs):
+            return svc.plan([self.src], "generic", user_requirements=reqs, kinds=["transcript"], params={"language": "ja", "offline": True})
+        for reqs, needle in (({"transcribe.engine": "no_such_engine"}, "declares no such engine"),
+                             ({"transcribe.word_segmentation": "dictionary"}, "word_timestamps_required")):
+            with self.assertRaises(ValueError, msg=reqs) as cm:
+                plan(reqs)
+            self.assertIn(needle, str(cm.exception))
+        engines = {e.get("id"): e for e in self.adapter.engine_status()}
+        self.assertIn("qwen3_asr", engines, "transcription-skill 0.11 declares qwen3_asr")
+        if engines["faster_whisper"].get("available"):
+            with self.assertRaises(ValueError) as cm:
+                plan({"transcribe.model": "distil-large-v3.5"})
+            self.assertIn("INVALID_INPUT language_unsupported", str(cm.exception)); self.assertIn("recognises only en", str(cm.exception))
+            if not engines["qwen3_asr"].get("available"):
+                rec = plan({"transcribe.engine": "qwen3_asr"}).doc["provenance"]["transcription_options"]
+                self.assertEqual((rec["requested"], rec["checked"]["status"], rec["skill_version"]), ({"engine": "qwen3_asr"}, "left_to_the_analysis", self.adapter.version))
+                self.assertIn("ENGINE_UNAVAILABLE", rec["checked"]["reasons"][0])
+                self.assertEqual((rec["measured"][0]["status"], rec["measured"][0]["error"]["skill_error"]), ("FAILED", "ENGINE_UNAVAILABLE"))
+        else:
+            r = self.adapter.preflight({"input": self.src, "asset_id": "preflight", "parameters": {"model": "distil-large-v3.5", "language": "ja", "offline": True}})
+            err = r.data["error"]
+            self.assertEqual((r.ok, err["code"], err["details"].get("reason")), (False, "ENGINE_UNAVAILABLE", "engine_not_installed"), err)
+            self.assertIsNone(preflight_refusal(err), "an engine not installed here is the analysis's to record, not a refusal of the options")
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill() and locate_transcription(), "needs ffmpeg, ffmpeg-skill and transcription-skill")
 class SpeechToPlanRealTests(unittest.TestCase):
