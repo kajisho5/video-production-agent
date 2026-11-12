@@ -1,5 +1,5 @@
 """Fake dubbing-skill process for the ADR-085 tests: speaks the slice of the real `dubbing` CLI the agent uses -- `contract --json` (the pinned
-src/video_agent/tools/dubbing/contract_0.2.0.json), `doctor --json --offline --ffmpeg-skill=DIR` (dubbing/doctor@1 with engines and
+src/video_agent/tools/dubbing/contract_0.2.1.json), `doctor --json --offline --ffmpeg-skill=DIR` (dubbing/doctor@1 with engines and
 operations.<op>.ready) and `dub` with `--flag=value` options and the programme + cues after `--`, in the result shape of dubbing-skill main
 (dubbing/dub@1: output, fit, mix, clips, kept_original, obligations, provenance with the output sha256 and the consent summary; its error document).
 The media are the self-describing fake files of tests/fake_adapter.py: the output is such a file (the input's facts, louder dialogue). Nothing
@@ -25,7 +25,7 @@ MODE = os.environ.get("FAKE_DUB_MODE", "ok")
 ENGINES = os.environ.get("FAKE_DUB_ENGINES", "all")
 CONTRACT_MODE = os.environ.get("FAKE_DUB_CONTRACT", "pinned")
 CALLS_LOG = os.environ.get("FAKE_DUB_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "dubbing" / "contract_0.2.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "dubbing" / "contract_0.2.1.json"
 CREDITS = {"style_bert_vits2": "JVNV corpus voice jvnv-F1-jp (CC BY-SA 4.0)", "chatterbox": None}
 CLONES = {"chatterbox": True, "style_bert_vits2": True, "kokoro": False, "voicevox": False}
 

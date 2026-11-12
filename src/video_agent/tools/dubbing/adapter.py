@@ -4,7 +4,7 @@
         `dubbing dub --json --offline --overwrite --ffmpeg-skill=<dir> --output=<out.mp4> --lang=L [--k=v ...] -- <programme> <translated cues>`
           ─(its own engine worker; every media step through ffmpeg-skill)─→ the programme with its dialogue replaced
 
-Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_0.2.0.json -- the repository has no
+Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_0.2.1.json -- the repository has no
 release tag, so the pin follows main as voice-enhance-skill's does, ADR-073):
     contract → `dubbing contract --json`
     doctor   → `dubbing doctor --json --offline --ffmpeg-skill=<dir>` (dubbing/doctor@1: python / ffmpeg_skill / engines /
@@ -60,7 +60,8 @@ CAPABILITY_IDS = {"DUB": "speech.dub"}
 TOOL_OF_TYPE = {"DUB": TOOL_DUB}
 SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")   # 0.2.0 (dubbing-skill #20, main 979dc1a; ADR-107 addendum 10): the optional, experimental
                                               # qwen3_tts engine (engines.experimental, engine.revision / engine.experimental in provenance). Additive;
-                                              # the agent does not wire qwen3_tts into plans
+                                              # the agent does not wire qwen3_tts into plans. 0.2.1 (#21, main f929f4a; addendum 14):
+                                              # `terms --transcript` and its `heard` result; `terms` is not an op tool here, and it is not run
 DOCTOR_SCHEMA = "dubbing/doctor@1"
 DOCTOR_CODES = ("ENGINE_UNAVAILABLE", "MODEL_NOT_FOUND", "FFMPEG_SKILL_UNAVAILABLE")
 VIDEO_OUTPUTS = (".mp4", ".mov", ".mkv")   # the contract's `-o <out.mp4|out.mov|out.mkv|out.wav>`: the agent keeps the picture, so never .wav
@@ -93,7 +94,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "im
 # policy is fatal: the consent gate (`policy.consent_record.bypass: null`) is what lets the agent pass a reference at all.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "error_shape", "policy")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv", "schema", "limits")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
