@@ -4,7 +4,11 @@ FAKE_TS_MODE = ok | empty | text | two_docs | wrong_schema | wrong_skill | wrong
 bad_source | no_transcript | invalid_provenance | speaker_set | timeout_error | hang | crash | nonzero | model_unavailable |
 engine_unavailable | bad_segments | speaker_unknown | speaker_mismatch. FAKE_TS_CACHE=hit reports a cache hit. Model distil-large-v3.5 is
 English only, as in transcription-skill 0.10.0: another language or none is refused (language_unsupported / language_detection_unsupported). FAKE_TS_RENDERED (JSON segments / words)
-is what a rendered fake file (which carries no speech) is heard to say (ADR-110). With `speaker_turns` (a
+is what a rendered fake file (which carries no speech) is heard to say (ADR-110). ADR-113: FAKE_TS_REQUESTS (a file) logs each run's params as a
+JSON line; FAKE_TS_ENGINES (comma-separated ids) declares more engines (available, local), and a transcript then names the engine requested;
+FAKE_TS_CONTRACT=0.8 serves a 0.8.0 contract (no word_segmentation, no dictionary capability). word_segmentation dictionary follows the Skill's
+rules (language ja: dictionary_segmentation_language; word timestamps: word_timestamps_required; FAKE_TS_MODE=no_dictionary refuses it as
+dictionary_segmentation_unavailable) and its words carry pos / timing; model no-such-model is MODEL_UNKNOWN. With `speaker_turns` (a
 diarization-skill/turns@1 document, ADR-096) the segments get speaker_id by the Skill's own ASSIGN rule (longest overlap with the exclusive
 turns; none or a tie: null) and the transcript a `speaker_assignment` record, as transcription-skill 0.8.0 merges after recognition.
 Never runs an ASR engine or ffmpeg. Test double only."""
@@ -37,6 +41,22 @@ def log(kind: str) -> None:
 
 # transcription-skill 0.10.0: models limited to some languages (faster_whisper's English-only distil-large-v3.5)
 MODEL_LANGUAGES = {"distil-large-v3.5": ("en",)}
+UNKNOWN_MODEL = "no-such-model"   # ADR-113: a model the engine does not know (MODEL_UNAVAILABLE, availability MODEL_UNKNOWN)
+EXTRA_ENGINES = [e for e in (os.environ.get("FAKE_TS_ENGINES") or "").split(",") if e]
+
+
+def engine_ids() -> list:
+    return [ENGINE["id"]] + [e for e in EXTRA_ENGINES if e != ENGINE["id"]]
+
+
+def contract() -> dict:
+    c = json.loads(json.dumps(CONTRACT))
+    if os.environ.get("FAKE_TS_CONTRACT") == "0.8":   # before 0.9.0: no word_segmentation input, no word_index / dictionary capability
+        c["version"] = "0.8.0"
+        c["capabilities"] = [x for x in c["capabilities"] if x not in ("word_index", "dictionary_word_segmentation")]
+        for tool in c["tools"]:
+            (tool.get("input") or {}).pop("word_segmentation", None)
+    return c
 
 
 def _err(code: str, message: str, details: dict = None) -> int:
@@ -55,6 +75,8 @@ def transcript(params: dict, fp: str) -> dict:
     lang = params.get("language") or "ja"
     model = params.get("model") or "base"
     words = [{"start": 0.5, "end": 0.9, "text": "本日", "confidence": 0.9}, {"start": 0.9, "end": 1.4, "text": "の", "confidence": 0.8}] if params.get("word_timestamps") else None
+    if words and params.get("word_segmentation") == "dictionary":   # 0.9.0: dictionary words carry a POS tag and how their timing was found
+        words = [dict(w, pos=pos, timing="measured") for w, pos in zip(words, ("noun", "particle"))]
     segs = [{"id": "seg_0001", "start": 0.5, "end": 3.2, "text": "本日の公園を始めます", "raw_text": "本日の公園を始めます", "confidence": 0.72, "words": words, "speaker_id": None},
             {"id": "seg_0002", "start": 4.0, "end": 8.4, "text": "会場の音教設備についてご説明します", "raw_text": "会場の音教設備についてご説明します", "confidence": 0.68, "words": None, "speaker_id": None}]
     if os.environ.get("FAKE_TS_SEGMENTS"):   # [[start, end, text], ...] → canned segments with a fixed confidence (temporal-structure tests)
@@ -84,14 +106,17 @@ def transcript(params: dict, fp: str) -> dict:
     tid = "tr_" + hashlib.sha256((fp + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:12]
     prov_params = {"language": params.get("language"), "word_timestamps": bool(params.get("word_timestamps")), "temperature": params.get("temperature", 0.0),
                    "initial_prompt": params.get("initial_prompt"), "beam_size": params.get("beam_size", 5)}
+    if params.get("word_segmentation") not in (None, "engine"):   # as the Skill: recorded only when it is not the default
+        prov_params["word_segmentation"] = params["word_segmentation"]
+    engine = params.get("engine") or ENGINE["id"]
     return {"schema": "transcription-skill/transcript/0.1", "id": tid, "asset_id": params["asset_id"], "language": lang, "language_source": "requested" if params.get("language") else "detected",
             "language_confidence": None if params.get("language") else 0.93, "duration": 9.606, "segments": segs,
             "source": {"filename": os.path.basename(params["input"]), "fingerprint": "sha256:" + fp, "size_bytes": 64, "media_duration": 9.606, "audio_channels": 1, "sample_rate": 16000,
                        "container": "wav", "has_video": False},
-            "engine": ENGINE["id"], "engine_version": ENGINE["version"], "created_at": "2026-09-04T10:00:00Z",
-            "provenance": {"engine": ENGINE["id"], "engine_version": ENGINE["version"], "execution_mode": "local", "model": model, "model_version": "fake-model-rev",
+            "engine": engine, "engine_version": ENGINE["version"], "created_at": "2026-09-04T10:00:00Z",
+            "provenance": {"engine": engine, "engine_version": ENGINE["version"], "execution_mode": "local", "model": model, "model_version": "fake-model-rev",
                            "parameters": prov_params, "parameters_hash": "p" * 64, "cache_key": "c" * 64, "created_at": "2026-09-04T10:00:00Z", "processing_seconds": 0.01,
-                           "skill_version": CONTRACT["version"], "skill": "transcription-skill", "tool": "transcription/transcribe",
+                           "skill_version": contract()["version"], "skill": "transcription-skill", "tool": "transcription/transcribe",
                            "language_detection": None if params.get("language") else {"candidate": lang, "probability": 0.93, "min_probability": 0.5},
                            "audio_extraction": {"tool": "ffmpeg", "recipe": {"channels": 1, "sample_rate": 16000, "codec": "pcm_s16le", "container": "wav"}, "engine_seconds": 0.0}},
             "warnings": []}
@@ -101,8 +126,8 @@ def main() -> int:
     argv = sys.argv[1:]
     if argv[:1] == ["skill"]:
         log("skill")
-        c = json.loads(json.dumps(CONTRACT))
-        c["engines"] = [dict(ENGINE)]
+        c = contract()
+        c["engines"] = [dict(ENGINE)] + [dict(ENGINE, id=e, description="fake (FAKE_TS_ENGINES)") for e in EXTRA_ENGINES if e != ENGINE["id"]]
         if MODE == "engine_unavailable":
             c["engines"][0].update(available=False, version=None, models=[], unavailable_reason="faster-whisper is not installed")
         if MODE == "wrong_version":
@@ -145,12 +170,27 @@ def main() -> int:
         if set(req) - {"tool", "params"} or req.get("tool") not in [t["name"] for t in CONTRACT["tools"]]:
             return _err("INVALID_INPUT", "bad request envelope")
         p = req.get("params") or {}
+        if os.environ.get("FAKE_TS_REQUESTS"):
+            with open(os.environ["FAKE_TS_REQUESTS"], "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({k: v for k, v in p.items() if k not in ("speaker_turns",)}, ensure_ascii=False, sort_keys=True) + "\n")
         for k in p:
             if k.lower() in ("command", "argv", "cmd", "shell", "exec", "args", "script", "binary", "api_key", "token", "secret", "password", "credentials", "env"):
                 return _err("INVALID_INPUT", f"key '{k}' is not allowed")
         raw = p.get("input")
         if not isinstance(raw, str) or not raw:
             return _err("INVALID_INPUT", "'input' must be a non-empty path string")
+        if p.get("engine") is not None and p["engine"] not in engine_ids():
+            return _err("INVALID_INPUT", f"unknown engine {p['engine']!r}", {"engine": p["engine"], "reason": "engine_unknown"})
+        seg = p.get("word_segmentation")
+        if "word_segmentation" in p and ("word_segmentation" not in ((contract()["tools"][0].get("input")) or {}) or seg not in ("engine", "dictionary")):
+            return _err("INVALID_INPUT", "unknown key 'word_segmentation'" if os.environ.get("FAKE_TS_CONTRACT") == "0.8" else f"'word_segmentation' must be one of ['engine', 'dictionary']")
+        if seg == "dictionary":   # the Skill's request rules (0.9.0), before any file or engine check
+            if p.get("language") != "ja":
+                return _err("INVALID_INPUT", "word_segmentation 'dictionary' is for Japanese only and needs \"language\": \"ja\" in the request",
+                            {"reason": "dictionary_segmentation_language", "language": p.get("language"), "supported": ["ja"]})
+            if not p.get("word_timestamps"):
+                return _err("INVALID_INPUT", "word_segmentation 'dictionary' maps word timings onto dictionary words and needs \"word_timestamps\": true",
+                            {"reason": "word_timestamps_required"})
         roots = [os.path.realpath(r) for r in (p.get("allowed_input_roots") or [])]
         if roots:
             if any(part == ".." for part in raw.replace("\\", "/").split("/")):
@@ -165,6 +205,9 @@ def main() -> int:
             return _err("ENGINE_UNAVAILABLE", "faster-whisper is not installed", {"engine": "faster_whisper", "reason": "engine_not_installed"})
         if MODE == "model_unavailable" or (p.get("offline") and p.get("model") not in (None, "base")):
             return _err("MODEL_UNAVAILABLE", "model not on this machine and cannot be fetched (offline)", {"engine": "faster_whisper", "model": p.get("model") or "base", "availability": "MODEL_MISSING", "offline": bool(p.get("offline"))})
+        if p.get("model") == UNKNOWN_MODEL:
+            return _err("MODEL_UNAVAILABLE", f"model {UNKNOWN_MODEL!r}: not a model of this engine; known: tiny, base, small",
+                        {"engine": p.get("engine") or ENGINE["id"], "model": UNKNOWN_MODEL, "availability": "MODEL_UNKNOWN", "offline": bool(p.get("offline"))})
         if p.get("model") in MODEL_LANGUAGES:   # 0.10.0 (its ADR-040): a model limited to some languages, refused before any audio work
             langs, lang = MODEL_LANGUAGES[p["model"]], p.get("language")
             if lang is None:
@@ -173,6 +216,9 @@ def main() -> int:
             if lang not in langs:
                 return _err("INVALID_INPUT", f"model {p['model']} of engine faster_whisper does not recognize language {lang!r}",
                             {"engine": "faster_whisper", "model": p["model"], "reason": "language_unsupported", "supported": list(langs)})
+        if seg == "dictionary" and MODE == "no_dictionary":
+            return _err("INVALID_INPUT", "word_segmentation 'dictionary' needs SudachiPy and its dictionary: install the optional [ja] extra",
+                        {"reason": "dictionary_segmentation_unavailable"})
         if MODE == "nonzero":
             return _err("TRANSCRIPTION_FAILED", "engine crashed", {"exit": 1})
         if MODE == "timeout_error":
@@ -180,7 +226,7 @@ def main() -> int:
         fp = hashlib.sha256(Path(raw).read_bytes()).hexdigest()
         hit = os.environ.get("FAKE_TS_CACHE") == "hit"
         if p.get("dry_run"):
-            res = {"dry_run": True, "input": {"filename": os.path.basename(raw), "fingerprint": "sha256:" + fp, "duration": 9.606}, "engine": {"id": ENGINE["id"], "version": ENGINE["version"], "execution_mode": "local"},
+            res = {"dry_run": True, "input": {"filename": os.path.basename(raw), "fingerprint": "sha256:" + fp, "duration": 9.606}, "engine": {"id": p.get("engine") or ENGINE["id"], "version": ENGINE["version"], "execution_mode": "local"},
                    "model": {"model": p.get("model") or "base", "availability": "MODEL_AVAILABLE"}, "cache": {"status": "hit" if hit else "miss", "key": "c" * 64}, "would_run": not hit,
                    "path_policy": {"mode": "allowed_roots" if roots else "unrestricted", "allowed_roots": roots}}
             print(json.dumps({"ok": True, "tool": req["tool"], "result": res}, ensure_ascii=False))
@@ -220,7 +266,7 @@ def main() -> int:
                     per[seg["speaker_id"]] = per.get(seg["speaker_id"], 0) + 1
             if MODE == "speaker_unknown":
                 tr["segments"][0]["speaker_id"] = "SPEAKER_42"
-            tr["speaker_assignment"] = {"skill": "transcription-skill", "skill_version": CONTRACT["version"], "tool": "transcription/speakers", "created_at": "2026-10-31T00:00:00Z",
+            tr["speaker_assignment"] = {"skill": "transcription-skill", "skill_version": contract()["version"], "tool": "transcription/speakers", "created_at": "2026-10-31T00:00:00Z",
                                         "method": "max_overlap_with_exclusive_turns",
                                         "rule": "per word (else per segment): speaker with the longest overlap with the exclusive turns; zero overlap or a tie -> null. "
                                                 "Segment with words: speaker with the largest assigned word duration; tie -> null.", "speaker_ids": "anonymous (SPEAKER_nn) from diarization-skill; they name nobody",
