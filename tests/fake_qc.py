@@ -11,8 +11,13 @@ request via FAKE_QC_MODE:
   package_fail (kind delivery_package: the last member's extension does not match its rule) | package_fingerprint (a member's
   fingerprint is not its file's)
 
-FAKE_QC_CALLS: a file every invocation (subcommand + argv) is appended to (security tests read it). Never runs ffprobe / ffmpeg,
-never imports qc_skill. Test double only."""
+FAKE_QC_CALLS: a file every invocation (subcommand + argv) is appended to (security tests read it). FAKE_QC_REQUESTS: a file every run
+request document is appended to. Never runs ffprobe / ffmpeg, never imports qc_skill. Test double only.
+
+The opt-in stinger (1.2.0) and loop-seam (1.3.0) checks run only when their rule is in the request, like the real Skill: the cover check from
+the rule itself, the opacity from FAKE_QC_STINGER (ok | not_opaque | unknown), the cut-frame difference from FAKE_QC_CUT_DIFF (default 0.0,
+judged only with max_cut_frame_difference), the seam facts from FAKE_QC_SEAM_CLICK / _LEVEL / _BAND (defaults 1.0 / 0.3 / 1.0) or
+FAKE_QC_SEAM=unknown. A stinger `file` is resolved like an input (MISSING_INPUT / PATH_NOT_ALLOWED) and fingerprinted (provenance.stinger_input)."""
 from __future__ import annotations
 
 import hashlib
@@ -179,6 +184,9 @@ def main() -> int:
         req = json.loads(sys.stdin.read())
     except ValueError:
         return err("INVALID_REQUEST", "request is not valid JSON")
+    if os.environ.get("FAKE_QC_REQUESTS"):
+        with open(os.environ["FAKE_QC_REQUESTS"], "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(req, ensure_ascii=False) + "\n")
     if MODE in ("hang", "timeout"):
         time.sleep(30)
     if MODE == "malformed":
@@ -237,6 +245,14 @@ def main() -> int:
             if bad:
                 return bad
             companions[k] = p
+    stinger = (vrule.get("stinger") or None) if kind in ("video", "delivery") else None
+    if stinger and stinger.get("file") is not None:   # qc-skill ADR-024: the stinger is a second input, resolved and fingerprinted like `input`
+        p, bad = resolve(stinger["file"], roots, "rules.video.stinger.file")
+        if bad:
+            return bad
+        companions["stinger"] = p
+    arule = (rules.get("audio") if kind == "audio" else (rules.get("delivery") or {}).get("audio") if kind == "delivery" else None) or {}
+    seam_rule = arule.get("loop_seam") or None
     if MODE == "cancelled":
         return err("CANCELLED", "interrupted", {"reason": "signal"})
     if MODE in ("tool_error", "tool_error_final"):
@@ -264,11 +280,16 @@ def main() -> int:
         ms += [measurement("delivery.extension", Path(src).suffix.lstrip("."), None, "OBSERVED")]
     prefixes = {"video": ("video.",), "audio": ("audio.",), "subtitle": ("subtitle.",), "delivery": ("video.", "audio.", "subtitle.", "delivery.")}[kind]
     checks, findings = [], []
+    opt_in = {"video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"} | {c for c in CONTRACT["checks"] if c.startswith(("video.stinger_", "audio.loop_seam_"))}
     if operation in ("check", "validate"):
         opted = {f"video.{m}_meets_minimum" for m in metrics}
         for cid in CONTRACT["checks"]:
-            if cid.startswith(prefixes) and (cid not in {"video.vmaf_meets_minimum", "video.ssim_meets_minimum", "video.psnr_meets_minimum"} or cid in opted):
+            if cid.startswith(prefixes) and (cid not in opt_in or cid in opted):
                 checks.append({"check_id": cid, "category": cid.split(".")[0], "status": "PASS", "measurement_ids": [m["id"] for m in ms if m["category"] == cid.split(".")[0]][:2], "finding_codes": [], "evidence": {}})
+        if stinger:
+            stinger_checks(stinger, checks, findings, ms)
+        if seam_rule:
+            seam_checks(seam_rule, f["duration"], checks, findings, ms)
         if MODE == "verdict_fail" or (kind in ("video", "delivery") and not f["video"]):
             checks[0].update(status="FAIL", finding_codes=["VIDEO_STREAM_MISSING"])
             findings.append({"code": "VIDEO_STREAM_MISSING", "category": "video", "severity": "FAIL", "message": "no video stream", "check_id": checks[0]["check_id"], "argv": ["scrubbed"]})
@@ -300,6 +321,67 @@ def main() -> int:
     if MODE == "two_docs":
         emit(doc)
     return 3 if MODE == "nonzero_ok" else 0
+
+
+def check(cid, status, codes=(), reason=None, evidence=None):
+    c = {"check_id": cid, "category": cid.split(".")[0], "status": status, "measurement_ids": [], "finding_codes": list(codes), "evidence": evidence or {}}
+    if reason:
+        c["reason"] = reason
+    return c
+
+
+def stinger_checks(rule, checks, findings, ms) -> None:
+    """qc-skill rules.py _evaluate_stinger, with canned measurements."""
+    cp = float(rule["cut_point"])
+    if rule.get("cover"):
+        inside = float(rule["cover"]["start"]) <= cp < float(rule["cover"]["end"])
+        checks.append(check("video.stinger_cut_point_in_cover", "PASS" if inside else "FAIL", [] if inside else ["VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER"]))
+        if not inside:
+            findings.append({"code": "VIDEO_STINGER_CUT_POINT_OUTSIDE_COVER", "category": "video", "severity": "FAIL", "timestamp": cp,
+                             "message": f"{cp:.3f}s the stated cut point is outside the stated cover window [{rule['cover']['start']}, {rule['cover']['end']})s"})
+    mode = os.environ.get("FAKE_QC_STINGER", "ok")
+    alpha = {"measured": False, "reason": "the stream's pixel format yuv420p has no alpha channel"} if mode == "unknown" else \
+        {"measured": True, "frame": int(round(cp * 25)), "pixels": 2304, "pixels_below": 12 if mode == "not_opaque" else 0, "min_alpha_255": 200 if mode == "not_opaque" else 255}
+    ms.append(measurement("video.stinger_cut_point_alpha", alpha, None, "ffmpeg:extractplanes"))
+    if mode == "unknown":
+        checks.append(check("video.stinger_opaque_at_cut_point", "UNKNOWN", reason=alpha["reason"]))
+    else:
+        bad = mode == "not_opaque"
+        checks.append(check("video.stinger_opaque_at_cut_point", "FAIL" if bad else "PASS", ["VIDEO_STINGER_NOT_OPAQUE"] if bad else []))
+        if bad:
+            findings.append({"code": "VIDEO_STINGER_NOT_OPAQUE", "category": "video", "severity": "FAIL", "timestamp": cp,
+                             "message": f"{cp:.3f}s frame {alpha['frame']} of the stinger: 12 of 2304 pixels have alpha below 253/255 (lowest 200/255)"})
+    if rule.get("cut_at"):
+        diff = float(os.environ.get("FAKE_QC_CUT_DIFF", "0.0"))
+        cuts = [{"cut_at": t, "frame": int(round(t * 25)), "difference": diff, "measured": True} for t in rule["cut_at"]]
+        ms.append(measurement("video.stinger_cut_frames", {"cuts": cuts}, None, "ffmpeg:rawvideo"))
+        if rule.get("max_cut_frame_difference") is not None:
+            over = [c for c in cuts if c["difference"] > float(rule["max_cut_frame_difference"])]
+            checks.append(check("video.stinger_cut_frame_matches", "FAIL" if over else "PASS", ["VIDEO_STINGER_CUT_FRAME_MISMATCH"] if over else []))
+            if over:
+                findings.append({"code": "VIDEO_STINGER_CUT_FRAME_MISMATCH", "category": "video", "severity": "FAIL", "timestamp": over[0]["cut_at"],
+                                 "message": f"{len(over)} cut frame(s) do not show the stinger's frame at its cut point (limit {rule['max_cut_frame_difference']})"})
+
+
+def seam_checks(rule, duration, checks, findings, ms) -> None:
+    """qc-skill rules.py loop-seam checks, with canned facts per seam."""
+    unknown = os.environ.get("FAKE_QC_SEAM") == "unknown"
+    vals = {"click": float(os.environ.get("FAKE_QC_SEAM_CLICK", "1.0")), "level": float(os.environ.get("FAKE_QC_SEAM_LEVEL", "0.3")), "band": float(os.environ.get("FAKE_QC_SEAM_BAND", "1.0"))}
+    seams = [{"seam": t, "time_sec": t} for t in rule.get("seams") or []] + ([{"seam": "wrap", "time_sec": duration}] if rule.get("include_wrap", True) else [])
+    ms.append(measurement("audio.loop_seams", {"measured": True, "window_sec": rule.get("window_sec"), "seams": seams}, None, "ffmpeg:rawaudio"))
+    for field, cid, code, key in (("max_click_ratio", "audio.loop_seam_click_within_limit", "AUDIO_LOOP_SEAM_CLICK", "click"),
+                                  ("max_level_diff_db", "audio.loop_seam_level_within_limit", "AUDIO_LOOP_SEAM_LEVEL_MISMATCH", "level"),
+                                  ("max_band_diff_db", "audio.loop_seam_spectrum_within_limit", "AUDIO_LOOP_SEAM_SPECTRUM_MISMATCH", "band")):
+        if rule.get(field) is None:
+            continue
+        if unknown:
+            checks.append(check(cid, "UNKNOWN", reason="seam 2.0: within window_sec of the start of the file"))
+            continue
+        bad = vals[key] > float(rule[field])
+        checks.append(check(cid, "FAIL" if bad else "PASS", [code] if bad else []))
+        if bad and seams:
+            findings.append({"code": code, "category": "audio", "severity": "FAIL", "timestamp": seams[0]["time_sec"],
+                             "message": f"{len(seams)} seam(s) over the limit: {key} {vals[key]} > {rule[field]}"})
 
 
 def run_package(req, roots, operation, kind, params, rules, argv) -> int:

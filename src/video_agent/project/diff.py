@@ -51,6 +51,10 @@ def plan_diff(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
         fin[sec] = _diff_map(o_, n_, _op_view)
     oq = {"qc": (old.get("qa") or {}).get("qc")} if (old.get("qa") or {}).get("qc", {}).get("enabled") else {}
     nq = {"qc": (new.get("qa") or {}).get("qc")} if (new.get("qa") or {}).get("qc", {}).get("enabled") else {}
+    for key in ("stinger_check", "loop_seam_check"):   # ADR-112: the opt-in qc-skill checks of a stinger join / a looped bed (written only when asked for)
+        for side, q in ((old, oq), (new, nq)):
+            if (side.get("qa") or {}).get(key):
+                q[key] = side["qa"][key]
     # ADR-110: the post-render transcript check (written only when asked for)
     ov_ = {"transcript": (old.get("qa") or {}).get("transcript_verify")} if (old.get("qa") or {}).get("transcript_verify") else {}
     nv_ = {"transcript": (new.get("qa") or {}).get("transcript_verify")} if (new.get("qa") or {}).get("transcript_verify") else {}
@@ -102,12 +106,13 @@ def summarize(diff: Dict[str, Any]) -> List[str]:
             lines.append(f"{sec.upper()} {k}: added")
         for k in (diff.get(sec) or {}).get("changed", {}):
             lines.append(f"{sec.upper()} {k}: parameters changed")
+    qc_names = {"qc": "QC gate", "stinger_check": "QC stinger check", "loop_seam_check": "QC loop-seam check"}
     for k in (diff.get("qc") or {}).get("removed", {}):
-        lines.append("QC gate: removed")
+        lines.append(f"{qc_names.get(k, k)}: removed")
     for k in (diff.get("qc") or {}).get("added", {}):
-        lines.append("QC gate: added")
+        lines.append(f"{qc_names.get(k, k)}: added")
     for k in (diff.get("qc") or {}).get("changed", {}):
-        lines.append("QC gate: rules changed")
+        lines.append(f"{qc_names.get(k, k)}: " + ("rules changed" if k == "qc" else "limits changed"))
     for verb in ("removed", "added", "changed"):   # ADR-110
         for k in (diff.get("verify") or {}).get(verb, {}):
             lines.append(f"VERIFY {k}: {verb}")

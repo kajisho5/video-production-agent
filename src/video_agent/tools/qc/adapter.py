@@ -16,7 +16,9 @@ the video rule's reference_metrics, qc-skill ADR-021), "cache_policy"?: use|bypa
 [{artifact_id, artifact_type, input: <artifact id>}] instead of "input": the deliverable set checked together; its admission recomputes the
 sha256 of every member and requires the report's provenance to name each member with that fingerprint.
 Rule sections / field names / value types and parameter names come from the contract's `rules` and `parameters` blocks; forbidden keys
-are refused by name; the request carries paths only for the input and its companions (workspace and allowed roots go on argv).
+are refused by name; the request carries paths only for the input, its companions and the files a rule names (ADR-112: a stinger rule's
+`file`, resolved under the path policy like an input and admitted by its fingerprint in provenance.stinger_input; workspace and allowed roots
+go on argv).
 
 ADMISSION is the whole point of this adapter: a report is accepted only when the response schema, status, skill id and version, the
 report's operation and kind, provenance.measurement_source == OBSERVED, the report's fingerprint == provenance fingerprint == the sha256
@@ -91,6 +93,10 @@ PACKAGE_ARTIFACT_KEYS = ("artifact_id", "artifact_type", "input")
 REFERENCE_KINDS = ("subtitle", "video", "delivery")   # qc-skill ADR-021: video / delivery read reference_video only for reference_metrics
 AGENT_CACHE_POLICIES = ("use", "bypass")   # "only" (fail unless cached) is never useful to the agent
 REPORT_ID_PREFIX = "qcreport_"
+# ADR-112: rule fields that name a file (qc-skill resolves and fingerprints them like `input`). The adapter resolves each one under the path
+# policy, sends the absolute path and admits the report only when provenance.<name>_input carries that file's sha256. Per kind: where the
+# field sits in the rules → the companion name (the provenance key prefix). A package names none (refused there).
+RULE_FILE_FIELDS = {"video": {("video", "stinger", "file"): "stinger"}, "delivery": {("delivery", "video", "stinger", "file"): "stinger"}}
 _SCALAR_RULE_TYPES = ("int", "float", "bool", "str")
 # qc rule field types, as the contract spells them: [Optional[] T []] where T is a scalar, a named nested rule (AudioRule, TextRegion:
 # needs `nested_rule`), List[scalar | named] or Dict[str, scalar] (qc-skill #20: video.expected_cuts List[float], min_text_height_px
@@ -474,6 +480,7 @@ class QcAdapter(ToolAdapter):
                 raise ToolError("qc: a subtitle companion is only accepted with kind delivery")
             companions["subtitle"] = self._resolve_input("subtitle", args["subtitle"], paths)
         rules = self.rules_for(args.get("rules"))
+        rule_files = self._rule_files(kind, rules, paths)
         metrics = self._reference_metrics(kind, rules)
         if args.get("reference_video") is not None:
             if kind not in REFERENCE_KINDS:
@@ -502,9 +509,27 @@ class QcAdapter(ToolAdapter):
         hit = scan_forbidden(req, self.forbidden, "request")
         if hit:
             raise ToolError(f"qc: refusing to send a request carrying {hit}")
-        inputs = [src] + list(companions.values())
-        return {"request": req, "input": src, "companions": companions, "operation": operation, "kind": kind, "tool": tool,
+        inputs = [src] + list(companions.values()) + list(rule_files.values())
+        return {"request": req, "input": src, "companions": companions, "rule_files": rule_files, "operation": operation, "kind": kind, "tool": tool,
                 "workspace": self.workspace or str(Path(src).parent), "cache": bool(self.workspace), "input_dirs": sorted({str(Path(p).parent) for p in inputs})}
+
+    def _rule_files(self, kind: str, rules: Dict[str, Any], paths: Dict[str, str]) -> Dict[str, str]:
+        """ADR-112: each file a rule names (RULE_FILE_FIELDS), resolved like an input (an artifact id or a path, inside the allowed roots) and
+        written back into the rules as the resolved absolute path; {companion name: path}. A stinger rule elsewhere than the kind's video rule
+        is refused (the Skill would read a file the adapter has not resolved)."""
+        out: Dict[str, str] = {}
+        for where, name in RULE_FILE_FIELDS.get(kind, {}).items():
+            holder: Any = rules
+            for k in where[:-1]:
+                holder = holder.get(k) if isinstance(holder, dict) else None
+            if not isinstance(holder, dict) or holder.get(where[-1]) is None:
+                continue
+            path = self._resolve_input("rules." + ".".join(where), holder[where[-1]], paths)
+            holder[where[-1]] = path
+            out[name] = path
+        if kind != "video" and as_dict(as_dict(rules.get("video")).get("stinger")).get("file") is not None:
+            raise ToolError("qc: a stinger file goes in the kind's own video rule (rules.video with kind video, rules.delivery.video with kind delivery)")
+        return out
 
     def _package_request(self, tool: str, operation: str, kind: str, args: Dict[str, Any], paths: Dict[str, str], op_id: str, timeout: Optional[float]) -> Dict[str, Any]:
         """Kind delivery_package (ADR-065): the members are named artifacts, each resolved like an input; no single input, no companions."""
@@ -531,6 +556,8 @@ class QcAdapter(ToolAdapter):
         if len(set(ids)) != len(ids):
             raise ToolError("qc: duplicate artifact ids in the package")
         rules = self.rules_for(args.get("rules"))
+        if any(as_dict(as_dict(as_dict(r).get("video")).get("stinger")).get("file") is not None for r in as_dict(rules.get(PACKAGE_KIND)).get("artifacts") or []):
+            raise ToolError(f"qc: a stinger file is not accepted in kind {PACKAGE_KIND} (check the delivered video with kind video)")   # ADR-112
         named = [str(as_dict(r).get("artifact_id")) for r in as_dict(rules.get(PACKAGE_KIND)).get("artifacts") or []]
         if any(n not in ids for n in named):
             raise ToolError(f"qc: package rules name artifacts the request does not carry: {sorted(set(named) - set(ids))}")
@@ -628,7 +655,7 @@ class QcAdapter(ToolAdapter):
             return self._check_package_response(doc, b)
         errs: List[str] = []
         fp = sha256_file(b["input"])
-        comp: Dict[str, Optional[str]] = {k: sha256_file(p) for k, p in b["companions"].items()}
+        comp: Dict[str, Optional[str]] = {k: sha256_file(p) for k, p in list(b["companions"].items()) + list((b.get("rule_files") or {}).items())}
         if doc.get("schema") != RESPONSE_SCHEMA:
             errs.append(f"response schema {doc.get('schema')!r} != {RESPONSE_SCHEMA}")
         sk = as_dict(doc.get("skill"))
@@ -710,13 +737,16 @@ class QcAdapter(ToolAdapter):
     def _success_data(self, doc: Dict[str, Any], b: Dict[str, Any], fp: str, comp: Dict[str, Optional[str]]) -> Dict[str, Any]:
         rep, prov = as_dict(doc.get("report")), as_dict(doc.get("provenance"))
         checks = [{"check_id": c.get("check_id"), "category": c.get("category"), "status": c.get("status"), "finding_codes": list(c.get("finding_codes") or []),
-                   "measurement_ids": list(c.get("measurement_ids") or []), **({"artifact_id": c["artifact_id"]} if c.get("artifact_id") else {})}
+                   "measurement_ids": list(c.get("measurement_ids") or []), **({"artifact_id": c["artifact_id"]} if c.get("artifact_id") else {}),
+                   # why a check is UNKNOWN, as the Skill wrote it (ADR-112: QA shows it)
+                   **({"reason": str(c["reason"])[:300]} if isinstance(c.get("reason"), str) and c["reason"] else {})}
                   for c in rep.get("checks") or [] if isinstance(c, dict)]
         findings = [scrub(f, self.forbidden) for f in rep.get("findings") or [] if isinstance(f, dict)]
         measurements = [{k: m.get(k) for k in ("id", "category", "name", "value", "unit", "source", "estimated")} for m in rep.get("measurements") or [] if isinstance(m, dict)]
         return {"skill": {"id": SKILL_ID, "version": self.version}, "status": "completed", "operation_type": b["operation"], "kind": b["kind"], "verdict": rep.get("overall_status"),
                 "report_id": rep.get("id"), "checks": checks, "findings": findings, "measurements": measurements, "fingerprint": fp or None,
-                **({"artifacts": dict(comp)} if b.get("members") is not None else {"companions": {"subtitle": comp.get("subtitle"), "reference_video": comp.get("reference_video")}}),
+                **({"artifacts": dict(comp)} if b.get("members") is not None else {"companions": {"subtitle": comp.get("subtitle"), "reference_video": comp.get("reference_video"),
+                                                                                                   **({"stinger": comp["stinger"]} if comp.get("stinger") else {})}}),
                 "provenance": {k: prov.get(k) for k in ("skill", "skill_version", "engine", "identity", "observed_at", "measurement_source")},
                 "cache": {k: as_dict(doc.get("cache")).get(k) for k in ("status", "policy", "key")}, "reused": bool(doc.get("reused")), "admitted": True, "commands": [], "warnings": []}
 

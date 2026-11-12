@@ -5,7 +5,7 @@ output file, and misbehaves on request via FAKE_VE_MODE:
 
   ok | reused | tool_error | tool_error_final | output_missing | validation_error | cancelled | timeout | hang | malformed | empty |
   two_docs | text | nonzero_ok | wrong_schema | wrong_skill | wrong_version | bad_contract | contract_fail | hash_mismatch |
-  no_observation | unknown_code | internal_error | doctor_fail
+  no_observation | unknown_code | internal_error | doctor_fail | no_joins (a stinger CONCAT whose report has no joins)
 
 FAKE_VE_CALLS: a file every invocation (subcommand + argv) is appended to (security tests read it). Never runs ffmpeg or
 ffmpeg-skill, never imports video_editing_skill. Test double only."""
@@ -362,6 +362,16 @@ def main() -> int:
                           "reencoded": True, "ranges": len(params["keep"]) if op["type"] == "CUT" else 1, "fallbacks": [], "smart": smart_doc}
     if (req.get("options") or {}).get("segment_cache"):
         record["segments"] = {"mode": "segments", "join": "stream_copy", "parts": [], "encoded": len(params["keep"]), "reused": 0}
+    tr_ = params.get("transition") or {}
+    if op["type"] == "CONCAT" and tr_.get("type") == "stinger":   # the stinger report (contract.stinger.report): every join's cut on the output timeline
+        joins, t = [], 0.0
+        for i in inputs[:-1]:
+            t = round(t + in_dur(i), 6)
+            joins.append({"cut_at": {"seconds": f"{t:.6f}", "rational": f"{int(round(t * 1000))}/1000"},
+                          "stinger_start": {"seconds": f"{t - float(tr_['cut_point']):.6f}"}, "stinger_end": None})
+        record["stinger"] = {"source": tr_.get("stinger"), "cut_point": {"seconds": f"{float(tr_['cut_point']):.6f}"},
+                             "cover": {k: {"seconds": f"{float(tr_['cover'][k]):.6f}"} for k in ("start", "end")}, "duration": None, "audio": None,
+                             "joins": None if MODE == "no_joins" else joins, "cover_measured": {"tool": "ffmpeg-skill/look", "measured": True, "covered": True, "provenance": "OBSERVED"}}
     doc = {"ok": True, **base, "status": "reused" if reused else "completed", "command": "run", "engine": {"ffmpeg-skill": "0.9.0-fake", "ffmpeg": "fake", "ffprobe": "fake"},
            "execution": {"status": "completed", "started_at": "2026-09-05T00:00:00Z", "finished_at": "2026-09-05T00:00:01Z", "work_dir": os.path.join(ws, ".video-editing", "work"),
                          "operations": [record], "outputs": [out_doc]}}

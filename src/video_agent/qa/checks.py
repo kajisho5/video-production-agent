@@ -6,10 +6,13 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from ..agent import qc_checks
+from ..agent.bgm import BGM_OUTPUT
 from ..agent.editing import delivery_subjects
 from ..agent.qc import PACKAGE_KIND, admit, admit_package
+from ..agent.transcript_verify import timeline_of
 from ..artifacts import artifact_id
 from ..media.analysis import loudness_facts, probe_facts
 from ..models import Incident, ToolResult
@@ -146,6 +149,9 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
         o = d.get("observation")
         return dict(o.get("data") or {}) if isinstance(o, dict) and isinstance(o.get("data"), dict) else d
     th = ir_doc["qa"].get("thresholds") or {}
+    stinger_cfg = (ir_doc.get("qa") or {}).get("stinger_check")   # ADR-112: opt-in, written only when asked
+    loop_cfg = (ir_doc.get("qa") or {}).get("loop_seam_check")
+    loop_memo: Dict[str, Any] = {}   # the bed is measured once, whatever the number of deliverables
     dur_tol = float(th.get("duration_tolerance_s", 0.5))
     lu_tol = float(th.get("loudness_tolerance_lu", 2.0))
     required = set(ir_doc["qa"]["required"])
@@ -269,6 +275,10 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                 else:
                     rep.items.append(QAItem("delivery", "check", "WARN", "no result", "check.py output", artifact=art))
             qc_items(art, path, "audio" if subject.get("audio_only") else "delivery", qc_key=qc_key)
+            if stinger_cfg is not None and qc_checks.stinger_concat(ir_doc, asset_id) is not None:   # ADR-112: the stinger join, on the delivered file
+                rep.items.extend(stinger_items(ir_doc, subject, art, path, paths, results, stinger_cfg, tools, measure))
+            if loop_cfg is not None and qc_checks.bed_mix_subject(ir_doc) == asset_id:   # ADR-112: the seams of the bed this deliverable carries
+                rep.items.extend(loop_seam_items(art, paths, results, loop_cfg, tools, measure, loop_memo))
             for i in rep.items[start_idx:]:
                 i.subject_artifact_id = subject_artifact_id
             if sheet_dir and v:
@@ -374,6 +384,110 @@ def document_items(doc: Dict[str, Any], r: Optional[ToolResult], rep: "QAReport"
         rep.incidents.append(Incident(type="DELIVERY_SPEC_FAILURE", severity="HIGH", evidence=[art], possible_cause="artifacts-skill reports a failing check on the document",
                                       recommended_action="fix the document (e.g. remove leftover placeholder text) and render again"))
     return items
+
+
+# ---- ADR-112: opt-in qc-skill checks of what the agent joined (agent/qc_checks.py) ------------------------------------------------------
+QC_CHECK_STATUS = {"PASS": "PASS", "WARN": "WARN", "FAIL": "FAIL", "UNKNOWN": "WARN"}   # UNKNOWN is never rounded up to a pass: a person looks
+
+
+def _qc_check_run(tools: Dict[str, str], measure: Any, args: Dict[str, Any], expected_sha256: str, kind: str, companion: Optional[Tuple[str, str]] = None
+                  ) -> Tuple[Optional[Dict[str, Any]], str]:
+    """One qc-skill check through the QA measurement boundary → (admitted report data, "") or (None, why it did not run / was not admitted)."""
+    tool = tools.get("qc_check")
+    if not tool:
+        return None, "qc-skill is not installed or not usable here (no tool for qc_check)"
+    r = measure(tool, args)
+    data = r.data if isinstance(r.data, dict) else {}
+    if not r.ok:
+        err = data.get("error") or {}
+        return None, f"{err.get('code')}: {str(err.get('message') or '')[:300]}"
+    problems = admit(data, expected_sha256, kind)
+    if companion is not None and ((data.get("companions") or {}).get(companion[0]) != companion[1]):
+        problems.append(f"the report does not carry the sha256 of the {companion[0]} file")
+    if problems:
+        return None, "; ".join(problems)
+    return data, ""
+
+
+def _qc_check_items(data: Dict[str, Any], art: str, check_ids: Tuple[str, ...], findings: Tuple[str, ...], expected: str, what: str) -> List[QAItem]:
+    """The named checks of an admitted report as QA items (layer qc): PASS / WARN / FAIL as reported, UNKNOWN as WARN with the Skill's reason,
+    each with the finding codes and messages it produced. A check the report did not run (its limit was not set) gives no item."""
+    by_code = {str(f.get("code")): f for f in data.get("findings") or [] if isinstance(f, dict) and f.get("code") in findings}
+    out: List[QAItem] = []
+    for c in data.get("checks") or []:
+        cid = str(c.get("check_id"))
+        if cid not in check_ids:
+            continue
+        st = str(c.get("status"))
+        codes = [str(x) for x in c.get("finding_codes") or []]
+        if st == "UNKNOWN":
+            observed = f"UNKNOWN: {c.get('reason') or 'not measured (no reason given)'}"
+        elif codes:
+            observed = "; ".join(f"{x}: {str((by_code.get(x) or {}).get('message') or '')[:300]}".rstrip(": ") for x in codes)
+        else:
+            observed = st
+        out.append(QAItem("qc", cid, QC_CHECK_STATUS.get(st, "WARN"), observed, expected, kind="judgement", artifact=art,
+                          fix_hint="" if st == "PASS" else f"see qc report {data.get('report_id')} ({what}); nothing was changed: review the join, re-render if it is wrong"))
+    return out
+
+
+def stinger_items(doc: Dict[str, Any], subject: Dict[str, Any], art: str, path: str, paths: Dict[str, str], results: List[ToolResult], cfg: Dict[str, Any],
+                  tools: Dict[str, str], measure: Any) -> List[QAItem]:
+    """ADR-112: qc-skill's stinger checks on one delivered file of the stinger programme. The cut times are video-editing's own (the concat's
+    result), mapped onto the delivered timeline; without them the cut-frame check is not sent (and says so when the user set its limit)."""
+    concat = qc_checks.stinger_concat(doc, subject["id"]) or {}
+    out_path = paths.get(str(concat.get("output") or subject["id"]))
+    res = next((r for r in results or [] if r.ok and r.output and out_path and os.path.realpath(str(r.output)) == os.path.realpath(out_path)
+                and isinstance(r.data, dict) and ((r.data.get("reported") or {}).get("stinger"))), None)
+    cuts = qc_checks.joins_cut_at(res.data) if res is not None else None
+    items: List[QAItem] = []
+    if cuts is not None:
+        tl = timeline_of(doc, subject)
+        cuts = qc_checks.delivered_times(cuts, float(tl.get("speed") or 1.0), float(tl.get("lead") or 0.0))
+    elif cfg.get("max_cut_frame_difference") is not None:
+        items.append(QAItem("qc", "video.stinger_cut_frame_matches", "WARN", "not checked: the CONCAT result reported no stinger joins (cut_at)",
+                            f"each delivered cut frame within {cfg['max_cut_frame_difference']:g} of the stinger's frame at its cut point", kind="judgement", artifact=art,
+                            fix_hint="re-render without resuming the CONCAT step to get video-editing's join times"))
+    try:
+        stinger_sha = _sha256(str(concat.get("stinger")))
+    except OSError as e:
+        return items + [QAItem("qc", "stinger", "WARN", f"not checked: the stinger file cannot be read ({e.strerror or e})", "a qc-skill stinger report", kind="judgement",
+                               artifact=art, fix_hint="the stinger named by edit.concat.stinger must still exist inside the allowed input roots")]
+    data, why = _qc_check_run(tools, measure, {"input": path, "kind": "video", "rules": qc_checks.stinger_rules(concat, cuts, cfg)}, _sha256(path), "video",
+                              companion=("stinger", stinger_sha))
+    if data is None:
+        hint = ("the stinger file must be inside the allowed input roots (the plan adds its folder; re-plan if it moved)" if why.startswith("PATH_NOT_ALLOWED") or "outside" in why
+                else "install / fix qc-skill (VIDEO_AGENT_QC_DIR) and re-run QA by rendering again" if "not installed" in why else "see the qc-skill error")
+        return items + [QAItem("qc", "stinger", "WARN", f"not checked: {why}", "a qc-skill stinger report", kind="judgement", artifact=art, fix_hint=hint)]
+    return items + _qc_check_items(data, art, qc_checks.STINGER_CHECKS, qc_checks.STINGER_FINDINGS,
+                                   "the stinger covers the picture at its cut point (alpha >= 253/255 in every pixel), inside its stated cover"
+                                   + (", and each delivered cut shows its frame" if cuts and cfg.get("max_cut_frame_difference") is not None else ""), "stinger cut point")
+
+
+def loop_seam_items(art: str, paths: Dict[str, str], results: List[ToolResult], cfg: Dict[str, Any], tools: Dict[str, str], measure: Any,
+                    memo: Dict[str, Any]) -> List[QAItem]:
+    """ADR-112: qc-skill's loop-seam checks on the bed library-pick looped (measured once), as items on a deliverable that carries it."""
+    if "result" not in memo:
+        bed = paths.get(BGM_OUTPUT)
+        res = next((r for r in results or [] if r.ok and r.output and bed and os.path.realpath(str(r.output)) == os.path.realpath(bed)
+                    and isinstance(r.data, dict) and r.data.get("op") == "library-pick"), None)
+        seams = qc_checks.loop_seams((res.data or {}).get("fit"), ((res.data.get("outputs") or [{}])[0] or {}).get("duration")) if res is not None else None
+        if res is None:
+            memo["result"] = ("WARN", "not checked: no library-pick result for the bed (the step was reused or did not run)", None)
+        elif seams is None:
+            fit = (res.data or {}).get("fit") or {}
+            memo["result"] = ("SKIP", f"no seam: library-pick did not loop the bed (fit {fit.get('mode')!r})", None)
+        else:
+            data, why = _qc_check_run(tools, measure, {"input": bed, "kind": "audio", "rules": qc_checks.loop_rules(seams, cfg)}, _sha256(bed), "audio")
+            memo["result"] = ("WARN", f"not checked: {why}", None) if data is None else (None, "", (data, seams))
+    status, observed, payload = memo["result"]
+    if payload is None:
+        return [QAItem("qc", "loop_seam", status, observed, "the looped music bed's seams within the limits set", kind="judgement", artifact=art,
+                       fix_hint="" if status == "SKIP" else "install / fix qc-skill (VIDEO_AGENT_QC_DIR) and render again")]
+    data, seams = payload
+    limits = ", ".join(f"{k} {cfg[k]:g}" for k in ("max_click_ratio", "max_level_diff_db", "max_band_diff_db") if cfg.get(k) is not None)
+    return _qc_check_items(data, art, qc_checks.LOOP_CHECKS, qc_checks.LOOP_FINDINGS,
+                           f"the music bed's {len(seams)} seam(s) at multiples of its loop period within {limits}", "music bed loop seams")
 
 
 def package_items(rep: "QAReport", args: Dict[str, Any], r: Optional[ToolResult], paths: Dict[str, str]) -> None:
