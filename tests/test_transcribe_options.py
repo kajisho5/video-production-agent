@@ -166,6 +166,32 @@ class PlanTests(_Base):
                 ({"code": "INVALID_INPUT", "details": {"reason": r}}, False) for r in topts.PATH_REASONS):
             self.assertEqual(topts.preflight_refusal(err) is not None, refused, err)
 
+    def test_the_dry_runs_share_one_budget_and_stop_at_a_time_out(self):
+        """A Skill that hangs on one dry run would hang on every input: the first time-out stops them (left to the analysis, which has its own
+        budget), and all of a plan's dry runs share one deadline (#150 review)."""
+        from unittest import mock
+        from video_agent.models import ToolResult
+        from video_agent.tools.transcription import TranscriptionAdapter
+        other = fake_media(self.tmp, "second.mp4")
+        timeouts = []
+
+        def hang(_self, args, timeout=600.0):
+            timeouts.append(timeout)
+            return ToolResult("op", "transcription/transcribe", False, 124, None, {"error": {"code": "TRANSCRIPTION_TIMEOUT", "message": "process timed out"}}, [], "", timeout)
+        svc = pipeline_service(self.tmp)
+        with mock.patch.object(TranscriptionAdapter, "preflight", hang):
+            ir = svc.plan([self.src, other], "generic", user_requirements={"transcribe.model": "small"}, kinds=["transcript"], params={"language": "ja"})
+        self.assertEqual(len(timeouts), 1, "no second dry run after a time-out")
+        self.assertLessEqual(timeouts[0], topts.PREFLIGHT_BUDGET_SECONDS)
+        rec = ir.doc["provenance"]["transcription_options"]
+        self.assertEqual(rec["checked"]["status"], "left_to_the_analysis"); self.assertIn("TRANSCRIPTION_TIMEOUT", rec["checked"]["reasons"][0])
+        # a spent budget: no dry run at all, and the record says why
+        timeouts.clear()
+        with mock.patch.object(topts, "PREFLIGHT_BUDGET_SECONDS", 0.5), mock.patch.object(TranscriptionAdapter, "preflight", hang):
+            ir = svc.plan([self.src], "generic", user_requirements={"transcribe.model": "small"}, kinds=["transcript"], params={"language": "ja"})
+        self.assertEqual(timeouts, [])
+        self.assertIn("budget ran out", ir.doc["provenance"]["transcription_options"]["checked"]["reasons"][0])
+
     def test_installed_but_not_selected_the_contract_is_still_checked(self):
         """transcription-skill installed while the registry selects no tool for speech_transcription (e.g. its default engine is missing): the
         installed contract still refuses an undeclared option before anything runs; otherwise nothing is dry-run, and the analysis refuses the

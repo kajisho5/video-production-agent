@@ -43,6 +43,7 @@ DICTIONARY_LANGUAGE = "ja"                          # transcription-skill: dicti
 DICTIONARY_CAPABILITY = "dictionary_word_segmentation"
 RULE = "transcribe_options@1"
 SKILL = "speech_transcription"
+PREFLIGHT_BUDGET_SECONDS = 600.0   # all of a plan's dry runs together; a time-out stops them and is left to the analysis
 # the same name rules as the transcription adapter (an engine id, a model name: never a path)
 _ENGINE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

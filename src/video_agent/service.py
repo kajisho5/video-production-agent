@@ -3,6 +3,7 @@ Request → Requirements → Intent → Analysis → Inference → Decision → 
 from __future__ import annotations
 
 import hmac
+from time import monotonic as _monotonic
 import json
 import os
 from pathlib import Path
@@ -510,8 +511,13 @@ class Service:
         Path(self.workspace).mkdir(parents=True, exist_ok=True)   # one of the allowed roots the dry run is given, as the analysis gives it
         kp = {k: v for k, v in {**params, **opts}.items() if k in ANALYSIS_KINDS["transcript"]["params"] and v is not None}
         left: List[str] = []
+        deadline = _monotonic() + transcribe_task.PREFLIGHT_BUDGET_SECONDS   # one budget for every dry run of the plan, not one per input
         for p in inputs:
-            r = ad.preflight({"input": p, "asset_id": "preflight", "parameters": kp})
+            remaining = deadline - _monotonic()
+            if remaining <= 1.0:
+                left.append(f"the dry runs' {transcribe_task.PREFLIGHT_BUDGET_SECONDS:g} s budget ran out before {Path(p).name}")
+                break
+            r = ad.preflight({"input": p, "asset_id": "preflight", "parameters": kp}, timeout=remaining)
             if r.ok:
                 record["checked"] = {"status": "accepted", "by": "the Skill's dry run", "input": Path(p).name, "parameters": kp,
                                      "cache": ((r.data or {}).get("cache") or {}).get("status")}
@@ -521,6 +527,8 @@ class Service:
             if why:
                 raise ValueError(f"{', '.join(transcribe_task.PREFIX + k for k in opts)}: {why}")
             left.append(f"{Path(p).name}: {err.get('code')}: {str(err.get('message') or '')[:200]}")
+            if r.exit_code == 124 or err.get("code") == "TRANSCRIPTION_TIMEOUT":   # a Skill that hangs here hangs on the next input too: the analysis has its own budget
+                break
         record["checked"] = {"status": "left_to_the_analysis", "by": "the Skill's dry run", "parameters": kp, "reasons": left}
         return record
 
