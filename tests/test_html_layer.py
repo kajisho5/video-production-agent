@@ -116,9 +116,9 @@ class _Base(unittest.TestCase):
 
 
 class ContractTests(_Base):
-    def test_pin_is_0_9_0_and_the_handoff_reads_the_same_file(self):
+    def test_pin_is_0_9_1_and_the_handoff_reads_the_same_file(self):
         c = pinned_contract()
-        self.assertEqual((c["skill_id"], c["version"]), ("hyperframes-skill", "0.9.0"))
+        self.assertEqual((c["skill_id"], c["version"]), ("hyperframes-skill", "0.9.1"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(PINS["html_scene_render"].pin_file, PINNED_CONTRACT_PATH.name)
         self.assertEqual((drift(c), breaking_drift(c)), ([], []))
@@ -299,7 +299,7 @@ class PlanTests(_Base):
         [render] = self.hf_calls("render")
         self.assertIn("--codec=prores", render)
         hres = next(r for r in out["execution"]["results"] if r["tool"] == "hyperframes-skill/render")
-        self.assertEqual((hres["data"]["skill"], hres["data"]["layer_timing"]), ({"id": "hyperframes-skill", "version": "0.9.0"}, {"in_duration": 0.5, "out_duration": 0.5, "loop": True}))
+        self.assertEqual((hres["data"]["skill"], hres["data"]["layer_timing"]), ({"id": "hyperframes-skill", "version": "0.9.1"}, {"in_duration": 0.5, "out_duration": 0.5, "loop": True}))
         prov = json.loads((Path(self.svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         row = next(e for e in prov["operations"] if e["tool"] == "motion-graphics/run")
         sent = next(e for e in row["args"]["elements"] if e["type"] == "rendered_layer")
@@ -330,7 +330,7 @@ class PlanTests(_Base):
         [h] = [h for h in self.svc.handoffs(ir) if h["skill"] == "html_scene_layer"]
         self.assertEqual(h["provided_by"], ["hyperframes-skill"])
         c = h["contract"]
-        self.assertEqual((c["tool"], c["version"], c["args"]["codec"], c["args"]["segments"]), ("hyperframes-skill/render", "0.9.0", "prores", True))
+        self.assertEqual((c["tool"], c["version"], c["args"]["codec"], c["args"]["segments"]), ("hyperframes-skill/render", "0.9.1", "prores", True))
         self.assertIn("motion.layer=<file>", c["next"])
         self.assertIn("--segments", c["steps"][-1])
 

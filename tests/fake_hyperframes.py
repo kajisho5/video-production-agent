@@ -69,7 +69,7 @@ def main(argv):
         caps = {k: {"status": "available", "detail": k} for k in ("node", "hyperframes", "ffmpeg", "ffprobe", "encoder:libx264", "encoder:prores_ks", "disk:tmp")}
         caps["chromium:headless"] = {"status": "available" if chromium else "missing", "detail": "fake" if chromium else "no Chromium found in any searched location"}
         render = {"usable": "yes"} if chromium else {"usable": "no", "missing": ["chromium:headless"]}
-        emit({"status": "completed" if chromium else "failed", "ok": chromium, "skill": {"id": "hyperframes-skill", "version": "0.9.0"}, "missing": [] if chromium else ["chromium:headless"],
+        emit({"status": "completed" if chromium else "failed", "ok": chromium, "skill": {"id": "hyperframes-skill", "version": "0.9.1"}, "missing": [] if chromium else ["chromium:headless"],
               "capabilities": caps, "tools": {"doctor": {"usable": "yes"}, "template": {"usable": "yes"}, "scene": {"usable": "yes"}, "render": render}})
         return 0 if chromium else 1
     if MODE.startswith("fail:") and tool == "render":

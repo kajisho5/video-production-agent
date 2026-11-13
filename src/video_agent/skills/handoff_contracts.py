@@ -112,8 +112,8 @@ PINS: Dict[str, HandoffPin] = {p.skill: p for p in (
         next_step=_render_3d_next,
         note="needs Blender 4.2+ on the machine (the contract's external_tools.required); `python3 scripts/_contract.py doctor --json` says whether it is found"),
     HandoffPin(
-        skill="html_scene_render", package="hyperframes-skill", version="0.9.0", pin_file="hyperframes-skill_0.9.0.json",
-        source="kajisho5/hyperframes-skill main a7ec99d (= v0.9.0; `node bin/hyperframes-skill.mjs contract --json`)",
+        skill="html_scene_render", package="hyperframes-skill", version="0.9.1", pin_file="hyperframes-skill_0.9.1.json",
+        source="kajisho5/hyperframes-skill main ec84b8e (= v0.9.1; `node bin/hyperframes-skill.mjs contract --json`)",
         tool="hyperframes-skill/render",
         params=(
             HandoffParam("scene", "scene_dir", "dir", marker="index.html", required=True, doc="the scene directory with index.html"),

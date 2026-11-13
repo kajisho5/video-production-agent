@@ -40,9 +40,10 @@ SKILL_ID = PACKAGE_ID
 TOOL_RENDER = "hyperframes-skill/render"
 # 0.8.0 (render --segments, --codec png, probe --alpha) and 0.8.1 (hyperframes-skill #22, docs only: the contract differs in `version`);
 # 0.9.0 (ADR-107 addendum 21): the scene request keys `stinger` and `title`, five stinger templates, and `stinger` / `sidecar` in the results.
+# 0.9.1 (hyperframes-skill #24, docs only; ADR-107 addendum 27): the contract differs in `version` only.
 # Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.10 / 1.x.
 SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.")
-PIN_VERSION = "0.9.0"
+PIN_VERSION = "0.9.1"
 PINNED_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "skills" / "pins" / f"hyperframes-skill_{PIN_VERSION}.json"
 CODEC = "prores"            # ProRes 4444 with alpha: what rendered_layer reads (a VP9 alpha WebM decodes without its alpha there)
 SEGMENT_NAMES = ("in", "loop", "out")
