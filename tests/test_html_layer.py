@@ -173,9 +173,9 @@ class AdapterTests(_Base):
         self.assertTrue(r.ok, r.data)
         [tpl], [scene], [render] = self.hf_calls("template"), self.hf_calls("scene"), self.hf_calls("render")
         work = os.path.dirname(out)
-        self.assertEqual(tpl[1:], ["lower-third", f"--values={work}/talk_layer.values.json", f"--output={work}/talk_layer.request.json", "--json", "--overwrite"])
-        self.assertEqual(scene[1:], [f"{work}/talk_layer.request.json", f"--output={work}/talk_layer.scene", "--json"])
-        self.assertEqual(render[1:], [f"{work}/talk_layer.scene", f"--output={out}", "--codec=prores", "--segments", "--json", "--overwrite", "--timeout=1800"])
+        self.assertEqual(tpl[1:], ["lower-third", f"--values={os.path.join(work, 'talk_layer.values.json')}", f"--output={os.path.join(work, 'talk_layer.request.json')}", "--json", "--overwrite"])
+        self.assertEqual(scene[1:], [f"{os.path.join(work, 'talk_layer.request.json')}", f"--output={os.path.join(work, 'talk_layer.scene')}", "--json"])
+        self.assertEqual(render[1:], [f"{os.path.join(work, 'talk_layer.scene')}", f"--output={out}", "--codec=prores", "--segments", "--json", "--overwrite", "--timeout=1800"])
         req = json.loads(Path(work, "talk_layer.request.json").read_text(encoding="utf-8"))
         self.assertEqual(req["segments"], {"in": 0.5, "loop": 3.0, "out": 0.5}, "the segments asked for are added to the template's request")
         d = r.data
