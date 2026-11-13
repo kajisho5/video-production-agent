@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..tools.discovery import child_env
 from ..tools.ffmpeg_skill.catalog import CATALOG
@@ -80,6 +80,20 @@ def export_keeps_subtitles(caps: Dict[str, Any]) -> bool:
     except ValueError:
         return False
     return len(v) == 3 and v >= EXPORT_KEEPS_SUBTITLES_FROM
+
+
+def delivery_names(caps: Optional[Dict[str, Any]]) -> Tuple[Optional[List[str]], Optional[List[str]], str]:
+    """(presets, platforms, why unknown): the delivery preset and platform names the located ffmpeg-skill's contract publishes, as
+    ffmpeg_skill_capabilities recorded them in the `ffmpeg-skill` capability's evidence (ADR-056 addendum 2, roadmap step 31). A
+    list is None when no contract was read or it does not publish that enum; the validator then says the names were not checked."""
+    cap = (caps or {}).get("ffmpeg-skill")
+    ev = getattr(cap, "evidence", None) or (cap.get("evidence") if isinstance(cap, dict) else None) or {}
+    contract = ev.get("contract") if isinstance(ev, dict) else None
+    if not isinstance(contract, dict):
+        return None, None, "no ffmpeg-skill contract was read (ffmpeg-skill not located)"
+    if contract.get("status") != "checked":
+        return None, None, f"the ffmpeg-skill contract is {contract.get('status')}: {contract.get('reason') or 'no reason given'}"
+    return contract.get("presets"), contract.get("platforms"), "the ffmpeg-skill contract publishes no such names"
 
 
 def ffmpeg_skill_capabilities(skill: Any) -> Dict[str, Capability]:

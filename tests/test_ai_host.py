@@ -84,8 +84,8 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual((h["step"], h["skill"]), (step["id"], "silence_cleanup"))
         self.assertIn("ffmpeg", h["reason"])
         self.assertIn("video-editing", h["provided_by"])
-        self.assertIn("/plugin install video-editing-skill@ai-video-production-os", h["install"])
-        self.assertIn("/plugin install ffmpeg-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install video-editing-skill@velisa", h["install"])
+        self.assertIn("/plugin install ffmpeg-skill@velisa", h["install"])
 
 
 
@@ -109,16 +109,13 @@ ECOSYSTEM_JOBS = {
     # ADR-080: blender-skill / hyperframes-skill are named by their own skill_id (the prefix of the tool id their pinned contract provides)
     "render_3d": ("blender-skill", "blender-skill", "npx blender-skill"),
     "html_scene_render": ("hyperframes-skill", "hyperframes-skill", f"git clone {_GH}hyperframes-skill && cd hyperframes-skill && npm ci"),
-    "bluray_authoring": ("bdmvkit", "bdmvkit", "pip install bdmvkit"),
-    "dvd_authoring": ("vtskit", "vtskit", "pip install vtskit"),
-    "disc_image": ("udfkit", "udfkit", "pip install udfkit"),
-    "dvd_line21_captions": ("dvdcc", "dvdcc", "pip install dvdcc"),
+    # ADR-115: one disc job; bdmvkit / vtskit / udfkit / dvdcc are the kits oncemore runs (their former jobs named tool ids they do not have)
     "disc_author": ("oncemore", "oncemore", "pip install git+https://github.com/kajisho5/oncemore"),
 }
 # ecosystem.json `plugin: true` (listed in the Claude Code marketplace) / `optional: true` (./install.sh --with-optional)
 PLUGINS = {"ingest-skill", "diarization-skill", "detection-skill", "slide-sync-skill", "imagemagick-skill", "blender-skill", "remotion-ffmpeg-skill",
            "hyperframes-skill", "artifacts-skill"}
-OPTIONAL = {"diarization-skill", "detection-skill", "bdmvkit", "vtskit", "udfkit", "dvdcc", "oncemore"}
+OPTIONAL = {"diarization-skill", "detection-skill", "oncemore"}
 
 
 class EcosystemJobHandoffTests(unittest.TestCase):
@@ -141,9 +138,9 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertIn("declared for phase 2 and not implemented", h["reason"])
         self.assertEqual((h["provided_by"], h["repositories"]), ([package], [repo]))
         self.assertIn(command, h["install"])
-        self.assertEqual(f"/plugin install {repo}@ai-video-production-os" in h["install"], repo in PLUGINS)
+        self.assertEqual(f"/plugin install {repo}@velisa" in h["install"], repo in PLUGINS)
         if not command.startswith("none yet"):
-            self.assertIn("or ./install.sh" + (" --with-optional" if repo in OPTIONAL else "") + " from AI-video-production-OS (packages and CLIs)", h["install"])
+            self.assertIn("or ./install.sh" + (" --with-optional" if repo in OPTIONAL else "") + " from Velisa (packages and CLIs)", h["install"])
         else:
             self.assertEqual(h["install"], [command], "nothing released: no command that cannot work")
         self.assertEqual(svc.registry.get(skill).phase, 2)
@@ -164,7 +161,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         [h] = svc.handoffs(ir)
         self.assertEqual((h["skill"], h["provided_by"], h["repositories"]), ("media_offload", ["ingest"], ["ingest-skill"]))
         self.assertIn(f"git clone {_GH}ingest-skill && pip install -e 'ingest-skill[fetch]'", h["install"])
-        self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install ingest-skill@velisa", h["install"])
         self.assertEqual(list(dest.iterdir()), [], "nothing copied")
 
     def test_voice_enhancement_moved_to_the_voice_enhance_adapter(self):
@@ -180,7 +177,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         [h] = [h for h in svc.handoffs(ir) if h["skill"] == "voice_dereverb"]
         self.assertEqual((h["provided_by"], h["repositories"]), (["voice-enhance"], ["voice-enhance-skill"]))
         self.assertIn(f"git clone {_GH}voice-enhance-skill && pip install -e 'voice-enhance-skill'", h["install"])
-        self.assertNotIn("/plugin install voice-enhance-skill@ai-video-production-os", h["install"], "not a marketplace plugin (ecosystem.json)")
+        self.assertNotIn("/plugin install voice-enhance-skill@velisa", h["install"], "not a marketplace plugin (ecosystem.json)")
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_dubbing(self):
@@ -209,7 +206,7 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         [h] = [h for h in svc.handoffs(ir) if h["skill"] == "speaker_diarization"]
         self.assertEqual((h["step"], h["provided_by"], h["repositories"]), ("step_job_speaker_diarization", ["diarization"], ["diarization-skill"]))
         self.assertIn(f"git clone {_GH}diarization-skill && pip install -e 'diarization-skill[pyannote]'", h["install"])
-        self.assertIn("/plugin install diarization-skill@ai-video-production-os", h["install"])
+        self.assertIn("/plugin install diarization-skill@velisa", h["install"])
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
     def test_visual_detection(self):
@@ -273,18 +270,6 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertNotIn("document_verification", svc.registry.names())
         self.assertEqual(svc.registry.get("document_verify").tools, ["artifacts-skill/verify"])
 
-    def test_bluray_authoring(self):
-        self.assert_handoff("bluray_authoring")
-
-    def test_dvd_authoring(self):
-        self.assert_handoff("dvd_authoring")
-
-    def test_disc_image(self):
-        self.assert_handoff("disc_image")
-
-    def test_dvd_line21_captions(self):
-        self.assert_handoff("dvd_line21_captions")
-
     def test_disc_author(self):
         """ADR-094 (oncemore roadmap step 3): a plan asking for a disc names oncemore and stops there; the step has no tool and nothing runs."""
         self.assert_handoff("disc_author")
@@ -299,6 +284,36 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertIn("plan step step_job_disc_author cites skill disc_author which is declared for phase 2 and not implemented", out["validation"]["errors"])
         self.assertEqual(out["job"].get("completed_ops") or {}, {})
 
+    def test_one_disc_skillspec(self):
+        """ADR-115 (roadmap step 30): a disc request hands off to oncemore only. The four kit jobs are refused with the one way to ask, and no
+        SkillSpec cites a kit, whose former tool ids (bdmvkit/build, vtskit/author, udfkit/image, dvdcc/caption) do not exist."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        for job in ("bluray_authoring", "dvd_authoring", "disc_image", "dvd_line21_captions"):
+            with self.assertRaises(ValueError) as cm:
+                svc.plan([fake_media(tmp)], "youtube", user_requirements={f"job.{job}": True})
+            self.assertIn("job.disc_author=true", str(cm.exception))
+            self.assertNotIn(job, svc.registry.names())
+        kits = {"bdmvkit", "vtskit", "udfkit", "dvdcc"}
+        self.assertFalse([s.name for s in svc.registry.all() if kits & {t.split("/", 1)[0] for t in s.tools}])
+        from video_agent.skills.ecosystem import COMPONENTS
+        self.assertFalse(kits & set(COMPONENTS))
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.disc_author": True})
+        self.assertEqual([(h["skill"], h["provided_by"]) for h in svc.handoffs(ir)], [("disc_author", ["oncemore"])])
+
+    def test_handoff_tool_ids_exist(self):
+        """ADR-115: every handoff SkillSpec names tool ids its package has (from each package's contract, read 2026-11-13)."""
+        published = {"dubbing": {"narrate", "dub", "audio-description"}, "oncemore": {"build", "iso", "burn", "batch"},
+                     "imagemagick-skill": {"resize", "crop", "convert", "optimize", "strip", "pad", "trim", "rotate"},
+                     "blender-skill": {"render"}, "hyperframes-skill": {"render"}, "detection": {"faces", "text", "objects", "shots", "tracks"}}
+        from video_agent.skills.registry import ECOSYSTEM_JOB_SKILLS
+        for spec in ECOSYSTEM_JOB_SKILLS:
+            if spec.name == "visual_detection":   # detection/detect: replaced by roadmap step 33 (text_detection)
+                continue
+            for t in spec.tools:
+                pkg, _, tool = t.partition("/")
+                self.assertIn(tool, published.get(pkg, set()), f"{spec.name} names {t}")
+
     def test_every_declared_job_is_covered(self):
         from video_agent.skills.registry import ECOSYSTEM_JOB_SKILLS
         self.assertEqual({s.name for s in ECOSYSTEM_JOB_SKILLS}, set(ECOSYSTEM_JOBS))
@@ -306,8 +321,8 @@ class EcosystemJobHandoffTests(unittest.TestCase):
     def test_several_jobs_one_plan_and_nothing_without_the_switch(self):
         tmp = tempfile.mkdtemp()
         svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
-        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.dubbing": True, "job.disc_image": "true", "job.render_3d": False})
-        self.assertEqual(sorted(h["skill"] for h in svc.handoffs(ir)), ["disc_image", "dubbing"])
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.dubbing": True, "job.disc_author": "true", "job.render_3d": False})
+        self.assertEqual(sorted(h["skill"] for h in svc.handoffs(ir)), ["disc_author", "dubbing"])
         plain = svc.plan([fake_media(tmp)], "youtube")
         self.assertFalse([s for s in plain.doc["plan"]["steps"] if s["id"].startswith("step_job_")])
         self.assertEqual(svc.handoffs(plain), [])
@@ -320,18 +335,39 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "is a switch"):
             svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.dubbing": "into English"})
 
-    def test_snapshot_matches_the_os_ecosystem_json(self):
-        """skills/ecosystem.py against a sibling AI-video-production-OS checkout's ecosystem.json, when there is one."""
+
+def velisa_checkout():
+    """A Velisa checkout: VIDEO_AGENT_VELISA_DIR, else a sibling `Velisa` or `AI-video-production-OS` (its former name) directory."""
+    env = os.environ.get("VIDEO_AGENT_VELISA_DIR")
+    cands = [Path(env)] if env else [Path(__file__).resolve().parents[2] / n for n in ("Velisa", "AI-video-production-OS")]
+    return next((c for c in cands if (c / "ecosystem.json").is_file()), None)
+
+
+class EcosystemSnapshotTests(unittest.TestCase):
+    """ADR-057 addendum 1 (roadmap step 32): skills/ecosystem.py follows Velisa's ecosystem.json -- every field it copies (status
+    included) and the marketplace name. Skips without a Velisa checkout; CI's integration shard 1 clones Velisa main for it."""
+
+    def setUp(self):
+        self.root = velisa_checkout()
+        if self.root is None:
+            self.skipTest("no Velisa checkout (VIDEO_AGENT_VELISA_DIR, or a sibling Velisa directory)")
+
+    def test_components_match_ecosystem_json(self):
         from video_agent.skills.ecosystem import COMPONENTS
-        manifest = Path(__file__).resolve().parents[2] / "AI-video-production-OS" / "ecosystem.json"
-        if not manifest.is_file():
-            self.skipTest("no AI-video-production-OS checkout next to this repository")
-        rows = {c["repo"]: c for c in json.loads(manifest.read_text(encoding="utf-8"))["components"]}
+        rows = {c["repo"]: c for c in json.loads((self.root / "ecosystem.json").read_text(encoding="utf-8"))["components"]}
         for c in COMPONENTS.values():
             row = rows.get(c.repo)
             self.assertIsNotNone(row, f"{c.repo} is not in ecosystem.json")
-            self.assertEqual((c.department, c.install, c.plugin, c.optional, list(c.owns)),
-                             (row["department"], row["install"], bool(row.get("plugin")), bool(row.get("optional")), row["owns"]), c.repo)
+            self.assertEqual((c.department, c.install, c.status, c.plugin, c.optional, list(c.owns)),
+                             (row["department"], row["install"], row["status"], bool(row.get("plugin")), bool(row.get("optional")), row["owns"]), c.repo)
+
+    def test_marketplace_name(self):
+        from video_agent.skills.ecosystem import MARKETPLACE
+        market = json.loads((self.root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        self.assertEqual(MARKETPLACE, market["name"])
+        listed = {p["name"] for p in market.get("plugins") or []}
+        from video_agent.skills.ecosystem import COMPONENTS
+        self.assertFalse([c.repo for c in COMPONENTS.values() if c.plugin and c.repo not in listed], "a plugin=true component is not in the marketplace")
 
 
 class McpServerTests(unittest.TestCase):

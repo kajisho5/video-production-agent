@@ -730,6 +730,28 @@ class FfmpegSkillContractTests(unittest.TestCase):
         for name in CATALOG:
             self.assertEqual(caps[f"ffmpeg-skill:{name}"].status, "MISSING" if name in full.unavailable else "AVAILABLE", name)
 
+    def test_every_published_delivery_name_passes_the_validator(self):
+        """ADR-056 addendum 2 (roadmap step 31): every preset and platform name ffmpeg-skill main's contract publishes passes the
+        validator (no copy of either list in the agent), and an unknown name is still refused."""
+        from video_agent.project.validator import validate_ir
+        ws = tempfile.mkdtemp()
+        src = str(Path(ws) / "in.mp4")
+        make_media(src)
+        svc = Service(workspace=ws)
+        ir = svc.plan([src], "conference", hash_sources=False)
+        caps = svc.caps.resolve()
+        contract = caps["ffmpeg-skill"].evidence["contract"]
+        self.assertGreaterEqual(len(contract["presets"] or []), 20, contract["presets"])
+        self.assertGreaterEqual(len(contract["platforms"] or []), 12, contract["platforms"])
+        target = ir.doc["delivery"]["targets"][0]
+        for key in ("preset", "platform"):
+            keep = target.get(key)
+            for name in contract[key + "s"] + ["no-such-" + key]:
+                target[key] = name
+                errs = [e for e in validate_ir(ir, caps, check_paths=False).errors if f"unknown {key}" in e]
+                self.assertEqual(bool(errs), name.startswith("no-such-"), (name, errs))
+            target[key] = keep
+
     def test_help_declares_every_catalog_flag(self):
         skill = locate_ffmpeg_skill()
         from video_agent.tools.ffmpeg_skill.catalog import FLAG_ALIASES, QUALITY_FLAG

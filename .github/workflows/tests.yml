@@ -165,6 +165,13 @@ jobs:
         env:
           VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
           VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
+      # ADR-057 addendum 1: skills/ecosystem.py (every status, plugin, owns) and the marketplace name against Velisa main's ecosystem.json
+      - if: matrix.shard == 1
+        run: git clone --depth 1 https://github.com/kajisho5/Velisa ../Velisa
+      - if: matrix.shard == 1
+        run: python -m unittest -v tests.test_ai_host.EcosystemSnapshotTests
+        env:
+          VIDEO_AGENT_VELISA_DIR: "${{ github.workspace }}/../Velisa"
       # ADR-114: the motion.layer clip on the real hyperframes-skill (main): its live contract against the adapter's checks and the pin, and its doctor's
       # verdict. No Chromium here, so the doctor says render is not usable and the two render tests skip (they run where a headless Chromium is found)
       - if: matrix.shard == 1
