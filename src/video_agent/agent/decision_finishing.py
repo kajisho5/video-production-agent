@@ -28,6 +28,8 @@ from .editing import EditRequirementError
 from .finishing import (COLOR_OPERATIONS, COLOR_ORDER, parse_motion_options, ELEMENT_DEFAULT_DURATION, ELEMENT_TYPES, GRAPHICS_SKILL,
                         element_label, parse_color_requirements, parse_motion_requirements, parse_thumbnail_requirements, parse_qc_reference, placement_problems,
                         planned_picture_size, qc_requested)
+from .html_layer import (APPROVAL_KEY as HTML_LAYER_APPROVAL_KEY, SUBJECT as HTML_LAYER_SUBJECT, decide_html_layer, element_timing, layer_id as html_layer_id,
+                         parse_html_layer_requirements)
 from .qc import QC_SKILL, WARN_PROMOTION_DEFAULT, WARN_PROMOTION_KEY
 from .finishing import thumbnail_skill_of
 from .thumbnail_features import FRAME_SKILLS, GEOMETRY_SUBJECTS
@@ -54,7 +56,9 @@ APPROVAL_KEYS = {"subtitle.generate": ("subtitle.generate.approval", "CONFIRM"),
                  "color.ocio": ("color.ocio.approval", "CONFIRM"), "color.match_camera": ("color.match_camera.approval", "CONFIRM"),
                  "color.legalize": ("color.legalize.approval", "CONFIRM"),
                  # one approval key per motion-graphics element type (ADR-031; every element type of the contract since ADR-064)
-                 **{f"graphics.{t}": (f"graphics.{t}.approval", "CONFIRM") for t in ELEMENT_TYPES}}
+                 **{f"graphics.{t}": (f"graphics.{t}.approval", "CONFIRM") for t in ELEMENT_TYPES},
+                 # ADR-114: the rendered layer's clip rendered by hyperframes-skill (a browser render of new graphics: floor CONFIRM)
+                 HTML_LAYER_SUBJECT: HTML_LAYER_APPROVAL_KEY}
 FINISHING_SUBJECTS = ("subtitle.", "thumbnail.", "color.", "graphics.", "qc.")
 
 
@@ -68,6 +72,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
     cols = parse_color_requirements(m)
     mots = parse_motion_requirements(m)
     mopts = parse_motion_options(m)   # ADR-102
+    html_layer = parse_html_layer_requirements({k: r.value for k, r in m.items() if r.provenance != "DEFAULT"})   # ADR-114: motion.layer=hyperframes
     th = parse_thumbnail_requirements(m)
     qc = qc_requested(m)
     qc_ref = parse_qc_reference(m)
@@ -167,7 +172,13 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                            "(motion.themes / motion.theme name the theme file and its logo); none is given", confidence=1.0, evidence=ev, risk="HIGH", approval="BLOCK",
                            provenance="USER", params={"asset_id": subject, "type": typ}, requirements=req)
                 continue
-            label = element_label(typ, el["params"])
+            if typ == "rendered_layer" and html_layer is not None:   # ADR-114: the clip is rendered here by hyperframes-skill, its timing is the segments'
+                hreqs = [r for k, r in sorted(m.items()) if (k.startswith("hyperframes.") or k == "motion.layer") and r.provenance != "DEFAULT"]
+                decide_html_layer(eng, html_layer, subject, [r.id for r in hreqs] + probe_ids_of(sources), hreqs, caps,
+                                  lambda subj, explicit=None, floor=None: approval_for(subj, explicit=explicit, floor=floor, keys=APPROVAL_KEYS))
+                gparams["parameters"] = {**gparams["parameters"], "layer": html_layer_id(subject), **element_timing(html_layer)}
+                gparams["layer_source"] = "hyperframes-skill"
+            label = element_label(typ, el["params"]) if not (typ == "rendered_layer" and html_layer is not None) else "'rendered by hyperframes-skill'"
             eng.decide(subject=subj_key, type="TRANSFORM", decision=f"{typ} {label} on {subject} from {gparams['start']:g}s to {'the end' if end is None else f'{end:g}s'}",
                        reason=f"user asked for a {typ.replace('_', ' ')} ({req[0].source}); rendered on the finished picture" + (f" ({size[0]}x{size[1]})" if size else "")
                        + (" (start / duration from policy defaults)" if settings else ""),

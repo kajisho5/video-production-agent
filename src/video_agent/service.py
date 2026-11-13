@@ -32,6 +32,7 @@ from .agent import transcript_verify as verify_task
 from .agent import transcribe_options as transcribe_task
 from . import preferences as prefs_task
 from .agent.remotion import check_remotion_keys
+from .agent.html_layer import PREFIX as HTML_LAYER_PREFIX, SUBJECT as HTML_LAYER_SUBJECT, check_html_layer_keys
 from .agent.documents import SKILL as DOCUMENT_SKILL, check_document_keys
 from .agent.requirements import requirement_map
 from .artifacts import ArtifactError, ArtifactStore, artifact_id, delivery_name
@@ -76,6 +77,7 @@ from .tools.detection import PACKAGE as DETECTION_PACKAGE, DetectionAdapter, loc
 from .tools.diarization import PACKAGE as DIARIZATION_PACKAGE, DiarizationAdapter, locate_diarization
 from .tools.slide_sync import PACKAGE as SLIDE_SYNC_PACKAGE, SlideSyncAdapter, locate_slide_sync
 from .tools.remotion import PACKAGE as REMOTION_PACKAGE, RemotionAdapter, locate_remotion
+from .tools.hyperframes import PACKAGE as HYPERFRAMES_PACKAGE, HyperframesAdapter, locate_hyperframes
 from .tools.artifacts import PACKAGE as ARTIFACTS_PACKAGE, ArtifactsAdapter, locate_artifacts
 from .tools.sound_design import PACKAGE as SOUND_DESIGN_PACKAGE, SoundDesignAdapter, lift_observation as lift_bgm_observation, locate_sound_design
 from .tools.imagemagick import PACKAGE as IMAGEMAGICK_PACKAGE, ImageMagickAdapter, lift_observation as lift_image_observation, locate_imagemagick
@@ -130,6 +132,7 @@ class Service:
         self.diarization_dir = os.environ.get("VIDEO_AGENT_DIARIZATION_DIR")   # ADR-086: diarization-skill (speaker turns)
         self.slide_sync_dir = os.environ.get("VIDEO_AGENT_SLIDE_SYNC_DIR")   # ADR-091: slide-sync-skill (slide timeline, deck pages)
         self.remotion_dir = os.environ.get("VIDEO_AGENT_REMOTION_DIR")   # ADR-093: remotion-ffmpeg-skill (measured motion graphics)
+        self.hyperframes_dir = os.environ.get("VIDEO_AGENT_HYPERFRAMES_DIR")   # ADR-114: hyperframes-skill (the motion.layer clip)
         self.artifacts_dir = os.environ.get("VIDEO_AGENT_ARTIFACTS_DIR")   # ADR-095: artifacts-skill (verification of a document that goes out with the video)
         self.sound_design_dir = os.environ.get("VIDEO_AGENT_SOUND_DESIGN_DIR")   # ADR-092: sound-design-skill (the music bed of the mix)
         self.offline = bool(offline)   # hard constraint for recognition Skills: no remote engine, no model download (never loosened by a request)
@@ -158,6 +161,7 @@ class Service:
         self.registry.register_package(DIARIZATION_PACKAGE)   # diarization-skill (ADR-086): same rule
         self.registry.register_package(SLIDE_SYNC_PACKAGE)   # slide-sync-skill (ADR-091): same rule
         self.registry.register_package(REMOTION_PACKAGE)   # remotion-ffmpeg-skill (ADR-093): same rule
+        self.registry.register_package(HYPERFRAMES_PACKAGE)   # hyperframes-skill (ADR-114): same rule
         self.registry.register_package(ARTIFACTS_PACKAGE)   # artifacts-skill (ADR-095): same rule
         self.registry.register_package(SOUND_DESIGN_PACKAGE)   # sound-design-skill (ADR-092): same rule
         if self._adapter is not None:
@@ -219,6 +223,9 @@ class Service:
             (locate_slide_sync(self.slide_sync_dir), lambda sk: SlideSyncAdapter(sk, workspace=self.workspace, allowed_inputs=ma_roots, ffmpeg_skill_dir=engine)),
             # ADR-093: its scripts run as `python <checkout>/scripts/<tool>.py`; the source, the project and the user's files inside the allowed roots
             (locate_remotion(self.remotion_dir), lambda sk: RemotionAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy)),
+            # ADR-114: `node <checkout>/bin/hyperframes-skill.mjs <tool>`; the user's scene request / font inside the allowed roots, everything it writes in
+            # the job; its render cross-checked with the agent's own ffmpeg-skill checkout
+            (locate_hyperframes(self.hyperframes_dir), lambda sk: HyperframesAdapter(sk, workspace=self.workspace, allowed_inputs=roots, path_policy=policy, ffmpeg_skill_dir=engine)),
             # ADR-095: a read-only plan step (QA gates on its checks); the document is a user file inside the allowed roots
             (locate_artifacts(self.artifacts_dir), lambda sk: ArtifactsAdapter(sk, allowed_inputs=roots)),
             # ADR-092: a plan step writing the bed into the job; the library is a user folder inside the allowed roots
@@ -928,6 +935,7 @@ class Service:
         images = [op["image"] for op in plan["video_ops"] if op.get("type") in ("video.overlay", "video.image_insert") and op.get("image")]   # ADR-070: the joined still too
         images += [op["stinger"] for op in plan["video_ops"] if op.get("type") == "video.concat" and op.get("stinger")]   # ADR-099: the stinger file
         images += [op["layer"] for op in plan.get("graphics_ops") or [] if op.get("layer")] \
+            + [op[k] for op in plan.get("graphics_ops") or [] if op.get("type") == HTML_LAYER_SUBJECT for k in ("font", "request") if op.get(k)] \
             + [f for op in plan.get("graphics_ops") or [] for f in ((op.get("options") or {}).get("themes") or {}).values()]   # ADR-102: the layer clip, the theme files
         images += [op["reference_path"] for op in plan.get("color_ops") or [] if op.get("reference_path")]   # ADR-100: MATCH_CAMERA's reference video
         images += [op["config"] for op in plan.get("color_ops") or [] if op.get("config") and not str(op["config"]).startswith("ocio://")]   # ADR-100: a .ocio file
@@ -1998,7 +2006,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", "document.", verify_task.PREFIX, transcribe_task.PREFIX)
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", HTML_LAYER_PREFIX, "document.", verify_task.PREFIX, transcribe_task.PREFIX)
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -2135,6 +2143,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_slide_keys(user_requirements)   # ADR-091: slides.* keys known, in range, the deck an existing file of a type slide-sync imports
     check_document_keys(user_requirements)   # ADR-095: document.verify an existing non-caption file, the preset one of artifacts-skill's names
     check_remotion_keys(user_requirements)   # ADR-093: remotion.* keys known, a composition that keeps the clock, the user's project and files exist
+    check_html_layer_keys(user_requirements)   # ADR-114: hyperframes.* only with motion.layer=hyperframes, a template + values or a scene request, segments that add up
     check_bgm_keys(user_requirements)   # ADR-092: bgm.* keys known, one mode, a library folder that is a sound-design library, with audio.production + audio.mix
     verify_task.parse_verify_requirements(user_requirements)   # ADR-110: verify.* keys known, a switch, in range
     transcribe_task.parse_transcribe_requirements(user_requirements)   # ADR-113: transcribe.* keys known, an engine id / a model name / a segmentation mode

@@ -129,7 +129,7 @@ _COMPONENTS: Tuple[Component, ...] = (
               note="one composition over the edited picture as the skill measured_motion (ADR-093); Remotion needs Node 18+ and the user's own project (init.py, npm install)"),
     Component("hyperframes-skill", "hyperframes-skill", "visual", "npm", "active", plugin=True, owns=("HTMLシーンの動画化(HyperFrames)",),
               package_install=f"git clone {GITHUB}hyperframes-skill && cd hyperframes-skill && npm ci",
-              note="html_scene_render is handed off with hyperframes-skill/render named from its pinned contract (ADR-080); needs Node.js 22+ and a headless Chromium"),
+              note="renders the motion.layer clip (skill html_scene_layer, ADR-114: motion.layer=hyperframes, ProRes 4444 with alpha); html_scene_render is handed off with hyperframes-skill/render named from its pinned contract (ADR-080); needs Node.js 22+ and a headless Chromium"),
 )
 
 COMPONENTS: Dict[str, Component] = {c.package: c for c in _COMPONENTS}

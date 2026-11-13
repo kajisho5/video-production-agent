@@ -20,6 +20,7 @@ from ..agent.timeline import TIMELINE_FORMATS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.image_prepare import prepare_chain, prepare_problems
 from ..agent.documents import SKILL as DOCUMENT_SKILL, document_problems
 from ..agent.qc_checks import check_problems as qc_check_problems
+from ..agent.html_layer import SKILL as HTML_LAYER_SKILL, SUBJECT as HTML_LAYER_SUBJECT, html_layer_problems, layer_id as html_layer_id
 from ..agent.remotion import SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT, remotion_problems
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
 from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
@@ -764,6 +765,10 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                     if e.get("type") != typ:
                         continue
                     f = (e.get("parameters") or {}).get(ref)
+                    if typ == "rendered_layer" and f == html_layer_id(str(subj)) and op.get("layer_source") == f:   # ADR-114: rendered in this plan
+                        if not any(x.get("type") == HTML_LAYER_SUBJECT and x.get("asset") == subj for x in (d.get("graphics") or {}).get("operations") or []):
+                            errs.append(f"graphics.render element {e.get('id')}: its layer {f} is rendered by no {HTML_LAYER_SUBJECT}")
+                        continue
                     if not isinstance(f, str) or Path(f).suffix.lower() not in exts or any(part == ".." for part in f.replace("\\", "/").split("/")):
                         errs.append(f"graphics.render element {e.get('id')}: {ref} must be {what} path without traversal")
                     elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
@@ -781,6 +786,22 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                     errs.append(f"graphics.render on {subj}: theme {name} is outside the allowed input roots")
             if any(e.get("type") == "logo" for e in op.get("elements") or []) and not themes:
                 errs.append(f"graphics.render on {subj}: a logo element draws the active theme's logo and no theme is given")
+        elif t == HTML_LAYER_SUBJECT:   # ADR-114: the motion.layer clip hyperframes-skill renders; placed by this subject's graphics.render
+            if seen.get(("html_layer", subj)):
+                errs.append(f"more than one {HTML_LAYER_SUBJECT} on {subj}")
+            seen[("html_layer", subj)] = 1
+            errs.extend(html_layer_problems(op))
+            for k in ("font", "request"):
+                f = op.get(k)
+                if f is None:
+                    continue
+                if not isinstance(f, str) or any(part == ".." for part in f.replace("\\", "/").split("/")):
+                    errs.append(f"{HTML_LAYER_SUBJECT} on {subj}: {k} must be a path without traversal")
+                elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
+                    errs.append(f"{HTML_LAYER_SUBJECT} on {subj}: {k} is outside the allowed input roots")
+            if not any(x.get("type") == "graphics.render" and x.get("asset") == subj and x.get("layer_source") == op.get("output")
+                       for x in (d.get("graphics") or {}).get("operations") or []):
+                errs.append(f"{HTML_LAYER_SUBJECT} on {subj}: no graphics.render places its output (a rendered_layer element)")
         elif t == "graphics.thumbnail":
             if seen.get(("thumbnail", subj)):
                 errs.append(f"more than one graphics.thumbnail on {subj}")
@@ -1229,7 +1250,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
         if (COLOR_SKILL_OF.get(op["type"], "?"), op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in (d.get("graphics") or {}).get("operations") or []:
-        want = GRAPHICS_SKILL if op["type"] == "graphics.render" else thumbnail_skill_of(op)
+        want = GRAPHICS_SKILL if op["type"] == "graphics.render" else HTML_LAYER_SKILL if op["type"] == HTML_LAYER_SUBJECT else thumbnail_skill_of(op)
         if (want, op["asset"]) not in step_keys:
             rep.errors.append(f"{op['type']} on {op['asset']} has no plan step")
     for op in (d.get("captions") or {}).get("operations") or []:

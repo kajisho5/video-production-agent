@@ -80,6 +80,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    # ADR-095: the document artifacts-skill verifies (by name; the path is in qa.documents)
                    "document_verify": ("document", "name", "preset"),
                    "measured_motion": ("asset", "comp", "project", "captions", "options", "font_file", "beats", "conform", "fast"),
+                   # ADR-114: the motion.layer clip hyperframes-skill renders (template + values, or the user's scene request by name; segments; ProRes)
+                   "html_scene_layer": ("asset", "codec", "template", "values", "font", "request", "segments", "workers"),
                    "bgm_library": ("asset", "library", "tags", "mood", "file", "crossfade", "duration"), "bgm_generate": ("asset", "prompt", "tags", "seed", "duration"),
                    "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),
                    # dubbing-skill DUB (ADR-085): the subject, the user's files (translated / source cues, reference voice + its consent record) and the typed options

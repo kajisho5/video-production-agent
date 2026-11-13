@@ -145,6 +145,10 @@ MOTION_PATH_PARAMS = {"image_path": "image", "video_path": "video"}
 MOTION_TYPE_PATH_PARAMS = {("rendered_layer", "video_path"): "layer"}
 
 
+# ADR-114: `motion.layer=hyperframes` asks for the rendered layer's clip to be rendered in this plan by hyperframes-skill (agent/html_layer.py)
+HTML_LAYER_SOURCE = "hyperframes"
+
+
 def motion_path_name(typ: str, name: str) -> str:
     return MOTION_TYPE_PATH_PARAMS.get((typ, name), MOTION_PATH_PARAMS.get(name, name))
 
@@ -442,6 +446,9 @@ def parse_motion_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, 
         for name, pspec in spec["parameters"].items():
             key = base if name == main_param else f"{base}.{name}"
             if key not in vals:
+                continue
+            if typ == "rendered_layer" and key == base and isinstance(vals[key], str) and vals[key].strip().lower() == HTML_LAYER_SOURCE:
+                p[motion_path_name(typ, name)] = HTML_LAYER_SOURCE   # ADR-114: the clip is rendered in this plan by hyperframes-skill (agent/html_layer.py)
                 continue
             p[motion_path_name(typ, name)] = _motion_param(vals[key], key, name, pspec)
         missing = [f"{base}.{n}" for n, ps in spec["parameters"].items() if ps.get("required") and n != main_param and motion_path_name(typ, n) not in p]
@@ -902,7 +909,9 @@ def ir_graphics_render(subject: str, elements: List[Dict[str, Any]], decision_id
     rec: Dict[str, Any] = {"type": "graphics.render", "asset": subject, "input": input_id, "output": output, "elements": list(elements)}
     for typ, ref in (("image_overlay", "image"), ("video_overlay", "video"), ("rendered_layer", "layer")):   # ADR-102: the rendered layer's clip
         files = [e["parameters"][ref] for e in elements if e.get("type") == typ and e.get("parameters", {}).get(ref)]
-        if files:
+        if files and typ == "rendered_layer" and files[0] == f"{subject}_html_layer":
+            rec["layer_source"] = files[0]   # ADR-114: rendered in this plan (graphics.html_layer's output), an artifact id, not the user's file
+        elif files:
             rec[ref] = files[0]
     if options:   # ADR-102: style / brand kit / themes (the user's theme files) / reserved regions of the whole render
         rec["options"] = json.loads(json.dumps(options))

@@ -24,6 +24,7 @@ from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJE
 from ..agent.nle import MODES as NLE_MODES
 from ..agent.image_prepare import prepare_chain, prepared_id
 from ..agent.documents import SKILL as DOCUMENT_SKILL, TOOL_NAME as DOCUMENT_TOOL_NAME
+from ..agent.html_layer import PARAMS as HTML_LAYER_PARAMS, SKILL as HTML_LAYER_SKILL, SUBJECT as HTML_LAYER_SUBJECT, TOOL as HTML_LAYER_TOOL, layer_id as html_layer_id
 from ..agent.remotion import FILE_KEYS as REMOTION_FILE_KEYS, PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
 from ..tools.remotion.adapter import render_name as remotion_render_name
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, TOOL_NAMES as BGM_TOOL_NAMES, skill_of as bgm_skill_of
@@ -591,6 +592,26 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, lower_color_op(tool, op, st["current"], out_id, lut_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
             st["current"] = out_id
         for op in (d.get("graphics") or {}).get("operations") or []:
+            if op["asset"] == subject and op["type"] == HTML_LAYER_SUBJECT:   # ADR-114: the motion.layer clip, rendered before the render that places it
+                tool = tool_for(HTML_LAYER_SKILL, subject)
+                if tool != HTML_LAYER_TOOL:
+                    raise CompileError(f"{HTML_LAYER_SUBJECT} needs {HTML_LAYER_TOOL}, the plan names {tool}")
+                out_id = op.get("output") or html_layer_id(subject)
+                paths[out_id] = str(job / "ops" / f"{st['stem']}_html_layer" / f"{st['stem']}_layer.mov")
+                args: Dict[str, Any] = {"output": out_id}
+                ins: List[str] = []
+                for k in HTML_LAYER_PARAMS:
+                    if op.get(k) is None:
+                        continue
+                    if k in ("font", "request"):   # the user's files, by path like a LUT
+                        ref = f"{subject}_html_layer_{k}"
+                        paths[ref], keys[ref] = op[k], ""
+                        args[k] = ref
+                        ins.append(ref)
+                    else:
+                        args[k] = op[k]
+                add(tool, args, ins, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=HTML_LAYER_SKILL)
+                continue
             if op["asset"] != subject or op["type"] != "graphics.render":
                 continue
             st["gen"] += 1
@@ -599,6 +620,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             tool = tool_for(GRAPHICS_SKILL, subject)
             inputs = [st["current"]]
             refs: Dict[str, Optional[str]] = {"image": None, "video": None, "layer": None}   # ADR-102: the rendered layer's clip
+            if op.get("layer_source"):   # ADR-114: the layer clip is this plan's own artifact (graphics.html_layer's output), already in paths
+                refs["layer"] = op["layer_source"]
+                inputs.append(op["layer_source"])
             for ref in refs:   # the composited files (named by the user) are inputs by path, like a LUT
                 if op.get(ref):
                     refs[ref] = f"{subject}_graphics_{ref}"
