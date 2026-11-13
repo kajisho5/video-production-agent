@@ -1,5 +1,5 @@
 """ADR-093 (remotion-ffmpeg-skill roadmap step 4, agent side: SkillSpec measured_motion -> pipeline, CONFIRM): one Remotion composition over the edited
-picture by remotion-ffmpeg-skill's pipeline, against a fake checkout (tests/fake_remotion.py) that speaks its v0.13.0 contract, doctor and pipeline
+picture by remotion-ffmpeg-skill's pipeline, against a fake checkout (tests/fake_remotion.py) that speaks its v0.14.0 contract, doctor and pipeline
 result, with the fake media engine. No Node, Remotion, ffmpeg or network."""
 from __future__ import annotations
 
@@ -105,14 +105,14 @@ class _Base(unittest.TestCase):
 class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
-        self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.13.0 tag")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("remotion-ffmpeg-skill", "0.13.0", "1.0"))
+        self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.14.0 tag")
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("remotion-ffmpeg-skill", "0.14.0", "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
         self.assertEqual((recovery_class("missing_tool"), recovery_class("timeout"), recovery_class("other")), ("TOOL_MISSING", "TIMEOUT", "SKILL_ERROR"))
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["name"] == "pipeline")["flags"].pop("out_dir")
         self.assertTrue(any("out_dir" in e for e in check_contract(bad)))
         self.assertTrue(breaking_drift(bad))
-        for v in ("0.14.0", "0.130.0", "1.0.0"):
+        for v in ("0.15.0", "0.140.0", "1.0.0"):
             bad = json.loads(json.dumps(c)); bad["version"] = bad["skill"]["version"] = v
             self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
         # ADR-107 addendum 14: a 0.12.x install (no Emphasis in the comp descriptions) is inside the gate and is drift, not breaking drift

@@ -4296,7 +4296,7 @@ class SoundDesignBgmRealTests(unittest.TestCase):
 
 
 class RemotionRealTests(unittest.TestCase):
-    """ADR-093 on the real remotion-ffmpeg-skill checkout (main = v0.13.0): the live contract equals the pin and its doctor answers (python / node / npm /
+    """ADR-093 on the real remotion-ffmpeg-skill checkout (main = v0.14.0): the live contract equals the pin and its doctor answers (python / node / npm /
     ffmpeg-skill / ffmpeg; the agent's PIPELINE capability follows it), and a plan naming a Remotion project whose `npm install` has not run is BLOCKED
     with the Skill's own fix line instead of rendering. A real Remotion render (npm install plus Remotion's browser download) is not run in CI."""
 
