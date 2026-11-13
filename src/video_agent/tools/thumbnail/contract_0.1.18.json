@@ -4,7 +4,7 @@
   "id": "thumbnail-skill",
   "name": "thumbnail-skill",
   "package": "thumbnail-skill",
-  "version": "0.1.16",
+  "version": "0.1.18",
   "contract_version": "1",
   "kind": "execution",
   "role": "thumbnail rendering (deterministic execution); not decision, not selection, not design",
@@ -861,6 +861,112 @@
     "compose": "start from layer 0 (the background, the full canvas) as the base image; then alpha-composite every further layer at its position, in order (Porter-Duff source-over on straight 8-bit RGBA, as Pillow's Image.alpha_composite)",
     "verified": "the image rebuilt from the layer files read back from disk equals the written PNG byte for byte (for a JPEG thumbnail: the lossless composite it was encoded from); otherwise VALIDATION_ERROR (reason layers_mismatch)",
     "decision": "docs/decisions.md ADR-17"
+  },
+  "kit": {
+    "schema": "velisa/kit@1",
+    "field": "options.kit",
+    "cli": "thumbnail render request.json --kit kit.json --json",
+    "tools": [
+      "thumbnail/render",
+      "thumbnail/render_layers",
+      "thumbnail/render_variants",
+      "thumbnail/render_batch"
+    ],
+    "spec": "Velisa docs/specs/kit.md: a superset of ffmpeg-skill brand.json; every brand.json is a kit",
+    "file": {
+      "format": "UTF-8 JSON object",
+      "max_bytes": 262144,
+      "paths": "logo (and font_file) relative to the kit file",
+      "policy": "the kit file and its logo are inputs under the request's path policy (allowed_input_roots)",
+      "colours": "RRGGBB without '#' (this skill adds the '#'); `colours` is read as `colors`; null is not stated"
+    },
+    "mapping": [
+      {
+        "kit": "colors.text",
+        "to": "document.elements[].text.color",
+        "when": "the element gives no color"
+      },
+      {
+        "kit": "colors.background",
+        "to": "document.canvas.background",
+        "when": "the canvas gives no background"
+      },
+      {
+        "kit": "colors.background",
+        "to": "document.elements[].text.background.color",
+        "when": "the element gives a background band without a color"
+      },
+      {
+        "kit": "colors.outline",
+        "to": "document.elements[].text.stroke.color",
+        "when": "the element gives a stroke without a color"
+      },
+      {
+        "kit": "font",
+        "to": "document.elements[].text.font_id",
+        "when": "the element gives no font_id; the registered font_id whose resolved file on this machine has that family name (regular style first)"
+      },
+      {
+        "kit": "logo, logo_position, logo_scale, safe_margin, logo_opacity?",
+        "to": "an image asset and element 'kit-logo' (top of the stack, fit contain)",
+        "when": "the kit states logo, logo_position, logo_scale and safe_margin, and the document has no element or asset 'kit-logo'"
+      },
+      {
+        "kit": "colors.primary, colors.text, colors.background, colors.outline",
+        "to": "render_variants' palettes",
+        "when": "variants.palettes is not given"
+      }
+    ],
+    "precedence": "a value stated in the document wins over the kit and is listed in kit.kept; the kit fills only slots the document leaves out",
+    "not_filled": "nothing the kit leaves out is filled in: ffmpeg-skill's brand.json defaults are not used; a slot neither gives stays as it is (a text element without color or font_id is still INVALID_REQUEST)",
+    "logo": {
+      "element_id": "kit-logo",
+      "positions": [
+        "top-left",
+        "top",
+        "top-right",
+        "left",
+        "center",
+        "right",
+        "bottom-left",
+        "bottom",
+        "bottom-right"
+      ],
+      "size": "logo_scale px wide, the image's aspect ratio",
+      "margin": "safe_margin from the edges",
+      "opacity": "logo_opacity when stated, else this skill's default 1.0"
+    },
+    "variants": {
+      "palettes": "when variants.palettes is not given: kit-text-on-background-band, kit-background-on-primary-band, kit-text-with-outline, kit-primary-with-outline, each only when the kit states its two colours; with one colour, kit-<role> (that colour alone); with none, INVALID_REQUEST (kit_without_colors): this skill's default palettes are not used with a kit",
+      "padding": 16,
+      "stroke_width": 4,
+      "layout_numbers": "this skill's variant defaults, not the kit's"
+    },
+    "unmapped": {
+      "font_file": "fonts are named only by registered font_id; this skill never reads a font file path from a request",
+      "colors.accent": "a ThumbnailDocument has no element role for an accent colour",
+      "colors.secondary": "a ThumbnailDocument has no element role for a secondary colour",
+      "lang": "this skill does not choose fonts or layout by language",
+      "styles": "styles.caption is the caption look; a thumbnail has no caption",
+      "caption": "caption burn-in defaults; a thumbnail has no caption",
+      "loudness": "a thumbnail has no audio",
+      "fonts": "font licences and embedding are recorded in the kit, not checked or used by this skill",
+      "logo_variants": "only the one logo file (logo) is placed",
+      "contrast": "this skill computes no contrast itself (render_variants measures it through qc-skill)",
+      "name": "recorded in response.kit.name; a ThumbnailDocument has no name field"
+    },
+    "invalid": {
+      "code": "INVALID_INPUT",
+      "reason": "bad_kit",
+      "when": "a value that maps is malformed or out of range, an unknown schema, both colors and colours"
+    },
+    "result": {
+      "response.kit": "{schema, read, file {path, sha256, size}, name, colors, applied [{target, value, from}], kept [{target, value, kit_key, kit_value}], unmapped [{key, reason}], unused [{key, reason}], font? {kit, font_id, family, style, path, font_file_hash}, logo?, palettes?}",
+      "provenance.kit": "{schema, path, sha256}",
+      "warnings": "one per unmapped key",
+      "validate": "validation.kit {read: false, slots}: validate touches no file, so the kit is not read"
+    },
+    "decision": "docs/decisions.md ADR-18"
   },
   "background_providers": {
     "tool": "thumbnail/generate_background",
