@@ -42,11 +42,11 @@ class VersionGateTests(unittest.TestCase):
         # 0.8.0 (ADR-078): optional engine whisperx appended, nothing the adapter sends changed; 0.9.0 (ADR-107 addendum 2): word index,
         # optional dictionary words (pos / timing) and the opt-in word_segmentation input, all additions; 0.10.0 (ADR-107 addendum 7): new
         # optional models and per-model language limits (a refusal reason), additive; 0.11.0 (addendum 8): optional engine qwen3_asr added;
-        # 0.11.2 / 0.11.3 (addendum 12): opt-in chunk_seconds / parallel / speech_regions and transcribe --follow, additive; 0.12.0 (addendum 15):
+        # 0.11.2 / 0.11.3 (addendum 12): opt-in chunk_seconds / parallel / speech_regions and transcribe --follow, additive; 0.12.0 / 0.12.1 (addendum 15):
         # tool transcription/find and capability transcript_search, additive
-        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2", "0.11.3", "0.11.9", "0.12.0", "0.12.4"):
+        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2", "0.11.3", "0.11.9", "0.12.0", "0.12.1", "0.12.4"):
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
-        self.assertEqual(tr.pinned_contract()["version"], "0.12.0")
+        self.assertEqual(tr.pinned_contract()["version"], "0.12.1")
         self.assertTrue({"follow_growing_files", "chunked_long_recordings", "transcript_search"} <= set(tr.pinned_contract()["capabilities"]))
         self.assertIn("transcription/find", [t["name"] for t in tr.pinned_contract()["tools"]])
         self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")

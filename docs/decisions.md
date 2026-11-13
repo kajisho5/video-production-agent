@@ -1220,13 +1220,14 @@
     - unit `tests/test_dubbing.py`: pin 0.2.1; `terms --transcript` is pinned and `terms` is not in `TOOLS`; a 0.2.0 contract is not breaking drift.
     - unit `tests/test_release_version.py` and `tests/test_version_gates.py`.
     - Locally on the real Skills (remotion-ffmpeg-skill v0.13.0, dubbing-skill f929f4a, ffmpeg-skill main): `RemotionRealTests` and `DubbingRealTests` pass, and live == pin.
-- Addendum 15 (2026-11-13, transcription-skill v0.12.0): a re-pin, a widened gate, and `transcription/find` wired (roadmap step 33).
+- Addendum 15 (2026-11-13, transcription-skill v0.12.0 / v0.12.1): a re-pin, a widened gate, and `transcription/find` wired (roadmap step 33).
   - Facts:
     - transcription-skill released v0.12.0 (9494f75, after #59 625beab, its ADR-045 and roadmap step 16) while step 33 was open. It adds the tool `transcription/find`: a phrase gives every timed hit (start / end, segment ids, word indices, speaker id, context). It is read-only and standard library only. The release also adds the capability `transcript_search`.
     - transcribe, the schemas and the engines are unchanged.
+    - v0.12.1 (1adbefc) adds `rule` to the `transcription/speakers` tool, which the agent does not call (it merges turns through transcribe's `speaker_turns`). Nothing else changed.
     - The version is outside the gate (`0.11.`), so every integration shard that builds a TranscriptionAdapter failed on main.
   - Decision, re-pin:
-    - `contract_0.12.0.json` replaces `contract_0.11.3.json`. It is the v0.12.0 tag's `contract --json` with the pin's availability-free engine entries, written with indent 1.
+    - `contract_0.12.1.json` replaces `contract_0.11.3.json`. It is the v0.12.1 tag's `contract --json` with the pin's availability-free engine entries, written with indent 1.
     - The same method reproduces the 0.11.3 pin byte for byte. The tag's engines equal 0.11.3's.
     - The gate adds `0.12.` (0.13 and 1.x are still refused). The contract change is additive.
   - Decision, wiring:
@@ -1239,8 +1240,8 @@
   - Verification:
     - unit `tests/test_measurements.py::TranscriptSearchTests`: vocabulary and refusals, hits from the measured transcript, a result about another phrase refused (BLOCK), the handoff, and adapter refusals before any process.
     - `tests/test_version_gates.py`: 0.12.x accepted, 0.13.0 refused.
-    - `RealSkillTests::test_find_on_the_real_transcription_skill`: the v0.12.0 tree finds "Hello" twice in a word-timed transcript its validator accepts, with word indices. Run locally and in CI's shard 1.
-    - `TranscriptionRealTests` passes locally against the v0.12.0 tree.
+    - `RealSkillTests::test_find_on_the_real_transcription_skill`: the v0.12.1 tree finds "Hello" twice in a word-timed transcript its validator accepts, with word indices. Run locally and in CI's shard 1.
+    - `TranscriptionRealTests` passes locally against the v0.12.1 tree.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

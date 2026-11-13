@@ -104,7 +104,7 @@ class PlanTests(_Base):
         self.assertEqual((o["parameters"]["engine"], o["parameters"]["model"]), ("qwen3_asr", "small"))
         rec = ir.doc["provenance"]["transcription_options"]
         self.assertEqual((rec["rule"], rec["requested"], rec["source"], rec["skill"], rec["skill_version"]),
-                         ("transcribe_options@1", {"engine": "qwen3_asr", "model": "small"}, "--set", "transcription-skill", "0.12.0"))
+                         ("transcribe_options@1", {"engine": "qwen3_asr", "model": "small"}, "--set", "transcription-skill", "0.12.1"))
         self.assertEqual((rec["checked"]["status"], rec["checked"]["input"]), ("accepted", "talk.mp4"))
         self.assertEqual(rec["measured"], [{"asset_id": o["asset_id"], "status": "OK", "engine": "qwen3_asr", "model": "small"}])
         reqs = {r["key"]: (r["value"], r["provenance"]) for r in ir.doc["requirements"]}

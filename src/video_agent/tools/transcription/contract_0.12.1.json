@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.12.0",
+ "version": "0.12.1",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -211,7 +211,14 @@
   },
   {
    "name": "transcription/speakers",
-   "description": "Fill segments[].speaker_id (and words[].speaker_id) of a Transcript from diarization-skill speaker turns (diarization-skill/turns@1), with diarization-skill's own ASSIGN rule. No diarization here.",
+   "description": "Fill segments[].speaker_id (and words[].speaker_id) of a Transcript from diarization-skill speaker turns (diarization-skill/turns@1), with diarization-skill's own ASSIGN rule. No diarization here. Follows diarization-skill's speaker-id assignment rule and passes its conformance fixtures at the version in `rule`.",
+   "rule": {
+    "owner": "diarization-skill",
+    "spec": "https://github.com/kajisho5/diarization-skill/blob/main/docs/speaker_id_rule.md",
+    "method": "max_overlap_with_exclusive_turns",
+    "conformance_fixtures": "diarization-skill/speaker-id-conformance@1",
+    "conformance_fixture_version": "1"
+   },
    "input": {
     "transcript": "Transcript | path",
     "turns": "diarization-skill/turns@1 document | path",
