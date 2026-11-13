@@ -12,7 +12,7 @@ from ..models import Decision, Inference, now_iso
 from .audio import (AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, concat_segments as audio_concat_segments, cut_ranges, has_video,
                     ir_audio_operation, is_audio_capable, kept_after_cut, mix_segments, transcript_words, words_after_cut)
 from .editing import (AI_OP, CONDENSE_KEEP_LABEL, CONDENSE_OP, CONDENSE_SKILL, CUT_SKILL, subtract_spans,
-                      IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_rate, concat_segments, input_rate, ir_operation,
+                      IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_OP, TRIM_SKILL, concat_segments, input_rate, ir_operation, programme_rate,
                       kept_duration)
 from .image_insert import still_frame
 from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
@@ -1047,7 +1047,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                     params["fps"] = round(float(v_["fps"]), 3)
                 summary.append(f"Conform the AI-generated input(s) {', '.join(made)} to {ref}'s {params['width']}x{params['height']}" + (f" @ {params['fps']:g} fps" if params.get("fps") else ""))
         # ADR-115: placed on the output frame grid the way video-editing-skill joins (contract.whole_frames): params.fps, else the first input's rate
-        segments, total = concat_segments(inputs, video_ops, durations, params.get("transition"), rate=concat_rate(params, techn.get(inputs[0])),
+        segments, total = concat_segments(inputs, video_ops, durations, params.get("transition"), rate=programme_rate(inputs, techn, ai_sources, params),
                                           input_rates={a: input_rate(techn.get(a)) for a in inputs})
         scope = {"start": 0.0, "end": total}
         # a concat assembled from take picks (ADR-053) cites them too: a rejected pick makes the assembly rejected-cited, a pending one keeps it PROPOSED

@@ -688,6 +688,19 @@ def concat_rate(params: Dict[str, Any], first_input_technical: Optional[Dict[str
     return Fraction(f).limit_denominator(1001) if f > 0 else None
 
 
+def programme_rate(inputs: List[str], techn: Dict[str, Optional[Dict[str, Any]]], ai_sources: Any, params: Optional[Dict[str, Any]] = None) -> Optional[Fraction]:
+    """The rate a CONCAT of `inputs` is joined at, the one rule for the planner's concat and the take alignment: params.fps when
+    given; with an AI-generated input among them (ADR-099), the rate of the first input that is not declared AI-generated (the
+    planner names it on the CONCAT as params.fps, rounded to 3 decimals); else the first input's (concat_rate)."""
+    params = dict(params or {})
+    if not params.get("fps") and any(a in ai_sources for a in inputs):
+        ref = next((a for a in inputs if a not in ai_sources), None)
+        v_ = ((techn.get(ref) or {}).get("video") or {}) if ref else {}
+        if v_.get("width") and v_.get("height") and v_.get("fps"):
+            params["fps"] = round(float(v_["fps"]), 3)
+    return concat_rate(params, techn.get(inputs[0]) if inputs else None)
+
+
 def input_rate(technical: Optional[Dict[str, Any]]) -> Tuple[Optional[float], bool]:
     """(frame rate, variable-rate suspected) of one CONCAT input, from its probe."""
     v = (technical or {}).get("video") or {}

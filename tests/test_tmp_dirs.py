@@ -122,7 +122,7 @@ class TmpDirCleanupTests(unittest.TestCase):
         out, err = p.communicate(timeout=60)
         self.assertNotEqual(p.returncode, 0, err)
         self.assertIn("KeyboardInterrupt", err)
-        made = out.split()
+        made = out.splitlines()
         self.assertEqual(len(made), 1, (out, err))
         self.assertTrue(os.path.realpath(made[0]).startswith(self.root), made)
         self.assertEqual(os.listdir(self.root), [])

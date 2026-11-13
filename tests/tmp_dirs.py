@@ -30,8 +30,9 @@ _SIGTERM_SET = False
 
 
 def _remove(path: str) -> None:
-    _LIVE.discard(path)
     shutil.rmtree(path, ignore_errors=True)
+    if not os.path.exists(path):   # still tracked (for the exit handler) when a running child kept it from going
+        _LIVE.discard(path)
 
 
 @atexit.register

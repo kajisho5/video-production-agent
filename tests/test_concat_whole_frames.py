@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from video_agent.agent.editing import concat_rate, concat_segments, input_rate, joined_transition, whole_frame_length  # noqa: E402
+from video_agent.agent.editing import concat_rate, concat_segments, input_rate, joined_transition, programme_rate, whole_frame_length  # noqa: E402
 from video_agent.agent.takes import align_to_frames  # noqa: E402
 
 PIN = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.8.0.json"
@@ -165,6 +165,28 @@ class TakePicksOnFramesTests(unittest.TestCase):
         segs, total = concat_segments([p["asset_id"] for p in ps], [{"type": "video.trim", "asset": p["asset_id"], "keep": [p["keep"]]} for p in ps], {},
                                       None, rate=Fraction(30), input_rates={p["asset_id"]: (30.0, False) for p in ps})
         self.assertEqual(total, moves["p9"]["programme_out"], "the Skill's whole-frame join changes nothing any more")
+
+    def test_the_millisecond_cut_list_adds_up_to_the_frame_timeline(self):
+        """Ten picks of 1.017 s at 30 fps (31 / 30 frames): the cut list the IR keeps (milliseconds) adds up to the concat timeline
+        within the take validator's 1 ms (SYNC_TOLERANCE); rounding each pick's length on its own was 1.67 ms off."""
+        from video_agent.agent.takes import SYNC_TOLERANCE
+        ps = self.picks(*[(1.0, 2.017, 10.0)] * 10)
+        align_to_frames(ps, Fraction(30))
+        cut_list = sum(p["keep"][1] - p["keep"][0] for p in ps)
+        _, total = concat_segments([p["asset_id"] for p in ps], [{"type": "video.trim", "asset": p["asset_id"], "keep": [p["keep"]]} for p in ps], {},
+                                   None, rate=Fraction(30), input_rates={p["asset_id"]: (30.0, False) for p in ps})
+        self.assertEqual(round(total * 30), 305)
+        self.assertLessEqual(abs(cut_list - total), SYNC_TOLERANCE)
+        for n in range(1, 11):   # and at every join, not only the end
+            self.assertLessEqual(abs(sum(p["keep"][1] - p["keep"][0] for p in ps[:n]) - round(round(sum(31 - k % 2 for k in range(n)) / 30, 6), 3)), SYNC_TOLERANCE)
+
+    def test_one_rate_rule_with_an_ai_generated_first_pick(self):
+        """An AI-generated first input does not decide the rate (ADR-099): the first declared-native input's does, for the concat
+        and the take alignment alike."""
+        techn = {"ai": {"video": {"width": 1280, "height": 720, "fps": 24.0}}, "cam": {"video": {"width": 1920, "height": 1080, "fps": 30.0}}}
+        self.assertEqual(programme_rate(["ai", "cam"], techn, {"ai"}), Fraction(30))
+        self.assertEqual(programme_rate(["ai", "cam"], techn, set()), Fraction(24))
+        self.assertEqual(programme_rate(["ai", "cam"], techn, {"ai"}, {"fps": 25}), Fraction(25))
 
     def test_never_past_the_source_and_at_least_a_frame(self):
         ps = self.picks((0.35, 6.0, 6.0), (0.0, 0.01, 6.0))   # 169.5 frames would need 6.0167 s of a 6 s source; 0.3 frames

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import difflib
 import math
+import os
 import re
 import statistics
 import unicodedata
@@ -42,7 +43,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models import Requirement
 from ..media.analysis import loudness_facts
-from .editing import PROGRAMME, EditRequirementError, _bool, _number, concat_rate
+from .editing import AI_OP, PROGRAMME, EditRequirementError, _bool, _number, programme_rate
 
 TAKES_KEY = "edit.takes"
 REQUIREMENT_KEYS = ("edit.takes", "edit.takes.similarity", "edit.takes.music", "edit.takes.snap_max_shift", "edit.takes.crossfade")
@@ -291,7 +292,9 @@ def align_to_frames(picks: List[Dict[str, Any]], rate: Optional[Fraction]) -> Di
         frames = max(1, math.floor(planned * rate + Fraction(1, 2)) - t)
         while frames > 1 and float(s_ + Fraction(frames) / rate) > float(p["duration"]) + 1e-9:
             frames -= 1   # never past the source's end
-        e2 = round(float(s_ + Fraction(frames) / rate), 3)
+        # the IR keeps milliseconds: the out point is placed so the cut list's running length is the frame position to the
+        # millisecond (not each pick's length rounded on its own, which would add up past SYNC_TOLERANCE over many picks)
+        e2 = round(s + round(float(Fraction(t + frames) / rate), 3) - round(float(Fraction(t) / rate), 3), 3)
         moved[p["asset_id"]] = {"fps": round(float(rate), 3), "out_before": round(e, 3), "out_after": e2, "moved": e2 != round(e, 3),
                                 "programme_out": round(float(Fraction(t + frames) / rate), 3)}
         p["keep"] = [round(s, 3), e2]
@@ -486,7 +489,12 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
                          extra=[beat_obs.id], params={"asset_id": PROGRAMME, "music": music.id})
         joins = snap_joins([rec for _, rec, _ in picks], [float(b) for b in grid["supported_beats"]], tk["snap_max_shift"])
     # ---- ADR-115: every out point on the programme's frame grid (video-editing-skill joins at whole frames, contract.whole_frames)
-    frame_moves = align_to_frames([rec for _, rec, _ in picks], concat_rate({}, facts[picks[0][1]["pick"]]["technical"]) if picks else None)
+    # the same rate rule as the planner's concat (programme_rate): an AI-generated pick does not decide it (ADR-099)
+    ai_paths = [os.path.realpath(it["input"]) for it in (((edits.get(AI_OP) or {}).get("params") or {}).get("sources") or [])]
+    ai_ids = {a.id for a in takes if os.path.realpath(a.path) in ai_paths}
+    pick_order = [rec["pick"] for _, rec, _ in picks]
+    frame_moves = align_to_frames([rec for _, rec, _ in picks],
+                                  programme_rate(pick_order, {a: facts[a]["technical"] for a in pick_order}, ai_ids) if picks else None)
     for j in joins:
         if j["asset_id"] in frame_moves and frame_moves[j["asset_id"]]["programme_out"] != j["to"]:   # a join lands on the frame nearest its beat
             j["on_frame"] = frame_moves[j["asset_id"]]["programme_out"]
