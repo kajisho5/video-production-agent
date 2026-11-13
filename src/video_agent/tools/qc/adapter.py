@@ -78,7 +78,10 @@ DOCTOR_SCHEMA = "qc/doctor@1"
 # block), and a NaN / Infinity anywhere in a request is INVALID_REQUEST (this adapter already refuses non-finite rule values and parameters,
 # and now a non-finite timeout, before any process starts). Every addition is optional; the request the adapter sends and the report it
 # admits are unchanged unless a caller names the new rules. Re-pinned from the v1.3.0 tag's `contract --json` (ADR-107 addendum 7).
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.", "1.1.", "1.2.", "1.3.")
+# 1.4.0 (qc-skill ADR-026 / 027 / 028): opt-in video loop-seam, alpha-edge and key / fill checks (rules.video.loop_seam / alpha_edge / key_fill,
+# their nested rules, the input key_file, a `video_material` block). Every addition is optional; the request the adapter sends and the report it
+# admits are unchanged. Re-pinned from the v1.4.0 tag's `contract --json` (ADR-107 addendum 16).
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.", "1.1.", "1.2.", "1.3.", "1.4.")
 CANONICAL_INVOCATION = ["qc", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False}
 ALLOWED_EXECUTABLES = {"ffprobe", "ffmpeg"}
@@ -124,7 +127,7 @@ def parse_rule_type(t: str) -> Optional[Tuple[bool, Optional[str], str]]:
 DRIFT_KEYS = ("schema", "skill_id", "version", "contract_version", "role", "kinds", "operations", "statuses", "checks", "rules", "parameters", "inputs", "outputs",
               "execution", "capabilities", "provenance", "identity", "cache", "errors", "deterministic", "measurements")
 DRIFT_FINDING_KEYS = ("category", "default_severity")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.3.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.4.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

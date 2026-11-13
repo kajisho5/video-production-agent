@@ -29,7 +29,7 @@ from video_agent.models import Operation  # noqa: E402
 import fake_publish  # noqa: E402
 
 FAKE = str(Path(__file__).resolve().parent / "fake_publish.py")
-MODES = ("FAKE_PUB_VERDICT", "FAKE_PUB_MODE", "FAKE_PUB_CONTRACT", "FAKE_PUB_CALLS", "FAKE_PUB_UPLOADS", "VIDEO_AGENT_PUBLISH_DIR")
+MODES = ("FAKE_PUB_VERDICT", "FAKE_PUB_GUIDANCE", "FAKE_PUB_MODE", "FAKE_PUB_CONTRACT", "FAKE_PUB_CALLS", "FAKE_PUB_UPLOADS", "VIDEO_AGENT_PUBLISH_DIR")
 
 
 def fake_skill() -> CliSkill:
@@ -111,7 +111,7 @@ class ContractTests(_Base):
     def test_pin_shape_and_contract_checks(self):
         c = pinned_contract()
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual((c["skill_id"], c["version"]), ("publish", "0.1.0"))
+        self.assertEqual((c["skill_id"], c["version"]), ("publish", "0.2.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]))
         p = platforms(c)
@@ -122,7 +122,7 @@ class ContractTests(_Base):
         for bad, msg in ((dict(c, confirmation=dict(c["confirmation"], from_environment_or_config=True)), "never come from the environment"),
                          (dict(c, execution=dict(c["execution"], network_requires="nothing")), "network only with --confirm"),
                          (dict(c, credentials=dict(c["credentials"], from_files_or_flags=True)), "never come from files or flags"),
-                         (dict(c, version="0.2.0"), "supported range")):
+                         (dict(c, version="0.3.0"), "supported range")):
             self.assertTrue(any(msg in e for e in check_contract(bad)), (msg, check_contract(bad)))
 
     def test_drift_classification(self):
@@ -254,6 +254,23 @@ class PipelineTests(_Base):
         self.assertEqual(pub["status"], "BLOCKED")
         self.assertEqual(pub["plan"]["rows"][0]["status"], "FAIL")
         self.assertFalse([c for c in calls(self.log) if c[:1] == ["upload"]], "no dry run after a failing plan")
+
+    def test_ffmpeg_guidance_rows_do_not_decide_the_publish(self):
+        """publish-skill 0.2.0 (its ADR-015; ADR-107 addendum 18): publish-skill owns upload limits. ffmpeg-skill check's duration / file size
+        rows are guidance (`in_verdict: false`) and publish-skill's own limit table decides the verdict. Before 0.2.0 a FAIL on ffmpeg-skill's
+        duration row (e.g. 140 s for X) failed the plan; now the agent follows the Skill's PASS verdict, records that row as guidance and
+        does not name it as a row to fix. A FAIL verdict still blocks, whatever the guidance rows say."""
+        os.environ["FAKE_PUB_GUIDANCE"] = "FAIL"
+        svc, r = self.rendered(REQ)
+        pub = r["out"]["publish"]
+        self.assertEqual((pub["status"], pub["plan"]["verdict"], pub["plan"]["rows"]), ("AWAITING_CONFIRMATION", "PASS", []), pub)
+        self.assertEqual([(g["check"], g["status"], g["owner"], g["in_verdict"]) for g in pub["plan"]["guidance"]], [("duration", "FAIL", "ffmpeg-skill", False)])
+        self.assertTrue([c for c in calls(self.log) if c[:1] == ["upload"]], "the dry run follows the Skill's PASS verdict")
+        os.environ["FAKE_PUB_VERDICT"] = "FAIL"
+        svc, r = self.rendered(REQ)
+        pub = r["out"]["publish"]
+        self.assertEqual(pub["status"], "BLOCKED")
+        self.assertEqual([x["check"] for x in pub["plan"]["rows"]], ["title.max_chars"], "only the rows that count are named to fix")
 
     def test_refused_where_publishing_cannot_follow_qc(self):
         svc = pub_service(self.tmp)

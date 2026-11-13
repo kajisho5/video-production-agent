@@ -5,8 +5,8 @@
         `publish upload --json --platform=P [metadata] -- <file>`                      (dry run: no network, prints the confirm_token)
         `publish upload --json --platform=P [metadata] --confirm=<token> -- <file>`    (the upload: only with the token a human typed)
 
-Protocol (publish-skill's own contract, `publish contract --json`, pinned from main in contract_0.1.0.json -- the repository has no release
-tag, so the pin follows main as dubbing-skill's does, ADR-085):
+Protocol (publish-skill's own contract, `publish contract --json`, pinned from the v0.2.0 tag in contract_0.2.0.json, one sorted compact
+line; before v0.1.0 the repository had no release tag and the pin followed main as dubbing-skill's does, ADR-085):
     platforms  → `platforms.registered.<id>` (implemented, metadata_fields) and `tools[publish/upload].uploaders.<id>`: only a platform whose
                  uploader exists on the pinned main is offered; a platform added later is refused until the pin is renewed
     limits     → `upload_limits.platforms.<id>["privacy.values"]` (the privacy each platform takes; X: public only)
@@ -44,7 +44,10 @@ TOOL_UPLOAD = "publish/upload"
 TOOLS = (TOOL_UPLOAD,)          # the plan step's tool; publish/plan is called by the same adapter as the upload's precondition
 PLAN_SCHEMA = "publish/plan@1"
 DOCTOR_SCHEMA = "publish/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 0.2.0 (publish-skill ADR-015, ADR-107 addendum 18): `plan`'s verdict for duration and file size comes only from publish-skill's own limit table;
+# ffmpeg-skill check's duration / file size rows are guidance (`basis: guidance`, `in_verdict: false`) and left out of the verdict and the
+# counts. publish-skill owns upload limits: the agent takes the verdict as the Skill reports it and never re-decides from a guidance row.
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")
 CONFIRM_FLAG = "--confirm"
 TOKEN_RE = re.compile(r"^confirm-[0-9a-f]{16}$")
 PLAN_OK = ("PASS", "WARN")      # publish-skill: FAIL / INCOMPLETE → do not upload
@@ -67,7 +70,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "network", "writes_media", "mutates_input", "implemented", "schema", "argv", "uploaders", "verdicts", "row_statuses")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "confirmation", "error_shape")
 FATAL_DRIFT_TOOL_KEYS = ("role", "network", "writes_media", "mutates_input", "schema", "argv", "verdicts")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

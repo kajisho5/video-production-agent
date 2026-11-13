@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.11.3",
+ "version": "0.12.1",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -26,7 +26,8 @@
   "word_index",
   "dictionary_word_segmentation",
   "follow_growing_files",
-  "chunked_long_recordings"
+  "chunked_long_recordings",
+  "transcript_search"
  ],
  "engine_contract": {
   "schema": "transcription-skill/engine-spec/0.1",
@@ -210,7 +211,14 @@
   },
   {
    "name": "transcription/speakers",
-   "description": "Fill segments[].speaker_id (and words[].speaker_id) of a Transcript from diarization-skill speaker turns (diarization-skill/turns@1), with diarization-skill's own ASSIGN rule. No diarization here.",
+   "description": "Fill segments[].speaker_id (and words[].speaker_id) of a Transcript from diarization-skill speaker turns (diarization-skill/turns@1), with diarization-skill's own ASSIGN rule. No diarization here. Follows diarization-skill's speaker-id assignment rule and passes its conformance fixtures at the version in `rule`.",
+   "rule": {
+    "owner": "diarization-skill",
+    "spec": "https://github.com/kajisho5/diarization-skill/blob/main/docs/speaker_id_rule.md",
+    "method": "max_overlap_with_exclusive_turns",
+    "conformance_fixtures": "diarization-skill/speaker-id-conformance@1",
+    "conformance_fixture_version": "1"
+   },
    "input": {
     "transcript": "Transcript | path",
     "turns": "diarization-skill/turns@1 document | path",
@@ -220,6 +228,29 @@
    "output": {
     "transcript": "Transcript (speaker_id filled, speaker_assignment recorded)",
     "warnings": "list[str]"
+   },
+   "deterministic": true,
+   "side_effects": []
+  },
+  {
+   "name": "transcription/find",
+   "description": "Find a phrase in one or more Transcripts: every hit with its start and end, segment ids, word indices, speaker_id and neighbouring text. Exact, then normalized matching (NFKC width folding, casefold, long vowel marks, whitespace and punctuation ignored, across word and segment boundaries), then optional approximate matching labelled with its ratio. A read-only query: no margin, no cut range, no ranking.",
+   "input": {
+    "transcript": "Transcript | path (or transcripts)",
+    "transcripts": "list[Transcript | path] (1..100; or transcript)",
+    "phrase": "str (1..500 characters)",
+    "fuzzy": "0.5..1.0 | null (approximate matches with ratio >= fuzzy; phrase of at most 64 characters after folding)",
+    "context": "0..10 (neighbouring segments each side, default 1)"
+   },
+   "output": {
+    "phrase": "str",
+    "normalized_phrase": "str",
+    "normalization": "str",
+    "fuzzy": "number | null",
+    "context": "int",
+    "count": "int",
+    "hits": "list[{source, transcript_id, match: exact|normalized|approximate, ratio, start, end, timing: word|segment, segment_ids, word_indices (null when segment-timed), speaker_id, speaker_ids, text, segment_text, context: {before, after}}] (time order within each transcript, transcripts in the order given; empty when the phrase is not spoken)",
+    "transcripts": "list[{source, transcript_id, language, segments, words, word_timed, hits}]"
    },
    "deterministic": true,
    "side_effects": []

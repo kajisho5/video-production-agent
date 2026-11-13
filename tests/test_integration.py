@@ -826,7 +826,7 @@ class MediaAnalysisRealTests(unittest.TestCase):
         self.assertEqual(cap.status, "AVAILABLE", cap.evidence)
         self.assertEqual((cap.evidence["contract"], cap.evidence["execution"]), ("media-analysis/contract@1", "local_subprocess"))
         self.assertTrue(cap.evidence["version"].startswith(SUPPORTED_SKILL_VERSIONS), cap.evidence["version"])   # the installed release, inside the adapter's gate
-        self.assertEqual(len(cap.evidence["tools"]), 12)   # 0.1.7 (ADR-078): media-analysis/noise (noise_floor) is the tenth; 0.1.10 (ADR-097 addendum 6): media-analysis/style (edit_style); 0.1.16 (ADR-107 addendum 12): media-analysis/vad (speech_regions, not planned)
+        self.assertEqual(len(cap.evidence["tools"]), 14)   # 0.1.7 (ADR-078): media-analysis/noise (noise_floor) is the tenth; 0.1.10 (ADR-097 addendum 6): media-analysis/style (edit_style); 0.1.16 (ADR-107 addendum 12): media-analysis/vad (speech_regions, not planned); 0.1.18 (ADR-107 addendum 23): media-analysis/events and media-analysis/signals (audio_events, highlight_signals, not planned)
         self.assertIn("media-analysis/noise", cap.evidence["tools"]); self.assertIn("media-analysis/style", cap.evidence["tools"]); self.assertIn("media-analysis/vad", cap.evidence["tools"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["available"] and rows["ffmpeg-skill"]["available"])
@@ -3651,10 +3651,14 @@ class FaceRedactionRealTests(unittest.TestCase):
         doc = ad.doctor()
         self.assertTrue(doc["ready"].get("tracks"), doc.get("problems"))
         ev = ad.operation_evidence(doc)["FACES"]
+        ops = ad.operation_status(doc)
+        # roadmap step 33: TEXT / SHOTS follow the doctor's ready.text / ready.shots (Tesseract, PySceneDetect), each on its own
+        self.assertEqual({k: ops[k] for k in ("TEXT", "SHOTS")}, {k: "supported" if doc["ready"].get(r) and doc["ready"].get("video_frames") else "unavailable"
+                                                                  for k, r in (("TEXT", "text"), ("SHOTS", "shots"))})
         if os.environ.get("DETECTION_MODELS_DIR"):
-            self.assertEqual(ad.operation_status(doc), {"FACES": "supported"}, doc.get("problems"))
+            self.assertEqual(ops["FACES"], "supported", doc.get("problems"))
         else:
-            self.assertEqual(ad.operation_status(doc), {"FACES": "unavailable"})
+            self.assertEqual(ops["FACES"], "unavailable")
             self.assertIn(ev["code"], ("MODEL_NOT_FOUND", "ENGINE_UNAVAILABLE"))
             self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
 

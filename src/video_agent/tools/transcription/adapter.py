@@ -36,7 +36,7 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0.12.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
                                              # contract, now reporting the release version instead of a stale "0.2.0"
                                              # 0.8.0 (ADR-078): optional engine whisperx appended to engines; the tools / schemas the adapter uses are unchanged
                                              # 0.9.0 (ADR-107 addendum 2): every word carries `index`; dictionary words (opt-in, ja) carry `pos` / `timing`;
@@ -47,6 +47,9 @@ SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.")  #
                                              # forced-aligned word timestamps); the tools / schemas the adapter uses are unchanged
                                              # 0.11.2 / 0.11.3 (ADR-107 addendum 12): opt-in chunk_seconds / parallel / speech_regions inputs and
                                              # `transcribe --follow`; the agent sends none of them
+                                             # 0.12.0 (ADR-107 addendum 15): tool transcription/find and capability transcript_search
+                                             # added; transcribe, its schemas and the engines are unchanged. The agent runs find (step 33)
+                                             # 0.12.1 (addendum 15): `rule` added to transcription/speakers, a tool the agent does not call
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
@@ -78,6 +81,11 @@ _ENGINE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # diarization-skill's own ASSIGN rule, never into its cache); only then may a segment carry a speaker_id, and only an anonymous one of the turns
 TURNS_SCHEMA = "diarization-skill/turns@1"
 SPEAKERS_TOOL = "transcription/speakers"
+# roadmap step 33 (ADR-107 addendum 15): phrase -> every timed hit in a transcript (transcription-skill 0.12.0, its ADR-045). Read-only, standard library
+FIND_TOOL = "transcription/find"
+FIND_KIND = "transcript_hits"
+FIND_PARAMETERS = {"find_phrase": "phrase", "find_fuzzy": "fuzzy", "find_context": "context"}   # analysis request names -> the tool's input names
+FIND_RESULT_KEYS = ("phrase", "normalized_phrase", "normalization", "fuzzy", "context", "count", "hits", "transcripts")
 SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
 TURNS_KEYS = ("schema", "source", "speakers", "turns", "overlap", "engine", "parameters", "created_at", "speaker_count", "speech_seconds", "skill", "skill_version",
               "tool", "warnings", "duration", "processing_seconds", "counts")
@@ -170,7 +178,7 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.11.3.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.12.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
@@ -277,11 +285,15 @@ class TranscriptionAdapter(ToolAdapter):
         return package_from_contract(self.contract)
 
     def supports(self, tool: str) -> bool:
-        return tool == TRANSCRIBE_TOOL and tool in self.tools   # recognition only: segments / export / check are not measurement tools
+        # recognition, and (step 33) phrase search in a transcript the agent measured; segments / export / check are not measurement tools
+        return tool in (TRANSCRIBE_TOOL, FIND_TOOL) and tool in self.tools
 
     owns_cache = True   # the Skill owns the transcript cache (<workspace>/transcripts); the agent records its status as provenance only
 
     def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
+        if tool == FIND_TOOL:   # the transcript itself travels inline (never a path); the analyzer gives the one it measured for this asset
+            return {"asset_id": asset_id, "transcript": (parameters or {}).get("transcript"),
+                    **{FIND_PARAMETERS[k]: v for k, v in (parameters or {}).items() if k in FIND_PARAMETERS and v is not None}}
         declared = (self.tools.get(tool) or {}).get("input") or {}
         params = {k: v for k, v in (parameters or {}).items() if k in REQUEST_PARAMETER_KEYS and k in declared}
         budget = {k: v for k, v in (parameters or {}).items() if k in BUDGET_KEYS}
@@ -306,9 +318,39 @@ class TranscriptionAdapter(ToolAdapter):
         return os.path.realpath(os.path.abspath(raw))
 
     # ---- request construction (typed args → {"tool", "params"}; nothing else crosses the boundary)
+    def build_find_request(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Step 33: `transcription/find` on one transcript the agent measured (inline), with the phrase the user named, the Skill's own ranges
+        (phrase 1..500 characters, fuzzy 0.5..1.0, context 0..10) checked first. Nothing else crosses the boundary."""
+        unknown = sorted(k for k in args if k not in ("asset_id", "transcript", "phrase", "fuzzy", "context"))
+        if unknown:
+            raise ToolError(f"transcription: find takes no {', '.join(unknown)}")
+        tr = args.get("transcript")
+        if not isinstance(tr, dict) or tr.get("schema") != TRANSCRIPT_SCHEMA or not isinstance(tr.get("segments"), list):
+            raise ToolError(f"transcription: find needs a measured {TRANSCRIPT_SCHEMA} document")
+        phrase = args.get("phrase")
+        if not isinstance(phrase, str) or not phrase.strip() or len(phrase) > 500 or "\x00" in phrase:
+            raise ToolError("transcription: find needs a phrase of 1..500 characters")
+        params: Dict[str, Any] = {"transcript": tr, "phrase": phrase}
+        if args.get("fuzzy") is not None:
+            f = args["fuzzy"]
+            if isinstance(f, bool) or not isinstance(f, (int, float)) or not 0.5 <= float(f) <= 1.0:
+                raise ToolError("transcription: fuzzy must be a number in [0.5, 1.0]")
+            params["fuzzy"] = float(f)
+        if args.get("context") is not None:
+            c = args["context"]
+            if isinstance(c, bool) or not isinstance(c, int) or not 0 <= c <= 10:
+                raise ToolError("transcription: context must be an integer in [0, 10]")
+            params["context"] = c
+        return {"tool": FIND_TOOL, "params": params}
+
     def build_request(self, tool: str, args: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
         if not self.supports(tool):
             raise ToolError(f"transcription: unsupported tool {tool} (recognition only: {TRANSCRIBE_TOOL})")
+        if tool == FIND_TOOL:
+            for k in args:
+                if str(k).lower() in FORBIDDEN_ARG_KEYS:
+                    raise ToolError(f"transcription: refusing argument {k!r}")
+            return self.build_find_request(args)
         for k in args:
             if str(k).lower() in FORBIDDEN_ARG_KEYS:
                 raise ToolError(f"transcription: refusing argument {k!r} (commands, argv, executables, environment and credentials never cross the Skill boundary)")
@@ -416,6 +458,8 @@ class TranscriptionAdapter(ToolAdapter):
             req = self.build_request(op.tool, op.args, dry_run=dry_run)
         except ToolError as e:
             return ToolResult(op.id, op.tool, False, 2, None, {"error": {"code": "INVALID_INPUT", "message": str(e)}}, [], str(e), 0.0, attempt, dry_run)
+        if op.tool == FIND_TOOL:   # read-only and deterministic: no cache, no dry run of its own
+            return self._call_find(req, op, attempt, t0)
         cache_policy = str(op.args.get("cache_policy") or "use")
         if cache_policy == "only" and not dry_run:
             # the Skill has no cache-only mode: ask what would run; without a cached transcript nothing is recognised
@@ -467,6 +511,46 @@ class TranscriptionAdapter(ToolAdapter):
                           "model": (tr.get("provenance") or {}).get("model"), "model_version": (tr.get("provenance") or {}).get("model_version")}
         ops = [f"{tr['engine']}@{tr['engine_version']}: recognition ({(tr.get('provenance') or {}).get('execution_mode')})"]
         return ToolResult(op.id, op.tool, code == 0, code, None, data, ops, tail, secs, attempt, dry_run)
+
+    def _call_find(self, req: Dict[str, Any], op: Operation, attempt: int, t0: float) -> ToolResult:
+        """One `run -` of transcription/find. The result is admitted only when it is this phrase's search of this transcript: the tool, the phrase,
+        one transcript searched (its id), count equal to the hits, and every hit inside the transcript's duration with start <= end."""
+        code, out, err = self._invoke(["run", "-"], stdin=json.dumps(req, ensure_ascii=False), timeout=120.0)
+        tail = "\n".join(err.strip().splitlines()[-12:])
+        secs = round(time.time() - t0, 3)
+        try:
+            doc = _one_json_document(out)
+        except ToolError as e:
+            return ToolResult(op.id, op.tool, False, code or 9, None, {"error": {"code": "INVALID_RESULT", "message": str(e), "exit_code": code}}, [], tail, secs, attempt, False)
+        if doc.get("ok") is not True:
+            e = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+            return ToolResult(op.id, op.tool, False, code or 1, None, {"error": {"code": str(e.get("code") or "INVALID_RESULT"), "message": str(e.get("message") or tail)[:500],
+                                                                                "exit_code": code}, "skill": {"id": CONTRACT_ID, "version": self.version}}, [], tail, secs, attempt, False)
+        res = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+        tr = req["params"]["transcript"]
+        why: List[str] = []
+        if doc.get("tool") != FIND_TOOL:
+            why.append(f"response tool {doc.get('tool')!r} != {FIND_TOOL}")
+        if res.get("phrase") != req["params"]["phrase"]:
+            why.append("the result is about another phrase")
+        hits = res.get("hits")
+        if not isinstance(hits, list) or res.get("count") != len(hits):
+            why.append("hits is not a list of count entries")
+        else:
+            dur = tr.get("duration")
+            for h in hits:
+                h = h if isinstance(h, dict) else {}
+                if h.get("transcript_id") != tr.get("id") or not isinstance(h.get("start"), (int, float)) or not isinstance(h.get("end"), (int, float)) \
+                        or h["start"] > h["end"] or (isinstance(dur, (int, float)) and h["end"] > dur + 0.001):
+                    why.append(f"hit {h.get('start')!r}..{h.get('end')!r} is not a timed hit of this transcript")
+                    break
+        if [t.get("transcript_id") for t in res.get("transcripts") or [] if isinstance(t, dict)] != [tr.get("id")]:
+            why.append("the result searched another transcript")
+        if why:
+            return ToolResult(op.id, op.tool, False, 9, None, {"error": {"code": "INVALID_RESULT", "message": "; ".join(why)}}, [], tail, secs, attempt, False)
+        data = {"hits": {k: res.get(k) for k in FIND_RESULT_KEYS}, "skill": {"id": CONTRACT_ID, "version": self.version},
+                "transcript": {"id": tr.get("id"), "fingerprint": (tr.get("source") or {}).get("fingerprint")}}
+        return ToolResult(op.id, op.tool, code == 0, code, None, data, [f"{FIND_TOOL}: {res.get('count')} hit(s)"], tail, secs, attempt, False)
 
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         return self.run(Operation(tool=tool, args=args, inputs=[], outputs=[], kind="measure"), paths or {}, timeout=timeout)

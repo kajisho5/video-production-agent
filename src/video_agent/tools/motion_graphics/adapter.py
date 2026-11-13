@@ -56,7 +56,8 @@ CONTRACT_SCHEMA = "motion-graphics/contract@1"
 REQUEST_SCHEMA = "motion-graphics/request@1"
 RESPONSE_SCHEMA = "motion-graphics/response@1"
 DOCTOR_SCHEMA = "motion-graphics/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.")  # 0.2.x: the same contract, now reporting its release version (0.2.4 adds colors / alpha: false, ADR-067)
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.")  # 0.2.x: the same contract, now reporting its release version (0.2.4 adds colors / alpha: false, ADR-067)
+# 0.3.0 (ADR-107 addendum 19): a top-level `kit` block and the optional `options.kit?` of a shape request. Additive; the agent sends no kit.
 # 0.2.11 .. 0.2.16 (motion-graphics-skill #37 .. #42): element types logo / rendered_layer, style presets, text fit, themes, reserved regions;
 # `response` gains `conditional.reserved_regions` and `success.plan.warnings` (#41), a fatal key here until the re-pin. The pinned element types
 # are unchanged. Re-pinned from the v0.2.16 tag (ADR-097 addendum 6).
@@ -83,7 +84,7 @@ DRIFT_KEYS = ("schema", "skill_id", "version", "kind", "tools", "unsupported_ele
               "limits", "timeline", "execution", "ffmpeg_skill", "request", "response", "provenance", "work_dir", "image_formats", "schema_versions", "errors",
               "colors")   # ADR-067: 0.2.4's colour-name table, which the agent's planning reads from the pin
 DRIFT_ELEMENT_KEYS = ("type", "tool", "animation", "parameters", "required_capabilities", "deterministic")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.19.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

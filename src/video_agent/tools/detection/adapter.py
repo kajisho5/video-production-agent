@@ -24,7 +24,16 @@ the allowed roots, the files land in the workspace, `every` is in (0, 60] second
 is one `--flag=value` word and the input path comes after `--`. The result is admitted only when it is about this request: schemas,
 tools, Skill version, the fingerprint equal to the input's sha256, face labels null, the sampling and min_score requested, the tracks
 made from exactly the detections file written (its sha256), every redact rectangle even-sized inside the frame and inside the media,
-and each file on disk equal to the document printed. The Skill's error codes are kept verbatim with the agent's recovery class."""
+and each file on disk equal to the document printed. The Skill's error codes are kept verbatim with the agent's recovery class.
+
+Text and shots (ADR-090 addendum 1, roadmap step 33), measurements asked for explicitly (agent/measurements.py):
+    `detection text --json --overwrite --output=<workspace>/cache/detection/<asset>.text.json --every=S [--lang=L] [--min-score=X]
+     [--ffmpeg-skill=<dir>] --timeout=T -- <video>`        (Tesseract lines with their OCR text on sampled frames: analysis kind screen_text)
+    `detection shots --json --overwrite --output=<workspace>/cache/detection/<asset>.shots.json [--threshold=X] [--min-shot-frames=N]
+     [--ffmpeg-skill=<dir>] --timeout=T -- <video>`        (the frame-accurate shot table, detection-skill/shots@1: analysis kind shot_table)
+Each runs with the Skill's default engine (tesseract / pyscenedetect); the result is admitted only when it is about this request (schema,
+kind, tool, Skill version, the input's sha256, the sampling or parameters asked for, shots covering every frame in order) and the file on
+disk equals the printed document."""
 from __future__ import annotations
 
 import json
@@ -46,6 +55,15 @@ SKILL_ID = PACKAGE_ID
 PREFIX = SKILL_ID + "/"
 TOOL_FACES = "detection/faces"
 TOOL_TRACKS = "detection/tracks"
+TOOL_TEXT = "detection/text"                    # ADR-090 addendum 1: OCR lines on sampled frames (analysis kind screen_text)
+TOOL_SHOTS = "detection/shots"                  # ADR-090 addendum 1: the frame-accurate shot table (analysis kind shot_table)
+SHOTS_SCHEMA = "detection-skill/shots@1"
+TEXT_KIND = "screen_text"
+SHOT_KIND = "shot_table"
+# the analysis request's names of their parameters (media/analysis.py) → the Skill's own option names
+TEXT_PARAMETERS = {"text_every": "every", "text_lang": "lang", "text_min_score": "min_score"}
+SHOT_PARAMETERS = {"shot_threshold": "threshold", "shot_min_frames": "min_shot_frames"}
+LANG_RE = re.compile(r"^[a-z]{3}(?:_[a-z]{3,4})?(?:\+[a-z]{3}(?:_[a-z]{3,4})?){0,7}$")   # Tesseract language codes joined by + (jpn+eng, jpn_vert)
 DETECTIONS_SCHEMA = "detection-skill/detections@1"
 TRACKS_SCHEMA = "detection-skill/tracks@1"
 # 0.2.0 (detection-skill #15, main 0ff0be3, no release tag; ADR-107 addendum 8): optional engines for text (`--engine ppocrv6`) and objects
@@ -68,7 +86,7 @@ MAX_WINDOW = 3600.0
 # identity keys the Skill never writes on a face (its validator's rule); the agent refuses a result that carries one
 IDENTITY_KEYS = ("identity", "name", "person_id", "person", "embedding", "face_id", "recognized_as")
 # the per-operation capability `detection:<TYPE>` (resolver) ← the doctor's `ready`; FACES on a video also needs ffmpeg-skill frames
-OPERATION_TYPES = {"faces": "FACES"}
+OPERATION_TYPES = {"faces": "FACES", "text": "TEXT", "shots": "SHOTS"}
 DEFAULT_TIMEOUT = 3600.0                        # the Skill's own engine time limit (its --timeout default); the process gets a margin on top
 PROCESS_MARGIN = 120.0
 # detection-skill's error codes (its contract `errors`) → the agent's recovery class. A missing engine / model / ffmpeg-skill is TOOL_MISSING
@@ -115,7 +133,7 @@ def check_contract(contract: Any) -> List[str]:
     if not ver.startswith(SUPPORTED_SKILL_VERSIONS):
         errs.append(f"skill version {ver!r} not in supported range {SUPPORTED_SKILL_VERSIONS}")
     tools = {str(t.get("tool_id")): t for t in contract.get("tools") or [] if isinstance(t, dict)}
-    for tid, role in ((TOOL_FACES, "measurement"), (TOOL_TRACKS, "transformation")):
+    for tid, role in ((TOOL_FACES, "measurement"), (TOOL_TRACKS, "transformation"), (TOOL_TEXT, "measurement"), (TOOL_SHOTS, "measurement")):
         t = tools.get(tid)
         if t is None:
             errs.append(f"contract lacks tool {tid} (declares {sorted(tools)})")
@@ -123,6 +141,8 @@ def check_contract(contract: Any) -> List[str]:
             errs.append(f"tool {tid} must declare role {role}, writes_media false, mutates_input false")
     if as_dict(contract.get("detections")).get("schema") != DETECTIONS_SCHEMA:
         errs.append(f"detections.schema {as_dict(contract.get('detections')).get('schema')!r} != {DETECTIONS_SCHEMA}")
+    if as_dict(contract.get("shots")).get("schema") != SHOTS_SCHEMA:
+        errs.append(f"shots.schema {as_dict(contract.get('shots')).get('schema')!r} != {SHOTS_SCHEMA}")
     tr = as_dict(contract.get("tracks"))
     if tr.get("schema") != TRACKS_SCHEMA or tr.get("identity") is not False:
         errs.append(f"tracks must declare schema {TRACKS_SCHEMA} and identity false")
@@ -137,7 +157,7 @@ def check_contract(contract: Any) -> List[str]:
 
 
 def _used_tools(c: Dict[str, Any]) -> Dict[str, Any]:
-    return dict(c, tools=[t for t in c.get("tools") or [] if isinstance(t, dict) and t.get("tool_id") in (TOOL_FACES, TOOL_TRACKS)])
+    return dict(c, tools=[t for t in c.get("tools") or [] if isinstance(t, dict) and t.get("tool_id") in (TOOL_FACES, TOOL_TRACKS)])   # text / shots argv drift is reported, not fatal (0.1.x)
 
 
 def drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -162,7 +182,13 @@ PACKAGE = SkillPackage(
     capabilities=["detection"],
     tools=[ToolSpec(TOOL_FACES, SKILL_ID, description="Face boxes on sampled frames (detection-skill/detections@1, labels always null) linked into redact rectangles "
                                                        "(detection-skill/tracks@1)", required_capabilities=["detection:FACES"], inputs=["input"], produces_output=False,
-                    deterministic=False, result_keys=["detections", "tracks", "detections_file", "tracks_file", "engine", "warnings"])],
+                    deterministic=False, result_keys=["detections", "tracks", "detections_file", "tracks_file", "engine", "warnings"]),
+           ToolSpec(TOOL_TEXT, SKILL_ID, description="Text lines with their OCR text on sampled frames (detection-skill/detections@1, kind text)",
+                    required_capabilities=["detection:TEXT"], inputs=["input"], produces_output=False, deterministic=True,
+                    result_keys=["detections", "detections_file", "detections_sha256", "engine", "warnings"]),
+           ToolSpec(TOOL_SHOTS, SKILL_ID, description="Shot boundaries over every frame (detection-skill/shots@1): each shot's start / end in seconds and frames",
+                    required_capabilities=["detection:SHOTS"], inputs=["input"], produces_output=False, deterministic=True,
+                    result_keys=["shots", "shots_file", "shots_sha256", "engine", "warnings"])],
     repository="kajisho5/detection-skill", role="face / text / object detection (boxes in time, never an identity)")
 
 
@@ -291,6 +317,108 @@ def check_tracks(doc: Dict[str, Any], version: str, detections_sha256: str, face
     return errs
 
 
+def check_text_parameters(params: Dict[str, Any]) -> Dict[str, Any]:
+    """ADR-090 addendum 1: `every` (seconds, required), `lang` (Tesseract codes joined by +) and `min_score` as detection-skill's text command takes them."""
+    unknown = sorted(k for k in params if k not in TEXT_PARAMETERS.values())
+    if unknown:
+        raise ToolError(f"unknown detection text parameter(s): {', '.join(unknown)}")
+    out: Dict[str, Any] = {k: v for k, v in check_parameters({k: params[k] for k in ("every", "min_score") if k in params}).items()}
+    if params.get("lang") is not None:
+        if not isinstance(params["lang"], str) or not LANG_RE.match(params["lang"]):
+            raise ToolError(f"lang must be Tesseract language codes joined by + (e.g. jpn+eng), got {params['lang']!r}")
+        out["lang"] = params["lang"]
+    return out
+
+
+def check_shot_parameters(params: Dict[str, Any]) -> Dict[str, Any]:
+    """ADR-090 addendum 1: `threshold` (> 0, the default engine's content threshold) and `min_shot_frames` (an integer >= 1)."""
+    unknown = sorted(k for k in params if k not in SHOT_PARAMETERS.values())
+    if unknown:
+        raise ToolError(f"unknown detection shots parameter(s): {', '.join(unknown)}")
+    out: Dict[str, Any] = {}
+    if params.get("threshold") is not None:
+        if not _num(params["threshold"]) or not 0 < float(params["threshold"]) <= 255:
+            raise ToolError(f"threshold must be a number in (0, 255], got {params['threshold']!r}")
+        out["threshold"] = float(params["threshold"])
+    if params.get("min_shot_frames") is not None:
+        v = params["min_shot_frames"]
+        if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 100000:
+            raise ToolError(f"min_shot_frames must be an integer >= 1, got {v!r}")
+        out["min_shot_frames"] = v
+    return out
+
+
+def check_text(doc: Dict[str, Any], version: str, input_sha256: str, params: Dict[str, Any]) -> List[str]:
+    """Why a text document is not about this request (empty = admitted): detections@1 of kind text from detection/text, this input, the sampling asked for."""
+    if doc.get("schema") != DETECTIONS_SCHEMA:
+        return [f"schema {doc.get('schema')!r} != {DETECTIONS_SCHEMA}"]
+    errs: List[str] = []
+    if doc.get("kind") != "text" or doc.get("tool") != TOOL_TEXT or doc.get("skill") != "detection-skill" or str(doc.get("skill_version")) != version:
+        errs.append(f"result kind / tool / skill {doc.get('kind')!r} / {doc.get('tool')!r} / {doc.get('skill')!r}@{doc.get('skill_version')!r} is not text / {TOOL_TEXT}@{version}")
+    src = as_dict(doc.get("source"))
+    if strip_sha_prefix(src.get("fingerprint")) != input_sha256:
+        errs.append("source.fingerprint is not the sha256 of the input file")
+    samp = as_dict(doc.get("sampling"))
+    if samp.get("method") != "every" or not _num(samp.get("every")) or abs(float(samp["every"]) - params["every"]) > 1e-6:
+        errs.append(f"sampling {samp.get('method')!r} every {samp.get('every')!r} is not the requested every {params['every']:g}")
+    got = as_dict(doc.get("parameters"))
+    if "lang" in params and got.get("lang") != params["lang"]:
+        errs.append(f"parameters.lang {got.get('lang')!r} is not the requested {params['lang']!r}")
+    if "min_score" in params and (not _num(got.get("min_score")) or abs(float(got["min_score"]) - params["min_score"]) > 1e-6):
+        errs.append(f"parameters.min_score {got.get('min_score')!r} is not the requested {params['min_score']:g}")
+    frames = doc.get("frames")
+    if not isinstance(frames, list):
+        return errs + ["frames is not a list"]
+    prev = None
+    for fr in frames:
+        fr = as_dict(fr)
+        if not _num(fr.get("t")) or (prev is not None and fr["t"] <= prev):
+            return errs + [f"frame time {fr.get('t')!r} is not a strictly increasing number"]
+        prev = fr["t"]
+        for d in fr.get("detections") or []:
+            d = as_dict(d)
+            if d.get("kind") != "text" or not isinstance(d.get("label"), str):
+                return errs + [f"a detection at t={fr['t']} is not a text line with its text"]
+            if any(k in d for k in IDENTITY_KEYS):
+                return errs + ["a text line carries an identity key"]
+    return errs
+
+
+def check_shots(doc: Dict[str, Any], version: str, input_sha256: str, params: Dict[str, Any]) -> List[str]:
+    """Why a shots document is not about this request (empty = admitted): shots@1 from detection/shots on this input, the parameters asked for, and
+    contiguous shots covering every frame in order (frame and second boundaries consistent with the measured rate)."""
+    if doc.get("schema") != SHOTS_SCHEMA:
+        return [f"schema {doc.get('schema')!r} != {SHOTS_SCHEMA}"]
+    errs: List[str] = []
+    if doc.get("tool") != TOOL_SHOTS or doc.get("skill") != "detection-skill" or str(doc.get("skill_version")) != version:
+        errs.append(f"result tool / skill {doc.get('tool')!r} / {doc.get('skill')!r}@{doc.get('skill_version')!r} is not {TOOL_SHOTS}@{version}")
+    if strip_sha_prefix(as_dict(doc.get("source")).get("fingerprint")) != input_sha256:
+        errs.append("source.fingerprint is not the sha256 of the input file")
+    got = as_dict(doc.get("parameters"))
+    for k in ("threshold", "min_shot_frames"):
+        if k in params and (not _num(got.get(k)) or abs(float(got[k]) - float(params[k])) > 1e-6):
+            errs.append(f"parameters.{k} {got.get(k)!r} is not the requested {params[k]!r}")
+    fr = as_dict(doc.get("frames"))
+    rate, count = fr.get("frame_rate"), fr.get("frame_count")
+    if fr.get("method") != "every_frame" or not _num(rate) or float(rate) <= 0 or not isinstance(count, int) or count < 1:
+        return errs + ["frames is not every frame with a rate and a count"]
+    shots = doc.get("shots")
+    if not isinstance(shots, list) or not shots:
+        return errs + ["shots is not a non-empty list"]
+    nxt = 0
+    for sh in shots:
+        sh = as_dict(sh)
+        a, b = sh.get("start_frame"), sh.get("end_frame")
+        if not isinstance(a, int) or not isinstance(b, int) or a != nxt or b < a:
+            return errs + [f"shot {sh.get('id')!r} frames {a!r}..{b!r} do not continue at frame {nxt}"]
+        if not (_num(sh.get("start")) and _num(sh.get("end"))) or abs(float(sh["start"]) - a / float(rate)) > 0.002 or abs(float(sh["end"]) - (b + 1) / float(rate)) > 0.002:
+            return errs + [f"shot {sh.get('id')!r} times {sh.get('start')!r}..{sh.get('end')!r} are not its frames at {rate}"]
+        nxt = b + 1
+    if nxt != count:
+        errs.append(f"shots end at frame {nxt}, not at the frame count {count}")
+    return errs
+
+
 class DetectionAdapter(ToolAdapter):
     owns_cache = False   # the Skill keeps no cache: the agent's ObservationCache stores the result like any other measurement
 
@@ -307,7 +435,7 @@ class DetectionAdapter(ToolAdapter):
         if errs:
             raise ContractError("incompatible detection-skill contract: " + "; ".join(errs))
         self.version = str(self.contract.get("version"))
-        self.tools = {TOOL_FACES: True}
+        self.tools = {TOOL_FACES: True, TOOL_TEXT: True, TOOL_SHOTS: True}
         self.retryable = {c: bool(as_dict(v).get("retryable")) for c, v in as_dict(self.contract.get("errors")).items()}
         self._doctor: Optional[Dict[str, Any]] = None
 
@@ -341,7 +469,8 @@ class DetectionAdapter(ToolAdapter):
     def operation_status(self, doc: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         """`detection:FACES` from the doctor: faces on a video need YuNet (opencv + the model file) and ffmpeg-skill's frames."""
         ready = as_dict((doc or self.doctor()).get("ready"))
-        return {"FACES": "supported" if ready.get("faces") is True and ready.get("video_frames") is True else "unavailable"}
+        frames = ready.get("video_frames") is True
+        return {t: "supported" if ready.get(k) is True and frames else "unavailable" for k, t in OPERATION_TYPES.items()}
 
     def operation_evidence(self, doc: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
         """Why FACES is (not) ready, in the Skill's own words: the code its faces command would return (FFMPEG_SKILL_NOT_FOUND when
@@ -360,7 +489,22 @@ class DetectionAdapter(ToolAdapter):
                 inst = as_dict(checks.get(k)).get("install")
                 lines += [str(x) for x in inst] if isinstance(inst, list) else ([str(inst)] if inst else [])
             ev["install"] = " ".join(lines)[:600]
-        return {"FACES": ev}
+        out = {"FACES": ev}
+        # ADR-090 addendum 1: TEXT needs Tesseract and its tessdata; SHOTS needs PySceneDetect (its default engine); both need ffmpeg-skill's frames
+        for typ, key, needs in (("TEXT", "text", ("ffmpeg_skill", "tesseract", "tessdata")), ("SHOTS", "shots", ("ffmpeg_skill", "opencv", "numpy", "scenedetect"))):
+            e: Dict[str, Any] = {"ready": ready.get(key) is True and ready.get("video_frames") is True}
+            if not e["ready"]:
+                missing = [k for k in needs if as_dict(checks.get(k)).get("status") not in (None, "OK")]
+                e["code"] = "FFMPEG_SKILL_NOT_FOUND" if "ffmpeg_skill" in missing or ready.get("video_frames") is not True else \
+                    ("LANGUAGE_NOT_FOUND" if missing == ["tessdata"] else "ENGINE_UNAVAILABLE")
+                e["detail"] = "; ".join(str(p) for p in doc.get("problems") or [])[:300]
+                lines = []
+                for k in missing:
+                    inst = as_dict(checks.get(k)).get("install")
+                    lines += [str(x) for x in inst] if isinstance(inst, list) else ([str(inst)] if inst else [])
+                e["install"] = " ".join(lines)[:600]
+            out[typ] = e
+        return out
 
     def drift(self) -> List[str]:
         return drift(self.contract)
@@ -370,7 +514,7 @@ class DetectionAdapter(ToolAdapter):
 
     # ---- ToolAdapter
     def describe(self) -> Dict[str, Any]:
-        return {"name": self.name, "version": self.version, "skill": self.skill.describe(), "tools": [TOOL_FACES], "drift": self.drift()}
+        return {"name": self.name, "version": self.version, "skill": self.skill.describe(), "tools": [TOOL_FACES, TOOL_TEXT, TOOL_SHOTS], "drift": self.drift()}
 
     def package(self) -> SkillPackage:
         return SkillPackage(PACKAGE.skill_id, PACKAGE.name, self.version, PACKAGE.description, list(PACKAGE.capabilities),
@@ -380,6 +524,12 @@ class DetectionAdapter(ToolAdapter):
         return tool in self.tools
 
     def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
+        if kind == TEXT_KIND:
+            return {"input": path, "asset_id": asset_id, "measure": "text",
+                    "parameters": {TEXT_PARAMETERS[k]: v for k, v in (parameters or {}).items() if k in TEXT_PARAMETERS}}
+        if kind == SHOT_KIND:
+            return {"input": path, "asset_id": asset_id, "measure": "shots",
+                    "parameters": {SHOT_PARAMETERS[k]: v for k, v in (parameters or {}).items() if k in SHOT_PARAMETERS}}
         if kind == ATTR_KIND:
             return {"input": path, "asset_id": asset_id, "attributes": True,
                     "parameters": {ATTR_PARAMETERS[k]: v for k, v in (parameters or {}).items() if k in ATTR_PARAMETERS}}
@@ -390,6 +540,8 @@ class DetectionAdapter(ToolAdapter):
             b = self.build(op.args)
         except ToolError as e:
             return [f"<refused: {e}>"]
+        if b.get("measure"):
+            return [" ".join(["detection"] + b["argv"])]
         return [" ".join(["detection"] + argv) for argv in (b["faces_argv"], b["tracks_argv"]) if argv]
 
     def run(self, op: Operation, paths: Dict[str, str], timeout: Optional[float] = None, dry_run: bool = False, attempt: int = 1) -> ToolResult:
@@ -413,9 +565,11 @@ class DetectionAdapter(ToolAdapter):
         hit = scan_forbidden(args, FORBIDDEN_ARG_KEYS)
         if hit:
             raise ToolError(f"forbidden key {hit}")
-        unknown = sorted(k for k in args if k not in ("input", "asset_id", "parameters", "attributes"))
+        unknown = sorted(k for k in args if k not in ("input", "asset_id", "parameters", "attributes", "measure"))
         if unknown:
             raise ToolError(f"unknown detection argument(s): {', '.join(unknown)}")
+        if args.get("measure") is not None:
+            return self._build_measure(args, timeout)
         attributes = args.get("attributes", False)
         if attributes not in (True, False):
             raise ToolError("attributes must be true or false")
@@ -440,6 +594,63 @@ class DetectionAdapter(ToolAdapter):
         tracks = ["tracks", "--json", "--overwrite", f"--output={tracks_out}"] + ([f"--window={params['window']:g}"] if "window" in params else []) + ["--", faces_out]
         return {"faces_argv": faces, "tracks_argv": None if attributes else tracks, "input": src, "faces_out": faces_out, "tracks_out": None if attributes else tracks_out,
                 "out_dir": out_dir, "params": params, "timeout": t, "attributes": attributes}
+
+    def _build_measure(self, args: Dict[str, Any], timeout: Optional[float]) -> Dict[str, Any]:
+        """ADR-090 addendum 1: the argv of `detection text` or `detection shots` for one input (the Skill's default engine)."""
+        measure = args.get("measure")
+        if measure not in ("text", "shots") or args.get("attributes"):
+            raise ToolError(f"measure must be text or shots (without attributes), got {measure!r}")
+        if not self.workspace:
+            raise ToolError("detection needs the agent's workspace (its result file is written there)")
+        src = self._input(args.get("input"))
+        raw = dict(args.get("parameters") or {})
+        params = check_text_parameters(raw) if measure == "text" else check_shot_parameters(raw)
+        asset = str(args.get("asset_id") or "asset")
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", asset):
+            raise ToolError(f"invalid asset id {asset!r}")
+        out_dir = os.path.join(self.workspace, "cache", "detection")
+        out = os.path.join(out_dir, f"{asset}.{measure}.json")
+        t = max(1.0, min(86400.0, float(timeout or self.default_timeout)))
+        argv = [measure, "--json", "--overwrite", f"--output={out}"]
+        if measure == "text":
+            argv.append(f"--every={params['every']:g}")
+            if "lang" in params:
+                argv.append(f"--lang={params['lang']}")
+            if "min_score" in params:
+                argv.append(f"--min-score={params['min_score']:g}")
+        else:
+            if "threshold" in params:
+                argv.append(f"--threshold={params['threshold']:g}")
+            if "min_shot_frames" in params:
+                argv.append(f"--min-shot-frames={params['min_shot_frames']}")
+        if self.ffmpeg_skill_dir:
+            argv.append(f"--ffmpeg-skill={self.ffmpeg_skill_dir}")
+        argv += [f"--timeout={t:g}", "--", src]
+        return {"measure": measure, "argv": argv, "input": src, "out": out, "out_dir": out_dir, "params": params, "timeout": t}
+
+    def _run_measure(self, op: Operation, b: Dict[str, Any], dry_run: bool, attempt: int, t0: float) -> ToolResult:
+        measure = b["measure"]
+        commands = [" ".join(["detection"] + b["argv"])]
+        if dry_run:
+            return ToolResult(op.id, op.tool, True, 0, None, {"skill": {"id": SKILL_ID, "version": self.version}, "status": "dry_run", "commands": commands},
+                              commands, "", round(time.time() - t0, 3), attempt, True)
+        os.makedirs(b["out_dir"], exist_ok=True)
+        if os.path.exists(b["out"]):   # an earlier run's file must never pass for this run's
+            os.remove(b["out"])
+        doc, failed, tail = self._step(op, attempt, t0, b["argv"], b["timeout"], measure)
+        if failed is not None:
+            return failed
+        file_key = "detections_file" if measure == "text" else "shots_file"
+        body = {k: v for k, v in doc.items() if k not in ("ok", file_key)}
+        check = check_text if measure == "text" else check_shots
+        why = check(body, self.version, sha256_file(b["input"]), b["params"])
+        if _read_json(b["out"]) != body:
+            why.append(f"the {measure} file on disk is not the document the Skill printed")
+        if why:
+            return self._fail(op, attempt, dry_run, t0, 9, "INVALID_OUTPUT", f"detection {measure} result not admitted: " + "; ".join(why))
+        data = {"skill": {"id": SKILL_ID, "version": self.version}, "status": "ok", "measure": measure, measure: body, f"{measure}_file": b["out"],
+                f"{measure}_sha256": sha256_file(b["out"]), "engine": as_dict(body.get("engine")), "warnings": [str(w)[:600] for w in body.get("warnings") or []], "commands": commands}
+        return ToolResult(op.id, op.tool, True, 0, None, data, commands, tail, round(time.time() - t0, 3), attempt, False)
 
     # ---- execution
     def _fail(self, op: Operation, attempt: int, dry_run: bool, t0: float, exit_code: int, code: str, message: str, retryable: bool = False,
@@ -472,12 +683,17 @@ class DetectionAdapter(ToolAdapter):
 
     def _measure(self, op: Operation, timeout: Optional[float], dry_run: bool, attempt: int) -> ToolResult:
         t0 = time.time()
-        if op.tool != TOOL_FACES:
+        want = {TOOL_TEXT: "text", TOOL_SHOTS: "shots"}.get(op.tool)
+        if op.tool != TOOL_FACES and want is None:
             return self._fail(op, attempt, dry_run, t0, 2, "INVALID_REQUEST", f"{SKILL_ID} adapter does not support {op.tool}")
+        if (op.args or {}).get("measure") != want:
+            return self._fail(op, attempt, dry_run, t0, 2, "INVALID_REQUEST", f"{op.tool} measures {want or 'faces'}, the request asks for {(op.args or {}).get('measure') or 'faces'}")
         try:
             b = self.build(op.args, timeout)
         except ToolError as e:
             return self._fail(op, attempt, dry_run, t0, 2, "INVALID_REQUEST", str(e))
+        if want is not None:
+            return self._run_measure(op, b, dry_run, attempt, t0)
         commands = [" ".join(["detection"] + argv) for argv in (b["faces_argv"], b["tracks_argv"]) if argv]
         if dry_run:
             return ToolResult(op.id, op.tool, True, 0, None, {"skill": {"id": SKILL_ID, "version": self.version}, "status": "dry_run", "commands": commands},

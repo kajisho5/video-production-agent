@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, several delivery loudness versions in one run, stems (dialogue / music / effects files that sum to the mix), mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -1263,6 +1263,18 @@
   ],
   "filler_lexicons": {
     "presets": {
+      "en": [
+        "um",
+        "umm",
+        "uh",
+        "uhh",
+        "uhm",
+        "erm",
+        "er",
+        "hmm",
+        "mm",
+        "ah"
+      ],
       "ja": [
         "\u3048\u30fc",
         "\u3048\u30fc\u3068",
@@ -1275,22 +1287,19 @@
         "\u3046\u30fc\u3093",
         "\u3093\u30fc",
         "\u3048\u3048\u3068"
-      ],
-      "en": [
-        "um",
-        "umm",
-        "uh",
-        "uhh",
-        "uhm",
-        "erm",
-        "er",
-        "hmm",
-        "mm",
-        "ah"
       ]
     },
     "default": "none: FILLER_REMOVE.lexicon is required",
-    "matching": "exact on normalised text (NFKC, case-folded, punctuation and whitespace dropped, long-vowel marks unified); runs of up to 3 tokens at most 0.05s apart count as one word; the longest run wins"
+    "matching": "exact on normalised text (NFKC, case-folded, punctuation and whitespace dropped, long-vowel marks unified); runs of up to 3 tokens at most 0.05s apart count as one word; the longest run wins",
+    "opt_in": {
+      "ja-ambiguous": [
+        "\u3042\u306e",
+        "\u305d\u306e",
+        "\u307e\u3042",
+        "\u306a\u3093\u304b"
+      ]
+    },
+    "opt_in_use": "not presets and never a default: words that are also ordinary words. A caller who wants one list cut copies it into FILLER_REMOVE.lexicon.words. Every token (or run of touching tokens) equal to one of them is cut, whatever it means in the sentence; a longer token that contains one (\"\u3042\u306e\u4eba\") is kept. Each such removal is a warning and is listed in measurements.filler_remove.ambiguous"
   },
   "unsupported_operations": [
     {

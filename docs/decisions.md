@@ -787,6 +787,26 @@
 - 決定（実行）: 計画は 3 step（`face_redact_segment` → `face_redact_blur` → `face_redact_composite`）と IR `video.redact_faces`（入力は元の asset そのもの）。compiler は入力ごとの処理の先頭（trim より前: 矩形は元の時間軸の上にある）で、区間ごとに `cut --segments s-e --accurate`、その切片に有効な矩形ごとに `redact --x --y --width --height --mode [...]`、最後に 1 回の `broll <元> --insert <切片>… --at s… --end e… --audio a` に lower する。broll の出力（元と同じ長さ・元の音）の上で trim・編集・仕上げ・納品が続く。ffmpeg-skill の catalog に `broll`（`insert` は新しい型 `list[path_in]`、入力ごとに path policy を検査）を足した（ADR-056 の contract 照合の対象）。compiler は step の tool 名が cut / redact / broll であることだけを確かめ、tool id は registry から来る。validator は op の語彙・元の asset であること・区間が時間順で重ならず media 内・矩形が偶数の整数で probe の frame 内・mode と parameter を検査し、3 つの step の存在を求める。
 - 検証: `tests/test_face_redaction.py`（27 件、unit job。`tests/fake_detection.py` が contract / doctor / faces / tracks を話す）: pin の形式・check_contract・拒否される contract・drift の分類・locate・catalog の broll、capability（ready・model 無し・frame 無しの code と install、doctor に agent の ffmpeg-skill）、argv の形、起動前の拒否、本物でない結果の拒否 6 種、code の保持、plan step で走らないこと、依頼 key の検査と brief、区間の純関数、plan（CONFIRM の提案と 3 step、明示要求でも CONFIRM、承認前は何もぼかさず承認後に cut → redact → … → broll、trim は合成の後を読む、provenance の decision）、顔無しの KEEP、無い / ready でない時の handoff、失敗の BLOCK、区間の上限、改ざんした IR、reject → revise。evals 157-158。integration `FaceRedactionRealTests`（detection-skill main + ffmpeg-skill main / v2.24.1: live contract = pin、doctor、YuNet の実 model で detection-skill の fixture astronaut.jpg を 2〜5 秒だけ映した 8 秒の動画を plan → 承認前は render しない → 承認後に render、出力は 8 秒、顔の矩形の中だけが顔の時間に変わり、その外と前後の時間は変わらない）。CI の integration job は detection-skill を `[faces]` で入れ、YuNet の file を sha256 で固定して取得する（detection-skill 自身の CI と同じ）。
 - 対象外: 文字（名札・画面）・物体の redaction（detection-skill の text / objects、別の明示要求）、track の間の補間（Skill の heuristic のまま、測られていない時間は extend だけ）、回転した source の座標変換、ぼかした後の自動の再検出による確認（人が確認する）。
+- Addendum 1 (2026-11-13, roadmap step 33): text on screen and the shot table, asked for by name; `visual_detection` removed.
+  - Facts: the ownership audit of 2026-11-12 found two detection-skill tools that ship with no SkillSpec here: `detection/text` (Tesseract lines with their OCR text on sampled frames, detections@1 of kind text) and `detection/shots` (a frame-accurate shot table over every frame, shots@1; detection-skill owns ショット検出). Both are in the 0.2.2 pin. ADR-057's `visual_detection` handoff named `detection/detect`, which detection-skill does not have.
+  - Decision:
+    - Two SkillSpecs. `text_detection` (`detection/text`, analysis kind `screen_text`) needs `detection:TEXT` (the doctor's `ready.text` and `ready.video_frames`). `shot_detection` (`detection/shots`, analysis kind `shot_table`) needs `detection:SHOTS` (`ready.shots`). The doctor's install lines and the code the command would return are the evidence when either is missing.
+    - Explicit keys only (`agent/measurements.py`), never a brief key, a stored preference or a default:
+      - `text.detect=true` (+ `text.every`, 1 s by default; `text.lang`; `text.min_score`);
+      - `shots.detect=true` (+ `shots.threshold`, `shots.min_shot_frames`).
+    - Each uses the Skill's default engine. ffmpeg-skill `scenes` stays the fast cut list (`scene_detection`), and no default provider changes.
+    - The adapter checks every value before a process starts. It admits a result only when the result is about this request: schema, kind, tool, version, the input's sha256, the sampling or parameters asked for, shots that cover every frame in order, and the file on disk equal to the printed document.
+    - `screen_text` keeps every line (time, text, box, score, language). `shot_table` keeps the shots and boundaries as measured.
+    - Without the Skill or its engine, the measurement takes the `speakers.diarize` route (`decide_measurement_handoffs`): the ask, a BLOCK with the registry's reason, and a handoff naming detection-skill.
+    - `visual_detection` leaves ECOSYSTEM_JOB_SKILLS. `job.visual_detection` is refused with how text, shots and faces are asked for.
+  - Not done:
+    - The text going to diarization's `name` (diarization-skill's naming of voiceprints, an op the agent does not call) and to the transcription vocabulary. The plan has no rule yet for which on-screen words become a prompt; that would be an inference, and it needs its own CONFIRM.
+    - The edit view of step 14.
+    - Objects.
+  - Verification:
+    - `tests/test_measurements.py`, in the unit job. The fake detection process now speaks `text` and `shots`. Covered: requirement parsing and refusals; argv; admission and refusals; readiness from the doctor; plans that measure, plans that hand off, and plans that measure nothing without the keys.
+    - `tests/test_ai_host.py::test_visual_detection_moved_to_the_detection_measurements`.
+    - Against the real detection-skill (main 9e2f732, 0.2.2; Tesseract 5, PySceneDetect), `RealSkillTests` reads "HELLO WORLD" from a rendered card and finds the cut at 2.0 s of a 4 s clip. It runs locally and skips in CI, which has neither engine.
 
 ## ADR-091 slide-sync-skill を analysis kind `slide_timeline` として配線する。`slides.detect=true` を明示した時だけ測り、deck を名指しされれば同じ測定の中で import と match も呼ぶ。測った slide は Observation と SlideEvent にし、何も決めない（slide-sync-skill の ECOSYSTEM_ROADMAP step 6「(agent side) adapter」、2026-10-31）
 - 事実（slide-sync-skill main 0bb14c8、0.1.0、release tag なし）: `slide-sync detect <video> [--threshold X] [--min-dwell S] [-o F] [--ffmpeg-skill D] [--timeout T] --json` は `slide-sync/timeline@1`（slides {index, start, end, duration}、changes、detector の threshold / min_dwell / engine の版、`source.path` = 入力の絶対 path、provenance OBSERVED）を出す。`import <deck> -o <dir>` は page ごとの PNG と text と `deck.json`（`slide-sync/deck@1`、deck の sha256、page ごとの text layer の文字数）を書き、`match <video> --deck <dir> --timeline <F>` は `slide-sync/match@1`（slide ごとの page / confidence / margin / view / reason。確信が無ければ page null と reason）を出す。contract は detect / import / match を role `measurement`、detect と match は writes_media false、import は自分の出力 dir に PNG を書く（mutates_input false）と宣言し、`execution` は shell / network false・入力 read-only。doctor は engine（ffmpeg-skill）の ok と import の ready（pdf = pypdfium2、pptx_key_odp = その上に LibreOffice）を返し、engine が駄目なら exit 3。失敗は `{ok: false, error: {code, message, detail}}`。sha256 を返すのは deck だけで、timeline は入力を path で名指す。
@@ -947,6 +967,16 @@
   - CONDENSE の `{speed: factor}` の rule と `output: removed`（切る区間だけの確認用 file）（ADR-099）: speed の rule は承認した区間を速めて残すので kept range の算術（字幕・timeline record・QA の尺）が変わる。確認用 file は deliverable でない成果物の扱いが要る。lowering はある。
   - subtitle の `placement.faces` / `reframe`（ADR-101）: detection-skill の顔の文書を workspace の中に用意して渡す段が要る。
 - 検証: unit `tests/test_edit_style.py`（kind の parameter = contract、fake media-analysis で plan の tool 選択と OBSERVED の Observation、filter が無い時は選ばれない）、`tests/test_unit.py` の kind の一覧と数。integration `MediaAnalysisRealTests.test_all_kinds_lifted_with_provenance_and_skill_cache` に edit_style を足した（実 Skill: tool、profile_schema、1 shot の clip で cut 0）。
+- Addendum 1 (2026-11-13, roadmap step 33): speech regions, asked for by name.
+  - Facts: media-analysis-skill 0.1.16 (pinned, ADR-107 addendum 12) ships kind `speech_regions` (tool `media-analysis/vad`, a voice-activity model, its optional extra `vad`; media-analysis owns 発話区間). No SkillSpec cited it.
+  - Decision:
+    - SkillSpec `speech_region_analysis` (`media-analysis/vad`, analysis kind `speech_regions`, the Skill's own defaults), lifted like every media-analysis observation.
+    - Asked for only with `--set speech_regions.detect=true` (`agent/measurements.py`).
+    - Without media-analysis-skill, the measurement is handed off like the detection kinds. Without the `vad` extra, the Skill answers with its own code and the plan BLOCKs on it.
+  - Not done: handing the regions to transcription-skill's `transcribe(speech_regions=...)`. The Skill takes them only with `chunk_seconds` and a language, a transcribe option this agent does not send yet (ADR-113 would gain `transcribe.chunk_seconds` with its dry-run check).
+  - Verification:
+    - `tests/test_measurements.py::SpeechRegionTests`: the fake media-analysis process measures it, a plan without the key measures nothing, and without the Skill it is handed off.
+    - `RealSkillTests::test_speech_regions_on_a_rendered_file` runs on the real Skill where the vad extra is installed; it is MEASURED locally.
 
 ## ADR-104 thumbnail-skill 0.1.12〜0.1.15 の `choose_frame`・`place_text`・`render_variants`・`render_layers`・`render_batch` を計画と実行に配線する: 顔の順位で選ぶ frame（`thumbnail.at=faces`）、顔を避ける caption（`thumbnail.avoid_faces`）、A/B の案（`thumbnail.variants`）、layer の PNG と manifest（`thumbnail.layers`）、表の行 × platform preset の一括（`thumbnail.batch`）（ADR-103 の follow-up、2026-11-07）
 - 事実（pin `thumbnail/contract_0.1.15.json`、thumbnail-skill v0.1.15 の実装）: `choose_frame`（role ranking、media を書かない）は detection-skill の `faces --attributes` の文書（detections@1）の sampled frame を、目が開いている frame を先に、`eyes_open 0.30 / sharpness 0.25 / exposure 0.15 / frontal 0.15 / size 0.15` の式で順位付けし、各 frame の顔の箱（frame_size の pixel）・部分点・欠けた部分を返す。`video` を渡すと文書の source.fingerprint と照合する。`place_text`（role layout）は文書の text element を、image element の crop / fit / position を通して canvas に写した顔の箱から margin だけ離れ、canvas の中に収まる最初の候補位置（既定は 8 か所）へ動かした文書と placement を返し、どこも空いていなければ VALIDATION_ERROR（`no_position_clear_of_faces`）。`render_variants` は文書の text の layout・palette・frame を軸に N 案（`<stem>-v1..vN`、1 案目は文書どおり）を描き、各案の文字の高さ（phone_width 320 px 換算）と contrast（qc-skill の text legibility）を検査して下回る案を `flagged` で報告する（落とさない、勝者を選ばない）。`render_layers` は thumbnail に加えて合成した layer ごとの RGBA PNG と `layers.json`（`thumbnail-skill/layers@1`）を書き、disk から読み戻した layer で thumbnail を pixel 単位で再構成できることを確かめる。`render_batch` は CSV（utf-8 既定、cp932 は opt-in）の行ごと・preset（`platform_presets`、1〜4 個）ごとに 1 枚、`{{column}}` を text に差し込み、`text_fit` で文字を max_width まで縮める（切らない・折り返さない）。各 file は render と同じ出力検査と preset の検査を通る。
@@ -1190,6 +1220,96 @@
     - unit `tests/test_dubbing.py`: pin 0.2.1; `terms --transcript` is pinned and `terms` is not in `TOOLS`; a 0.2.0 contract is not breaking drift.
     - unit `tests/test_release_version.py` and `tests/test_version_gates.py`.
     - Locally on the real Skills (remotion-ffmpeg-skill v0.13.0, dubbing-skill f929f4a, ffmpeg-skill main): `RemotionRealTests` and `DubbingRealTests` pass, and live == pin.
+- Addendum 15 (2026-11-13, transcription-skill v0.12.0 / v0.12.1): a re-pin, a widened gate, and `transcription/find` wired (roadmap step 33).
+  - Facts:
+    - transcription-skill released v0.12.0 (9494f75, after #59 625beab, its ADR-045 and roadmap step 16) while step 33 was open. It adds the tool `transcription/find`: a phrase gives every timed hit (start / end, segment ids, word indices, speaker id, context). It is read-only and standard library only. The release also adds the capability `transcript_search`.
+    - transcribe, the schemas and the engines are unchanged.
+    - v0.12.1 (1adbefc) adds `rule` to the `transcription/speakers` tool, which the agent does not call (it merges turns through transcribe's `speaker_turns`). Nothing else changed.
+    - The version is outside the gate (`0.11.`), so every integration shard that builds a TranscriptionAdapter failed on main.
+  - Decision, re-pin:
+    - `contract_0.12.1.json` replaces `contract_0.11.3.json`. It is the v0.12.1 tag's `contract --json` with the pin's availability-free engine entries, written with indent 1.
+    - The same method reproduces the 0.11.3 pin byte for byte. The tag's engines equal 0.11.3's.
+    - The gate adds `0.12.` (0.13 and 1.x are still refused). The contract change is additive.
+  - Decision, wiring:
+    - `--set transcript.find=<phrase>` (+ `transcript.find.fuzzy` 0.5..1, `transcript.find.context` 0..10) is explicit only, never a brief key.
+    - It measures the transcript, then runs SkillSpec `transcript_search` (`transcription/find`, analysis kind `transcript_hits`) on the transcript measured for the same input. The transcript is sent inline, never as a path.
+    - A result is admitted only when it searched this phrase in this transcript: tool, phrase, the one transcript id, count equal to the hits, and every hit inside the transcript's duration.
+    - The observation keeps the hits and records which transcript observation was searched.
+    - Without transcription-skill 0.12, the plan hands the search off, like the other step-33 measurements.
+    - Nothing is cut or ranked from the hits here. Paper edit (step 28) and the edit view (step 14) can read them later.
+  - Verification:
+    - unit `tests/test_measurements.py::TranscriptSearchTests`: vocabulary and refusals, hits from the measured transcript, a result about another phrase refused (BLOCK), the handoff, and adapter refusals before any process.
+    - `tests/test_version_gates.py`: 0.12.x accepted, 0.13.0 refused.
+    - `RealSkillTests::test_find_on_the_real_transcription_skill`: the v0.12.1 tree finds "Hello" twice in a word-timed transcript its validator accepts, with word indices. Run locally and in CI's shard 1.
+    - `TranscriptionRealTests` passes locally against the v0.12.1 tree.
+- Addendum 16 (2026-11-13, qc-skill v1.4.0): a re-pin and a widened gate, needed to keep CI green.
+  - Facts:
+    - qc-skill released v1.4.0 (9c61ed7, after #35, its ADR-026 / 027 / 028) while step 33's PR was open. It adds opt-in video loop-seam, alpha-edge and key / fill checks: the rules `video_loop_seam`, `video_alpha_edge` and `video_key_fill`, their checks, findings and measurements, the input `key_file`, and a `video_material` block.
+    - `errors`, `operations`, `kinds`, `statuses` and `execution` are unchanged.
+    - The version is outside the gate (`1.3.`). As a result, `QcRealSkillTests` errored in CI shard 1, and the stinger QA of `VideoEditingFeaturesRealTests` came back WARN ("qc-skill is not installed or not usable here") in shard 4.
+  - Decision:
+    - `contract_1.4.0.json` replaces `contract_1.3.0.json`. It is the v1.4.0 tag's `contract --json`, written as one line with sorted keys, ASCII escapes and compact separators.
+    - The same method reproduces the 1.3.0 pin byte for byte.
+    - The gate adds `1.4.` (1.5 and 2.x are still refused).
+    - The request the adapter sends and the report it admits are unchanged. The new checks are not wired.
+  - Verification:
+    - unit `tests/test_adapter_qc.py` and `tests/test_version_gates.py`.
+    - `QcRealSkillTests` passes locally against the v1.4.0 tree.
+- Addendum 17 (2026-11-13, audio-production-skill v1.3.0): a re-pin and a widened gate, needed to keep CI green.
+  - Facts:
+    - audio-production-skill released v1.3.0 (5b0beaa, after #35 b0b6df0) while step 33's PR was open. It adds the opt-in `filler_lexicons.opt_in` and `filler_lexicons.opt_in_use`: a lexicon (`ja-ambiguous`) used by FILLER_REMOVE only when a request names it.
+    - Compared field by field with the 1.2.0 pin, nothing else changed besides `version` / `tools[0].version`. `operations`, the request and the response are unchanged.
+    - The version is outside the gate (`1.2.`). As a result, every `AudioProductionRealTests` test failed in CI shard 3, and `SoundDesignBgmRealTests` / `VoiceEnhanceRealTests` failed in shard 1 (`required capability MISSING: audio-production`).
+  - Decision:
+    - `contract_1.3.0.json` replaces `contract_1.2.0.json`. It is the v1.3.0 tag's `skill --json` output, unchanged (indent 2). The same method reproduces the 1.2.0 pin from v1.2.0 byte for byte.
+    - The gate adds `1.3.` (1.4 and 2.x are still refused).
+    - The agent sends no `opt_in` lexicon. FILLER_REMOVE's request is unchanged.
+  - Verification: unit `tests/test_version_gates.py` (1.3.x accepted, 1.4.0 refused), `tests/test_unit.py`, `tests/test_satellite_params.py`; `AudioProductionRealTests`, `SoundDesignBgmRealTests` and `VoiceEnhanceRealTests` pass locally against the v1.3.0 tree.
+- Addendum 18 (2026-11-13, publish-skill v0.2.0): a re-pin and a widened gate. The plan verdict for duration and file size is now publish-skill's alone.
+  - Facts:
+    - publish-skill released v0.2.0 (f0f0dc5, #24, its ADR-015 and roadmap step 12). `publish plan`'s verdict for duration and file size now comes only from publish-skill's own limit table (`video.max_duration_s`, `video.max_bytes`, each cited).
+    - ffmpeg-skill check's `duration` and `file size` rows are still shown, as guidance: `basis: "guidance"`, `in_verdict: false`, and a `guidance` note naming the limit that decides. They are left out of the verdict and the counts. Every other ffmpeg-skill row counts as before.
+    - Every plan row now has `in_verdict`, and a row tied to the limit table has `limit_status`. `counts` gains `guidance`. The contract adds `verdict_rows` to the `publish/plan` tool. The schema `publish/plan@1`, `verdicts`, `row_statuses` and `contract_version` are unchanged.
+    - The version is outside the gate (`0.1.`). As a result, `PublishRealTests` errored in CI shard 1.
+  - Decision, re-pin:
+    - `contract_0.2.0.json` replaces `contract_0.1.0.json`. It is the v0.2.0 tag's `contract --json` as one line with sorted keys, compact separators and no ASCII escapes. The same method reproduces the 0.1.0 pin from v0.1.0 byte for byte.
+    - The gate adds `0.2.` (0.3 and 1.x are still refused).
+  - Decision, behaviour (the owner decided: publish-skill owns upload limits):
+    - The agent takes the plan's verdict as publish-skill reports it. PASS / WARN go on to the dry run, FAIL / INCOMPLETE block, as before. The agent never re-decides from a guidance row.
+    - `publish.json` keeps the non-PASS rows that count (`in_verdict` not false) under `plan.rows`, the rows the BLOCK reason says to fix. Non-PASS guidance rows go under `plan.guidance`. Before 0.2.0, a FAIL on ffmpeg-skill's duration row (for example X's 140 s) failed the plan and was named as a row to fix. Now publish-skill's own limit decides, and that row is guidance only.
+    - No test expected an ffmpeg-skill duration FAIL to fail the plan. `PublishRealTests` asserts only that the verdict is PASS / WARN / INCOMPLETE for a 3 s 720p file, which holds under both versions.
+  - Verification:
+    - unit `tests/test_publish.py`: pin 0.2.0, 0.3.0 refused. The new `test_ffmpeg_guidance_rows_do_not_decide_the_publish` covers two cases. In the first, the fake reports ffmpeg-skill's duration row as a FAIL guidance row (`in_verdict: false`) under a PASS verdict: the agent goes on to the dry run, `plan.rows` is empty and the row is in `plan.guidance`. In the second, a FAIL verdict still blocks and names only the row that counts. `tests/fake_publish.py` speaks the 0.2.0 row shape (`in_verdict`, `limit_status`, guidance rows, `counts.guidance`).
+    - Locally, the real v0.2.0 plan of a 150 s 720p file for X: verdict WARN (only from ffmpeg-skill's counted subtitle row), ffmpeg-skill's duration row WARN with `in_verdict: false`, `counts.guidance` 2. `PublishRealTests` passes against the v0.2.0 tree.
+- Addendum 19 (2026-11-13, motion-graphics-skill v0.3.0): a re-pin and a widened gate, so agent main stops drifting.
+  - Facts: motion-graphics-skill released v0.3.0 (f302830, after #47 7b9dba0). It adds a kit@1 brand kit reader: a top-level `kit` block and the optional `options.kit?` of a shape request. Compared field by field with the 0.2.19 pin, nothing else changed besides `version` / `tools[0].version`. 0.2.20 was a docs release. The version is outside the gate (`0.1.` / `0.2.`).
+  - Decision: `contract_0.3.0.json` replaces `contract_0.2.19.json`. It is the v0.3.0 tag's `skill --json` output, unchanged. The same method reproduces the 0.2.19 pin from v0.2.19 byte for byte. `agent/finishing.py` reads the new file too. The gate adds `0.3.`. No request sends `kit`: brand kits are for a later step.
+  - Verification: unit `tests/test_version_gates.py` (0.2.20 / 0.3.x accepted, 0.4.0 refused) and `tests/test_adapter_motion_graphics.py`; `MotionGraphicsFeaturesRealTests` and `test_adapter_motion_graphics.RealSkillTests` pass locally against the v0.3.0 tree.
+- Addendum 20 (2026-11-13, subtitle-skill v0.10.0): a re-pin and a widened gate, so agent main stops drifting.
+  - Facts: subtitle-skill released v0.10.0 (c1d699d, after #39 91d2dcf). Render gains animated captions from cues through ffmpeg-skill caption: the optional inputs `animate?` and `karaoke?`, the output `animation?`, two render parameters, a longer render description, and `capabilities.animated_captions`. Nothing else changed besides `version`. 0.9.2 was a docs release. The version is outside the gate (`0.9.`).
+  - Decision: `contract_0.10.0.json` replaces `contract_0.9.1.json`. It is the v0.10.0 tag's `contract --json` output, unchanged (one sorted line). The same method reproduces the 0.9.1 pin from v0.9.1 byte for byte. `agent/subtitles.py` reads the new file too. The gate adds `0.10.`. The adapter sends neither `animate` nor `karaoke`: animated captions are for a later step.
+  - Verification: unit `tests/test_version_gates.py` (0.10.x accepted, 0.11.0 refused), `tests/test_release_version.py` and `tests/test_adapter_subtitle.py`; `SubtitleMuxRealTests`, `SubtitleFeaturesRealTests` and `test_adapter_subtitle.RealSkillTests` pass locally against the v0.10.0 tree.
+- Addendum 21 (2026-11-13, hyperframes-skill v0.9.0): a re-pin and a widened gate, so agent main stops drifting.
+  - Facts: hyperframes-skill released v0.9.0 (a7ec99d, after #23 551237d, its roadmap steps 15 and 17). It adds the scene request keys `stinger` and `title`, five stinger templates (`template`'s description), `hfs-material.json` in the scene directory, and `stinger` / `sidecar` in the results of render and batch, with `<name>.title.json` / `<name>.stinger.json` beside a batch row. The `codec` enum the html_scene_render handoff reads is unchanged. The version is outside the gate (`0.8.`).
+  - Decision: `skills/pins/hyperframes-skill_0.9.0.json` replaces `hyperframes-skill_0.8.1.json`. It is the v0.9.0 tag's `contract --json` as one line with sorted keys and compact separators. The same method reproduces the 0.8.1 pin from v0.8.1 byte for byte. The adapter's `PIN_VERSION` and the handoff pin read it. The gate adds `0.9.`. The scene request the adapter sends and the result it admits are unchanged. No request sends `stinger` or `title`: they are for a later step.
+  - Verification: unit `tests/test_html_layer.py` (0.9.x accepted, 0.10.0 refused) and `tests/test_handoff_contracts.py`; `HtmlLayerRealSkillTests` (contract and doctor; the render tests skip without Chromium) and `HandoffPinLiveTests.test_hyperframes_skill` pass locally against the v0.9.0 tree.
+- Addendum 22 (2026-11-13, media-analysis-skill v0.1.17): a version-only re-pin.
+  - Facts: media-analysis-skill released v0.1.17 (74e1d23, after the docs change #31 50f12db). The `contract --json` differs from the 0.1.16 pin only in `version` and each tool's `version`. The version is inside the gate (`0.1.`).
+  - Decision: `contract_0.1.17.json` replaces `contract_0.1.16.json`. It is the v0.1.17 tag's `contract --json` output, unchanged. The same method reproduces the 0.1.16 pin from v0.1.16 byte for byte. The gate is unchanged.
+  - Verification: unit `tests/test_unit.py` and eval 24 (the version strings); `MediaAnalysisRealTests` passes locally against the v0.1.17 tree.
+- Addendum 23 (2026-11-13, media-analysis-skill v0.1.18): a re-pin, released while this PR ran CI. It replaces addendum 22's 0.1.17 pin.
+  - Facts:
+    - media-analysis-skill released v0.1.18 (81d5c9d, after #32 1dc10ab, its roadmap step 5).
+    - It adds highlight signals, measured but not judged. The tool `media-analysis/events` (kind `audio_events`) gives applause and laughter spans from an audio-event classifier. It needs the optional extra `events`; without it the kind reports UNKNOWN. The tool `media-analysis/signals` (kind `highlight_signals`) gives speech-energy peaks, speaking-rate changes and screen-change bursts.
+    - The release also adds two provides entries, their `kind_to_tool` entries, their parameters, the request schema's kind enum and parameters, and `execution.optional_extras.events`.
+    - Compared field by field with the 0.1.17 pin, every other tool and kind is unchanged apart from `version`. The change is additive.
+    - The version is inside the gate (`0.1.`), but live != pin outside the version fields, so `MediaAnalysisRealTests` would fail against main.
+  - Decision:
+    - `contract_0.1.18.json` replaces `contract_0.1.17.json`. It is the v0.1.18 tag's `contract --json` output, unchanged. The same method reproduces the 0.1.17 pin from v0.1.17 byte for byte.
+    - The gate is unchanged. The planner requests neither new kind. Highlight signals are for a later step.
+  - Verification:
+    - unit `tests/test_unit.py` and eval 24 (the version strings).
+    - `MediaAnalysisRealTests` (now 14 tools) and `test_measurements.RealSkillTests::test_speech_regions_on_a_rendered_file` pass locally against the v0.1.18 tree.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

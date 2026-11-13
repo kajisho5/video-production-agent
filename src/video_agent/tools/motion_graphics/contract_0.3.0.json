@@ -4,7 +4,7 @@
   "id": "motion-graphics",
   "name": "motion-graphics-skill",
   "package": "motion-graphics-skill",
-  "version": "0.2.19",
+  "version": "0.3.0",
   "contract_version": 1,
   "kind": "execution",
   "role": "motion graphics rendering (execution); not design, not decision",
@@ -28,7 +28,7 @@
     {
       "tool_id": "motion-graphics/run",
       "skill_id": "motion-graphics",
-      "version": "0.2.19",
+      "version": "0.3.0",
       "role": "execution",
       "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, video-on-video picture-in-picture/chroma-key overlays, solid-colour rectangles, with fade animation) onto a video and write a validated artifact with provenance",
       "inputs": [
@@ -1517,6 +1517,28 @@
     "validate": "`validate` touches no files, so it checks options.themes / options.theme structurally and applies no theme",
     "check_command": "motion-graphics theme-check <theme.json> --json prints the validated theme and its contrast report"
   },
+  "kit": {
+    "file_schema": "velisa/kit@1",
+    "superset_of": "ffmpeg-skill brand.json: a plain brand.json (no schema key) is read the same way",
+    "request_field": "options.kit: the kit file's path; refused together with options.themes / options.theme / options.brand_kit",
+    "mapping": {
+      "colors.primary|secondary|background|text": "theme@1 colors (all four) or options.brand_kit (the roles the kit has)",
+      "font_file": "theme font.font_file",
+      "logo": "theme logo.path",
+      "logo_position": "theme logo.position (a named position)",
+      "logo_scale": "theme logo.scale_width",
+      "logo_opacity": "theme logo.opacity",
+      "safe_margin": "theme spacing.margin and logo.margin",
+      "name": "theme name (when it is a short identifier)",
+      "colours": "read as colors (remotion spelling)"
+    },
+    "without_all_four_roles": "options.brand_kit with the roles the kit has; the theme-only keys are reported unmapped",
+    "unmapped": "every other key, with the reason, in response.kit.unmapped and as a warning; nothing is dropped silently",
+    "defaults": "none: only what the kit states is passed on (ffmpeg-skill's brand.json defaults are not filled in)",
+    "precedence": "an explicit parameter > the kit > options.style (the preset)",
+    "result": "response.kit {schema, file {sha256, size}, mapped_to, theme | brand_kit, unmapped, contrast?}; with theme@1 also response.theme (label \"kit\", contrast on the kit's colours)",
+    "validate": "`validate` touches no files: options.kit is checked as a path and no kit is applied"
+  },
   "layer_export": {
     "request_field": "options.layer_export",
     "shape": {
@@ -1914,6 +1936,7 @@
           "background?": "RRGGBB",
           "text?": "RRGGBB"
         },
+        "kit?": "brand/kit.json",
         "layer_export?": {
           "directory": "layers",
           "alpha_codec?": "prores4444",

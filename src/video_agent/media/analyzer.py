@@ -141,6 +141,9 @@ class MediaAnalyzer(Analyzer):
             if "frame_ranking" in kinds_here:   # ADR-104: the ranking reads the faces-with-attributes file measured just before it
                 kinds_here = sorted(kinds_here, key=lambda k: 1 if k == "frame_ranking" else 0)
             attrs_of: Optional[Observation] = None
+            if "transcript_hits" in kinds_here:   # step 33: the search reads the transcript measured just before it
+                kinds_here = sorted(kinds_here, key=lambda k: 1 if k == "transcript_hits" else 0)
+            transcript_of: Optional[Observation] = None
             for kind in kinds_here:
                 only = ANALYSIS_KINDS[kind].get("only_input_param")
                 if only and req.params.get(only) != n_input:
@@ -171,13 +174,19 @@ class MediaAnalyzer(Analyzer):
                     # diarization-skill's ASSIGN rule; never part of its recognition cache)
                     kp = dict(kp, speaker_turns={k: v for k, v in turns_of.data.items() if k != "turns_file"})
                     args = {"input": asset.path}
+                elif kind == "transcript_hits":
+                    if transcript_of is None:
+                        rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no transcript of this asset to search"})
+                        continue
+                    kp = dict(kp, transcript=transcript_of.data)
+                    args = {"input": asset.path}
                 elif kind == "frame_ranking":
                     if attrs_of is None:
                         rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no face_attributes observation of this asset to rank"})
                         continue
                     kp = {"detections_sha256": str(attrs_of.data.get("detections_sha256") or "")}
                     args = {"input": asset.path, "detections_path": str(attrs_of.data.get("detections_file") or ""), "detections_sha256": kp["detections_sha256"]}
-                elif kind in ("face_tracks", "slide_timeline", "face_attributes"):
+                elif kind in ("face_tracks", "slide_timeline", "face_attributes", "screen_text", "shot_table"):
                     if not asset.technical.get("video"):
                         rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no video stream"})
                         continue
@@ -196,6 +205,10 @@ class MediaAnalyzer(Analyzer):
                     turns_of = o
                 if kind == "face_attributes":
                     attrs_of = o
+                if kind == "transcript":
+                    transcript_of = o
+                if kind == "transcript_hits":
+                    o.parameters = {k: v for k, v in (o.parameters or {}).items() if k != "transcript"} | {"transcript": transcript_of.id}
                 self._events(kind, o, asset, dur, tl, params)
             if not has_audio:
                 warnings.append(f"{p}: no audio stream; silence and loudness analysis skipped")
@@ -340,6 +353,21 @@ class MediaAnalyzer(Analyzer):
             if asset.hash and o.fingerprint != asset.hash:
                 row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"frame ranking fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
                 return None, row
+        elif kind == "transcript_hits" and isinstance(r.data, dict) and isinstance(r.data.get("hits"), dict):
+            sk = r.data.get("skill") or {}
+            fp = str((r.data.get("transcript") or {}).get("fingerprint") or "")
+            o = Observation(kind=kind, asset_id=asset.id, source=source, data=dict(r.data["hits"], transcript_id=(r.data.get("transcript") or {}).get("id")),
+                            observed_at=now_iso(), analysis_id=req.analysis_id, analyzer=f"transcription-skill@{sk.get('version')}", cache_key=key, provenance="OBSERVED",
+                            skill=tool.split("/", 1)[0], skill_version=str(sk.get("version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                            parameters={k: v for k, v in dict(kparams).items() if k != "transcript"})
+            if asset.hash and o.fingerprint != asset.hash:
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": "the hits are about another file's transcript"}})
+                return None, row
+        elif kind in ("screen_text", "shot_table") and isinstance(r.data, dict) and isinstance(r.data.get({"screen_text": "text", "shot_table": "shots"}[kind]), dict):
+            o = self._lift_detection_measure(kind, r.data, asset, req, source, key, tool, kparams)
+            if asset.hash and o.fingerprint != asset.hash:   # about this file's bytes (detection-skill's source.fingerprint)
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"{kind} fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+                return None, row
         elif kind == "face_tracks" and isinstance(r.data, dict) and isinstance(r.data.get("tracks"), dict):
             o = self._lift_face_tracks(r.data, asset, req, source, key, tool, kparams)
             if asset.hash and o.fingerprint != asset.hash:   # the boxes are about this file's bytes (detection-skill's source.fingerprint)
@@ -441,6 +469,35 @@ class MediaAnalyzer(Analyzer):
                            analysis_id=req.analysis_id, analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
                            skill_version=str(sk.get("version") or tr.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
                            parameters={**dict(kparams), "model": eng.get("model"), "model_sha256": eng.get("model_sha256")})
+
+    @staticmethod
+    def _lift_detection_measure(kind: str, data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:
+        """ADR-090 addendum 1: detection-skill's text lines (detections@1, kind text) as an Observation of kind `screen_text`, or its shot table
+        (shots@1) as one of kind `shot_table`. screen_text keeps every line (time, OCR text, box, score) and how frames were sampled; shot_table
+        keeps the shots and boundaries as measured. Both keep the engine and the file the agent wrote (with its sha256). OBSERVED: measured, never read
+        as meaning here."""
+        measure = "text" if kind == "screen_text" else "shots"
+        doc = dict(data[measure])
+        eng = doc.get("engine") or {}
+        sk = data.get("skill") or {}
+        fp = str((doc.get("source") or {}).get("fingerprint") or "")
+        common = {"engine": {k: eng.get(k) for k in ("id", "version", "model", "model_sha256", "model_license", "engine_license")}, "parameters": doc.get("parameters") or {},
+                  "counts": doc.get("counts") or {}, "source": {k: v for k, v in (doc.get("source") or {}).items() if k != "filename"},
+                  f"{measure}_file": data.get(f"{measure}_file"), f"{measure}_sha256": data.get(f"{measure}_sha256"), "warnings": list(data.get("warnings") or [])}
+        if kind == "screen_text":
+            samp = doc.get("sampling") or {}
+            lines = [{"t": d.get("t"), "text": d.get("label"), "box": d.get("box"), "score": d.get("score"), "lang": d.get("lang")}
+                     for fr in doc.get("frames") or [] for d in fr.get("detections") or []]
+            body = {"lines": lines, "frame_size": doc.get("frame_size") or {},
+                    "sampling": {k: samp.get(k) for k in ("method", "every", "frames_tool")} | {"frames": len(samp.get("times") or [])}, **common}
+        else:
+            fr = doc.get("frames") or {}
+            body = {"shots": doc.get("shots") or [], "boundaries": doc.get("boundaries") or [],
+                    "frames": {k: fr.get(k) for k in ("method", "frame_rate", "frame_count", "frames_tool")}, **common}
+        return Observation(kind=kind, asset_id=asset.id, source=source, data=body, observed_at=str(doc.get("created_at") or now_iso()), analysis_id=req.analysis_id,
+                           analyzer=f"{eng.get('id')}@{eng.get('version')}", cache_key=key, provenance="OBSERVED", skill=tool.split("/", 1)[0],
+                           skill_version=str(sk.get("version") or doc.get("skill_version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                           parameters={**dict(kparams), "engine": eng.get("id")})
 
     @staticmethod
     def _lift_face_attributes(data: Dict[str, Any], asset: Asset, req: AnalysisRequest, source: str, key: str, tool: str, kparams: Dict[str, Any]) -> Observation:

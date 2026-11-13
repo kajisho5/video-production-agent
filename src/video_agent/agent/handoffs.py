@@ -24,6 +24,7 @@ from ..skills.ecosystem import repository
 from ..skills.handoff_contracts import HandoffParameterError, parse_param, pin
 from ..skills.registry import ECOSYSTEM_JOB_SKILLS
 from .editing import EditRequirementError
+from .measurements import MEASUREMENTS, parse_measurement
 from .speakers import SKILL as DIARIZE_SKILL, SWITCH as DIARIZE_SWITCH, speaker_kind
 
 JOB_PREFIX = "job."
@@ -56,6 +57,10 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
              **{k: "disc authoring is one job: ask for --set job.disc_author=true (oncemore builds the DVD-Video / Blu-ray folder or .iso, "
                    "with its own titles, menus and chapters); bdmvkit, vtskit, udfkit and dvdcc are the kits oncemore runs, not jobs of their own"
                 for k in ("bluray_authoring", "dvd_authoring", "disc_image", "dvd_line21_captions")},
+             # ADR-090 addendum 1 (roadmap step 33): detection/detect does not exist; text and faces are implemented measurements
+             "visual_detection": "detection is implemented per kind: text on screen with --set text.detect=true (+ text.every / text.lang / text.min_score; "
+                                 "analysis kind screen_text), the shot table with --set shots.detect=true (analysis kind shot_table), faces to blur with "
+                                 "--set edit.redact_faces=true (ADR-090); object detection is not wired",
              # ADR-091: slide-sync-skill's adapter (slide-sync-skill roadmap step 6)
              "slide_sync": "the slide timeline is implemented (analysis kind slide_timeline, ADR-091): ask for --set slides.detect=true (+ slides.deck=<pdf|pptx|key|odp> "
                            "for the page on screen in each slide); without slide-sync-skill the plan hands it off"}
@@ -136,7 +141,9 @@ def decide_jobs(eng: Any, m: Dict[str, Requirement], asset_ids: List[str], probe
 
 
 # requirement switch → (registry skill, analysis kind, why the measurement is asked for); ADR-086
-MEASUREMENT_HANDOFFS = {DIARIZE_SWITCH: (DIARIZE_SKILL, "speaker_turns", "anonymous speaker turns (who spoke when) on every input with audio")}
+MEASUREMENT_HANDOFFS = {DIARIZE_SWITCH: (DIARIZE_SKILL, "speaker_turns", "anonymous speaker turns (who spoke when) on every input with audio"),
+                        # roadmap step 33: text on screen, the shot table, speech regions (agent/measurements.py)
+                        **{k: (skill, kind, what) for k, (skill, kind, what, _) in MEASUREMENTS.items()}}
 
 
 def requested_measurements(m: Dict[str, Requirement]) -> List[Requirement]:
@@ -148,6 +155,8 @@ def requested_measurements(m: Dict[str, Requirement]) -> List[Requirement]:
         if r is None or r.provenance != "USER":
             continue
         if key == DIARIZE_SWITCH and speaker_kind({k: v for k, v in values.items() if k.startswith("speakers.")}) is None:
+            continue
+        if key in MEASUREMENTS and parse_measurement(values, key) is None:
             continue
         out.append(r)
     return out
