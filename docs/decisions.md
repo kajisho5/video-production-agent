@@ -1242,6 +1242,19 @@
     - `tests/test_version_gates.py`: 0.12.x accepted, 0.13.0 refused.
     - `RealSkillTests::test_find_on_the_real_transcription_skill`: the v0.12.1 tree finds "Hello" twice in a word-timed transcript its validator accepts, with word indices. Run locally and in CI's shard 1.
     - `TranscriptionRealTests` passes locally against the v0.12.1 tree.
+- Addendum 16 (2026-11-13, qc-skill v1.4.0): a re-pin and a widened gate, needed to keep CI green.
+  - Facts:
+    - qc-skill released v1.4.0 (9c61ed7, after #35, its ADR-026 / 027 / 028) while step 33's PR was open. It adds opt-in video loop-seam, alpha-edge and key / fill checks: the rules `video_loop_seam`, `video_alpha_edge` and `video_key_fill`, their checks, findings and measurements, the input `key_file`, and a `video_material` block.
+    - `errors`, `operations`, `kinds`, `statuses` and `execution` are unchanged.
+    - The version is outside the gate (`1.3.`). As a result, `QcRealSkillTests` errored in CI shard 1, and the stinger QA of `VideoEditingFeaturesRealTests` came back WARN ("qc-skill is not installed or not usable here") in shard 4.
+  - Decision:
+    - `contract_1.4.0.json` replaces `contract_1.3.0.json`. It is the v1.4.0 tag's `contract --json`, written as one line with sorted keys, ASCII escapes and compact separators.
+    - The same method reproduces the 1.3.0 pin byte for byte.
+    - The gate adds `1.4.` (1.5 and 2.x are still refused).
+    - The request the adapter sends and the report it admits are unchanged. The new checks are not wired.
+  - Verification:
+    - unit `tests/test_adapter_qc.py` and `tests/test_version_gates.py`.
+    - `QcRealSkillTests` passes locally against the v1.4.0 tree.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

@@ -157,7 +157,7 @@ class VersionOnlyDriftTests(unittest.TestCase):
 
     def test_version_outside_the_gate_fails(self):
         for skill, new in (("video-editing-skill", "0.8.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.2.0"),
-                           ("color-grading-skill", "2.0.0"), ("subtitle-skill", "0.10.0"), ("qc-skill", "1.4.0"), ("thumbnail-skill", "0.2.0")):
+                           ("color-grading-skill", "2.0.0"), ("subtitle-skill", "0.10.0"), ("qc-skill", "1.5.0"), ("thumbnail-skill", "0.2.0")):
             pinned, supported, drift = adapter(skill)
             with self.subTest(skill=skill, version=new):
                 c = compare_to_pin(skill, by_hand(pinned, new), pinned, supported, drift)
