@@ -1,0 +1,39 @@
+# PR autolabeling via release-drafter's built-in autolabeler, sharing the
+# same .github/release-drafter.yml config used by release.yml.
+#
+# Trigger is `pull_request_target` (not `pull_request`) so this also labels
+# PRs opened from forks, per explicit user request. `pull_request_target`
+# runs with base-repo permissions/secrets against the *base* ref, not the
+# untrusted fork head, so this job intentionally:
+#   - does NOT check out github.event.pull_request.head (no actions/checkout
+#     of fork content at all)
+#   - has no `run:` step that executes anything from the PR
+# release-drafter's autolabeler only reads PR title/body/changed-files
+# metadata via the GitHub API — it needs no checkout of the fork's contents.
+name: PR Autolabeler
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  autolabel:
+    runs-on: ubuntu-latest
+    steps:
+      # release-drafter's action, when triggered by a pull_request /
+      # pull_request_target event, only performs autolabeling (there is no
+      # commit/tag context to draft a release from) — no separate
+      # "disable-releaser" input exists in the action's current interface
+      # (verified against its action.yml/README, which lists config-name,
+      # token, dry-run, publish and version-related inputs, but nothing named
+      # disable-releaser or disable-autolabeler), so none is passed here.
+      - name: Autolabel PR
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
