@@ -3,7 +3,7 @@
 
     python3 tools/loudness_compare.py                         sibling checkouts, both targets, 1 run per case
     python3 tools/loudness_compare.py --repeat 3 --json out.json
-    python3 tools/loudness_compare.py --ffmpeg-skill DIR --audio-production DIR --seconds 8 --targets -14/-1
+    python3 tools/loudness_compare.py --ffmpeg-skill DIR --audio-production DIR --seconds 8 --targets=-14/-1
 
 Paths (each normalises one generated WAV to one target and writes a WAV):
   ffmpeg-skill       `python3 <ffmpeg-skill>/scripts/loudness.py IN -I <lufs> --tp <tp> -o OUT --json`: the argv the
@@ -200,6 +200,9 @@ def measure(path: Path) -> Dict[str, Dict[str, Optional[float]]]:
 
 
 def compare(ffs: Path, aps: Path, work: Path, seconds: float = 20.0, targets=TARGETS, fixtures=None, repeat: int = 1) -> Dict[str, Any]:
+    """`work` must be a directory of the comparison's own (empty): it writes fixtures there and clears its out/ and
+    .audio-production/ between runs."""
+    work = work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     rows: List[Dict[str, Any]] = []
     inputs: Dict[str, Any] = {}
@@ -324,16 +327,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--fixtures", help=f"comma list of {', '.join(FIXTURES)} (default: all)")
     ap.add_argument("--repeat", type=int, default=1, help="runs per path and case; the median time is reported (default 1)")
     ap.add_argument("--json", metavar="FILE", help="also write the full result document here")
-    ap.add_argument("--workdir", help="keep fixtures and outputs here (default: a temporary directory, removed after)")
+    ap.add_argument("--workdir", help="keep fixtures and outputs in a new loudness-compare-* directory under this one "
+                                      "(default: a temporary directory, removed after)")
     a = ap.parse_args(argv)
     if not shutil.which("ffmpeg"):
         raise SystemExit("ffmpeg is not on PATH")
     ffs = _find(a.ffmpeg_skill, "VIDEO_AGENT_FFMPEG_SKILL_DIR", "ffmpeg-skill")
     aps = _find(a.audio_production, "VIDEO_AGENT_AUDIO_PRODUCTION_DIR", "audio-production-skill")
     fixtures = a.fixtures.split(",") if a.fixtures else None
-    tmp = None if a.workdir else tempfile.mkdtemp(prefix="loudness-compare-")
+    # compare() writes and clears names of its own (fixtures, out/, .audio-production/) in the directory it is given,
+    # so it is always one made here: a --workdir's own files are never written over or removed
+    if a.workdir:
+        base = Path(a.workdir).resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        tmp, work = None, Path(tempfile.mkdtemp(prefix="loudness-compare-", dir=str(base)))
+        print(f"fixtures and outputs kept in {work}", file=sys.stderr)
+    else:
+        tmp = tempfile.mkdtemp(prefix="loudness-compare-")
+        work = Path(tmp)
     try:
-        result = compare(ffs, aps, Path(a.workdir or tmp), a.seconds, a.targets, fixtures, a.repeat)
+        result = compare(ffs, aps, work, a.seconds, a.targets, fixtures, a.repeat)
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
