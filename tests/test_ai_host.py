@@ -102,7 +102,7 @@ ECOSYSTEM_JOBS = {
     # sound_design (sound-design) too (ADR-092): the implemented music bed bgm_library / bgm_generate (tests/test_bgm.py)
     # measured_motion_graphics (remotion-ffmpeg-skill) too (ADR-093): the implemented measured_motion (tests/test_remotion.py)
     # document_verification (artifacts-skill) too (ADR-095): the implemented document_verify (tests/test_documents.py)
-    "visual_detection": ("detection", "detection-skill", f"git clone {_GH}detection-skill && pip install -e 'detection-skill[all]'"),
+    # visual_detection (detection/detect, not a detection-skill tool) left this table (ADR-090 addendum 1): text is the measurement screen_text (tests/test_measurements.py)
     # platform_publish (publish) left this table with its adapter (ADR-087): the implemented skill publish_upload
     # ADR-077: the package id is the Skill's own skill.id (its overlay resize / pad / strip are implemented; a still as its own deliverable is not)
     "still_image_edit": ("imagemagick-skill", "imagemagick-skill", "npx imagemagick-skill"),
@@ -209,8 +209,17 @@ class EcosystemJobHandoffTests(unittest.TestCase):
         self.assertIn("/plugin install diarization-skill@velisa", h["install"])
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
-    def test_visual_detection(self):
-        self.assert_handoff("visual_detection")
+    def test_visual_detection_moved_to_the_detection_measurements(self):
+        """ADR-090 addendum 1 (roadmap step 33): `job.visual_detection` named detection/detect, which detection-skill does not have; it is refused
+        with how text, shots and faces are asked for, and no SkillSpec hands text off as visual_detection any more."""
+        tmp = tempfile.mkdtemp()
+        svc = Service(workspace=tmp, adapter=FakeAdapter(), caps=FakeCaps())
+        with self.assertRaises(ValueError) as cm:
+            svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.visual_detection": True})
+        self.assertIn("text.detect=true", str(cm.exception))
+        self.assertNotIn("visual_detection", svc.registry.names())
+        ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"text.detect": True})
+        self.assertEqual([(h["skill"], h["provided_by"]) for h in svc.handoffs(ir)], [("text_detection", ["detection"])])
 
     def test_slide_sync_moved_to_the_slide_sync_adapter(self):
         """ADR-091: `job.slide_sync` is no longer a handoff switch; it is refused with how the implemented measurement is asked for, and a plan
@@ -308,8 +317,6 @@ class EcosystemJobHandoffTests(unittest.TestCase):
                      "blender-skill": {"render"}, "hyperframes-skill": {"render"}, "detection": {"faces", "text", "objects", "shots", "tracks"}}
         from video_agent.skills.registry import ECOSYSTEM_JOB_SKILLS
         for spec in ECOSYSTEM_JOB_SKILLS:
-            if spec.name == "visual_detection":   # detection/detect: replaced by roadmap step 33 (text_detection)
-                continue
             for t in spec.tools:
                 pkg, _, tool = t.partition("/")
                 self.assertIn(tool, published.get(pkg, set()), f"{spec.name} names {t}")

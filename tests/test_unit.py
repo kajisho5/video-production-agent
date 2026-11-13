@@ -1662,7 +1662,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         from video_agent.media.analysis import CORE_KINDS
         self.assertEqual(CORE_KINDS, ("media_probe", "silence", "loudness"), "FULL runs the core kinds")
         self.assertEqual(sorted(ANALYSIS_KINDS), ["audio_format", "beats", "crop_rectangle", "duration", "edit_style", "face_attributes", "face_tracks", "frame_ranking", "integrity",
-                                                  "loudness", "media_probe", "scene_detection", "silence", "slide_timeline", "speaker_turns", "stream_layout", "sync", "timing",
+                                                  "loudness", "media_probe", "scene_detection", "screen_text", "shot_table", "silence", "slide_timeline", "speaker_turns", "speech_regions", "stream_layout", "sync", "timing",
                                                   "transcript", "video_format"],
                          "every kind maps to a production skill with a real tool (media-analysis-skill contract@1; ADR-103: edit_style; ADR-104: face_attributes, frame_ranking)")
         r = AnalysisRequest(inputs=[self.src], kinds=["silence"], strategy="FULL_ANALYSIS")
@@ -1681,7 +1681,7 @@ class ObservationAnalysisTests(unittest.TestCase):
         self.assertIsInstance(an, Analyzer)
         self.assertEqual((an.id, an.version, an.identity), ("media", "1.0", "media@1.0"))
         self.assertEqual(an.supported_kinds[:3], ("media_probe", "silence", "loudness"))
-        self.assertEqual(len(an.supported_kinds), 20)   # + beats (ADR-053), crop_rectangle (ADR-060), speaker_turns (ADR-086), face_tracks (ADR-090), slide_timeline (ADR-091), edit_style (ADR-103), face_attributes / frame_ranking (ADR-104)
+        self.assertEqual(len(an.supported_kinds), 23)   # + beats (ADR-053), crop_rectangle (ADR-060), speaker_turns (ADR-086), face_tracks (ADR-090), slide_timeline (ADR-091), edit_style (ADR-103), face_attributes / frame_ranking (ADR-104), screen_text / shot_table / speech_regions (roadmap step 33)
         with self.assertRaises(NotImplementedError):
             Analyzer().analyze(None)
         self.assertFalse(any(hasattr(Analyzer, m) for m in ("decide", "approve", "compile", "render", "complete")))

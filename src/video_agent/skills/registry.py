@@ -230,8 +230,8 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
     # ADR-085: dubbing itself (DUB) is the implemented `speech_dub` below; narration (NARRATE) and audio description (AUDIO_DESCRIPTION) stay handoffs
     _job("dubbing", "AI narration (TTS) and audio description in the programme's gaps (cloning a voice needs its owner's consent); dubbing the dialogue is speech_dub",
          {"asset": "video", "script": "text"}, {"artifact": "INTERMEDIATE"}, "dubbing", "narrate", "HIGH", deterministic=False),
-    _job("visual_detection", "Face, text (OCR) and object detection on the picture",
-         {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
+    # ADR-090 addendum 1: `visual_detection` (detection/detect, a tool id detection-skill does not have) left this list: text is the implemented
+    # text_detection, faces face_tracks (ADR-090); objects are not wired
     # ADR-077: imagemagick-skill's package id is its own `skill.id` (imagemagick-skill), the prefix of its provides[].tool_id; the overlay
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
     # ADR-115: the Skill has no `edit` tool; the job names the five tools of its description (imagemagick-skill's provides[].tool_id)
@@ -343,6 +343,9 @@ def default_registry() -> SkillRegistry:
         # ADR-103: media-analysis-skill 0.1.13's editing-style profile (its contract names filter:edgedetect for the burned-in subtitle probe)
         ("edit_style_analysis", "edit_style", "media-analysis/style", ["ffmpeg", "ffprobe", "media-analysis", "filter:scdet", "filter:edgedetect"],
          "Editing-style profile: cut rate, shot lengths, subtitle frequency / coverage / position, loudness, silence share"),
+        # ADR-103 addendum 1 (roadmap step 33): speech regions from a voice-activity model (media-analysis owns 発話区間; its optional extra `vad`)
+        ("speech_region_analysis", "speech_regions", "media-analysis/vad", ["ffmpeg", "ffprobe", "media-analysis"],
+         "Speech regions of one audio stream from a voice-activity model: time ranges with probability, speech share, longest pause"),
     ):
         r.register(SkillSpec(name, "1.0", desc, {"asset": "media"}, {"observation": kind}, caps, "LOW", True, "AUTO", [tool]))
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
@@ -418,6 +421,13 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("bgm_generate", "1.0", "A generated music bed (ACE-Step 1.5) from a prompt at the mix's length; EXPERIMENTAL, not checked against existing recordings",
                          {"prompt": "text", "duration": "seconds"}, {"artifact": "audio"}, ["sound-design", "sound-design:BGM_GENERATE"], "MEDIUM", False, "CONFIRM",
                          ["sound-design/generate-bgm"]))
+    # ---- text on screen and the shot table (ADR-090 addendum 1, roadmap step 33): detection-skill measurements asked for explicitly (text.detect /
+    # shots.detect), each with its own readiness from the doctor (`detection:TEXT`: Tesseract and tessdata; `detection:SHOTS`: PySceneDetect). The
+    # text replaces ADR-057's `visual_detection` handoff; ffmpeg-skill `scenes` stays the fast cut list (scene_detection) and the default providers do not change
+    r.register(SkillSpec("text_detection", "1.0", "Text on screen: OCR lines with their boxes on sampled frames (Tesseract, ja / en); measurement only",
+                         {"asset": "video"}, {"observation": "screen_text"}, ["detection", "detection:TEXT"], "LOW", True, "AUTO", ["detection/text"]))
+    r.register(SkillSpec("shot_detection", "1.0", "Frame-accurate shot table: every shot's start / end in frames and seconds and its boundary (cut / gradual); measurement only",
+                         {"asset": "video"}, {"observation": "shot_table"}, ["detection", "detection:SHOTS"], "LOW", True, "AUTO", ["detection/shots"]))
     # ---- blur faces (ADR-090): detection-skill's face boxes linked into redact rectangles (analysis kind face_tracks, a measurement that
     # needs the package and its own FACES readiness `detection:FACES` from its doctor: opencv, the YuNet file and ffmpeg-skill frames), then
     # an approved video.redact_faces executed by ffmpeg-skill: each segment cut out frame-accurately, its rectangles redacted, every piece

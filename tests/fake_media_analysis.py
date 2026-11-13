@@ -39,6 +39,10 @@ def observation(req: dict) -> dict:
         # ADR-103: an editing-style profile (a subset of the real Skill's keys)
         "edit_style": {"profile_schema": "media-analysis/edit-style@1", "duration": 16.0, "video": {"status": "measured", "cut_count": 1, "cuts_per_minute": 3.75, "shot_count": 2},
                        "audio": {"status": "measured"}, "subtitles": {"status": "measured"}, "unmeasured": []},
+        # roadmap step 33: speech regions (media-analysis/vad; a subset of the real Skill's keys)
+        "speech_regions": {"status": "MEASURED", "regions": [{"start": 3.0, "end": 9.5, "probability": 0.93}, {"start": 10.2, "end": 15.0, "probability": 0.9}],
+                           "region_count": 2, "speech_seconds": 11.3, "speech_share": 0.706, "pause_count": 1, "longest_pause": 0.7, "stream_index": 1, "threshold": 0.5,
+                           "engine": {"name": "silero-vad", "model": "silero_vad_16k_op15.onnx", "runtime": "onnxruntime", "device": "cpu", "licence": "MIT"}},
     }.get(kind, {"ok": True})
     ident = "0" * 60 + "%04x" % (hash(kind) & 0xFFFF)
     return {"id": "obs_" + ident[:16], "asset_id": req["asset_id"], "kind": kind, "data": data, "source": f"{tool}@{CONTRACT['version']}",

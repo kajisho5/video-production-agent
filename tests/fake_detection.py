@@ -6,9 +6,12 @@ the sha256 of the input, printed with ok / detections_file and written to --outp
 tests/pipeline_harness.py (1280x720 like the fake engine's probe): their `faces` fact [{"start", "end", "box": [x, y, w, h]}] says which
 box is on screen when; the sampled frames see it, the tracks link equal boxes into one track whose redact rectangle is the box made even,
 extended by one sampling step. Nothing runs an engine.
+ADR-090 addendum 1: `text --json --overwrite --output=F --every=S [--lang=L] [--min-score=X] ... -- <video>` (detections@1 of kind text from the
+media's `texts` fact [{"start", "end", "text", "box"}]) and `shots --json --overwrite --output=F [--threshold=X] [--min-shot-frames=N] ... --
+<video>` (shots@1 at 25 fps, cut at the media's `cuts` fact [seconds]).
 Controlled via:
 
-  FAKE_DET_READY: all (default) | model (the YuNet file missing) | frames (ffmpeg-skill unusable)
+  FAKE_DET_READY: all (default) | model (the YuNet file missing) | frames (ffmpeg-skill unusable) | no_tesseract | no_scenedetect
   FAKE_DET_MODE: ok | fail:<CODE> | bad_fingerprint | label | wrong_every | odd_rect | tracks_other_file | not_written | no_attributes
   `faces --attributes` (ADR-104) adds each face's attributes: the face fact's own "attributes" over an open-eyed frontal default.
   FAKE_DET_CONTRACT: pinned | drift_version (0.2.9: non-fatal) | drift_fatal (tracks argv changed) | incompatible (0.3.0)
@@ -51,13 +54,16 @@ def _fail(code: str, message: str) -> int:
 
 def _doctor(argv) -> int:
     model_ok, frames_ok = READY != "model", READY != "frames"
+    tess_ok, scd_ok = READY != "no_tesseract", READY != "no_scenedetect"
     checks = {"python": {"status": "OK"}, "opencv": {"status": "OK", "install": None}, "numpy": {"status": "OK", "install": None},
               "ffmpeg_skill": {"status": "OK" if frames_ok else "INCOMPATIBLE", "install": None if frames_ok else "ffmpeg-skill 2.x or 3.x with a working ffmpeg"},
               "face_model": {"status": "OK" if model_ok else "MISSING",
                              "install": None if model_ok else "download face_detection_yunet_2026may.onnx (MIT) from https://github.com/opencv/opencv_zoo and set $DETECTION_MODELS_DIR"},
-              "object_model": {"status": "MISSING", "install": "download a YOLOX ONNX file"}, "tesseract": {"status": "OK"}}
+              "object_model": {"status": "MISSING", "install": "download a YOLOX ONNX file"},
+              "tesseract": {"status": "OK" if tess_ok else "MISSING", "install": None if tess_ok else "brew install tesseract / apt install tesseract-ocr"},
+              "tessdata": {"status": "OK"}, "scenedetect": {"status": "OK" if scd_ok else "MISSING", "install": None if scd_ok else "pip install 'detection-skill[shots]'"}}
     problems = [f"{k}: {v['status']}" for k, v in checks.items() if v["status"] != "OK"]
-    ready = {"faces": model_ok, "text": True, "objects": False, "video_frames": frames_ok, "tracks": True, "check": True}
+    ready = {"faces": model_ok, "text": tess_ok, "objects": False, "shots": scd_ok, "video_frames": frames_ok, "tracks": True, "check": True}
     _emit({"ok": all(ready.values()), "skill": "detection-skill", "version": _contract()["version"], "ready": ready, "checks": checks, "problems": problems,
            "network": "never used at run time", "argv_ffmpeg_skill": any(a.startswith("--ffmpeg-skill=") for a in argv)})
     return 0 if all(ready.values()) else 3
@@ -141,6 +147,88 @@ def _faces(argv) -> int:
     return 0
 
 
+def _media(path):
+    raw = Path(path).read_bytes()
+    try:
+        facts = json.loads(raw.decode())
+    except ValueError:
+        facts = {}
+    return raw, facts
+
+
+def _source(media, raw, dur):
+    fp = "sha256:" + (("0" * 64) if MODE == "bad_fingerprint" else hashlib.sha256(raw).hexdigest())
+    return {"filename": os.path.basename(media), "fingerprint": fp, "size_bytes": len(raw), "media_type": "video", "duration": dur, "width": W, "height": H, "fps": 25.0}
+
+
+def _text(argv) -> int:
+    opts, pos = _opts(argv)
+    if READY == "no_tesseract":
+        return _fail("ENGINE_UNAVAILABLE", "tesseract not found (fake)")
+    if MODE.startswith("fail:"):
+        return _fail(MODE.split(":", 1)[1], "refused (fake)")
+    raw, facts = _media(pos[0])
+    dur, every = float(facts.get("duration") or 10.0), float(opts["every"])
+    times, t = [], 0.0
+    while t < dur - 1e-9:
+        times.append(round(t, 3))
+        t += every
+    lang = opts.get("lang", "jpn+eng")
+    frames = []
+    for i, t in enumerate(times):
+        dets = [{"t": t, "kind": "text", "box": [float(v) for v in x["box"]], "box_norm": [0, 0, 0, 0], "score": 0.92, "label": x["text"], "engine": "tesseract",
+                 "model": f"tessdata {lang}", "model_sha256": "2" * 64, "lang": lang, "words": len(x["text"].split())}
+                for x in facts.get("texts") or [] if float(x["start"]) <= t <= float(x["end"])]
+        frames.append({"index": i, "t": t, "detections": dets})
+    doc = {"schema": "detection-skill/detections@1", "kind": "text", "source": _source(pos[0], raw, dur), "frame_size": {"width": W, "height": H},
+           "sampling": {"method": "every", "every": every + (0.5 if MODE == "wrong_every" else 0.0), "times": times, "scene_points": None, "frames_tool": "ffmpeg-skill/look",
+                        "ffmpeg_skill_version": "3.8.3", "extracted_size": {"width": W, "height": H}},
+           "engine": {"id": "tesseract", "kind": "text", "version": "5.0.0", "runtime": "tesseract", "model": f"tessdata {lang}", "model_sha256": "2" * 64,
+                      "model_license": "Apache-2.0", "engine_license": "Apache-2.0", "files": [], "execution_mode": "local", "engine_seconds": 0.1},
+           "parameters": {"min_score": float(opts.get("min-score", 0.3)), "lang": lang, "vertical": False, "psm": 3, "level": "line"}, "frames": frames,
+           "counts": {"frames": len(frames), "detections": sum(len(f["detections"]) for f in frames)}, "skill": "detection-skill", "skill_version": _contract()["version"],
+           "tool": "detection/text", "created_at": "2026-11-13T00:00:00Z", "processing_seconds": 0.1, "warnings": []}
+    out = opts.get("output")
+    if out and MODE != "not_written":
+        Path(out).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _emit(dict(doc, ok=True, detections_file=out))
+    return 0
+
+
+def _shots(argv) -> int:
+    opts, pos = _opts(argv)
+    if READY == "no_scenedetect":
+        return _fail("ENGINE_UNAVAILABLE", "PySceneDetect not installed (fake)")
+    if MODE.startswith("fail:"):
+        return _fail(MODE.split(":", 1)[1], "refused (fake)")
+    raw, facts = _media(pos[0])
+    dur, rate = float(facts.get("duration") or 10.0), 25.0
+    count = int(round(dur * rate))
+    starts = [0] + [int(round(float(c) * rate)) for c in facts.get("cuts") or []]
+    shots = []
+    for i, a in enumerate(starts):
+        b = (starts[i + 1] if i + 1 < len(starts) else count) - 1
+        if MODE == "gap" and i == 1:
+            a += 1
+        shots.append({"id": f"shot_{i + 1:03d}", "index": i, "start_frame": a, "end_frame": b, "frames": b - a + 1, "start": round(a / rate, 6), "end": round((b + 1) / rate, 6),
+                      "duration": round((b - a + 1) / rate, 6), "starts_with": "start" if i == 0 else "cut", "score": None if i == 0 else 1.0, "engine": "pyscenedetect"})
+    params = {"threshold": float(opts.get("threshold", 27.0)), "adaptive_threshold": 3.0, "min_content_val": 15.0, "min_shot_frames": int(opts.get("min-shot-frames", 15))}
+    doc = {"schema": "detection-skill/shots@1", "source": _source(pos[0], raw, dur),
+           "frames": {"method": "every_frame", "frame_rate": rate, "frame_count": count, "seek_rule": "fake", "frames_tool": "ffmpeg-skill/look", "ffmpeg_skill_version": "3.8.3",
+                      "extracted_size": {"width": 320, "height": 180}},
+           "engine": {"id": "pyscenedetect", "kind": "shot", "version": "0.6.7", "runtime": "python", "model": None, "model_sha256": None, "model_license": None,
+                      "engine_license": "BSD-3-Clause", "files": [], "execution_mode": "local", "engine_seconds": 0.1},
+           "parameters": params, "boundaries": [{"index": i, "frame": s["start_frame"], "t": s["start"], "kind": "cut", "score": 1.0, "transition": None, "engine": "pyscenedetect",
+                                                 "metric": {}} for i, s in enumerate(shots[1:])],
+           "shots": shots, "counts": {"frames": count, "shots": len(shots), "boundaries": len(shots) - 1, "cuts": len(shots) - 1, "gradual": 0},
+           "skill": "detection-skill", "skill_version": _contract()["version"], "tool": "detection/shots", "created_at": "2026-11-13T00:00:00Z", "processing_seconds": 0.1, "warnings": []}
+    out = opts.get("output")
+    if out and MODE != "not_written":
+        Path(out).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _emit(dict(doc, ok=True, shots_file=out))
+    return 0
+
+
 def _even_out(x0: float, y0: float, x1: float, y1: float):
     xa, ya = int(x0) - int(x0) % 2, int(y0) - int(y0) % 2
     xb, yb = int(-(-x1 // 1)), int(-(-y1 // 1))
@@ -196,6 +284,10 @@ def main(argv) -> int:
         return _faces(argv[1:])
     if argv[:1] == ["tracks"]:
         return _tracks(argv[1:])
+    if argv[:1] == ["text"]:
+        return _text(argv[1:])
+    if argv[:1] == ["shots"]:
+        return _shots(argv[1:])
     return _fail("INVALID_ARGUMENT", f"unsupported command {argv[:1]}")
 
 

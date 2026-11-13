@@ -73,6 +73,12 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # slide changes of a talk recording (ADR-091): slide-sync-skill's measured timeline and, with the speaker's deck, the page on screen in each slide;
     # deck_sha256 is part of the cache key only (the deck's content, not just its path), never sent to the Skill
     "slide_timeline": {"skill": "slide_sync", "needs_audio": False, "params": ("threshold", "min_dwell", "deck", "deck_sha256")},
+    # ADR-090 addendum 1 (roadmap step 33): text on screen (detection-skill `text`: OCR lines with their boxes on frames sampled every `text_every`
+    # seconds) and the frame-accurate shot table (detection-skill `shots`, every frame). Measurements only, asked for explicitly (agent/measurements.py)
+    "screen_text": {"skill": "text_detection", "needs_audio": False, "params": ("text_every", "text_lang", "text_min_score")},
+    "shot_table": {"skill": "shot_detection", "needs_audio": False, "params": ("shot_threshold", "shot_min_frames")},
+    # ADR-103 addendum 1 (roadmap step 33): media-analysis-skill's speech regions (media-analysis/vad, a voice-activity model) with its own defaults
+    "speech_regions": {"skill": "speech_region_analysis", "needs_audio": True, "params": ()},
 }
 # what the agent asks cropdetect.py for (ADR-060): 10 s of footage over 5 windows spread across the file, the rectangle to the nearest
 # even pixel (`--round 2`; cropdetect's default 16 cuts up to 14 px into the picture). Recorded as the observation's parameters

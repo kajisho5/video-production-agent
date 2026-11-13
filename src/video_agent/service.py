@@ -20,6 +20,7 @@ from .agent.editing import REQUIREMENT_KEYS as _EDIT_REQUIREMENT_KEYS
 from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
 from .agent.speakers import check_speaker_keys, speaker_assign_requested, speaker_kind
+from .agent import measurements as measurements_task
 from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.faces import REQUIREMENT_KEYS as _FACE_REQUIREMENT_KEYS, check_face_keys, face_kind
@@ -464,6 +465,15 @@ class Service:
                 # ADR-096: speaker ids end to end -- the transcript is measured too, and transcribe merges this asset's turns into it
                 kinds = kinds + ([] if "transcript" in kinds else ["transcript"])
                 params = dict(params, speaker_merge=True)
+        mk = measurements_task.requested_kinds(user_requirements or {})
+        if mk:
+            # roadmap step 33 (ADR-090 addendum 1, ADR-103 addendum 1): text on screen, the shot table, speech regions, each asked for by name; a measurement
+            # with no runnable tool here is handed off instead (decide_measurement_handoffs)
+            runnable = self.tools_for(None, user_requirements)
+            for skill_name, (kind_name, kparams) in mk.items():
+                if skill_name in runnable:
+                    kinds = list(kinds or []) + ([] if kind_name in (kinds or []) else [kind_name])
+                    params = dict(params or {}, **kparams)
         allowed: Optional[List[str]] = None
         sl = slide_kind(user_requirements or {})
         if sl is not None and "slide_sync" in self.tools_for(None, user_requirements):
@@ -2006,7 +2016,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", "publish.", "slides.", "bgm.", "remotion.", HTML_LAYER_PREFIX, "document.", verify_task.PREFIX, transcribe_task.PREFIX)
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", *measurements_task.PREFIXES, "publish.", "slides.", "bgm.", "remotion.", HTML_LAYER_PREFIX, "document.", verify_task.PREFIX, transcribe_task.PREFIX)
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -2139,6 +2149,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_face_keys(user_requirements)   # ADR-090: edit.redact_faces and its refinements, in range, refinements only with the switch
     check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
     check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
+    measurements_task.check_measurement_keys(user_requirements)   # roadmap step 33: text.* / shots.* / speech_regions.* known, in range, refinements with their switch
     check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
     check_slide_keys(user_requirements)   # ADR-091: slides.* keys known, in range, the deck an existing file of a type slide-sync imports
     check_document_keys(user_requirements)   # ADR-095: document.verify an existing non-caption file, the preset one of artifacts-skill's names
