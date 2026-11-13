@@ -19,8 +19,10 @@ commands, filters, executables or paths never exist in this vocabulary (the comp
 """
 from __future__ import annotations
 
+import math
 import os
 import re
+from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models import Requirement
@@ -666,21 +668,93 @@ def kept_duration(doc_or_ops: Any, asset_id: str, source_duration: float) -> flo
     return round(float(source_duration or 0.0), 3)
 
 
-def concat_segments(inputs: List[str], video_ops: List[Dict[str, Any]], durations: Dict[str, float], transition: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
+# ---- ADR-115: video-editing-skill's whole-frame CONCAT (contract.whole_frames, 0.7.2 / 0.7.3), planned the same way
+FPS_TOLERANCE = 0.02   # contract.whole_frames: an input within 0.02 fps of the edit's rate runs "at the rate"
+
+
+def _exact(x: Any) -> Fraction:
+    """A time of the IR (seconds, a decimal number) as an exact fraction, as the Skill reads it."""
+    return Fraction(str(float(x)))
+
+
+def concat_rate(params: Dict[str, Any], first_input_technical: Optional[Dict[str, Any]]) -> Optional[Fraction]:
+    """contract.whole_frames.rate: the CONCAT's params.fps, else its first input's frame rate, as the Skill turns it into a
+    rational (Fraction(fps).limit_denominator(1001)). None when neither is known: the Skill then joins every input as it is."""
+    fps = params.get("fps") or ((first_input_technical or {}).get("video") or {}).get("fps")
+    try:
+        f = float(fps)
+    except (TypeError, ValueError):
+        return None
+    return Fraction(f).limit_denominator(1001) if f > 0 else None
+
+
+def input_rate(technical: Optional[Dict[str, Any]]) -> Tuple[Optional[float], bool]:
+    """(frame rate, variable-rate suspected) of one CONCAT input, from its probe."""
+    v = (technical or {}).get("video") or {}
+    try:
+        fps = float(v.get("fps") or 0) or None
+    except (TypeError, ValueError):
+        fps = None
+    return fps, bool(v.get("variable_frame_rate_suspected"))
+
+
+def whole_frame_length(length: Fraction, rate: Fraction, fps: Optional[float], vfr: bool) -> Fraction:
+    """contract.whole_frames.rule: the length an input of planned `length` is joined at. At the rate: rounded down to whole frames
+    (one within 1 ms of the next frame keeps it). At another rate or variable-rate: rounded to the nearest frame (conformed). An
+    input whose rate is not known is joined as it is."""
+    if not fps:
+        return length
+    if abs(fps - float(rate)) > FPS_TOLERANCE or vfr:
+        frames = math.floor(length * rate + Fraction(1, 2))
+    else:
+        frames = math.floor((length + Fraction(1, 1000)) * rate)
+    return Fraction(frames) / rate
+
+
+def joined_transition(duration: Any, rate: Fraction) -> Fraction:
+    """contract.whole_frames.rule: an xfade transition's duration rounded to the nearest frame of the rate, a half up, at least one frame."""
+    return Fraction(max(1, math.floor(_exact(duration) * rate + Fraction(1, 2)))) / rate
+
+
+def concat_segments(inputs: List[str], video_ops: List[Dict[str, Any]], durations: Dict[str, float], transition: Optional[Dict[str, Any]],
+                    rate: Optional[Fraction] = None, input_rates: Optional[Dict[str, Tuple[Optional[float], bool]]] = None) -> Tuple[List[Dict[str, Any]], float]:
     """Multi-source timeline of a concat: for every input, its kept source ranges and where they land on the programme
-    timeline (a transition overlaps consecutive clips by its duration). Returns (segments, programme duration)."""
+    timeline (a transition overlaps consecutive clips by its duration). Returns (segments, programme duration).
+
+    ADR-115: with the edit's frame `rate` (concat_rate) the timeline is the one video-editing-skill delivers (contract.whole_frames):
+    every input takes its whole-frame length (whole_frame_length; `input_rates` gives each input's own rate), an xfade transition
+    its whole-frame duration (joined_transition), and the clips are placed by those lengths, so every input starts on a frame of the
+    output and the offsets of subtitles / transcripts follow the delivered file. An input rounded down loses the part frame at the
+    end of its last kept range; one rounded up (another rate) holds its last instant, so its last segment is longer on the timeline
+    than in the source. Positions are computed exactly and written to the millisecond, so the rounding never accumulates. Without
+    a rate the requested lengths are used as they are (the Skill then joins as it is too)."""
     segs: List[Dict[str, Any]] = []
-    t = 0.0
-    overlap = float((transition or {}).get("duration") or 0.0)
+    t = Fraction(0)
+    tr = transition or {}
+    xfade = tr.get("type") != "stinger" and tr.get("duration") is not None   # a stinger butt-joins the clips (contract.stinger)
+    overlap = (joined_transition(tr["duration"], rate) if rate is not None else _exact(tr["duration"])) if xfade else Fraction(0)
     for n, aid in enumerate(inputs):
         keep = next((op["keep"] for op in video_ops if op.get("asset") == aid and op.get("type") == "video.trim"), [[0.0, float(durations.get(aid) or 0.0)]])
+        ranges = [(_exact(round(float(s), 3)), round(float(e), 3), _exact(round(float(e) - float(s), 3))) for s, e in keep]
+        planned = sum((ln for _, _, ln in ranges), Fraction(0))
+        joined = planned
+        if rate is not None:
+            fps, vfr = (input_rates or {}).get(aid, (None, False))
+            joined = whole_frame_length(planned, rate, fps, vfr)
         if n > 0:
-            t = max(0.0, t - overlap)
-        for s, e in keep:
-            length = round(float(e) - float(s), 3)
-            segs.append({"input": aid, "track": "V1", "source_range": [round(float(s), 3), round(float(e), 3)], "timeline_range": [round(t, 3), round(t + length, 3)]})
-            t = round(t + length, 3)
-    return segs, round(t, 3)
+            t = max(Fraction(0), t - overlap)
+        acc = Fraction(0)
+        for i, (s, e, ln) in enumerate(ranges):
+            left = joined - acc
+            if left <= 0:
+                break   # a kept range wholly inside the part frame an input rounded down loses
+            src_len = min(ln, left)
+            tl_len = left if i == len(ranges) - 1 else src_len   # rounded up: the last kept range holds to the whole frame
+            segs.append({"input": aid, "track": "V1", "source_range": [round(float(s), 3), e if src_len == ln else round(float(s + src_len), 3)],
+                         "timeline_range": [round(float(t + acc), 3), round(float(t + acc + tl_len), 3)]})
+            acc += tl_len
+        t += joined
+    return segs, round(float(t), 3)
 
 
 def delivery_subjects(doc: Dict[str, Any]) -> List[Dict[str, Any]]:

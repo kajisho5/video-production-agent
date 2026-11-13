@@ -7,13 +7,13 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_ai_provider import FakeAIProvider  # noqa: E402
 from pin_check import assert_live_matches_pin  # noqa: E402  ADR-108: live contract vs pin, the version by range
+from tmp_dirs import tmp_dir  # noqa: E402  ADR-115: every temporary directory is removed, on failure and interrupt too
 from video_agent.project import load_ir, save_ir
 from video_agent.service import Service
 from video_agent.tools.ffmpeg_skill.locate import locate_ffmpeg_skill
@@ -68,7 +68,7 @@ def artifact_qa(out, art):
 class RealMediaTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_int_")
+        cls.tmp = tmp_dir(cls, prefix="va_int_")
         cls.src = str(Path(cls.tmp) / "src" / "talk.mp4")
         Path(cls.src).parent.mkdir(parents=True)
         make_media(cls.src)
@@ -510,7 +510,7 @@ class IngestFetchRealTests(unittest.TestCase):
         status, detail, _ = yt_dlp_capability()
         if status != "AVAILABLE":
             raise unittest.SkipTest(f"needs ingest-skill's fetch extra: {detail}")
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_fetch_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_fetch_"))
         www = Path(cls.tmp) / "www"
         www.mkdir()
         make_media(str(www / "talk.mp4"))
@@ -591,7 +591,7 @@ class IngestOffloadRealTests(unittest.TestCase):
         from video_agent.tools.ingest import locate_ingest
         if not locate_ingest():
             raise unittest.SkipTest("needs ingest-skill (VIDEO_AGENT_INGEST_DIR)")
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="va_offload_")))
+        self.tmp = Path(os.path.realpath(tmp_dir(self, prefix="va_offload_")))
         self.card = make_xdcam_ex_card(self.tmp)
         self.a, self.b = self.tmp / "SSD1", self.tmp / "SSD2"
         self.a.mkdir()
@@ -687,12 +687,12 @@ class FfmpegSkillContractTests(unittest.TestCase):
         """Contract: reject / revise / approve / diff never spawn ffmpeg-skill (they are pure IR transformations)."""
         import shutil as _sh
         skill = locate_ffmpeg_skill()
-        broken = Path(tempfile.mkdtemp()) / "skill"
+        broken = Path(tmp_dir(self)) / "skill"
         (broken / "scripts").mkdir(parents=True)
         for name in skill.scripts:
             (broken / "scripts" / f"{name}.py").write_text("import sys; sys.exit(99)")
         (broken / "package.json").write_text('{"version": "0.8.4"}')
-        ws = tempfile.mkdtemp()
+        ws = tmp_dir(self)
         src = str(Path(ws) / "in.mp4")
         make_media(src)
         good = Service(workspace=ws)
@@ -725,7 +725,7 @@ class FfmpegSkillContractTests(unittest.TestCase):
         self.assertIsNotNone(full.doctor, full.notes)
         for name, why in full.unavailable.items():   # only doctor may rule a tool out here, and then with its own words
             self.assertTrue(why.startswith("ffmpeg-skill doctor:"), why)
-        caps = Service(workspace=tempfile.mkdtemp()).caps.resolve()
+        caps = Service(workspace=tmp_dir(self)).caps.resolve()
         self.assertEqual(caps["ffmpeg-skill"].evidence["contract"]["status"], "checked")
         for name in CATALOG:
             self.assertEqual(caps[f"ffmpeg-skill:{name}"].status, "MISSING" if name in full.unavailable else "AVAILABLE", name)
@@ -734,7 +734,7 @@ class FfmpegSkillContractTests(unittest.TestCase):
         """ADR-056 addendum 2 (roadmap step 31): every preset and platform name ffmpeg-skill main's contract publishes passes the
         validator (no copy of either list in the agent), and an unknown name is still refused."""
         from video_agent.project.validator import validate_ir
-        ws = tempfile.mkdtemp()
+        ws = tmp_dir(self)
         src = str(Path(ws) / "in.mp4")
         make_media(src)
         svc = Service(workspace=ws)
@@ -775,7 +775,7 @@ class NoAudioSourceTests(unittest.TestCase):
     """A video-only source (real-world: DJI drones, some screen captures) must analyze, plan and render without audio steps."""
 
     def test_video_only_source(self):
-        tmp = tempfile.mkdtemp()
+        tmp = tmp_dir(self)
         src = str(Path(tmp) / "src" / "silent.mp4")
         Path(src).parent.mkdir(parents=True)
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "6", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", src], check=True)
@@ -807,7 +807,7 @@ class MediaAnalysisRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_ma_")
+        cls.tmp = tmp_dir(cls, prefix="va_ma_")
         cls.src = str(Path(cls.tmp) / "src" / "talk.mp4")
         Path(cls.src).parent.mkdir(parents=True)
         make_media(cls.src)
@@ -957,7 +957,7 @@ class TranscriptionRealTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from video_agent.tools.transcription import TranscriptionAdapter
-        cls.tmp = tempfile.mkdtemp(prefix="va_ts_")
+        cls.tmp = tmp_dir(cls, prefix="va_ts_")
         src_dir = Path(cls.tmp) / "src"
         src_dir.mkdir()
         cls.src = str(src_dir / "talk.mp4")
@@ -1138,7 +1138,7 @@ class SpeechToPlanRealTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from video_agent.tools.transcription import TranscriptionAdapter
-        cls.tmp = tempfile.mkdtemp(prefix="va_sp_")
+        cls.tmp = tmp_dir(cls, prefix="va_sp_")
         src_dir = Path(cls.tmp) / "src"
         src_dir.mkdir()
         fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
@@ -1232,7 +1232,7 @@ class ProductionContextRealTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from video_agent.tools.transcription import TranscriptionAdapter
-        cls.tmp = tempfile.mkdtemp(prefix="va_cx_")
+        cls.tmp = tmp_dir(cls, prefix="va_cx_")
         src_dir = Path(cls.tmp) / "src"
         src_dir.mkdir()
         fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
@@ -1323,7 +1323,7 @@ class ProductionDecisionEngineRealTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from video_agent.tools.transcription import TranscriptionAdapter
-        cls.tmp = tempfile.mkdtemp(prefix="va_de_")
+        cls.tmp = tmp_dir(cls, prefix="va_de_")
         src_dir = Path(cls.tmp) / "src"
         src_dir.mkdir()
         fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
@@ -1409,7 +1409,7 @@ class MultiSourceSyncRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_sync_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_sync_"))
         cls.ws = str(Path(cls.tmp) / "ws")
         from video_agent.tools.transcription.locate import locate_transcription
         fixture = Path(locate_transcription().root or "") / "tests" / "fixtures" / "ja_short.wav"
@@ -1485,7 +1485,7 @@ class CameraSwitchRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_switch_")
+        cls.tmp = tmp_dir(cls, prefix="va_switch_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.a, cls.b = str(src / "a.mp4"), str(src / "b.mp4")
         make_media(cls.a)
@@ -1533,7 +1533,7 @@ class PriorityAToolsRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_priority_a_")
+        cls.tmp = tmp_dir(cls, prefix="va_priority_a_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.a = str(src / "a.mp4")
         make_media(cls.a)
@@ -1611,7 +1611,7 @@ class CropProposalRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_crop_")
+        cls.tmp = tmp_dir(cls, prefix="va_crop_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.letterboxed = str(src / "letterboxed.mp4")
         cls.full = str(src / "full.mp4")
@@ -1665,7 +1665,7 @@ class BeatGridRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_beats_")
+        cls.tmp = tmp_dir(cls, prefix="va_beats_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         click = str(Path(cls.tmp) / "click.wav")
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.05,apad=pad_dur=0.45", "-t", "0.5", click], check=True)
@@ -1703,12 +1703,12 @@ class TakeCrossfadeRealTests(unittest.TestCase):
     file (CI has no ASR model); every other tool is real."""
 
     BURSTS = {"t1.mp4": 1.0, "t2.mp4": 2.0, "t3.mp4": 1.5}
-    SPEECH = {"t1.mp4": [[0.5, 3.0, "the first line of the talk"]], "t2.mp4": [[1.0, 3.9, "now a completely different second sentence"]],
+    SPEECH = {"t1.mp4": [[0.5, 3.0, "the first line of the talk"]], "t2.mp4": [[1.05, 3.9, "now a completely different second sentence"]],   # kept 0.9-4.0: 93 whole frames to its end (ADR-115)
               "t3.mp4": [[0.05, 3.0, "and finally the closing remark here"]]}
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_xfade_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_xfade_"))
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.files = []
         for name, burst in cls.BURSTS.items():
@@ -1799,7 +1799,7 @@ class SubtitleMuxRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_mux_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_mux_"))
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.media = str(src / "talk.mp4")
         make_media(cls.media)
@@ -1919,7 +1919,7 @@ class SubtitleFeaturesRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_subf_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_subf_"))
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.media = str(src / "talk.mp4")
         make_media(cls.media)
@@ -1978,7 +1978,7 @@ class MotionGraphicsFeaturesRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_mgf_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_mgf_"))
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.media = str(src / "talk.mp4")
         make_media(cls.media)
@@ -2034,7 +2034,7 @@ class TimelineExportRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_timeline_")
+        cls.tmp = tmp_dir(cls, prefix="va_timeline_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.a = str(src / "a.mp4")
         make_media(cls.a)
@@ -2089,7 +2089,7 @@ class VideoEditingRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.video_editing import locate_video_editing
         cls.ve = locate_video_editing()
-        cls.tmp = tempfile.mkdtemp(prefix="va_ve_")
+        cls.tmp = tmp_dir(cls, prefix="va_ve_")
         src_dir = Path(cls.tmp) / "src"
         src_dir.mkdir()
         cls.src = str(src_dir / "talk.mp4")
@@ -2166,7 +2166,7 @@ class VideoEditingRealTests(unittest.TestCase):
         # an input outside the allowed roots is refused before the Skill runs; the Skill refuses it too (same roots)
         from video_agent.models import Operation
         from video_agent.tools.video_editing import VideoEditingAdapter
-        outside_dir = Path(tempfile.mkdtemp(prefix="va_out_")); outside = str(outside_dir / "o.mp4"); shutil.copy(self.src, outside)
+        outside_dir = Path(tmp_dir(self, prefix="va_out_")); outside = str(outside_dir / "o.mp4"); shutil.copy(self.src, outside)
         strict = VideoEditingAdapter(self.ve, workspace=ws, allowed_inputs=[str(Path(self.src).parent)], ffmpeg_skill_dir=str(locate_ffmpeg_skill().root))
         op = Operation(tool="video-editing/cut", args={"input": "x", "keep": [[0.0, 1.0]], "precision": "keyframe", "output": "y"}, inputs=["x"], outputs=["y"])
         target = str(Path(ws) / "manual" / "y.mp4"); os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -2184,6 +2184,57 @@ class VideoEditingRealTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class ConcatWholeFramesRealTests(unittest.TestCase):
+    """ADR-115 on the real video-editing-skill: the plan's concat timeline (clip starts, programme length) is the timeline the Skill
+    reports and the file it writes (contract.whole_frames). Two 4 s clips at 30 fps around a 3 s clip at 25 fps, with a 0.25 s fade
+    (7.5 frames, joined as 8): before ADR-115 the plan put each later clip and the programme's end a frame or more off."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.video_editing import locate_video_editing
+        cls.ve = locate_video_editing()
+        cls.tmp = tmp_dir(cls, prefix="va_wf_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.clips = [str(src / n) for n in ("a.mp4", "b.mp4", "c.mp4")]
+        if cls.ve:
+            for path, rate, dur in zip(cls.clips, (30, 25, 30), (4, 3, 4)):
+                subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=size=320x180:rate={rate}", "-f", "lavfi",
+                                "-i", "sine=frequency=440:sample_rate=48000", "-t", str(dur), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                                "-c:a", "aac", path], check=True)
+
+    def test_planned_timeline_is_the_delivered_one(self):
+        if not self.ve:
+            self.skipTest("needs a video-editing-skill checkout (VIDEO_AGENT_VIDEO_EDITING_DIR)")
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        ir = svc.plan(self.clips, "generic", user_requirements={"edit.concat": True, "edit.concat.transition": "fade", "edit.concat.transition_duration": 0.25,
+                                                                 "edit.trim_leading_silence": False, "edit.trim_trailing_silence": False, "audio.normalize": False})
+        d = ir.doc
+        self.assertEqual(d["plan"]["status"], "APPROVED", d["plan"]["summary"])
+        cat = next(op for op in d["video"]["operations"] if op["type"] == "video.concat")
+        planned = [s["timeline_range"] for s in cat["segments"]]
+        for start, _ in planned:   # every clip starts on a frame of the 30 fps output
+            self.assertLess(abs(start * 30 - round(start * 30)), 0.03, planned)
+        lengths = [float(d["assets"][a]["technical"]["duration"]) for a in cat["inputs"]]
+        self.assertGreater(abs((sum(lengths) - 2 * 0.25) - cat["timeline_duration"]), 0.5 / 30, "the old arithmetic (requested lengths and fade) would be off by over half a frame")
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        r = next(x for x in out["execution"]["results"] if x["tool"] == "video-editing/concat")
+        tl = r["data"]["timeline"]
+        delivered = [[float(s["timeline_range"]["start"]["seconds"]), float(s["timeline_range"]["end"]["seconds"])] for s in tl["tracks"][0]["segments"]]
+        starts = sorted({round(a, 3) for a, _ in delivered if all(abs(a - e) > 0.002 for _, e in delivered)})   # the Skill's speed-0 hold segments start where a clip ends
+        self.assertEqual(len(starts), 3, delivered)
+        for (want, _), got in zip(planned, starts):
+            self.assertAlmostEqual(want, got, delta=0.0011, msg=(planned, delivered))
+        self.assertAlmostEqual(cat["timeline_duration"], float(tl["duration"]["seconds"]), delta=0.0011)
+        pr = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "json", r["output"]],
+                            capture_output=True, text=True, check=True)
+        self.assertEqual(int(json.loads(pr.stdout)["streams"][0]["nb_read_frames"]), round(cat["timeline_duration"] * 30))
+        dur = next(i for i in out["qa"]["items"] if i["name"] == "duration")
+        self.assertEqual(dur["status"], "PASS", dur)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
 class VideoEditingOperationsRealTests(unittest.TestCase):
     """ADR-029 on the real video-editing-skill (PR #1 branch) and ffmpeg-skill 0.9.x: two real inputs A + B → trim (ffmpeg-skill/cut)
     → video.concat (with a transition) → video.speed → video.resize → video.fit / video.fill → video.overlay (a real PNG) → the
@@ -2194,7 +2245,7 @@ class VideoEditingOperationsRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.video_editing import locate_video_editing
         cls.ve = locate_video_editing()
-        cls.tmp = tempfile.mkdtemp(prefix="va_vo_")
+        cls.tmp = tmp_dir(cls, prefix="va_vo_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.a, cls.b, cls.png = str(src / "a.mp4"), str(src / "b.mp4"), str(src / "logo.png")
         if cls.ve:
@@ -2364,7 +2415,7 @@ class VideoEditingFeaturesRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.video_editing import locate_video_editing
         cls.ve = locate_video_editing()
-        cls.tmp = tempfile.mkdtemp(prefix="va_vf_")
+        cls.tmp = tmp_dir(cls, prefix="va_vf_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.a, cls.b, cls.stinger = str(src / "a.mp4"), str(src / "b.mp4"), str(src / "stinger.mov")
         cls.stinger_json = str(src / "stinger.json")
@@ -2576,7 +2627,7 @@ class AudioProductionRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.audio_production import locate_audio_production
         cls.ap = locate_audio_production()
-        cls.tmp = tempfile.mkdtemp(prefix="va_ap_")
+        cls.tmp = tmp_dir(cls, prefix="va_ap_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.wav, cls.mono, cls.mp4 = str(src / "a.wav"), str(src / "b.wav"), str(src / "v.mp4")
         if cls.ap:
@@ -2861,7 +2912,7 @@ class IntegratedPipelineRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="va_p3_")
+        cls.tmp = tmp_dir(cls, prefix="va_p3_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.a, cls.b, cls.png = str(src / "a.mp4"), str(src / "b.mp4"), str(src / "logo.png")
         cls.speech = str(src / "ja_talk.mp4")
@@ -3341,7 +3392,7 @@ class VoiceEnhanceRealTests(unittest.TestCase):
         from video_agent.tools.voice_enhance import locate_voice_enhance
         from video_agent.tools.audio_production import locate_audio_production
         cls.ve, cls.ap = locate_voice_enhance(), locate_audio_production()
-        cls.tmp = tempfile.mkdtemp(prefix="va_ve_")
+        cls.tmp = tmp_dir(cls, prefix="va_ve_")
         src = Path(cls.tmp) / "src"; src.mkdir()
         ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         speech = "0.3*sin(2*PI*220*t)*between(t\\,1\\,5)*gt(sin(2*PI*3*t)\\,-0.3)"
@@ -3515,7 +3566,7 @@ class ImagePrepareRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.imagemagick import locate_imagemagick
         cls.im = locate_imagemagick()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_im_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_im_"))
         cls.png = _png(str(Path(cls.tmp) / "src" / "logo.png"), 640, 320)
 
     def setUp(self):
@@ -3630,7 +3681,7 @@ class FaceRedactionRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.detection import locate_detection
         cls.det = locate_detection()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_det_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_det_"))
 
     def setUp(self):
         if not self.det:
@@ -3715,7 +3766,7 @@ class DubbingRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.dubbing import locate_dubbing
         cls.dub = locate_dubbing()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dub_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_dub_"))
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.prog = str(src / "prog.mp4")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4", "-f", "lavfi",
@@ -3769,7 +3820,7 @@ class DiarizationRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.diarization import locate_diarization
         cls.dia = locate_diarization()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_dia_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_dia_"))
 
     def setUp(self):
         if not self.dia:
@@ -3828,7 +3879,7 @@ class PublishRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.publish import locate_publish
         cls.pub = locate_publish()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_pub_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_pub_"))
         (Path(cls.tmp) / "ws").mkdir()
         cls.final = str(Path(cls.tmp) / "ws" / "final.mp4")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=3", "-f", "lavfi",
@@ -3874,7 +3925,7 @@ class ThumbnailDocumentRealTests(unittest.TestCase):
 
     def test_logo_and_texts_rendered_by_the_real_skill(self):
         from PIL import Image
-        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_thumb_"))
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_thumb_"))
         src = Path(tmp) / "src"; src.mkdir()
         video = str(src / "talk.mp4")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:size=640x360:rate=25:duration=3", "-f", "lavfi",
@@ -3909,7 +3960,7 @@ class ThumbnailFeaturesRealTests(unittest.TestCase):
             import PIL  # noqa: F401
         except ImportError:
             self.skipTest("needs Pillow (thumbnail-skill renders with it; CI installs it)")
-        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_thumbf_"))
+        self.tmp = os.path.realpath(tmp_dir(self, prefix="va_thumbf_"))
         self.src = Path(self.tmp) / "src"
         self.src.mkdir()
 
@@ -4005,7 +4056,7 @@ class NleBridgeRealTests(unittest.TestCase):
 
     def test_conform_package_from_the_executed_ir(self):
         from video_agent.tools.nle_bridge import breaking_drift, locate_nle_bridge, NleBridgeAdapter
-        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_nle_"))
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_nle_"))
         src = Path(tmp) / "src"; src.mkdir()
         video = str(src / "talk.mp4")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=4", "-f", "lavfi",
@@ -4037,7 +4088,7 @@ class NleBridgeRealTests(unittest.TestCase):
         would hand back as FCP7 XML); the diff and the read-back are the real `nle-bridge diff --timeline-out`."""
         from video_agent.tools.nle_bridge import NleBridgeAdapter, locate_nle_bridge
         from video_agent.tools.skill_process import invoke
-        tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_nlerb_"))
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_nlerb_"))
         self.addCleanup(shutil.rmtree, tmp, True)
         src = Path(tmp) / "src"; src.mkdir()
         video = str(src / "talk.mp4")
@@ -4128,7 +4179,7 @@ class SlideSyncRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.slide_sync import locate_slide_sync
         cls.ss = locate_slide_sync()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_ss_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_ss_"))
 
     def setUp(self):
         if not self.ss:
@@ -4188,7 +4239,7 @@ class SoundDesignBgmRealTests(unittest.TestCase):
         from video_agent.tools.audio_production import locate_audio_production
         cls.sd = locate_sound_design()
         cls.ap = locate_audio_production()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_sd_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_sd_"))
 
     def setUp(self):
         if not self.sd:
@@ -4247,7 +4298,7 @@ class RemotionRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.remotion import locate_remotion
         cls.rf = locate_remotion()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_rf_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_rf_"))
 
     def setUp(self):
         if not self.rf:
@@ -4289,7 +4340,7 @@ class DocumentVerifyRealTests(unittest.TestCase):
     def setUpClass(cls):
         from video_agent.tools.artifacts import locate_artifacts
         cls.af = locate_artifacts()
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_af_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_af_"))
 
     def setUp(self):
         if not self.af:
@@ -4342,7 +4393,7 @@ class SpeakerIdsRealTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = os.path.realpath(tempfile.mkdtemp(prefix="va_spk_"))
+        cls.tmp = os.path.realpath(tmp_dir(cls, prefix="va_spk_"))
         src = Path(cls.tmp) / "src"; src.mkdir()
         cls.media = str(src / "talk.mp4")
         make_media(cls.media)

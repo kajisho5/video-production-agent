@@ -33,14 +33,16 @@ Everything here is vocabulary and arithmetic over recorded observations, no exec
 from __future__ import annotations
 
 import difflib
+import math
 import re
 import statistics
 import unicodedata
+from fractions import Fraction
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models import Requirement
 from ..media.analysis import loudness_facts
-from .editing import PROGRAMME, EditRequirementError, _bool, _number
+from .editing import PROGRAMME, EditRequirementError, _bool, _number, concat_rate
 
 TAKES_KEY = "edit.takes"
 REQUIREMENT_KEYS = ("edit.takes", "edit.takes.similarity", "edit.takes.music", "edit.takes.snap_max_shift", "edit.takes.crossfade")
@@ -269,6 +271,34 @@ def keep_of(speech: Tuple[float, float], duration: float) -> List[float]:
     return [round(max(0.0, speech[0] - HANDLE_SECONDS), 3), round(min(duration, speech[1] + HANDLE_SECONDS), 3)]
 
 
+def align_to_frames(picks: List[Dict[str, Any]], rate: Optional[Fraction]) -> Dict[str, Dict[str, Any]]:
+    """ADR-115: each pick's out point moved (by under half a frame) so that its join lands on the nearest frame of the programme's
+    `rate`: video-editing-skill joins every CONCAT input at whole frames (contract.whole_frames), so a pick of a part frame would
+    otherwise be cut short there and every later join -- and the crossfaded audio and the beats planned on it -- would land early.
+    The nearest frame is taken on the planned programme position, not per pick, so the moves never add up (a beat-snapped join stays
+    within half a frame of its beat). A pick is kept at least one frame long and never past its source's end. picks: [{"asset_id",
+    "keep": [s, e], "duration"}] in programme order, keep updated in place. Returns {asset id: {fps, out_before, out_after, moved,
+    programme_out (where its out point lands in the programme)}}; empty, and nothing moves, without a known rate."""
+    moved: Dict[str, Dict[str, Any]] = {}
+    if rate is None:
+        return moved
+    t = 0                  # the programme position in frames (every join is on a frame)
+    planned = Fraction(0)  # the programme position as planned (the out points as cut, beat-snapped ones on their beats)
+    for p in picks:
+        s, e = float(p["keep"][0]), float(p["keep"][1])
+        s_ = Fraction(str(s))
+        planned += Fraction(str(e)) - s_
+        frames = max(1, math.floor(planned * rate + Fraction(1, 2)) - t)
+        while frames > 1 and float(s_ + Fraction(frames) / rate) > float(p["duration"]) + 1e-9:
+            frames -= 1   # never past the source's end
+        e2 = round(float(s_ + Fraction(frames) / rate), 3)
+        moved[p["asset_id"]] = {"fps": round(float(rate), 3), "out_before": round(e, 3), "out_after": e2, "moved": e2 != round(e, 3),
+                                "programme_out": round(float(Fraction(t + frames) / rate), 3)}
+        p["keep"] = [round(s, 3), e2]
+        t += frames
+    return moved
+
+
 def snap_joins(picks: List[Dict[str, Any]], beats: List[float], max_shift: float) -> List[Dict[str, Any]]:
     """picks: [{"asset_id", "keep": [s, e], "speech_end", "duration"}] in programme order. Each out point moves (in programme time,
     the bed laid from 0) to the nearest beat within `max_shift`, no earlier than MIN_TAIL_SECONDS after the last word and no later
@@ -416,7 +446,7 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
         loud = next((o for o in analysis.observations if o.asset_id == a.id and o.kind == "loudness"), None)
         lf = loudness_facts(loud.data) if loud is not None else {}
         sil = next((o for o in analysis.observations if o.asset_id == a.id and o.kind == "silence"), None)
-        facts[a.id] = {"index": n, "raw": raw, "clean": clean_text(raw), "transcript": tr.id, "speech": [float(segs[0]["start"]), float(segs[-1]["end"])], "duration": dur,
+        facts[a.id] = {"index": n, "raw": raw, "clean": clean_text(raw), "transcript": tr.id, "speech": [float(segs[0]["start"]), float(segs[-1]["end"])], "duration": dur, "technical": a.technical or {},
                        "loudness": loud.id if loud is not None else None, "lufs": lf.get("lufs"), "true_peak": lf.get("true_peak"),
                        "silence": sil.id if sil is not None else None, "silences": _silence_ranges(sil.data, dur) if sil is not None else [],
                        # ADR-096: who speaks in the take -- the anonymous ids a diarized transcript carries (speakers.assign), in order of first speech
@@ -455,6 +485,11 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
                          f"a grid below {BEAT_MIN_CONFIDENCE:g} confidence or without supported beats would put the joins on times nothing in the music supports",
                          extra=[beat_obs.id], params={"asset_id": PROGRAMME, "music": music.id})
         joins = snap_joins([rec for _, rec, _ in picks], [float(b) for b in grid["supported_beats"]], tk["snap_max_shift"])
+    # ---- ADR-115: every out point on the programme's frame grid (video-editing-skill joins at whole frames, contract.whole_frames)
+    frame_moves = align_to_frames([rec for _, rec, _ in picks], concat_rate({}, facts[picks[0][1]["pick"]]["technical"]) if picks else None)
+    for j in joins:
+        if j["asset_id"] in frame_moves and frame_moves[j["asset_id"]]["programme_out"] != j["to"]:   # a join lands on the frame nearest its beat
+            j["on_frame"] = frame_moves[j["asset_id"]]["programme_out"]
     # ---- one pick per line
     pick_ids: List[str] = []
     for ln, rec, ranked in picks:
@@ -480,6 +515,8 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
         snapped = next((j for j in joins if j["asset_id"] == rec["pick"]), None)
         if snapped is not None:
             params["keep_unsnapped"] = [rec["keep"][0], snapped["out_before"]]
+        if (frame_moves.get(rec["pick"]) or {}).get("moved"):
+            params["frame_grid"] = {k: v for k, v in frame_moves[rec["pick"]].items() if k != "moved"}
         d = eng.decide(subject=PICK_SUBJECT, type="TRANSFORM", decision=f"use {rec['pick']} for line {rec['line']} (score {by[rec['pick']]['score']:g} of {len(ranked)} take(s))",
                        reason=why, confidence=1.0 if ov is None else float(ov.confidence), evidence=ev, risk="MEDIUM", approval=appr,
                        alternatives=[{"decision": f"use {t['asset_id']}", "reason": f"score {t['score']:g} (rank {t['rank']})", "cost": ""} for t in ranked if t["asset_id"] != rec["pick"]],

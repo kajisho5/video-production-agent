@@ -230,7 +230,10 @@ class TakesPipelineTests(unittest.TestCase):
         t = 0.0
         for op, j in zip(trims, snap["params"]["joins"]):
             t += op["keep"][0][1] - op["keep"][0][0]
-            self.assertAlmostEqual(t, j["to"], places=3)
+            # ADR-115: on the frame nearest its beat (video-editing-skill joins whole frames of the 30 fps programme)
+            self.assertAlmostEqual(t, j.get("on_frame", j["to"]), places=3)
+            self.assertLessEqual(abs(t - j["to"]), 0.5 / 30 + 0.001)
+            self.assertAlmostEqual(t * 30, round(t * 30), places=1)
             self.assertIn(j["to"], beats["data"]["supported_beats"])
             self.assertTrue(op["accurate"], "a beat-snapped cut is frame-accurate")
             self.assertIn(snap["id"], op["decision_ids"])
@@ -295,7 +298,7 @@ class TakesPipelineTests(unittest.TestCase):
 L3 = "最後にご質問をお受けいたします"
 # three lines for the crossfades (ADR-054): line 2 runs to the end of its source and line 3 starts at 0, so join 2 has no room for handles
 XF_TAKES = [("l1_take1.mp4", {"segments": [[0.7, 4.1, L1]], "silences": [[0.0, 0.6], [4.3, None]]}),
-            ("l2_take1.mp4", {"segments": [[0.5, 5.95, L2]], "silences": [[0.0, 0.4]]}),
+            ("l2_take1.mp4", {"segments": [[0.55, 5.95, L2]], "silences": [[0.0, 0.45]]}),   # kept 0.4-6.0: 168 whole frames at 30 fps, to its source's end (ADR-115)
             ("l3_take1.mp4", {"segments": [[0.1, 3.0, L3]], "silences": [[3.2, None]]})]
 
 
@@ -461,7 +464,8 @@ class TakeCrossfadePipelineTests(unittest.TestCase):
         # the timeline export is the picture's cut list (hard cuts), unchanged by the audio crossfades
         nm = names(r["ir"].doc)
         tl = r["ir"].doc["delivery"]["timelines"][0]
-        self.assertEqual([[nm[c["asset"]], c["in"], c["out"]] for c in tl["clips"]], [["l1_take1.mp4", 0.55, 4.25], ["l2_take1.mp4", 0.35, 6.0], ["l3_take1.mp4", 0.0, 3.15]])
+        self.assertEqual([[nm[c["asset"]], c["in"], c["out"]] for c in tl["clips"]], [["l1_take1.mp4", 0.55, 4.25], ["l2_take1.mp4", 0.4, 6.0], ["l3_take1.mp4", 0.0, 3.167]])
+        # ADR-115: l3_take1 kept 0-3.15 s is 94.5 frames; its out point moves to the nearest frame of the programme (frame 374, 95 frames)
 
     def test_beat_snapped_joins_keep_their_beats_under_the_crossfades(self):
         music = fake_media(self.tmp, "bed.mp4", duration=20.0, beat_interval=0.5, beat_phase=0.25, beat_confidence=0.96)
@@ -473,7 +477,7 @@ class TakeCrossfadePipelineTests(unittest.TestCase):
         self.assertEqual(keeps(ir.doc), keeps(ir0.doc), "the snapped cut points are the same with and without crossfades")
         snap = by_subject(ir.doc, "takes.beat_snap")[0]
         rec = ir.doc["audio"]["take_crossfade"]
-        self.assertEqual([j["at"] for j in rec["joins"]], [j["to"] for j in snap["params"]["joins"]][:-1], "each crossfade sits on its beat-snapped cut")
+        self.assertEqual([j["at"] for j in rec["joins"]], [j.get("on_frame", j["to"]) for j in snap["params"]["joins"]][:-1], "each crossfade sits on its beat-snapped cut (ADR-115: its frame)")
 
     def test_no_room_anywhere_or_no_audio_production(self):
         # two picks whose only join has no room: KEEP with the reason, no audio chain

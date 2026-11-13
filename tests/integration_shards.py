@@ -34,7 +34,7 @@ SECONDS = {
     "SoundDesignBgmRealTests": 30, "ThumbnailDocumentRealTests": 23, "IngestFetchRealTests": 22,
     "DiarizationRealTests": 22, "RemotionRealTests": 22, "BeatGridRealTests": 18, "TranscriptionRealTests": 18,
     "PublishRealTests": 2, "ProductionContextRealTests": 1, "ProductionDecisionEngineRealTests": 1,
-    "SpeechToPlanRealTests": 1,
+    "SpeechToPlanRealTests": 1, "ConcatWholeFramesRealTests": 10,
 }
 DEFAULT_SECONDS = 60
 

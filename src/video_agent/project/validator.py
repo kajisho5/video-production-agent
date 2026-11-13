@@ -8,7 +8,7 @@ from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STAGES, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH,
                            FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
                            PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, SKILL_OF as AUDIO_SKILL_OF)
-from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, PUNCH_IN_OP, SKILL_OF, TRIM_SKILLS, switch_cams
+from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, concat_rate, IMAGE_INSERT_OP, IMAGE_INSERT_POSITIONS, OPERATIONS, PUNCH_IN_OP, SKILL_OF, TRIM_SKILLS, switch_cams
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL,
                                VIDEO_EXTENSIONS, picture_size, placement_problems, thumbnail_skill_of)
 from ..agent.thumbnail_features import PRESETS as THUMBNAIL_PRESETS
@@ -959,6 +959,11 @@ def check_take_assembly(d: Dict[str, Any]) -> List[str]:
             errs.append(f"takes.beat_snap {sn['id']}: no recorded beat measurement of the music bed {p.get('music')}")
             continue
         beats = [float(b) for b in (obs.get("data") or {}).get("supported_beats") or []]
+        # ADR-115: the joins are on the programme's frame grid (video-editing-skill joins whole frames), so a join lands on the frame
+        # nearest its beat: within half a frame of it (and the IR's millisecond), not on it
+        cat = next((o for o in ops if o.get("type") == "video.concat"), None)
+        rate = concat_rate(cat or {}, (assets.get(((cat or {}).get("inputs") or [None])[0]) or {}).get("technical")) if cat else None
+        on_beat = 0.002 if rate is None else max(0.002, 0.5 / float(rate) + 0.001)
         t = 0.0
         for j in p.get("joins") or []:
             trim = next((o for o in ops if o.get("type") == "video.trim" and o.get("asset") == j.get("asset_id")), None)
@@ -968,7 +973,7 @@ def check_take_assembly(d: Dict[str, Any]) -> List[str]:
                 continue
             if not any(abs(float(j["to"]) - b) <= 0.001 for b in beats):
                 errs.append(f"takes.beat_snap {sn['id']}: join after {j.get('asset_id')} at {j.get('to')}s is not a supported beat of the measurement")
-            elif trim is not None and abs(t - float(j["to"])) > 0.002:
+            elif trim is not None and abs(t - float(j["to"])) > on_beat:
                 errs.append(f"takes.beat_snap {sn['id']}: the cut list ends {j.get('asset_id')} at {t:.3f}s in the programme, not on its beat {j.get('to')}s")
     return errs + check_take_crossfade(d)
 
