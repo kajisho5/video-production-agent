@@ -2,7 +2,7 @@
 gets a step for it, BLOCKED with a handoff naming the package and its install command, instead of the request being dropped.
 
 - **Requirement** `job.<skill>` = true, for every phase-2 SkillSpec in `ECOSYSTEM_JOB_SKILLS` (e.g. `job.dubbing=true`,
-  `job.bluray_authoring=true`). `false` / `none` / absent: nothing. Any other value, or an unknown job, is refused before
+  `job.disc_author=true`). `false` / `none` / absent: nothing. Any other value, or an unknown job, is refused before
   analysis (never guessed).
 - **Decision**: one TRANSFORM `job.<skill>` (what was asked, CONFIRM, grounded on the requirement) and one BLOCK on the same
   subject (no adapter here), so the plan is BLOCKED. The agent never runs, records or verifies the job itself.
@@ -52,6 +52,10 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
              "sound_design": "a music bed under the mix is implemented (skills bgm_library / bgm_generate, ADR-092): with --set audio.production=true audio.mix=true, "
                              "ask for --set bgm.library=<a sound-design library folder> (your licensed files) or bgm.prompt=<what the music is> (generated); "
                              "sound effects are not wired",
+             # ADR-115: disc authoring is one job, oncemore's (the kits' own jobs named tool ids their packages do not have)
+             **{k: "disc authoring is one job: ask for --set job.disc_author=true (oncemore builds the DVD-Video / Blu-ray folder or .iso, "
+                   "with its own titles, menus and chapters); bdmvkit, vtskit, udfkit and dvdcc are the kits oncemore runs, not jobs of their own"
+                for k in ("bluray_authoring", "dvd_authoring", "disc_image", "dvd_line21_captions")},
              # ADR-091: slide-sync-skill's adapter (slide-sync-skill roadmap step 6)
              "slide_sync": "the slide timeline is implemented (analysis kind slide_timeline, ADR-091): ask for --set slides.detect=true (+ slides.deck=<pdf|pptx|key|odp> "
                            "for the page on screen in each slide); without slide-sync-skill the plan hands it off"}

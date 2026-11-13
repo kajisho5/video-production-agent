@@ -21,7 +21,12 @@ Fatal / non-fatal (ADR-047's split, applied to this Skill): there is no pinned c
 catalog is the pin and the contract grows every release (42 tools, descriptions, diagnostics). Fatal: contract_version
 major, skill id, a catalogued tool / flag / positional / switch arity. Everything else in the contract is ignored here.
 A checkout without scripts/_contract.py (ffmpeg-skill < 0.9.0, still inside SUPPORTED_MIN) is `unchecked`: the catalog
-is used as before (verified against 0.8.4 --help) and doctor says so."""
+is used as before (verified against 0.8.4 --help) and doctor says so.
+
+Delivery names (ADR-056 addendum, roadmap step 31): the same read also takes the delivery preset names (export's `--preset` enum)
+and platform names (check's `--platform` enum) the contract publishes, aliases included. The validator checks a delivery
+target's preset / platform against these, so the agent keeps no copy of either list. A contract without the enum leaves the
+names unknown (None), and the validator says it could not check them."""
 from __future__ import annotations
 
 import json
@@ -59,6 +64,8 @@ class CatalogCheck:
     unavailable: Dict[str, str] = field(default_factory=dict)   # catalogued tool -> why it cannot be used
     doctor: Optional[Dict[str, Any]] = None      # {ok, missing, missing_optional, unknown, tools: {name: {usable, missing, fix}}} (non-yes tools only)
     notes: List[str] = field(default_factory=list)
+    presets: Optional[List[str]] = None           # export.py --preset names the contract publishes (aliases included); None: not published
+    platforms: Optional[List[str]] = None         # check.py --platform names the contract publishes (aliases included); None: not published
 
     def tool_reason(self, name: str) -> Optional[str]:
         if self.status == REFUSED:
@@ -67,7 +74,8 @@ class CatalogCheck:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"status": self.status, "reason": self.reason, "contract_version": self.contract_version, "skill_version": self.skill_version,
-                "unavailable": dict(self.unavailable), "doctor": self.doctor, "notes": list(self.notes)}
+                "unavailable": dict(self.unavailable), "doctor": self.doctor, "notes": list(self.notes),
+                "presets": None if self.presets is None else list(self.presets), "platforms": None if self.platforms is None else list(self.platforms)}
 
 
 def _contract_major(v: Any) -> Optional[int]:
@@ -92,6 +100,7 @@ def check_catalog(contract: Any, doctor: Optional[Dict[str, Any]] = None, script
         chk.status, chk.reason = REFUSED, f"contract skill.id {skill.get('id')!r} != {SKILL_ID!r}"
         return chk
     tools = {str(t.get("name")): t for t in contract.get("tools") or [] if isinstance(t, dict)}
+    chk.presets, chk.platforms = option_enum(tools.get("export"), "--preset"), option_enum(tools.get("check"), "--platform")
     for name, spec in CATALOG.items():
         if scripts is not None and name not in scripts:
             continue
@@ -101,6 +110,18 @@ def check_catalog(contract: Any, doctor: Optional[Dict[str, Any]] = None, script
     if doctor is not None:
         _apply_doctor(chk, doctor, scripts)
     return chk
+
+
+def option_enum(tool: Optional[Dict[str, Any]], flag: str) -> Optional[List[str]]:
+    """The names a tool's value flag takes, from its input_schema (`enum` of the property whose `cli` lists the flag), sorted;
+    None when the tool, the flag or its enum is not published."""
+    schema = (tool or {}).get("input_schema") if isinstance((tool or {}).get("input_schema"), dict) else {}
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    for p in props.values():
+        if isinstance(p, dict) and isinstance(p.get("cli"), list) and flag in p["cli"]:
+            enum = p.get("enum")
+            return sorted(str(x) for x in enum) if isinstance(enum, list) and enum else None
+    return None
 
 
 def _tool_problems(name: str, spec: Dict[str, Any], tool: Optional[Dict[str, Any]]) -> List[str]:

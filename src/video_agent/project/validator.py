@@ -12,6 +12,7 @@ from ..agent.editing import EDIT_ORDER, IMAGE_INSERT_DURATION, IMAGE_INSERT_OP, 
 from ..agent.finishing import (COLOR_OPERATIONS, COLOR_ORDER, COLOR_SKILL_OF, ELEMENT_TYPES, FADE_TYPES, GRAPHICS_SKILL,
                                VIDEO_EXTENSIONS, picture_size, placement_problems, thumbnail_skill_of)
 from ..agent.thumbnail_features import PRESETS as THUMBNAIL_PRESETS
+from ..capabilities.resolver import delivery_names
 from ..agent.production_plan import validate_plan
 from ..agent.qc import QC_SKILL
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, MUX_SKILL
@@ -1120,6 +1121,22 @@ def historical_decision_ids(doc: Dict[str, Any]) -> set:
     return out
 
 
+def _check_delivery_names(d: Dict[str, Any], caps: Optional[Dict[str, Any]], rep: "ValidationReport") -> None:
+    presets, platforms, why = delivery_names(caps)   # the engine's own lists (capabilities/resolver.py), never a copy here
+    unchecked = set()
+    for t in d["delivery"]["targets"]:
+        for key, names in (("preset", presets), ("platform", platforms)):
+            value = t.get(key)
+            if key == "preset" and not value:
+                continue
+            if names is None:
+                unchecked.add(key)
+            elif value not in names:
+                rep.errors.append(f"delivery target {t['id']}: unknown {key} {value} (the engine's contract publishes: {', '.join(names)})")
+    if unchecked:
+        rep.warnings.append(f"delivery {' / '.join(sorted(unchecked))} names not checked: {why}")
+
+
 def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_paths: bool = True, registry=None, supports=None) -> ValidationReport:
     """registry: SkillRegistry (plan steps must cite implemented skills and their declared tools); supports: callable(tool) -> bool
     from the tool router (the named tool must be executable here). Both optional so pure schema checks stay cheap."""
@@ -1182,14 +1199,8 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
             rep.warnings.append(f"decision {dec['id']} ({dec['subject']}) is BLOCKED: {dec['reason']}")
         elif dec["approval"] == "CONFIRM" and dec["status"] == "PROPOSED":
             rep.warnings.append(f"decision {dec['id']} ({dec['subject']}) needs confirmation before execution")
-    # delivery presets / platforms must be names the tool knows (catalog-level check, no numbers duplicated)
-    known_presets = {"youtube", "youtube4k", "reels", "x", "prores", "h265", "gif"}
-    known_platforms = {"youtube", "shorts", "reels", "tiktok", "x", "linkedin", "broadcast", "podcast", "custom"}
-    for t in d["delivery"]["targets"]:
-        if t.get("preset") and t["preset"] not in known_presets:
-            rep.errors.append(f"delivery target {t['id']}: unknown preset {t['preset']}")
-        if t.get("platform") not in known_platforms:
-            rep.errors.append(f"delivery target {t['id']}: unknown platform {t.get('platform')}")
+    # delivery presets / platforms must be names the located engine publishes (ADR-056 addendum 2: read from its contract at locate time)
+    _check_delivery_names(d, caps, rep)
     # ProductionPlan structure / boundaries (ids, order, dependencies, evidence, decisions, parameters, scopes, status)
     rep.errors += validate_plan(d, registry=registry)
     # plan steps: Skill → Tool consistency (the compiler takes tools from the steps, so this is the execution contract)

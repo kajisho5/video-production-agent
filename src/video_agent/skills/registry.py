@@ -217,7 +217,7 @@ def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], 
 
 
 # ADR-057: one phase-2 SkillSpec per ecosystem job no adapter here runs; its package is the job's owner in ecosystem.json
-# (skills/ecosystem.py). Disc authoring is four jobs because ecosystem.json gives it to four packages. ADR-066: `media_ingest` (ingest) left this
+# (skills/ecosystem.py). Disc authoring is one job, `disc_author` (oncemore; ADR-115): the four kit jobs named tool ids their packages do not have. ADR-066: `media_ingest` (ingest) left this
 # list when its adapter landed: it is the implemented `media_offload` below (roadmap step 9, one job per PR as each adapter ships). ADR-073:
 # `voice_enhancement` (voice-enhance) left it the same way: the implemented voice_isolate / voice_dereverb / voice_bleed_reduce below. ADR-086:
 # `speaker_diarization` (diarization) too: the implemented measurement of the same name below (analysis kind speaker_turns). ADR-087:
@@ -234,25 +234,19 @@ ECOSYSTEM_JOB_SKILLS: Tuple[SkillSpec, ...] = (
          {"asset": "video|image"}, {"observation": "detections"}, "detection", "detect", "LOW", approval="AUTO", deterministic=False),
     # ADR-077: imagemagick-skill's package id is its own `skill.id` (imagemagick-skill), the prefix of its provides[].tool_id; the overlay
     # preparation is implemented (image_strip / image_prepare / image_pad below), editing a still as a deliverable of its own is not
-    _job("still_image_edit", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
-         {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, "imagemagick-skill", "edit", "LOW"),
+    # ADR-115: the Skill has no `edit` tool; the job names the five tools of its description (imagemagick-skill's provides[].tool_id)
+    SkillSpec("still_image_edit", "0.1", "Still-image editing with ImageMagick (resize, crop, convert, optimise, strip metadata), original never overwritten",
+              {"image": "png|jpg|heic|webp"}, {"artifact": "image"}, ["imagemagick-skill"], "LOW", True, "CONFIRM",
+              [f"imagemagick-skill/{t}" for t in ("resize", "crop", "convert", "optimize", "strip")], phase=2),
     # ADR-080: the Skill's own skill_id and provides[].tool_id from a pinned contract (skills/handoff_contracts.py); still a handoff, CONFIRM
     _job("render_3d", "Render a 3D model with headless Blender (still, turntable or 4-view sheet; with alpha for compositing) as a B-roll asset for ffmpeg-skill/overlay",
          {"model": "glb|gltf|fbx|obj|stl|usd|usdz|ply|abc|blend"}, {"artifact": "image|video"}, "blender-skill", "render", "MEDIUM"),
     _job("html_scene_render", "Render an HTML scene folder to verified video with HyperFrames (h264 / vp9, or ProRes 4444 with alpha), to join with "
          "video-editing/concat or composite with ffmpeg-skill/overlay", {"scene": "dir with index.html"}, {"artifact": "video"}, "hyperframes-skill", "render", "MEDIUM"),
-    _job("bluray_authoring", "Author a Blu-ray (BDMV): titles, chapters, menus, subtitles",
-         {"asset": "video"}, {"artifact": "BDMV"}, "bdmvkit", "build", "MEDIUM"),
-    _job("dvd_authoring", "Author a DVD-Video (VIDEO_TS): titles, menus, subtitles",
-         {"asset": "video"}, {"artifact": "VIDEO_TS"}, "vtskit", "author", "MEDIUM"),
-    _job("disc_image", "Write a UDF disc image (.iso) of an authored DVD-Video or Blu-ray folder",
-         {"disc": "VIDEO_TS|BDMV"}, {"artifact": "iso"}, "udfkit", "image", "LOW"),
     # ADR-094: the disc authoring app (oncemore roadmap step 3). Handoff only: oncemore's own project (titles, menus, chapters) and its build /
     # iso / burn are the user's to run with oncemore; nothing here executes it (no adapter, no execution path)
     _job("disc_author", "Author a DVD-Video or Blu-ray disc with menus, chapters and subtitles from finished videos, as a disc folder or .iso (oncemore, Mac app over a CLI and MCP server)",
          {"assets": "video[]"}, {"artifact": "VIDEO_TS|BDMV|iso"}, "oncemore", "build", "MEDIUM"),
-    _job("dvd_line21_captions", "Insert line-21 closed captions (CEA-608) into DVD MPEG-2 video without re-encoding",
-         {"video": "m2v", "captions": "scc|srt"}, {"artifact": "m2v"}, "dvdcc", "caption", "MEDIUM"),
 )
 
 

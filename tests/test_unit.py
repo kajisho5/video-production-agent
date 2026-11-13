@@ -6418,6 +6418,49 @@ class FfmpegSkillContractCatalogTests(unittest.TestCase):
         reg.register_package(PACKAGE)
         return reg
 
+    def test_delivery_names_come_from_the_contract(self):
+        """ADR-056 addendum 2 (roadmap step 31): the delivery preset / platform names are read from the contract (export's --preset
+        enum, check's --platform enum); every published name passes the validator, an unknown one is refused, and without a
+        checked contract the names are not checked (a warning says why). validator.py holds no list of names."""
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.project.validator import validate_ir
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog, option_enum
+        contract = fake_ffmpeg_contract("2.0")
+        tools = {t["name"]: t for t in contract["tools"]}
+        tools["export"]["input_schema"]["properties"]["preset"] = {"type": "string", "cli": ["--preset"], "enum": ["youtube", "tiktok", "facebook", "dnxhr-hq"]}
+        tools["check"]["input_schema"]["properties"]["platform"] = {"type": "string", "cli": ["--platform"], "enum": ["youtube", "facebook", "tiktok"]}
+        chk = check_catalog(contract)
+        self.assertEqual((chk.status, chk.presets, chk.platforms), ("checked", ["dnxhr-hq", "facebook", "tiktok", "youtube"], ["facebook", "tiktok", "youtube"]))
+        self.assertEqual(chk.to_dict()["presets"], chk.presets)
+        self.assertIsNone(option_enum(tools["cut"], "--preset"))
+        self.assertIsNone(check_catalog(fake_ffmpeg_contract("2.0")).presets, "a contract without the enum publishes no names")
+        svc = make_service(self.tmp)
+        ir = svc.plan([fake_media(self.tmp)], "youtube")
+        target = ir.doc["delivery"]["targets"][0]
+
+        def errors(contract_doc, preset, platform):
+            caps = dict(FakeCaps().resolve())
+            if contract_doc is not None:
+                caps["ffmpeg-skill"] = Capability("ffmpeg-skill", "AVAILABLE", "fake", {"version": "3.8.3", "contract": contract_doc})
+            target["preset"], target["platform"] = preset, platform
+            rep = validate_ir(ir, caps, check_paths=False)
+            return [e for e in rep.errors if e.startswith("delivery target")], [w for w in rep.warnings if w.startswith("delivery ")]
+
+        doc = chk.to_dict()
+        for preset in chk.presets:
+            for platform in chk.platforms:
+                self.assertEqual(errors(doc, preset, platform), ([], []), (preset, platform))
+        errs, _ = errors(doc, "teleport", "myspace")
+        self.assertEqual(len(errs), 2, errs)
+        self.assertIn("unknown preset teleport", errs[0]); self.assertIn("unknown platform myspace", errs[1])
+        errs, warns = errors(None, "teleport", "myspace")
+        self.assertEqual(errs, [])
+        self.assertEqual(warns, ["delivery platform / preset names not checked: no ffmpeg-skill contract was read (ffmpeg-skill not located)"])
+        errs, warns = errors(dict(doc, status="unchecked", reason="no scripts/_contract.py"), "youtube", "youtube")
+        self.assertEqual(warns, ["delivery platform / preset names not checked: the ffmpeg-skill contract is unchecked: no scripts/_contract.py"])
+        src = (Path(__file__).resolve().parents[1] / "src" / "video_agent" / "project" / "validator.py").read_text(encoding="utf-8")
+        self.assertNotIn("youtube4k", src); self.assertNotIn("known_platforms", src)
+
     def test_catalog_matches_a_contract_that_publishes_every_flag(self):
         from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
         chk = check_catalog(fake_ffmpeg_contract())
@@ -7106,7 +7149,7 @@ class UrlIngestTests(unittest.TestCase):
         h = doc["handoff"][0]
         self.assertEqual((h["skill"], h["provided_by"], h["repositories"], h["inputs"]), ("url_fetch", ["ingest"], ["ingest-skill"], ["https://example.com/watch?v=abc"]))
         self.assertIn("git clone https://github.com/kajisho5/ingest-skill && pip install -e 'ingest-skill[fetch]'", h["install"])
-        self.assertIn("/plugin install ingest-skill@ai-video-production-os", h["install"]); self.assertIn("ingest-skill not found", h["reason"])
+        self.assertIn("/plugin install ingest-skill@velisa", h["install"]); self.assertIn("ingest-skill not found", h["reason"])
         self.assertFalse((Path(self.tmp) / "downloads").exists() and any((Path(self.tmp) / "downloads").iterdir()), "nothing downloaded")
         # ingest-skill present but without its fetch extra: the same handoff, with ingest-skill's own reason
         os.environ[INGEST_ENV_DIR] = fake_ingest.checkout(Path(self.tmp) / "ingest-skill")
