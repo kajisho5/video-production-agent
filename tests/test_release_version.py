@@ -156,7 +156,7 @@ class VersionOnlyDriftTests(unittest.TestCase):
         self.assertTrue(compare_to_pin("video-editing-skill", live, pinned, supported, drift).content_drift)
 
     def test_version_outside_the_gate_fails(self):
-        for skill, new in (("video-editing-skill", "0.8.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.2.0"),
+        for skill, new in (("video-editing-skill", "0.9.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.2.0"),
                            ("color-grading-skill", "2.0.0"), ("subtitle-skill", "0.11.0"), ("qc-skill", "1.5.0"), ("thumbnail-skill", "0.2.0")):
             pinned, supported, drift = adapter(skill)
             with self.subTest(skill=skill, version=new):
@@ -172,8 +172,8 @@ class VersionOnlyDriftTests(unittest.TestCase):
 
     def test_restate_leaves_the_input_alone(self):
         pinned = adapter("video-editing-skill")[0]
-        live = by_hand(pinned, "0.7.3"); before = copy.deepcopy(live)
-        out, changed = restate_release_version(live, "0.7.0")
+        live = by_hand(pinned, "0.8.3"); before = copy.deepcopy(live)
+        out, changed = restate_release_version(live, "0.8.0")
         self.assertEqual(live, before); self.assertEqual(out, pinned); self.assertTrue(changed)
         self.assertEqual(restate_release_version({"name": "x"}, "1.0.0"), ({"name": "x"}, []))
 

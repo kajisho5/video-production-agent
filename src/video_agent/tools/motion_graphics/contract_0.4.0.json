@@ -4,7 +4,7 @@
   "id": "motion-graphics",
   "name": "motion-graphics-skill",
   "package": "motion-graphics-skill",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "contract_version": 1,
   "kind": "execution",
   "role": "motion graphics rendering (execution); not design, not decision",
@@ -28,7 +28,7 @@
     {
       "tool_id": "motion-graphics/run",
       "skill_id": "motion-graphics",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "role": "execution",
       "description": "Render a typed Graphics Document (titles, lower thirds, text overlays, image/logo overlays, video-on-video picture-in-picture/chroma-key overlays, solid-colour rectangles, with fade animation) onto a video and write a validated artifact with provenance",
       "inputs": [
@@ -814,7 +814,7 @@
     },
     {
       "type": "rendered_layer",
-      "description": "Place a pre-rendered clip with an alpha channel (e.g. an animated lower third exported as ProRes 4444) at a position over the element's window (ffmpeg-skill/overlay --video --place). in_duration seconds from the clip's start play at the element's start, out_duration seconds from its end finish at the element's end, and the part between them (the loop) is repeated to fill the rest when loop is true, or played once and cut when false. The layer must decode with alpha (a yuva/rgba pixel format: ProRes 4444, QuickTime Animation, PNG in MOV); a VP9 alpha WebM is refused because overlay decodes it without its alpha. No fade or other motion of its own: the animation is the clip's.",
+      "description": "Place a pre-rendered clip with an alpha channel (e.g. an animated lower third exported as ProRes 4444) at a position over the element's window (ffmpeg-skill/overlay --video --place). in_duration seconds from the clip's start play at the element's start, out_duration seconds from its end finish at the element's end, and the part between them (the loop) is repeated to fill the rest when loop is true, or played once and cut when false. The layer must decode with alpha (a yuva/rgba pixel format: ProRes 4444, QuickTime Animation, PNG in MOV); a VP9 alpha WebM is refused because overlay decodes it without its alpha. No fade or other motion of its own: the animation is the clip's. This is the path for animated overlays (slide, move, scale, keyframed opacity): render them as such a clip. title_json names the clip's title.json (velisa/title@1, written by hyperframes-skill render beside the clip): its segments give in_duration / out_duration / loop, and a value the request states wins (see the contract's title_json).",
       "tool": "ffmpeg-skill/overlay",
       "animation": "none",
       "parameters": {
@@ -871,6 +871,10 @@
           "type": "boolean",
           "required": false,
           "default": true
+        },
+        "title_json": {
+          "type": "path",
+          "required": false
         }
       },
       "required_capabilities": [
@@ -909,22 +913,22 @@
     {
       "kind": "slide",
       "status": "not_implemented",
-      "reason": "position animation is not exposed as a typed, per-element parameter by ffmpeg-skill/overlay; lower_third has a fixed, non-configurable built-in slide instead"
+      "reason": "position animation is not exposed as a typed, per-element parameter by ffmpeg-skill/overlay; lower_third has a fixed, non-configurable built-in slide instead; for animated graphics, render the motion as a clip with alpha (e.g. hyperframes-skill, ProRes 4444) and place it with the rendered_layer element (its title.json gives the in / loop / out)"
     },
     {
       "kind": "move",
       "status": "not_implemented",
-      "reason": "arbitrary position keyframes would require a per-frame expression, which this skill does not construct (no raw filters, STEP 10)"
+      "reason": "arbitrary position keyframes would require a per-frame expression, which this skill does not construct (no raw filters, STEP 10); for animated graphics, render the motion as a clip with alpha (e.g. hyperframes-skill, ProRes 4444) and place it with the rendered_layer element (its title.json gives the in / loop / out)"
     },
     {
       "kind": "scale",
       "status": "not_implemented",
-      "reason": "scale animation over time is not exposed as a typed parameter by ffmpeg-skill/overlay (static --scale / --scale-percent only)"
+      "reason": "scale animation over time is not exposed as a typed parameter by ffmpeg-skill/overlay (static --scale / --scale-percent only); for animated graphics, render the motion as a clip with alpha (e.g. hyperframes-skill, ProRes 4444) and place it with the rendered_layer element (its title.json gives the in / loop / out)"
     },
     {
       "kind": "opacity_keyframes",
       "status": "not_implemented",
-      "reason": "arbitrary opacity keyframe curves are not supported; use a fade (2-point in/out/in_out) instead"
+      "reason": "arbitrary opacity keyframe curves are not supported; use a fade (2-point in/out/in_out) instead, or for animated graphics, render the motion as a clip with alpha (e.g. hyperframes-skill, ProRes 4444) and place it with the rendered_layer element (its title.json gives the in / loop / out)"
     }
   ],
   "platforms": {
@@ -1538,6 +1542,34 @@
     "precedence": "an explicit parameter > the kit > options.style (the preset)",
     "result": "response.kit {schema, file {sha256, size}, mapped_to, theme | brand_kit, unmapped, contrast?}; with theme@1 also response.theme (label \"kit\", contrast on the kit's colours)",
     "validate": "`validate` touches no files: options.kit is checked as a path and no kit is applied"
+  },
+  "title_json": {
+    "file_schema": "velisa/title@1",
+    "written_by": "hyperframes-skill render of title material: <stem>.title.json beside the clip (the Velisa spec for title and stinger metadata)",
+    "request_field": "elements[].parameters.title_json on a rendered_layer: the title.json file's path (PathPolicy, at most 262144 bytes, UTF-8 JSON)",
+    "mapping": {
+      "segments.in": "in_duration",
+      "segments.out": "out_duration",
+      "segments.loop > 0": "loop (true; 0 gives false)"
+    },
+    "reads": [
+      "segments",
+      "sha256",
+      "file",
+      "alpha",
+      "schema"
+    ],
+    "checks": {
+      "sha256": "when present, the clip's sha256 (else title_json_stale)",
+      "file": "when present and sha256 is not, the clip's file name (else title_json_other_file)",
+      "segments": "in + loop + out is the clip's probed length within one frame (else title_json_segments_mismatch)",
+      "alpha": "when present, straight (premultiplied: title_json_premultiplied_alpha)",
+      "schema": "when present, velisa/title@1 (else not_title_json)"
+    },
+    "errors": "INVALID_INPUT, details.reason one of bad_title_json, not_title_json, title_json_without_segments, title_json_stale, title_json_other_file, title_json_segments_mismatch, title_json_premultiplied_alpha",
+    "precedence": "a value the request states (in_duration, out_duration, loop) wins over the file, with a warning when they differ; a value it leaves out comes from the file, not the parameter's default",
+    "result": "response.title_json {<element id>: {schema, file {sha256, size}, layer_matched_by (sha256 | file | null), segments, alpha?, values {in_duration, out_duration, loop}, sources {<parameter>: request | title_json}}} in plan and run, present when an element gives title_json",
+    "validate": "`validate` touches no files: title_json is checked as a path, and the parameters it would fill are left out"
   },
   "layer_export": {
     "request_field": "options.layer_export",

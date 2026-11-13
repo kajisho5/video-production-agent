@@ -3,8 +3,8 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.7.0",
-  "contract_version": "6.0",
+  "version": "0.8.0",
+  "contract_version": "7.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
   "repository": "https://github.com/kajisho5/video-editing-skill",
@@ -167,7 +167,7 @@
       "type": "POSITION",
       "capability": "video.position",
       "status": "NOT_IMPLEMENTED",
-      "reason": "free placement of a video layer is not provided: OVERLAY composites still images only; a video layer would extend OVERLAY (ADR-002)",
+      "reason": "free placement of a video layer (picture-in-picture, chroma key) is motion-graphics-skill's video_overlay, not an operation here: OVERLAY composites still images only (ADR-035)",
       "engine_tool": null
     }
   ],
@@ -175,7 +175,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -208,7 +208,7 @@
         },
         "output": {
           "frame_size": "params.width x params.height, else the first input",
-          "fps": "params.fps, else the first input",
+          "fps": "params.fps, else the first input; constant, with every input joined at whole frames of it (with or without a transition: an input at another rate or variable-rate is conformed to it, rounded to the nearest frame; one at that rate whose length is not whole frames is cut, rounded down; an xfade transition's duration is rounded to the nearest frame; the timeline places every clip at those lengths)",
           "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"
         }
       },
@@ -229,7 +229,7 @@
     {
       "tool_id": "video-editing/condense",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "CONDENSE",
       "capability": "video.condense",
       "description": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved proposals (retakes, silences, static spans) become segments here",
@@ -280,7 +280,7 @@
     {
       "tool_id": "video-editing/crop",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "CROP",
       "capability": "video.crop",
       "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
@@ -331,7 +331,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -379,7 +379,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -429,7 +429,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -479,7 +479,7 @@
     {
       "tool_id": "video-editing/freeze",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "FREEZE",
       "capability": "video.freeze",
       "description": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end",
@@ -528,7 +528,7 @@
     {
       "tool_id": "video-editing/image_insert",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "IMAGE_INSERT",
       "capability": "video.image_insert",
       "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
@@ -578,10 +578,10 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
-      "description": "composite a still image (logo, lower-third PNG) at a named position for a time range",
+      "description": "composite a still image (logo, lower-third PNG) at a named position for a time range; a video layer, picture-in-picture or chroma key is motion-graphics-skill's video_overlay (ADR-035)",
       "required_capabilities": [
         "ffmpeg",
         "ffprobe",
@@ -593,7 +593,7 @@
       ],
       "input_arity": "one",
       "parameters": {
-        "image": "image source id",
+        "image": "image source id (png / jpg); a video source or an operation is INVALID_INPUT overlay_video_layer: use motion-graphics-skill video_overlay",
         "position": "top-left|top|top-right|left|center|right|bottom-left|bottom|bottom-right or {x, y} px",
         "margin": "int px",
         "scale": "image width px (optional)",
@@ -632,7 +632,7 @@
     {
       "tool_id": "video-editing/punch_in",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "PUNCH_IN",
       "capability": "video.punch_in",
       "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
@@ -683,7 +683,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -731,7 +731,7 @@
     {
       "tool_id": "video-editing/reverse",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "REVERSE",
       "capability": "video.reverse",
       "description": "play the input backwards, picture and audio",
@@ -777,7 +777,7 @@
     {
       "tool_id": "video-editing/rotate",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "ROTATE",
       "capability": "video.rotate",
       "description": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)",
@@ -825,7 +825,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -874,7 +874,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -1013,7 +1013,7 @@
       "tool": "ffmpeg-skill/overlay",
       "arity": "one",
       "parameters": {
-        "image": "image source id",
+        "image": "image source id (png / jpg); a video source or an operation is INVALID_INPUT overlay_video_layer: use motion-graphics-skill video_overlay",
         "position": "top-left|top|top-right|left|center|right|bottom-left|bottom|bottom-right or {x, y} px",
         "margin": "int px",
         "scale": "image width px (optional)",
@@ -1318,7 +1318,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1424,12 +1424,12 @@
       },
       "output": {
         "frame_size": "params.width x params.height, else the first input",
-        "fps": "params.fps, else the first input",
+        "fps": "params.fps, else the first input; constant, with every input joined at whole frames of it (with or without a transition: an input at another rate or variable-rate is conformed to it, rounded to the nearest frame; one at that rate whose length is not whole frames is cut, rounded down; an xfade transition's duration is rounded to the nearest frame; the timeline places every clip at those lengths)",
         "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"
       },
       "refused_before_execution": [
         "source without a video stream or duration",
-        "an input shorter than twice the transition",
+        "an input shorter than twice the transition (both at whole frames)",
         "transition stinger: see contract.stinger.refused"
       ]
     },
@@ -1578,7 +1578,8 @@
         "source without a video stream or duration",
         "image that does not decode",
         "start / end beyond the input duration",
-        "input frame with an odd width or height (odd_frame)"
+        "input frame with an odd width or height (odd_frame)",
+        "a video source or an operation in params.image (INVALID_INPUT overlay_video_layer: a video layer is motion-graphics-skill's video_overlay)"
       ]
     },
     "PUNCH_IN": {
@@ -1766,7 +1767,7 @@
       "probe: video stream, duration, frame size",
       "duration within tolerance of the timeline (frame / auto / smart 0.35 s, keyframe 1.5 s)",
       "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE",
-      "frame rate as requested",
+      "frame rate as requested (a CONCAT without a transition or with a stinger: the first input's when params.fps is not given)",
       "audio stream kept when the input(s) had one"
     ],
     "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
@@ -1777,7 +1778,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.7.0"
+      "version": "0.8.0"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1797,8 +1798,8 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.7.0",
-    "contract_version": "6.0",
+    "version": "0.8.0",
+    "contract_version": "7.0",
     "pinned_blocks": [
       "schema",
       "skill_id",
@@ -1822,9 +1823,9 @@
     "next": {
       "0.7.0": [
         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag (docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-        "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
         "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
-        "POSITION: not planned as a type (see docs/decisions.md ADR-002)"
+        "POSITION: not planned as a type (see docs/decisions.md ADR-002)",
+        "OVERLAY video layer / chroma key: not planned; motion-graphics-skill video_overlay owns it (docs/decisions.md ADR-035)"
       ]
     }
   },
@@ -1971,9 +1972,10 @@
   "stinger": {
     "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
     "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: cut_point and cover come from it (the caller reads it and passes them)",
-    "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its frame at cut_point lies on the cut frame; a clip at the edit's frame rate takes its length rounded down to whole frames, so every cut is on a frame",
+    "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its frame at cut_point lies on the cut frame; every clip is joined at whole frames of the edit's rate, as in a plain CONCAT (a clip at that rate rounded down, one at another rate or variable-rate conformed to it, rounded to the nearest frame), so every cut is on a frame",
     "engine_calls": [
       "ffmpeg-skill/look <stinger> --at <a quarter frame before cut_point> --width <its width> --no-timecode -o <png>, once before anything runs: the stinger's frame at cut_point, written with its alpha (cover_check)",
+      "ffmpeg-skill/fit --fps <edit rate> --duration <whole frames> --method trim, for a clip at another rate or variable-rate",
       "ffmpeg-skill/cut --start 0 --end <whole frames> --accurate, only for a clip whose measured length is not that (a stream-copied segment, as a rule)",
       "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)",
       "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join (alpha respected)",
@@ -1991,6 +1993,25 @@
     ],
     "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, stinger_end}], cover_check, cover_measured: {tool, frame, at, measured, covered, pixels, pixels_below, min_alpha, threshold, opaque_within, frame_size, provenance: OBSERVED} (in a plan: measured false, measured when the request runs)}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
     "cover_check": "declared and measured: the cover window (the stinger maker's statement) must contain cut_point, and the stinger's own frame at cut_point is measured before anything runs: ffmpeg-skill/look writes it as a PNG with its alpha, this Skill reads every pixel's alpha, and the frame covers when none is under 253 of 255 (ffmpeg-skill's alpha tolerance, 2 of 255); the same stinger and cut point are measured once per request"
+  },
+  "whole_frames": {
+    "applies_to": "every CONCAT: without a transition and with a stinger (contract.stinger) the inputs are butt-joined; with an xfade transition they overlap by its duration, held to whole frames too",
+    "rate": "params.fps, else the first input's frame rate (as join.py chooses it); the output is constant at that rate",
+    "rule": [
+      "every input is joined at whole frames of the rate, and the timeline places every clip at that length",
+      "an input at the rate: its planned length rounded down to whole frames (one within 1 ms of the next frame keeps it); cut to it (ffmpeg-skill/cut --start 0 --end <length> --accurate) only when its measured length differs (a stream-copied segment, a cut that kept a part frame), else joined as it is",
+      "an input at another rate, or variable-rate: its planned length rounded to the nearest frame of the rate, conformed to the rate and that length first (ffmpeg-skill/fit --fps <rate> --duration <length> --method trim); a clip rounded up holds its last instant for the rest of its last frame (a timeline segment of speed 0)",
+      "an xfade transition: its duration rounded to the nearest frame of the rate (a half up, at least one frame) and joined at that length (ffmpeg-skill/join --duration); the timeline overlaps the clips by it, so every clip starts on a frame"
+    ],
+    "why": "join.py trims each clip to its own length and starts the next after it: a length that is not whole frames of the output rate moved every later clip off the frame grid (a one-frame hole in the picture once the remainders reached half a frame, and a timeline that drifted from the file by the remainder of every clip). With an xfade, join.py starts each transition at the lengths before it less the transitions, and xfade starts one only on a frame: an offset between frames started the next clip's picture on the frame after it, up to a frame after its sound and its timeline place",
+    "report": "execution.operations[].whole_frames and plan.steps[].whole_frames: {rate: {fps, rational}, inputs: [{input, fps, length, joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}], and with an xfade transition: {type, duration, joined_duration, frames}}; the join's own arguments (plan.steps[].arguments.duration) carry the joined duration",
+    "validation": "the output's frame rate is the rate within 0.02, also when params.fps is not given (VALIDATION_ERROR fps)",
+    "refused": [
+      "an input whose whole-frame length is no frame at all (INVALID_TIME_RANGE shorter_than_a_frame), before anything runs",
+      "with an xfade transition, an input whose whole-frame length is not longer than twice the joined transition (INVALID_TIME_RANGE), before anything runs"
+    ],
+    "not_applied": [],
+    "engine_note": "join.py writes each clip's length to the millisecond and starts the next clip after the longer of its picture and its sound: a clip of whole frames whose length rounds up (at 30 fps a frame count 2 more than a multiple of 3, up by 1/3 ms; at 29.97 fps up to 0.5 ms) still starts the next one that much late, so some 35 to 50 such clips in one edit can still leave a one-frame hole; that remainder is the engine's (a proposal to ffmpeg-skill), not worked around here. With an xfade, join.py writes each transition's offset to the millisecond too, and xfade starts it on the first frame at or after that time: a whole-frame offset that rounds up (at 30, 24 or 60 fps one offset in three, at 29.97, 23.976 or 59.94 fps about one in two; never at 25 or 50 fps) starts that transition, and the next clip's picture, one frame late, against its sound and the timeline (not worked around here either). Before ffmpeg-skill 2.4.1 join.py does not trim a clip's sound to its picture, so an AAC tail can still start the next clip up to a frame late"
   },
   "ai_generated": {
     "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",
@@ -2115,7 +2136,7 @@
       "video_only": "all operations allowed, OVERLAY included (ffmpeg-skill >=0.10.0 bounds the looped-image overlay with an explicit -t instead of -shortest); the output has no audio stream (validated)",
       "video_and_audio": "all operations; the audio stream is kept (validated)",
       "audio_only": "refused as a source (no_video_stream); audio-only editing is not provided",
-      "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch",
+      "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch; a video in OVERLAY.params.image is INVALID_INPUT overlay_video_layer (motion-graphics-skill video_overlay)",
       "mixed_audio_presence_in_concat": "allowed; the engine inserts silence for the inputs without audio and the output has audio (validated)",
       "different_resolution_in_concat": "allowed; conformed by params.mode to the normalized frame",
       "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
