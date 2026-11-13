@@ -1,11 +1,13 @@
 """Fake publish-skill process for the ADR-087 tests: speaks the slice of the real `publish` CLI the agent uses -- `contract --json` (the pinned
-src/video_agent/tools/publish/contract_0.1.0.json), `doctor --json --offline` (publish/doctor@1 with checks.platforms) and `plan` / `upload` with
+src/video_agent/tools/publish/contract_0.2.0.json), `doctor --json --offline` (publish/doctor@1 with checks.platforms) and `plan` / `upload` with
 `--flag=value` options and the deliverable after `--`, in the result shapes of publish-skill main (publish/plan@1; the dry run with its
 confirm_token = the real formula over platform, sha256, size and the canonical metadata; the upload result; its error document). Nothing touches
 a network: an upload with the right token writes a receipt line to FAKE_PUB_UPLOADS instead.
 Controlled via:
 
   FAKE_PUB_VERDICT: PASS (default) | WARN | FAIL | INCOMPLETE (the plan's verdict)
+  FAKE_PUB_GUIDANCE: PASS (default) | WARN | FAIL (the status of ffmpeg-skill check's duration row, which 0.2.0 reports as guidance:
+                     `basis: guidance`, `in_verdict: false`, never in the verdict or the counts)
   FAKE_PUB_MODE: ok | fail:<CODE> (upload --confirm refuses with that publish code) | dry_wrong_sha (the dry run reports another sha256)
   FAKE_PUB_CONTRACT: pinned | drift_platform (a new platform appears: non-fatal) | drift_confirm (confirmation from config: fatal) | gone_platform (x's uploader removed: fatal)
   FAKE_PUB_CALLS: a file every invocation's argv is appended to (one JSON list per line)
@@ -18,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "publish" / "contract_0.1.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "publish" / "contract_0.2.0.json"
 CALLS_LOG = os.environ.get("FAKE_PUB_CALLS")
 
 
@@ -116,10 +118,16 @@ def main() -> int:
     base = {"skill": {"id": "publish", "version": c["version"]}, "platform": {"id": platform, "name": c["platforms"]["registered"][platform]["name"]}, "input": item, "metadata": md}
     if argv[0] == "plan":
         v = os.environ.get("FAKE_PUB_VERDICT", "PASS")
-        rows = [{"check": "video.max_bytes", "status": "PASS", "value": item["size"], "limit": 1, "owner": "publish"}]
+        rows = [{"check": "video.max_bytes", "status": "PASS", "value": item["size"], "limit": 1, "owner": "publish", "in_verdict": True, "limit_status": "documented"}]
         if v != "PASS":
-            rows.append({"check": "title.max_chars", "status": {"WARN": "WARN", "FAIL": "FAIL", "INCOMPLETE": "UNCHECKED"}[v], "value": 999, "limit": 100, "owner": "publish", "fix": "shorten the title"})
-        _emit(dict(base, schema="publish/plan@1", ok=v in ("PASS", "WARN"), verdict=v, checks=rows, uploaded=False, network_used=False, next_step="fake"))
+            rows.append({"check": "title.max_chars", "status": {"WARN": "WARN", "FAIL": "FAIL", "INCOMPLETE": "UNCHECKED"}[v], "value": 999, "limit": 100, "owner": "publish", "fix": "shorten the title",
+                         "in_verdict": True, "limit_status": "documented"})
+        guide = [{"check": "duration", "status": os.environ.get("FAKE_PUB_GUIDANCE", "PASS"), "owner": "ffmpeg-skill", "basis": "guidance", "in_verdict": False,
+                  "guidance": "publish-skill's video.max_duration_s decides"},
+                 {"check": "file size", "status": "PASS", "owner": "ffmpeg-skill", "basis": "guidance", "in_verdict": False, "guidance": "publish-skill's video.max_bytes decides"}]
+        counts = {k: sum(1 for r in rows if r["status"] == s) for k, s in (("pass", "PASS"), ("warn", "WARN"), ("fail", "FAIL"), ("unchecked", "UNCHECKED"))}
+        _emit(dict(base, schema="publish/plan@1", ok=v in ("PASS", "WARN"), verdict=v, checks=rows + guide, counts=dict(counts, guidance=len(guide)), uploaded=False,
+                   network_used=False, next_step="fake"))
         return 0 if v in ("PASS", "WARN") else 1
     token = _token(platform, item["sha256"], item["size"], md)
     if "confirm" not in kv:

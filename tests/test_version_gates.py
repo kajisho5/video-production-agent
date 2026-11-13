@@ -31,12 +31,13 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        self.assertEqual(mg.pinned_contract()["version"], "0.2.19")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only; addendum 6: 0.2.16; ADR-106: 0.2.17 (layer_export); ADR-107: 0.2.18 / 0.2.19 version-only
-        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16", "0.2.17", "0.2.18", "0.2.19"):
+        self.assertEqual(mg.pinned_contract()["version"], "0.3.0")   # ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only; addendum 6: 0.2.16; ADR-106: 0.2.17 (layer_export); ADR-107: 0.2.18 / 0.2.19 version-only; addendum 19: 0.3.0 adds the kit block and options.kit?
+        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16", "0.2.17", "0.2.18", "0.2.19", "0.2.20", "0.3.0", "0.3.4"):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
             self.assertEqual(mg.contract_breaking_drift(live), [], v)
-        self.assertTrue(mg.check_contract(with_version(mg.pinned_contract(), "0.3.0")))
+        for v in ("0.4.0", "0.30.0", "1.0.0"):
+            self.assertTrue(mg.check_contract(with_version(mg.pinned_contract(), v)), v)
 
     def test_transcription_release_versions(self):
         # 0.8.0 (ADR-078): optional engine whisperx appended, nothing the adapter sends changed; 0.9.0 (ADR-107 addendum 2): word index,
@@ -67,12 +68,12 @@ class VersionGateTests(unittest.TestCase):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
         # ADR-097 addendum 6: 0.5.0 .. 0.8.0 add opt-in render / generate inputs and formats; the request the adapter builds is unchanged, so the gate takes 0.5.x .. 0.8.x
         # ADR-107: 0.9.0 adds render's optional fonts_dir (burn only), 0.9.1 is version-only; re-pinned from the v0.9.1 tag and the gate takes 0.9.x
-        self.assertEqual(st.pinned_contract()["version"], "0.9.1")   # ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
-        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3", "0.9.0", "0.9.1", "0.9.2"):
+        self.assertEqual(st.pinned_contract()["version"], "0.10.0")   # addendum 20: 0.10.0 adds opt-in animated captions; ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
+        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3", "0.9.0", "0.9.1", "0.9.2", "0.10.0", "0.10.3"):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)
-        for v in ("0.10.0", "1.0.0"):
+        for v in ("0.11.0", "0.100.0", "1.0.0"):
             self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)
         # a real 0.8.x contract has no fonts_dir: inside the version range, but its capabilities / operations / parameters differ from the pin (fatal drift)
         old = with_version(st.pinned_contract(), "0.8.0")
@@ -150,15 +151,15 @@ class VersionGateTests(unittest.TestCase):
         # ADR-107: 1.0.0 was an unintended version number for the 0.4 line (the 0.4.10 contract, version only), so the gate takes 1.0.x and 0.4.x of the
         # same contract; 1.0 is not a new contract generation, and 0.5 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only.
         # Addendum 12: 1.1.0 / 1.2.0 add LOUDNESS_SET and STEMS (operations, a fatal drift key: re-pinned); the gate takes 1.1.x / 1.2.x
-        self.assertEqual(ap.pinned_contract()["version"], "1.2.0")
+        self.assertEqual(ap.pinned_contract()["version"], "1.3.0")   # addendum 17: 1.3.0 adds the opt-in filler_lexicons.opt_in / opt_in_use
         self.assertTrue({"LOUDNESS_SET", "STEMS"} <= {o["type"] for o in ap.pinned_contract()["operations"]})
-        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5"):
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2"):
             live = with_version(ap.pinned_contract(), v)
             self.assertEqual(ap.check_contract(live), [], v)
             self.assertEqual(ap.contract_breaking_drift(live), [], v)
-        for v in ("0.5.0", "1.3.0", "1.10.0", "2.0.0", "10.0.0"):
+        for v in ("0.5.0", "1.4.0", "1.10.0", "2.0.0", "10.0.0"):
             self.assertTrue(ap.check_contract(with_version(ap.pinned_contract(), v)), v)
-        # a 1.0.x install (no LOUDNESS_SET / STEMS) is drift against the 1.2.0 pin, and fatal, as after every content re-pin
+        # a 1.0.x install (no LOUDNESS_SET / STEMS) is drift against the 1.3.0 pin, and fatal, as after every content re-pin
         old = with_version(ap.pinned_contract(), "1.0.1")
         old["operations"] = [o for o in old["operations"] if o["type"] not in ("LOUDNESS_SET", "STEMS")]
         self.assertEqual(sorted(ap.contract_breaking_drift(old)), ["operations LOUDNESS_SET: pinned but not in the installed contract",

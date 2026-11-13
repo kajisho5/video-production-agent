@@ -38,9 +38,11 @@ from .locate import PACKAGE_ID, HyperframesSkill, locate_hyperframes  # noqa: F4
 
 SKILL_ID = PACKAGE_ID
 TOOL_RENDER = "hyperframes-skill/render"
-# 0.8.0 (render --segments, --codec png, probe --alpha) and 0.8.1 (hyperframes-skill #22, docs only: the contract differs in `version`); never 0.9 / 1.x
-SUPPORTED_SKILL_VERSIONS = ("0.8.",)
-PIN_VERSION = "0.8.1"
+# 0.8.0 (render --segments, --codec png, probe --alpha) and 0.8.1 (hyperframes-skill #22, docs only: the contract differs in `version`);
+# 0.9.0 (ADR-107 addendum 21): the scene request keys `stinger` and `title`, five stinger templates, and `stinger` / `sidecar` in the results.
+# Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.10 / 1.x.
+SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.")
+PIN_VERSION = "0.9.0"
 PINNED_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "skills" / "pins" / f"hyperframes-skill_{PIN_VERSION}.json"
 CODEC = "prores"            # ProRes 4444 with alpha: what rendered_layer reads (a VP9 alpha WebM decodes without its alpha there)
 SEGMENT_NAMES = ("in", "loop", "out")

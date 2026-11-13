@@ -38,7 +38,7 @@ from .editing import EditRequirementError, _bool, _number
 # ADR-101: the pinned subtitle-skill contract, read as data (the agent layer imports no tool package): generate's formats, the regional and
 # caption profiles and the placement fields it declares. TTML (IMSC 1.1 Text) and EBU-TT-D are sidecar formats only: render (burn / mux)
 # stays SRT through the engine's caption tool, from the same cues.
-SUBTITLE_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "subtitle" / "contract_0.9.1.json"
+SUBTITLE_CONTRACT_PATH = Path(__file__).resolve().parents[1] / "tools" / "subtitle" / "contract_0.10.0.json"
 _SUB_CONTRACT: Dict[str, Any] = json.loads(SUBTITLE_CONTRACT_PATH.read_text(encoding="utf-8"))
 FORMATS = tuple(str(f) for f in _SUB_CONTRACT["operations"]["generate"]["formats"])   # srt, vtt, ttml, ebu-tt-d
 SIDECAR_EXTENSIONS = {"srt": "srt", "vtt": "vtt", "ttml": "ttml", "ebu-tt-d": "ttml"}   # the sidecar file's extension per format

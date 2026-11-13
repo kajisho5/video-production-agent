@@ -51,11 +51,12 @@ class PinnedSkillSpecTests(unittest.TestCase):
         self.assertEqual(PINS["render_3d"].param("preset").choices(load_pin(PINS["render_3d"].pin_file)), ("thumbnail", "square", "720p", "1080p", "4k", "vertical"))
         self.assertEqual(PINS["html_scene_render"].param("codec").choices(load_pin(PINS["html_scene_render"].pin_file)), ("h264", "vp9", "prores", "png"))
 
-    def test_hyperframes_pin_is_0_8_1_with_the_argv_recorder(self):
+    def test_hyperframes_pin_is_0_9_0_with_the_argv_recorder(self):
         """hyperframes-skill 0.6.2 renamed execution.argv_shims to execution.argv_recorder (its D10); 0.7.0 / 0.8.0 (ADR-107 addendum 12)
-        add render --segments, --codec png and probe --alpha; 0.8.1 (ADR-114) changes only `version`. The pin is the 0.8.1 contract."""
+        add render --segments, --codec png and probe --alpha; 0.8.1 (ADR-114) changes only `version`; 0.9.0 (ADR-107 addendum 21)
+        adds the scene request keys stinger / title and five stinger templates, not handed off. The pin is the 0.9.0 contract."""
         c = load_pin(PINS["html_scene_render"].pin_file)
-        self.assertEqual((c["version"], PINS["html_scene_render"].version), ("0.8.1", "0.8.1"))
+        self.assertEqual((c["version"], PINS["html_scene_render"].version), ("0.9.0", "0.9.0"))
         ex = c["execution"]
         self.assertIn("argv_recorder", ex)
         self.assertNotIn("argv_shims", ex)
@@ -68,7 +69,7 @@ class PinnedSkillSpecTests(unittest.TestCase):
     def test_png_is_pinned_but_not_handed_off(self):
         """The 0.8.0 PNG sequence is in the pin (the live check compares every codec) but is withheld from job.html_scene_render.codec."""
         p = PINS["html_scene_render"]
-        with self.assertRaisesRegex(HandoffParameterError, "codec=png is in the hyperframes-skill 0.8.1 contract but is not handed off"):
+        with self.assertRaisesRegex(HandoffParameterError, "codec=png is in the hyperframes-skill 0.9.0 contract but is not handed off"):
             parse_param(p, "codec", "png")
         with self.assertRaisesRegex(HandoffParameterError, "must be one of h264, vp9, prores \\("):
             parse_param(p, "codec", "av1")
@@ -165,7 +166,7 @@ class HtmlSceneHandoffTests(unittest.TestCase):
         ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.html_scene_render": True, "job.html_scene_render.scene": str(scene),
                                                                         "job.html_scene_render.codec": "prores"})
         k = _handoff(svc, ir, "html_scene_render")["contract"]
-        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.8.1", "hyperframes-skill/render"))
+        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.9.0", "hyperframes-skill/render"))
         self.assertEqual(k["args"], {"scene_dir": str(scene.resolve()), "codec": "prores"})
         self.assertEqual(k["missing"], [])
         self.assertIn("ffmpeg-skill/overlay", k["next"])

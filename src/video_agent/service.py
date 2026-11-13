@@ -1557,7 +1557,11 @@ class Service:
             meta["captions"] = [{"path": sc["path"], "language": pub.get("caption_language")}]
         rec["metadata"] = {k: (v if k not in ("thumbnail", "captions") else (Path(v).name if k == "thumbnail" else [Path(c["path"]).name for c in v])) for k, v in meta.items()}
         plan = publisher.plan(art["path"], pub["platform"], meta)
-        rec["plan"] = {"verdict": plan.get("verdict"), "error": plan.get("error"), "rows": [r for r in plan.get("checks") or [] if isinstance(r, dict) and r.get("status") != "PASS"]}
+        # publish-skill owns upload limits (its 0.2.0, ADR-107 addendum 18): the verdict is the Skill's. A row it marks `in_verdict: false`
+        # (ffmpeg-skill check's duration / file size, `basis: guidance`) is recorded apart as guidance and is never a row to fix.
+        named = [r for r in plan.get("checks") or [] if isinstance(r, dict) and r.get("status") != "PASS"]
+        rec["plan"] = {"verdict": plan.get("verdict"), "error": plan.get("error"), "rows": [r for r in named if r.get("in_verdict") is not False],
+                       "guidance": [r for r in named if r.get("in_verdict") is False]}
         if plan.get("error") or plan.get("verdict") not in PUBLISH_PLAN_OK:
             return done("BLOCKED", f"publish-skill plan: {plan.get('verdict') or (plan.get('error') or {}).get('code')}; fix the rows it names, re-render, nothing is uploaded")
         dry = publisher.dry_run(art["path"], pub["platform"], meta)

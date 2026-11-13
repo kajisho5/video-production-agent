@@ -1,7 +1,7 @@
 """Fake hyperframes-skill checkout for the ADR-114 tests: copied as <dir>/bin/hyperframes-skill.mjs (run by Python, not Node: the adapter only
 needs an argv), it acts by its first argument -- `contract --json` (the pinned skills/pins/hyperframes-skill_<version>.json), `doctor --json`
 (capabilities and tools.<tool>.usable), `template <name> --values=F --output=R --json`, `scene <request> --output=D --json` and
-`render <scene> --output=O --codec=C [--segments] --json`, in the result shapes of hyperframes-skill v0.8.1 (status, verified, verification[],
+`render <scene> --output=O --codec=C [--segments] --json`, in the result shapes of hyperframes-skill v0.9.0 (status, verified, verification[],
 commands[], expected, alpha, hyperframes, ffmpeg_skill, segments[], loop_seam). The render is a small file; nothing renders.
 Controlled via:
 
@@ -69,7 +69,7 @@ def main(argv):
         caps = {k: {"status": "available", "detail": k} for k in ("node", "hyperframes", "ffmpeg", "ffprobe", "encoder:libx264", "encoder:prores_ks", "disk:tmp")}
         caps["chromium:headless"] = {"status": "available" if chromium else "missing", "detail": "fake" if chromium else "no Chromium found in any searched location"}
         render = {"usable": "yes"} if chromium else {"usable": "no", "missing": ["chromium:headless"]}
-        emit({"status": "completed" if chromium else "failed", "ok": chromium, "skill": {"id": "hyperframes-skill", "version": "0.8.1"}, "missing": [] if chromium else ["chromium:headless"],
+        emit({"status": "completed" if chromium else "failed", "ok": chromium, "skill": {"id": "hyperframes-skill", "version": "0.9.0"}, "missing": [] if chromium else ["chromium:headless"],
               "capabilities": caps, "tools": {"doctor": {"usable": "yes"}, "template": {"usable": "yes"}, "scene": {"usable": "yes"}, "render": render}})
         return 0 if chromium else 1
     if MODE.startswith("fail:") and tool == "render":

@@ -1255,6 +1255,48 @@
   - Verification:
     - unit `tests/test_adapter_qc.py` and `tests/test_version_gates.py`.
     - `QcRealSkillTests` passes locally against the v1.4.0 tree.
+- Addendum 17 (2026-11-13, audio-production-skill v1.3.0): a re-pin and a widened gate, needed to keep CI green.
+  - Facts:
+    - audio-production-skill released v1.3.0 (5b0beaa, after #35 b0b6df0) while step 33's PR was open. It adds the opt-in `filler_lexicons.opt_in` and `filler_lexicons.opt_in_use`: a lexicon (`ja-ambiguous`) used by FILLER_REMOVE only when a request names it.
+    - Compared field by field with the 1.2.0 pin, nothing else changed besides `version` / `tools[0].version`. `operations`, the request and the response are unchanged.
+    - The version is outside the gate (`1.2.`). As a result, every `AudioProductionRealTests` test failed in CI shard 3, and `SoundDesignBgmRealTests` / `VoiceEnhanceRealTests` failed in shard 1 (`required capability MISSING: audio-production`).
+  - Decision:
+    - `contract_1.3.0.json` replaces `contract_1.2.0.json`. It is the v1.3.0 tag's `skill --json` output, unchanged (indent 2). The same method reproduces the 1.2.0 pin from v1.2.0 byte for byte.
+    - The gate adds `1.3.` (1.4 and 2.x are still refused).
+    - The agent sends no `opt_in` lexicon. FILLER_REMOVE's request is unchanged.
+  - Verification: unit `tests/test_version_gates.py` (1.3.x accepted, 1.4.0 refused), `tests/test_unit.py`, `tests/test_satellite_params.py`; `AudioProductionRealTests` passes locally against the v1.3.0 tree.
+- Addendum 18 (2026-11-13, publish-skill v0.2.0): a re-pin and a widened gate. The plan verdict for duration and file size is now publish-skill's alone.
+  - Facts:
+    - publish-skill released v0.2.0 (f0f0dc5, #24, its ADR-015 and roadmap step 12). `publish plan`'s verdict for duration and file size now comes only from publish-skill's own limit table (`video.max_duration_s`, `video.max_bytes`, each cited).
+    - ffmpeg-skill check's `duration` and `file size` rows are still shown, as guidance: `basis: "guidance"`, `in_verdict: false`, and a `guidance` note naming the limit that decides. They are left out of the verdict and the counts. Every other ffmpeg-skill row counts as before.
+    - Every plan row now has `in_verdict`, and a row tied to the limit table has `limit_status`. `counts` gains `guidance`. The contract adds `verdict_rows` to the `publish/plan` tool. The schema `publish/plan@1`, `verdicts`, `row_statuses` and `contract_version` are unchanged.
+    - The version is outside the gate (`0.1.`). As a result, `PublishRealTests` errored in CI shard 1.
+  - Decision, re-pin:
+    - `contract_0.2.0.json` replaces `contract_0.1.0.json`. It is the v0.2.0 tag's `contract --json` as one line with sorted keys, compact separators and no ASCII escapes. The same method reproduces the 0.1.0 pin from v0.1.0 byte for byte.
+    - The gate adds `0.2.` (0.3 and 1.x are still refused).
+  - Decision, behaviour (the owner decided: publish-skill owns upload limits):
+    - The agent takes the plan's verdict as publish-skill reports it. PASS / WARN go on to the dry run, FAIL / INCOMPLETE block, as before. The agent never re-decides from a guidance row.
+    - `publish.json` keeps the non-PASS rows that count (`in_verdict` not false) under `plan.rows`, the rows the BLOCK reason says to fix. Non-PASS guidance rows go under `plan.guidance`. Before 0.2.0, a FAIL on ffmpeg-skill's duration row (for example X's 140 s) failed the plan and was named as a row to fix. Now publish-skill's own limit decides, and that row is guidance only.
+    - No test expected an ffmpeg-skill duration FAIL to fail the plan. `PublishRealTests` asserts only that the verdict is PASS / WARN / INCOMPLETE for a 3 s 720p file, which holds under both versions.
+  - Verification:
+    - unit `tests/test_publish.py`: pin 0.2.0, 0.3.0 refused. The new `test_ffmpeg_guidance_rows_do_not_decide_the_publish` covers two cases. In the first, the fake reports ffmpeg-skill's duration row as a FAIL guidance row (`in_verdict: false`) under a PASS verdict: the agent goes on to the dry run, `plan.rows` is empty and the row is in `plan.guidance`. In the second, a FAIL verdict still blocks and names only the row that counts. `tests/fake_publish.py` speaks the 0.2.0 row shape (`in_verdict`, `limit_status`, guidance rows, `counts.guidance`).
+    - Locally, the real v0.2.0 plan of a 150 s 720p file for X: verdict WARN (only from ffmpeg-skill's counted subtitle row), ffmpeg-skill's duration row WARN with `in_verdict: false`, `counts.guidance` 2. `PublishRealTests` passes against the v0.2.0 tree.
+- Addendum 19 (2026-11-13, motion-graphics-skill v0.3.0): a re-pin and a widened gate, so agent main stops drifting.
+  - Facts: motion-graphics-skill released v0.3.0 (f302830, after #47 7b9dba0). It adds a kit@1 brand kit reader: a top-level `kit` block and the optional `options.kit?` of a shape request. Compared field by field with the 0.2.19 pin, nothing else changed besides `version` / `tools[0].version`. 0.2.20 was a docs release. The version is outside the gate (`0.1.` / `0.2.`).
+  - Decision: `contract_0.3.0.json` replaces `contract_0.2.19.json`. It is the v0.3.0 tag's `skill --json` output, unchanged. The same method reproduces the 0.2.19 pin from v0.2.19 byte for byte. `agent/finishing.py` reads the new file too. The gate adds `0.3.`. No request sends `kit`: brand kits are for a later step.
+  - Verification: unit `tests/test_version_gates.py` (0.2.20 / 0.3.x accepted, 0.4.0 refused) and `tests/test_adapter_motion_graphics.py`; `MotionGraphicsRealTests` passes locally against the v0.3.0 tree.
+- Addendum 20 (2026-11-13, subtitle-skill v0.10.0): a re-pin and a widened gate, so agent main stops drifting.
+  - Facts: subtitle-skill released v0.10.0 (c1d699d, after #39 91d2dcf). Render gains animated captions from cues through ffmpeg-skill caption: the optional inputs `animate?` and `karaoke?`, the output `animation?`, two render parameters, a longer render description, and `capabilities.animated_captions`. Nothing else changed besides `version`. 0.9.2 was a docs release. The version is outside the gate (`0.9.`).
+  - Decision: `contract_0.10.0.json` replaces `contract_0.9.1.json`. It is the v0.10.0 tag's `contract --json` output, unchanged (one sorted line). The same method reproduces the 0.9.1 pin from v0.9.1 byte for byte. `agent/subtitles.py` reads the new file too. The gate adds `0.10.`. The adapter sends neither `animate` nor `karaoke`: animated captions are for a later step.
+  - Verification: unit `tests/test_version_gates.py` (0.10.x accepted, 0.11.0 refused), `tests/test_release_version.py` and `tests/test_adapter_subtitle.py`; `SubtitleRealTests` passes locally against the v0.10.0 tree.
+- Addendum 21 (2026-11-13, hyperframes-skill v0.9.0): a re-pin and a widened gate, so agent main stops drifting.
+  - Facts: hyperframes-skill released v0.9.0 (a7ec99d, after #23 551237d, its roadmap steps 15 and 17). It adds the scene request keys `stinger` and `title`, five stinger templates (`template`'s description), `hfs-material.json` in the scene directory, and `stinger` / `sidecar` in the results of render and batch, with `<name>.title.json` / `<name>.stinger.json` beside a batch row. The `codec` enum the html_scene_render handoff reads is unchanged. The version is outside the gate (`0.8.`).
+  - Decision: `skills/pins/hyperframes-skill_0.9.0.json` replaces `hyperframes-skill_0.8.1.json`. It is the v0.9.0 tag's `contract --json` as one line with sorted keys and compact separators. The same method reproduces the 0.8.1 pin from v0.8.1 byte for byte. The adapter's `PIN_VERSION` and the handoff pin read it. The gate adds `0.9.`. The scene request the adapter sends and the result it admits are unchanged. No request sends `stinger` or `title`: they are for a later step.
+  - Verification: unit `tests/test_html_layer.py` (0.9.x accepted, 0.10.0 refused) and `tests/test_handoff_contracts.py`; `HtmlLayerRealTests` and `HandoffPinLiveTests.test_hyperframes_skill` pass locally against the v0.9.0 tree.
+- Addendum 22 (2026-11-13, media-analysis-skill v0.1.17): a version-only re-pin.
+  - Facts: media-analysis-skill released v0.1.17 (74e1d23, after the docs change #31 50f12db). The `contract --json` differs from the 0.1.16 pin only in `version` and each tool's `version`. The version is inside the gate (`0.1.`).
+  - Decision: `contract_0.1.17.json` replaces `contract_0.1.16.json`. It is the v0.1.17 tag's `contract --json` output, unchanged. The same method reproduces the 0.1.16 pin from v0.1.16 byte for byte. The gate is unchanged.
+  - Verification: unit `tests/test_unit.py` and eval 24 (the version strings); `MediaAnalysisRealTests` passes locally against the v0.1.17 tree.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。
