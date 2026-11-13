@@ -2,7 +2,7 @@
  "id": "transcription-skill",
  "skill_id": "transcription-skill",
  "name": "Transcription Skill",
- "version": "0.12.1",
+ "version": "0.13.0",
  "contract_version": "1.0",
  "description": "Speech recognition: audio/video in, structured Transcript (segments, optional word timestamps, language, provenance) and SpeechEvent candidates out. Not an agent, not a subtitle renderer, not a media analyzer.",
  "capabilities": [
@@ -27,7 +27,9 @@
   "dictionary_word_segmentation",
   "follow_growing_files",
   "chunked_long_recordings",
-  "transcript_search"
+  "transcript_search",
+  "domain_vocabulary",
+  "post_correction"
  ],
  "engine_contract": {
   "schema": "transcription-skill/engine-spec/0.1",
@@ -164,7 +166,9 @@
     "speaker_turns": "diarization-skill/turns@1 document | path | null (merged after recognition, never cached)",
     "chunk_seconds": "30..3600 | null (chunked long recording, cut at pauses; needs language)",
     "parallel": "1..8 (chunks recognized at a time; chunk_seconds only)",
-    "speech_regions": "media-analysis-skill speech_regions response | result | observation | path | null (chunk_seconds only)"
+    "speech_regions": "media-analysis-skill speech_regions response | result | observation | path | null (chunk_seconds only)",
+    "domain_vocabulary": "{programme: str | list[str], slides: slide-sync/deck@1 document | path | list[str], speakers: list[str], terms: list[str], max_terms: 1..200 (default 50), japanese: bool (default false)} | null (terms passed as the engine's initial_prompt or custom vocabulary; recorded in provenance.vocabulary)",
+    "corrections": "list[{from: str, to: str, match: word | substring (default word)}] | {from: to} | null (applied to segment text after recognition; every replacement in provenance.corrections.applied with its time)"
    },
    "output": {
     "transcript": "Transcript",

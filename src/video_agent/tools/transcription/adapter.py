@@ -36,7 +36,7 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0.12.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0.12.", "0.13.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
                                              # contract, now reporting the release version instead of a stale "0.2.0"
                                              # 0.8.0 (ADR-078): optional engine whisperx appended to engines; the tools / schemas the adapter uses are unchanged
                                              # 0.9.0 (ADR-107 addendum 2): every word carries `index`; dictionary words (opt-in, ja) carry `pos` / `timing`;
@@ -50,6 +50,8 @@ SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0
                                              # 0.12.0 (ADR-107 addendum 15): tool transcription/find and capability transcript_search
                                              # added; transcribe, its schemas and the engines are unchanged. The agent runs find (step 33)
                                              # 0.12.1 (addendum 15): `rule` added to transcription/speakers, a tool the agent does not call
+                                             # 0.13.0 (addendum 30): opt-in transcribe inputs domain_vocabulary / corrections, capabilities
+                                             # domain_vocabulary / post_correction, optional provenance objects; the agent sends none of them
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
@@ -178,7 +180,7 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.12.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.13.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

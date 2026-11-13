@@ -10,7 +10,7 @@
   },
   "transcript": {
    "skill": "transcription",
-   "skill_version": "0.12.1",
+   "skill_version": "0.13.0",
    "tool": "transcription/transcribe"
   }
  }

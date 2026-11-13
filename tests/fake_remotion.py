@@ -1,7 +1,7 @@
 """Fake remotion-ffmpeg-skill checkout for the ADR-093 tests: copied as <dir>/scripts/_contract.py, doctor.py and pipeline.py, it acts by the name it
-runs under -- `_contract.py --json` (the pinned src/video_agent/tools/remotion/contract_0.13.0.json), `doctor.py --json [--project=DIR]` (checks
+runs under -- `_contract.py --json` (the pinned src/video_agent/tools/remotion/contract_0.14.0.json), `doctor.py --json [--project=DIR]` (checks
 python / node / npm / ffmpeg-skill / ffmpeg, and the project's node_modules/remotion), and `pipeline.py <video> --project=P --comp=C ... --out-dir=D
---json --timeout=T` in the result shape of remotion-ffmpeg-skill v0.13.0 (status, output, timeline, render, look, verified, warnings, steps). The render
+--json --timeout=T` in the result shape of remotion-ffmpeg-skill v0.14.0 (status, output, timeline, render, look, verified, warnings, steps). The render
 is a self-describing fake media file (tests/pipeline_harness.py) as long as the input, written to D/<stem>_<comp>.mp4. Nothing renders.
 Controlled via:
 
@@ -53,7 +53,7 @@ def main(argv):
         if o.get("project"):
             ok = os.path.isfile(os.path.join(o["project"], "node_modules", "remotion", "package.json"))
             checks.append({"check": "remotion project", "ok": ok, "value": o["project"], "fix": "" if ok else f"cd {o['project']} && npm install"})
-        emit({"status": "completed", "ok": all(c["ok"] for c in checks), "version": "0.13.0", "checks": checks, "ffmpeg_skill_doctor": None})
+        emit({"status": "completed", "ok": all(c["ok"] for c in checks), "version": "0.14.0", "checks": checks, "ffmpeg_skill_doctor": None})
         return 0
     if NAME == "pipeline":
         if MODE.startswith("fail:"):
