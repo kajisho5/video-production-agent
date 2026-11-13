@@ -1297,6 +1297,19 @@
   - Facts: media-analysis-skill released v0.1.17 (74e1d23, after the docs change #31 50f12db). The `contract --json` differs from the 0.1.16 pin only in `version` and each tool's `version`. The version is inside the gate (`0.1.`).
   - Decision: `contract_0.1.17.json` replaces `contract_0.1.16.json`. It is the v0.1.17 tag's `contract --json` output, unchanged. The same method reproduces the 0.1.16 pin from v0.1.16 byte for byte. The gate is unchanged.
   - Verification: unit `tests/test_unit.py` and eval 24 (the version strings); `MediaAnalysisRealTests` passes locally against the v0.1.17 tree.
+- Addendum 23 (2026-11-13, media-analysis-skill v0.1.18): a re-pin, released while this PR ran CI. It replaces addendum 22's 0.1.17 pin.
+  - Facts:
+    - media-analysis-skill released v0.1.18 (81d5c9d, after #32 1dc10ab, its roadmap step 5).
+    - It adds highlight signals, measured but not judged. The tool `media-analysis/events` (kind `audio_events`) gives applause and laughter spans from an audio-event classifier. It needs the optional extra `events`; without it the kind reports UNKNOWN. The tool `media-analysis/signals` (kind `highlight_signals`) gives speech-energy peaks, speaking-rate changes and screen-change bursts.
+    - The release also adds two provides entries, their `kind_to_tool` entries, their parameters, the request schema's kind enum and parameters, and `execution.optional_extras.events`.
+    - Compared field by field with the 0.1.17 pin, every other tool and kind is unchanged apart from `version`. The change is additive.
+    - The version is inside the gate (`0.1.`), but live != pin outside the version fields, so `MediaAnalysisRealTests` would fail against main.
+  - Decision:
+    - `contract_0.1.18.json` replaces `contract_0.1.17.json`. It is the v0.1.18 tag's `contract --json` output, unchanged. The same method reproduces the 0.1.17 pin from v0.1.17 byte for byte.
+    - The gate is unchanged. The planner requests neither new kind. Highlight signals are for a later step.
+  - Verification:
+    - unit `tests/test_unit.py` and eval 24 (the version strings).
+    - `MediaAnalysisRealTests` (now 14 tools) and `test_measurements.RealSkillTests::test_speech_regions_on_a_rendered_file` pass locally against the v0.1.18 tree.
 
 ## ADR-108 integration の live == pin を、版番号の欄は範囲で、それ以外は従来どおり等しさで比べる。版だけが違う release は通して警告と summary に残し、re-pin を求めない（ADR-107 の「やらなかったこと」の続き、2026-11-11）
 - 背景: integration は sibling Skill を各 main から入れ、live の contract を pin と比べる（各 adapter の drift 関数が `[]`、`ad.version == pin の版`、resolver の `evidence.drift == []`、provenance の `tool_version` が pin の版の文字列）。2026-11-11 は 8 つの Skill が中身を変えない release（CI・test・release の手順だけ）を出し、実行は gate と致命的な drift の扱いで通るのに integration だけが live ≠ pin で赤になり、版だけの re-pin の PR が要った（#130、#131）。ADR-107 は「検査は緩めない」としてこれを残したが、同じことが release のたびに起きる。

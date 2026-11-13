@@ -28,7 +28,7 @@ CONTRACT_SCHEMA = "media-analysis/contract@1"
 RESPONSE_SCHEMA = "media-analysis/response@1"
 DOCTOR_SCHEMA = "media-analysis/doctor@1"
 SUPPORTED_CONTRACT_VERSIONS = ("1",)
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)          # 0.1.x: the contract this adapter was verified against; 0.1.16 (ADR-107 addendum 12): + kind speech_regions (media-analysis/vad), additive, not planned; 0.1.17 (ADR-107 addendum 22): version only
+SUPPORTED_SKILL_VERSIONS = ("0.1.",)          # 0.1.x: the contract this adapter was verified against; 0.1.16 (ADR-107 addendum 12): + kind speech_regions (media-analysis/vad), additive, not planned; 0.1.17 (ADR-107 addendum 22): version only; 0.1.18 (addendum 23): + kinds audio_events (media-analysis/events, optional extra events) and highlight_signals (media-analysis/signals), additive, not planned
 REQUEST_KEYS = ("analysis_id", "asset_id", "input", "kind", "parameters", "timeout", "cache_policy", "output_policy")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "shell", "executable", "executables", "ffmpeg", "ffprobe", "api_key", "token", "secret")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -110,7 +110,7 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
 # 0.1.8 / 0.1.9 (media-analysis-skill #22 / #23): version-only (roadmap docs PR on 2026-11-05 released it); re-pinned from the tag (ADR-097).
 # 0.1.10 .. 0.1.13 (media-analysis-skill #24 .. #27): kind edit_style (tool media-analysis/style, algorithm_version 2, burned_in_interval in
 # 0.1.13) and its capability filter:edgedetect; the existing tools are unchanged. Re-pinned from the v0.1.13 tag (ADR-097 addendum 6).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.17.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.18.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

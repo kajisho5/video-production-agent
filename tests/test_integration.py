@@ -826,7 +826,7 @@ class MediaAnalysisRealTests(unittest.TestCase):
         self.assertEqual(cap.status, "AVAILABLE", cap.evidence)
         self.assertEqual((cap.evidence["contract"], cap.evidence["execution"]), ("media-analysis/contract@1", "local_subprocess"))
         self.assertTrue(cap.evidence["version"].startswith(SUPPORTED_SKILL_VERSIONS), cap.evidence["version"])   # the installed release, inside the adapter's gate
-        self.assertEqual(len(cap.evidence["tools"]), 12)   # 0.1.7 (ADR-078): media-analysis/noise (noise_floor) is the tenth; 0.1.10 (ADR-097 addendum 6): media-analysis/style (edit_style); 0.1.16 (ADR-107 addendum 12): media-analysis/vad (speech_regions, not planned)
+        self.assertEqual(len(cap.evidence["tools"]), 14)   # 0.1.7 (ADR-078): media-analysis/noise (noise_floor) is the tenth; 0.1.10 (ADR-097 addendum 6): media-analysis/style (edit_style); 0.1.16 (ADR-107 addendum 12): media-analysis/vad (speech_regions, not planned); 0.1.18 (ADR-107 addendum 23): media-analysis/events and media-analysis/signals (audio_events, highlight_signals, not planned)
         self.assertIn("media-analysis/noise", cap.evidence["tools"]); self.assertIn("media-analysis/style", cap.evidence["tools"]); self.assertIn("media-analysis/vad", cap.evidence["tools"])
         rows = {r["skill_id"]: r for r in svc.packages()}
         self.assertTrue(rows["media-analysis"]["available"] and rows["ffmpeg-skill"]["available"])
