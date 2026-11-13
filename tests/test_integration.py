@@ -3651,10 +3651,14 @@ class FaceRedactionRealTests(unittest.TestCase):
         doc = ad.doctor()
         self.assertTrue(doc["ready"].get("tracks"), doc.get("problems"))
         ev = ad.operation_evidence(doc)["FACES"]
+        ops = ad.operation_status(doc)
+        # roadmap step 33: TEXT / SHOTS follow the doctor's ready.text / ready.shots (Tesseract, PySceneDetect), each on its own
+        self.assertEqual({k: ops[k] for k in ("TEXT", "SHOTS")}, {k: "supported" if doc["ready"].get(r) and doc["ready"].get("video_frames") else "unavailable"
+                                                                  for k, r in (("TEXT", "text"), ("SHOTS", "shots"))})
         if os.environ.get("DETECTION_MODELS_DIR"):
-            self.assertEqual(ad.operation_status(doc), {"FACES": "supported"}, doc.get("problems"))
+            self.assertEqual(ops["FACES"], "supported", doc.get("problems"))
         else:
-            self.assertEqual(ad.operation_status(doc), {"FACES": "unavailable"})
+            self.assertEqual(ops["FACES"], "unavailable")
             self.assertIn(ev["code"], ("MODEL_NOT_FOUND", "ENGINE_UNAVAILABLE"))
             self.assertTrue(ev["install"], "the doctor's install line travels with the verdict")
 
