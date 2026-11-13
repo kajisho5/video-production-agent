@@ -2757,7 +2757,6 @@
    "required": [
     "type",
     "asset",
-    "input",
     "output"
    ],
    "additionalProperties": false,
@@ -2765,7 +2764,8 @@
     "type": {
      "enum": [
       "graphics.render",
-      "graphics.thumbnail"
+      "graphics.thumbnail",
+      "graphics.html_layer"
      ]
     },
     "asset": {
@@ -3471,8 +3471,91 @@
        }
       }
      }
+    },
+    "layer_source": {
+     "type": "string",
+     "description": "ADR-114: the rendered_layer clip is this plan's own artifact (a graphics.html_layer output), not a user file"
+    },
+    "template": {
+     "type": "string",
+     "description": "ADR-114: graphics.html_layer -- a hyperframes-skill template name"
+    },
+    "values": {
+     "type": "object",
+     "description": "ADR-114: graphics.html_layer -- the template's values (plain values)",
+     "additionalProperties": {
+      "type": [
+       "string",
+       "number",
+       "boolean"
+      ]
+     }
+    },
+    "font": {
+     "type": "string",
+     "description": "ADR-114: graphics.html_layer -- the template's font file (the user's)"
+    },
+    "request": {
+     "type": "string",
+     "description": "ADR-114: graphics.html_layer -- the user's scene request .json"
+    },
+    "segments": {
+     "type": "object",
+     "description": "ADR-114: graphics.html_layer -- IN / LOOP / OUT seconds (render --segments)",
+     "additionalProperties": false,
+     "required": [
+      "in",
+      "loop",
+      "out"
+     ],
+     "properties": {
+      "in": {
+       "type": "number",
+       "minimum": 0
+      },
+      "loop": {
+       "type": "number",
+       "exclusiveMinimum": 0
+      },
+      "out": {
+       "type": "number",
+       "minimum": 0
+      }
+     }
+    },
+    "workers": {
+     "type": [
+      "integer",
+      "string"
+     ],
+     "description": "ADR-114: graphics.html_layer -- render's capture workers (auto or 1-8)"
+    },
+    "codec": {
+     "enum": [
+      "prores"
+     ],
+     "description": "ADR-114: graphics.html_layer -- always ProRes 4444 with alpha"
     }
-   }
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "enum": [
+         "graphics.render",
+         "graphics.thumbnail"
+        ]
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "input"
+      ]
+     }
+    }
+   ]
   },
   "color_op": {
    "type": "object",

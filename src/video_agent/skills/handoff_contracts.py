@@ -112,8 +112,8 @@ PINS: Dict[str, HandoffPin] = {p.skill: p for p in (
         next_step=_render_3d_next,
         note="needs Blender 4.2+ on the machine (the contract's external_tools.required); `python3 scripts/_contract.py doctor --json` says whether it is found"),
     HandoffPin(
-        skill="html_scene_render", package="hyperframes-skill", version="0.8.0", pin_file="hyperframes-skill_0.8.0.json",
-        source="kajisho5/hyperframes-skill main 3528095 (= v0.8.0; `node bin/hyperframes-skill.mjs contract --json`)",
+        skill="html_scene_render", package="hyperframes-skill", version="0.8.1", pin_file="hyperframes-skill_0.8.1.json",
+        source="kajisho5/hyperframes-skill main b349c40 (= v0.8.1; `node bin/hyperframes-skill.mjs contract --json`)",
         tool="hyperframes-skill/render",
         params=(
             HandoffParam("scene", "scene_dir", "dir", marker="index.html", required=True, doc="the scene directory with index.html"),
@@ -171,6 +171,8 @@ def parse_param(p: HandoffPin, name: str, value: Any) -> Any:
 def handoff_request(skill: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The handoff's `contract` block: the pinned Skill, the tool, the arguments by the contract's names, what the tool still needs, and
     where its output goes next here. None for a job without a pin. Data for the host; the agent runs nothing."""
+    if skill == LAYER_SKILL:
+        return layer_handoff_request(params)
     p = PINS.get(skill)
     if p is None:
         return None
@@ -180,6 +182,33 @@ def handoff_request(skill: str, params: Dict[str, Any]) -> Optional[Dict[str, An
     return {"package": p.package, "version": p.version, "source": p.source, "tool": p.tool, "capability": prov.get("id"), "lifecycle": prov.get("lifecycle"),
             "args": args, "missing": missing, "output": "chosen by whoever runs the tool, never the input; the agent does not admit it into the plan",
             "next": p.next_step(params), "note": p.note}
+
+
+# ADR-114: the motion.layer clip (skill html_scene_layer) has an adapter; without hyperframes-skill installed (or able to render) its step is handed
+# off with the same pinned tool, named the way the adapter would have run it
+LAYER_SKILL = "html_scene_layer"
+
+
+def layer_handoff_request(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The handoff's `contract` block for the motion.layer clip: template → scene → render --codec prores [--segments], and where the file goes."""
+    p = PINS["html_scene_render"]
+    prov = p.provides()
+    seg = params.get("segments")
+    steps = ([f"hyperframes-skill/template {params['template']} --values <the values> --output request.json"] if params.get("template") else []) \
+        + [f"hyperframes-skill/scene {'request.json' if params.get('template') else params.get('request')} --output scene",
+           "hyperframes-skill/render scene --output layer.mov --codec prores" + (" --segments" if seg else "")]
+    args: Dict[str, Any] = {"codec": "prores"}
+    for k in ("template", "values", "request"):
+        if params.get(k) is not None:
+            args[k] = params[k]
+    if seg:
+        args["segments"] = True
+    timing = (f"in_duration {seg['in']:g}, out_duration {seg['out']:g}, loop true" if seg else "in_duration 0, out_duration 0, loop false")
+    return {"package": p.package, "version": p.version, "source": p.source, "tool": p.tool, "capability": prov.get("id"), "lifecycle": prov.get("lifecycle"),
+            "args": args, "steps": steps, "missing": [],
+            "output": "a ProRes 4444 .mov with alpha (and with --segments its .in / .loop / .out pieces next to it)",
+            "next": f"give the .mov as motion.layer=<file> with motion.layer.{timing.replace(', ', ' / motion.layer.')}: motion-graphics-skill's rendered_layer places it",
+            "note": p.note}
 
 
 def check_pin_against(contract: Dict[str, Any], p: HandoffPin) -> List[str]:

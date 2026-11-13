@@ -404,6 +404,12 @@ def default_registry() -> SkillRegistry:
     r.register(SkillSpec("document_verify", "1.0", "Structural verification of a document that goes out with the video (script, report, slides): leftover placeholder text, "
                                                      "page / slide facts, encryption, scripts; read-only, writes nothing",
                          {"document": "file"}, {"qa": "document"}, ["artifacts-skill", "artifacts-skill:VERIFY"], "LOW", True, "AUTO", ["artifacts-skill/verify"]))
+    # ADR-114 (roadmap step 29): the motion.layer clip rendered by hyperframes-skill (template + values or a scene request → scene → render, ProRes 4444
+    # with alpha, IN / LOOP / OUT on request) for motion-graphics-skill's rendered_layer to place. html_scene_render (ADR-080) stays a handoff
+    r.register(SkillSpec("html_scene_layer", "1.0", "Render an animated overlay (a hyperframes-skill template or scene request) to ProRes 4444 with alpha, with "
+                         "IN / LOOP / OUT segments on request, for motion.layer (motion-graphics-skill rendered_layer) to place",
+                         {"template": "str", "values": "json", "request": "json"}, {"artifact": "INTERMEDIATE"}, ["hyperframes-skill", "hyperframes-skill:RENDER"], "MEDIUM",
+                         False, "CONFIRM", ["hyperframes-skill/render"]))
     # measured motion graphics (ADR-093, replacing ADR-057's phase-2 `measured_motion_graphics`): remotion-ffmpeg-skill's pipeline (analyze → render, verified)
     # draws one composition that keeps the source's clock over the edited picture, on the user's own Remotion project; never delivers (the agent does)
     r.register(SkillSpec("measured_motion", "1.0", "One Remotion composition (captions, pulses on peaks / beats, titles, picture-in-picture) over the picture, timed from ffmpeg-skill "

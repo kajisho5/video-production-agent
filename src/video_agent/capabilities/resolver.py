@@ -35,6 +35,7 @@ from ..tools.detection import DetectionAdapter, locate_detection
 from ..tools.diarization import DiarizationAdapter, locate_diarization
 from ..tools.slide_sync import SlideSyncAdapter, locate_slide_sync
 from ..tools.remotion import RemotionAdapter, locate_remotion
+from ..tools.hyperframes import HyperframesAdapter, locate_hyperframes
 from ..tools.sound_design import SoundDesignAdapter, locate_sound_design
 from ..tools.artifacts import ArtifactsAdapter, locate_artifacts
 
@@ -347,6 +348,12 @@ class CapabilityResolver:
         # `remotion-ffmpeg-skill:PIPELINE` follows it, with the doctor's fix lines. The user's project is checked per plan (its node_modules/remotion).
         self._finishing_skill(caps, "remotion-ffmpeg-skill", locate_remotion(env=self.env), lambda sk: RemotionAdapter(sk), "VIDEO_AGENT_REMOTION_DIR", "remotion-ffmpeg-skill",
                               "npx remotion-ffmpeg-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
+        # hyperframes-skill (ADR-114): contract against the pinned one (fatal subset), its doctor normalised (ok: template, scene and render usable;
+        # degraded: render is not -- no headless Chromium, ffmpeg or encoder -- so the package is found and `hyperframes-skill:RENDER` is MISSING with the
+        # doctor's missing capabilities and fix line). No Node at all: the checkout is found but unusable, named so.
+        self._finishing_skill(caps, "hyperframes-skill", locate_hyperframes(env=self.env), lambda sk: HyperframesAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),
+                              "VIDEO_AGENT_HYPERFRAMES_DIR", "hyperframes-skill", "git clone https://github.com/kajisho5/hyperframes-skill && npm ci",
+                              per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # sound-design-skill (ADR-092): the same rule -- contract against the pinned one (fatal subset), its own doctor ok / degraded (an engine missing is degraded:
         # library mode needs none). `sound-design:LIBRARY` / `:BGM_GENERATE` follow checks.operations.<op>.ready, with the engine's install line when not ready.
         self._finishing_skill(caps, "sound-design", locate_sound_design(env=self.env), lambda sk: SoundDesignAdapter(sk, ffmpeg_skill_dir=str(skill.root) if skill else None),

@@ -16,6 +16,7 @@ from .editing import (AI_OP, CONDENSE_KEEP_LABEL, CONDENSE_OP, CONDENSE_SKILL, C
                       kept_duration)
 from .image_insert import still_frame
 from .remotion import PARAMS as REMOTION_PARAMS, SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT
+from .html_layer import PARAMS as HTML_LAYER_PARAMS, SKILL as HTML_LAYER_SKILL, SUBJECT as HTML_LAYER_SUBJECT, layer_id as html_layer_id
 from .documents import SKILL as DOCUMENT_SKILL, SUBJECT as DOCUMENT_SUBJECT
 from .bgm import BGM_INPUT, BGM_OUTPUT, SUBJECT as BGM_SUBJECT, ir_bgm, skill_of as bgm_skill_of
 from .faces import BLUR_SKILL as FACE_BLUR_SKILL, COMPOSITE_SKILL as FACE_COMPOSITE_SKILL, SEGMENT_SKILL as FACE_SEGMENT_SKILL, SUBJECT as FACE_SUBJECT, ir_redact_faces
@@ -145,6 +146,18 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 current_of[subject], last_of[subject] = out_id, st.id
                 summary.append(d.decision)
         g_decs = [d for typ in ELEMENT_TYPES for d in decided(subject, f"graphics.{typ}")]
+        hl = next(iter(decided(subject, HTML_LAYER_SUBJECT)), None)
+        hl_step: Optional[str] = None
+        if hl is not None and g_decs:   # ADR-114: the rendered layer's clip, rendered by hyperframes-skill before the render that places it
+            hp = {k: hl.params[k] for k in HTML_LAYER_PARAMS if hl.params.get(k) is not None}
+            graphics_ops.append({"type": HTML_LAYER_SUBJECT, "asset": subject, "output": html_layer_id(subject), "codec": "prores", **hp, "decision_ids": [hl.id]})
+            order += 1
+            st = ProductionStep(id=f"step_html_layer_{subject}", order=order, skill=HTML_LAYER_SKILL, tool=tool_for(HTML_LAYER_SKILL), inputs=[],
+                                params={"asset": subject, "codec": "prores", **{k: (os.path.basename(v) if k in ("font", "request") else v) for k, v in hp.items()}},
+                                outputs=[html_layer_id(subject)], depends_on=[], evidence=evidence_of([hl.id]), decision_ids=[hl.id], decision_id=hl.id)
+            steps.append(st)
+            hl_step = st.id
+            summary.append(hl.decision)
         if g_decs:
             scope = dict(scope_of.get(subject) or {"start": 0.0, "end": durations.get(subject, 0.0)})
             elements = []
@@ -163,8 +176,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             graphics_ops.append(ir_graphics_render(subject, elements, [d.id for d in g_decs] + ([o_dec.id] if o_dec is not None else []), current_of[subject], out_id, scope=scope,
                                                    options=dict(o_dec.params["options"]) if o_dec is not None else None))
             order += 1
-            st = ProductionStep(id=f"step_graphics_{subject}", order=order, skill=GRAPHICS_SKILL, tool=tool_for(GRAPHICS_SKILL), inputs=[current_of[subject]],
-                                params={"asset": subject, "elements": [e["id"] for e in elements]}, outputs=[out_id], depends_on=[last_of[subject]] if last_of.get(subject) else [],
+            st = ProductionStep(id=f"step_graphics_{subject}", order=order, skill=GRAPHICS_SKILL, tool=tool_for(GRAPHICS_SKILL),
+                                inputs=[current_of[subject]] + ([html_layer_id(subject)] if hl_step else []),
+                                params={"asset": subject, "elements": [e["id"] for e in elements]}, outputs=[out_id],
+                                depends_on=([last_of[subject]] if last_of.get(subject) else []) + ([hl_step] if hl_step else []),
                                 evidence=evidence_of([d.id for d in g_decs] + ([o_dec.id] if o_dec is not None else [])),
                                 decision_ids=[d.id for d in g_decs] + ([o_dec.id] if o_dec is not None else []), decision_id=g_decs[0].id, temporal_scope=scope)
             steps.append(st)
