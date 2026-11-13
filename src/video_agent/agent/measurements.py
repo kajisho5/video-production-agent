@@ -1,9 +1,11 @@
 """Measurements asked for by name (roadmap step 33): text on screen, the shot table and speech regions. The ownership audit of 2026-11-12 found
-these three tools already shipping in their Skills with no SkillSpec here (ADR-090 addendum 1, ADR-103 addendum 1).
+these three tools already shipping in their Skills with no SkillSpec here (ADR-090 addendum 1, ADR-103 addendum 1); transcription-skill 0.12.0 then
+shipped `find` (ADR-107 addendum 15): every timed hit of a phrase in the transcript measured for the same input.
 
     --set text.detect=true            [text.every=<s> text.lang=<jpn+eng> text.min_score=<0..1>]   → analysis kind screen_text   (detection/text)
     --set shots.detect=true           [shots.threshold=<x> shots.min_shot_frames=<n>]              → analysis kind shot_table    (detection/shots)
     --set speech_regions.detect=true                                                               → analysis kind speech_regions (media-analysis/vad)
+    --set transcript.find=<phrase>    [transcript.find.fuzzy=<0.5..1> transcript.find.context=<0..10>] → analysis kind transcript_hits (transcription/find)
 
 - **Explicit only.** These keys come from `--set` (or the MCP `set`). They are never brief keys, stored preferences or profile defaults. Without
   them nothing new is measured, and the default providers do not change: the engine's `scenes` stays the fast cut list (`scene_detection`).
@@ -63,7 +65,13 @@ MEASUREMENTS: Dict[str, Tuple[str, str, str, Dict[str, Tuple[str, Any]]]] = {
         "shots.min_shot_frames": ("shot_min_frames", lambda v, k: _int(v, k, 1, 100000)),
     }),
     "speech_regions.detect": ("speech_region_analysis", "speech_regions", "speech regions (a voice-activity model) on every input with audio", {}),
+    # the one key that carries a value instead of a switch: the phrase itself (the transcript it is searched in is measured for it)
+    "transcript.find": ("transcript_search", "transcript_hits", "every timed hit of the phrase in the transcript of every input with audio", {
+        "transcript.find.fuzzy": ("find_fuzzy", lambda v, k: _number(v, k, 0.5, 1.0)),
+        "transcript.find.context": ("find_context", lambda v, k: _int(v, k, 0, 10)),
+    }),
 }
+VALUE_KEYS = ("transcript.find",)
 PREFIXES = tuple(sorted({k.split(".", 1)[0] + "." for k in MEASUREMENTS}))
 REQUIREMENT_KEYS = tuple(sorted(set(MEASUREMENTS) | {r for m in MEASUREMENTS.values() for r in m[3]}))
 
@@ -83,8 +91,16 @@ def parse_measurement(user_requirements: Dict[str, Any], switch: str) -> Optiona
     unknown = sorted(k for k in given if k not in REQUIREMENT_KEYS)
     if unknown:
         raise EditRequirementError(f"unknown requirement key(s): {', '.join(unknown)}; known: {', '.join(k for k in REQUIREMENT_KEYS if k.startswith(prefix))}")
-    on = switch in given and _switch(given, switch)
     params: Dict[str, Any] = {}
+    if switch in VALUE_KEYS:
+        v = given.get(switch)
+        if v is not None and v is not False and (not isinstance(v, str) or not v.strip() or len(v) > 500 or "\x00" in v):
+            raise EditRequirementError(f"{switch} is the phrase to find (1..500 characters), got {v!r}")
+        on = isinstance(v, str) and bool(v.strip())
+        if on:
+            params["find_phrase"] = v
+    else:
+        on = switch in given and _switch(given, switch)
     for key, (param, parse) in refinements.items():
         if given.get(key) is not None:
             if not on:

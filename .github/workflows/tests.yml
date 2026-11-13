@@ -180,6 +180,7 @@ jobs:
           VIDEO_AGENT_DETECTION_DIR: "${{ github.workspace }}/../detection-skill"
           DETECTION_MODELS_DIR: "${{ github.workspace }}/../detection-models"
           VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
+          VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
       # ADR-114: the motion.layer clip on the real hyperframes-skill (main): its live contract against the adapter's checks and the pin, and its doctor's
       # verdict. No Chromium here, so the doctor says render is not usable and the two render tests skip (they run where a headless Chromium is found)

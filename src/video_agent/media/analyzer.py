@@ -141,6 +141,9 @@ class MediaAnalyzer(Analyzer):
             if "frame_ranking" in kinds_here:   # ADR-104: the ranking reads the faces-with-attributes file measured just before it
                 kinds_here = sorted(kinds_here, key=lambda k: 1 if k == "frame_ranking" else 0)
             attrs_of: Optional[Observation] = None
+            if "transcript_hits" in kinds_here:   # step 33: the search reads the transcript measured just before it
+                kinds_here = sorted(kinds_here, key=lambda k: 1 if k == "transcript_hits" else 0)
+            transcript_of: Optional[Observation] = None
             for kind in kinds_here:
                 only = ANALYSIS_KINDS[kind].get("only_input_param")
                 if only and req.params.get(only) != n_input:
@@ -171,6 +174,12 @@ class MediaAnalyzer(Analyzer):
                     # diarization-skill's ASSIGN rule; never part of its recognition cache)
                     kp = dict(kp, speaker_turns={k: v for k, v in turns_of.data.items() if k != "turns_file"})
                     args = {"input": asset.path}
+                elif kind == "transcript_hits":
+                    if transcript_of is None:
+                        rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no transcript of this asset to search"})
+                        continue
+                    kp = dict(kp, transcript=transcript_of.data)
+                    args = {"input": asset.path}
                 elif kind == "frame_ranking":
                     if attrs_of is None:
                         rows.append({"asset_id": asset.id, "kind": kind, "status": "SKIPPED", "reason": "no face_attributes observation of this asset to rank"})
@@ -196,6 +205,10 @@ class MediaAnalyzer(Analyzer):
                     turns_of = o
                 if kind == "face_attributes":
                     attrs_of = o
+                if kind == "transcript":
+                    transcript_of = o
+                if kind == "transcript_hits":
+                    o.parameters = {k: v for k, v in (o.parameters or {}).items() if k != "transcript"} | {"transcript": transcript_of.id}
                 self._events(kind, o, asset, dur, tl, params)
             if not has_audio:
                 warnings.append(f"{p}: no audio stream; silence and loudness analysis skipped")
@@ -339,6 +352,16 @@ class MediaAnalyzer(Analyzer):
             o = self._lift_frame_ranking(r.data, asset, req, source, key, tool, kparams)
             if asset.hash and o.fingerprint != asset.hash:
                 row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": f"frame ranking fingerprint {o.fingerprint[:12]}… is not this asset's ({asset.hash[:12]}…)"}})
+                return None, row
+        elif kind == "transcript_hits" and isinstance(r.data, dict) and isinstance(r.data.get("hits"), dict):
+            sk = r.data.get("skill") or {}
+            fp = str((r.data.get("transcript") or {}).get("fingerprint") or "")
+            o = Observation(kind=kind, asset_id=asset.id, source=source, data=dict(r.data["hits"], transcript_id=(r.data.get("transcript") or {}).get("id")),
+                            observed_at=now_iso(), analysis_id=req.analysis_id, analyzer=f"transcription-skill@{sk.get('version')}", cache_key=key, provenance="OBSERVED",
+                            skill=tool.split("/", 1)[0], skill_version=str(sk.get("version") or ""), tool=tool, fingerprint=fp.split(":", 1)[1] if fp.startswith("sha256:") else fp,
+                            parameters={k: v for k, v in dict(kparams).items() if k != "transcript"})
+            if asset.hash and o.fingerprint != asset.hash:
+                row.update({"status": "FAILED", "error": {"kind": "ANALYSIS_INVALID_RESULT", "message": "the hits are about another file's transcript"}})
                 return None, row
         elif kind in ("screen_text", "shot_table") and isinstance(r.data, dict) and isinstance(r.data.get({"screen_text": "text", "shot_table": "shots"}[kind]), dict):
             o = self._lift_detection_measure(kind, r.data, asset, req, source, key, tool, kparams)

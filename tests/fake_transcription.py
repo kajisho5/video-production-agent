@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "transcription" / "contract_0.11.3.json").read_text(encoding="utf-8"))
+CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "transcription" / "contract_0.12.0.json").read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_TS_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_TS_CALLS")
 ENGINE = {"id": "faster_whisper", "version": "1.2.1-fake", "execution_mode": "local", "requires_network": False, "deterministic": True, "available": True,
@@ -176,6 +176,19 @@ def main() -> int:
         for k in p:
             if k.lower() in ("command", "argv", "cmd", "shell", "exec", "args", "script", "binary", "api_key", "token", "secret", "password", "credentials", "env"):
                 return _err("INVALID_INPUT", f"key '{k}' is not allowed")
+        if req["tool"] == "transcription/find":   # roadmap step 33: a plain case-folded substring search over the segment texts (the real Skill normalises more)
+            tr, phrase = p["transcript"], p["phrase"]
+            hits = [{"source": tr["source"]["filename"], "transcript_id": tr["id"], "match": "normalized", "ratio": 1.0, "start": sg["start"], "end": sg["end"],
+                     "timing": "segment", "segment_ids": [sg["id"]], "word_indices": None, "speaker_id": sg.get("speaker_id"), "speaker_ids": [],
+                     "text": sg["text"], "segment_text": sg["text"], "context": {"before": "", "after": ""}}
+                    for sg in tr["segments"] if phrase.casefold() in sg["text"].casefold()]
+            if MODE == "find_other_phrase":
+                phrase = phrase + "!"
+            res = {"phrase": phrase, "normalized_phrase": phrase.casefold(), "normalization": "fake", "fuzzy": p.get("fuzzy"), "context": p.get("context", 1),
+                   "count": len(hits), "hits": hits, "transcripts": [{"source": tr["source"]["filename"], "transcript_id": tr["id"], "language": tr.get("language"),
+                                                                       "segments": len(tr["segments"]), "words": 0, "word_timed": False, "hits": len(hits)}]}
+            print(json.dumps({"ok": True, "tool": req["tool"], "result": res}, ensure_ascii=False))
+            return 0
         raw = p.get("input")
         if not isinstance(raw, str) or not raw:
             return _err("INVALID_INPUT", "'input' must be a non-empty path string")

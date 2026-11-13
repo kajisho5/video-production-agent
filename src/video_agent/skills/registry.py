@@ -351,6 +351,9 @@ def default_registry() -> SkillRegistry:
     # speech recognition (transcription-skill, external Skill; recognition only: no speaker identity, no interpretation)
     r.register(SkillSpec("speech_transcription", "1.0", "Speech → timestamped Transcript (segments, language, optional word timestamps); recognition only",
                          {"asset": "media"}, {"observation": "transcript", "events": "SPEECH"}, ["ffmpeg", "ffprobe", "transcription"], "LOW", True, "AUTO", ["transcription/transcribe"]))
+    # phrase search (roadmap step 33, ADR-107 addendum 15): transcription-skill 0.12.0's find over the transcript measured for the same asset
+    r.register(SkillSpec("transcript_search", "1.0", "Every timed hit of a phrase in a measured transcript (start / end, segment ids, word indices, speaker id); read-only query",
+                         {"transcript": "transcript", "phrase": "str"}, {"observation": "transcript_hits"}, ["transcription"], "LOW", True, "AUTO", ["transcription/find"]))
     # who spoke when (ADR-086, replacing ADR-057's phase-2 declaration of the same name): diarization-skill's anonymous exclusive speaker turns,
     # a measurement (analysis kind speaker_turns) that needs the package and its own DIARIZE readiness (`diarization:DIARIZE`, from its
     # doctor: pyannote.audio, torch and the local pipeline directory). Never a name; nothing is decided from it here.

@@ -202,6 +202,72 @@ class SpeechRegionTests(unittest.TestCase):
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
 
 
+class TranscriptSearchTests(unittest.TestCase):
+    """ADR-107 addendum 15: `transcript.find=<phrase>` measures the transcript and searches it with transcription-skill 0.12.0's find."""
+
+    def setUp(self):
+        from pipeline_harness import clear_modes
+        clear_modes()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        os.environ.pop("FAKE_TS_MODE", None)
+
+    def plan(self, reqs, transcription=True):
+        from pipeline_harness import pipeline_service
+        self.svc = pipeline_service(self.tmp, transcription=transcription, skills=[])
+        return self.svc.plan([fake_media(self.tmp, duration=16.0)], "generic", user_requirements=reqs)
+
+    def test_vocabulary(self):
+        self.assertEqual(parse_measurement({"transcript.find": "ACME", "transcript.find.fuzzy": "0.8", "transcript.find.context": 2}, "transcript.find"),
+                         ("transcript_hits", {"find_phrase": "ACME", "find_fuzzy": 0.8, "find_context": 2}))
+        self.assertIsNone(parse_measurement({}, "transcript.find"))
+        for reqs, why in (({"transcript.find": ""}, "the phrase to find"), ({"transcript.find": "x" * 501}, "1..500"),
+                          ({"transcript.find.fuzzy": 0.8}, "not set to true"), ({"transcript.find": "a", "transcript.find.fuzzy": 0.2}, "[0.5, 1]"),
+                          ({"transcript.find": "a", "transcript.find.context": 11}, "[0, 10]")):
+            with self.subTest(reqs=reqs):
+                with self.assertRaises(ValueError) as cm:
+                    _check_requirement_keys(reqs)
+                self.assertIn(why, str(cm.exception))
+        self.assertNotIn("transcript.find", BRIEF_REQUIREMENT_KEYS)
+
+    def test_hits_from_the_measured_transcript(self):
+        ir = self.plan({"transcript.find": "会場"})
+        obs = {o["kind"]: o for o in ir.doc["analysis"]["observations"]}
+        self.assertIn("transcript", obs, "the transcript is measured for the search")
+        hits = obs["transcript_hits"]
+        self.assertEqual((hits["provenance"], hits["tool"], hits["data"]["phrase"]), ("OBSERVED", "transcription/find", "会場"))
+        self.assertEqual([(h["start"], h["end"], h["segment_ids"]) for h in hits["data"]["hits"]], [(4.0, 8.4, ["seg_0002"])])
+        self.assertEqual(hits["data"]["transcript_id"], obs["transcript"]["data"]["id"])
+        self.assertEqual(hits["parameters"]["transcript"], obs["transcript"]["id"], "which measured transcript was searched")
+        self.assertEqual(hits["data"]["count"], len(hits["data"]["hits"]))
+        self.assertFalse([h for h in self.svc.handoffs(ir) if h["skill"] == "transcript_search"])
+
+    def test_a_result_about_another_phrase_is_refused(self):
+        os.environ["FAKE_TS_MODE"] = "find_other_phrase"
+        ir = self.plan({"transcript.find": "welcome"})
+        self.assertFalse([o for o in ir.doc["analysis"]["observations"] if o["kind"] == "transcript_hits"])
+        self.assertTrue(any(d["subject"] == "transcript.find" and d["approval"] == "BLOCK" for d in ir.doc["decisions"]))
+
+    def test_without_transcription_it_is_handed_off(self):
+        ir = self.plan({"transcript.find": "welcome"}, transcription=False)
+        [h] = [h for h in self.svc.handoffs(ir) if h["skill"] == "transcript_search"]
+        self.assertEqual(h["repositories"], ["transcription-skill"])
+
+    def test_adapter_refuses_before_any_process(self):
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        fake = str(Path(__file__).resolve().parent / "fake_transcription.py")
+        ad = TranscriptionAdapter(TranscriptionSkill([sys.executable, fake], None, {}), workspace=self.tmp)
+        self.assertTrue(ad.supports("transcription/find"))
+        for args in ({"phrase": "a"}, {"transcript": {"schema": "x"}, "phrase": "a"}, {"transcript": {"schema": "transcription-skill/transcript/0.1", "segments": []}, "phrase": ""},
+                     {"transcript": {"schema": "transcription-skill/transcript/0.1", "segments": []}, "phrase": "a", "fuzzy": 0.1},
+                     {"transcript": {"schema": "transcription-skill/transcript/0.1", "segments": []}, "phrase": "a", "input": "/etc/passwd"}):
+            with self.subTest(args=args):
+                calls = ad.calls
+                r = ad.measure("transcription/find", args)
+                self.assertEqual((r.ok, r.data["error"]["code"], ad.calls), (False, "INVALID_INPUT", calls))
+
+
 def _ffmpeg(*args):
     subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
 
@@ -237,6 +303,37 @@ class RealSkillTests(unittest.TestCase):
             self.assertIn("HELLO WORLD", [ln["text"] for ln in obs["screen_text"]["data"]["lines"]])
         if "shots.detect" in reqs:
             self.assertEqual([(s["start"], s["end"]) for s in obs["shot_table"]["data"]["shots"]], [(0.0, 2.0), (2.0, 4.0)])
+
+    def test_find_on_the_real_transcription_skill(self):
+        """transcription-skill 0.12.0's own find (standard library, no engine) on a word-timed transcript its validator accepts."""
+        if not os.environ.get("VIDEO_AGENT_TRANSCRIPTION_DIR"):
+            self.skipTest("VIDEO_AGENT_TRANSCRIPTION_DIR not set")
+        from video_agent.tools.transcription import TranscriptionAdapter, locate_transcription
+        ad = TranscriptionAdapter(locate_transcription(), workspace=self.tmp)
+        if not ad.supports("transcription/find"):
+            self.skipTest(f"transcription-skill {ad.version} has no find")
+        words = [[("hello", 0.0, 0.4), ("world", 0.5, 0.9)], [("hello", 2.0, 2.3), ("again", 2.4, 2.8)]]
+        segs, n = [], 0
+        for i, ws in enumerate(words, 1):
+            w = []
+            for t, a, b in ws:
+                w.append({"start": a, "end": b, "text": t, "confidence": 0.9, "index": n}); n += 1
+            text = " ".join(x["text"] for x in w)
+            segs.append({"id": f"seg_{i:04d}", "start": w[0]["start"], "end": w[-1]["end"], "text": text, "raw_text": text, "confidence": 0.9, "words": w, "speaker_id": None})
+        fp = "sha256:" + "cd" * 32
+        doc = {"schema": "transcription-skill/transcript/0.1", "id": "tr_find_en", "asset_id": "asset_1", "language": "en", "language_source": "requested",
+               "language_confidence": None, "duration": 3.8, "segments": segs,
+               "source": {"filename": "talk.wav", "fingerprint": fp, "size_bytes": 10, "media_duration": 3.8, "audio_channels": 1, "sample_rate": 16000, "container": "wav",
+                          "has_video": False},
+               "engine": "fake", "engine_version": "1.0", "created_at": "2026-11-13T00:00:00Z",
+               "provenance": {"engine": "fake", "engine_version": "1.0", "execution_mode": "local", "model": "fake-model", "model_version": None,
+                              "parameters": {"language": "en"}, "parameters_hash": "0" * 64, "cache_key": "1" * 64, "created_at": "2026-11-13T00:00:00Z",
+                              "processing_seconds": 0.5, "skill_version": ad.version, "skill": "transcription-skill", "tool": "transcription/transcribe",
+                              "language_detection": None, "audio_extraction": None},
+               "warnings": []}
+        r = ad.measure("transcription/find", {"transcript": doc, "phrase": "Hello", "context": 0})
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual([(h["start"], h["end"], h["word_indices"]) for h in r.data["hits"]["hits"]], [(0.0, 0.4, [0]), (2.0, 2.3, [2])])
 
     def test_speech_regions_on_a_rendered_file(self):
         if not os.environ.get("VIDEO_AGENT_MEDIA_ANALYSIS_DIR"):

@@ -79,6 +79,9 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     "shot_table": {"skill": "shot_detection", "needs_audio": False, "params": ("shot_threshold", "shot_min_frames")},
     # ADR-103 addendum 1 (roadmap step 33): media-analysis-skill's speech regions (media-analysis/vad, a voice-activity model) with its own defaults
     "speech_regions": {"skill": "speech_region_analysis", "needs_audio": True, "params": ()},
+    # roadmap step 33 (ADR-107 addendum 15): every timed hit of a phrase the user named, searched by transcription-skill `find` in the transcript measured
+    # for the same asset (inline, never a path). A query of a measured fact, not a recognition: nothing is cut or ranked from it here
+    "transcript_hits": {"skill": "transcript_search", "needs_audio": True, "params": ("find_phrase", "find_fuzzy", "find_context")},
 }
 # what the agent asks cropdetect.py for (ADR-060): 10 s of footage over 5 windows spread across the file, the rectangle to the nearest
 # even pixel (`--round 2`; cropdetect's default 16 cuts up to 14 px into the picture). Recorded as the observation's parameters

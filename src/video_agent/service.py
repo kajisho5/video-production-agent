@@ -472,6 +472,8 @@ class Service:
             runnable = self.tools_for(None, user_requirements)
             for skill_name, (kind_name, kparams) in mk.items():
                 if skill_name in runnable:
+                    if kind_name == "transcript_hits":   # the phrase is searched in the transcript measured for the same input
+                        kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
                     kinds = list(kinds or []) + ([] if kind_name in (kinds or []) else [kind_name])
                     params = dict(params or {}, **kparams)
         allowed: Optional[List[str]] = None
