@@ -116,7 +116,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line, like ingest's pin (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("voice-enhance", "0.1.2", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("voice-enhance", "0.1.3", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual({p["id"]: p["lifecycle"] for p in c["provides"]}, {"voice.isolate": "EXPERIMENTAL", "voice.dereverb": "EXPERIMENTAL", "voice.bleed_reduce": "EXPERIMENTAL"})
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every voice-enhance error code has a recovery class")
