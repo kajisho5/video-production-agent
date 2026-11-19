@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from pipeline_harness import PipelineCaps, clear_modes, fake_media, pipeline_service  # noqa: E402
 
 from video_agent.agent.documents import parse_document_requirements  # noqa: E402
@@ -98,7 +99,7 @@ class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.4.0 tag, one sorted compact line")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("artifacts-skill", "0.4.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("artifacts-skill", pinned_version("artifacts"), "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
 
     def test_refused_contracts(self):

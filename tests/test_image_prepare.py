@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from fake_adapter import FakeAdapter  # noqa: E402
 import fake_imagemagick as fim  # noqa: E402
 from video_agent.agent import image_prepare as ip  # noqa: E402
@@ -91,7 +92,7 @@ class ContractTests(_Base):
         text = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         c = json.loads(text)
         self.assertEqual(text, json.dumps(c, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n", "one line, keys sorted (the ingest / voice-enhance pin format)")
-        self.assertEqual((c["skill"]["id"], c["skill"]["version"], c["contract_version"]), ("imagemagick-skill", "0.10.1", "1.0"))
+        self.assertEqual((c["skill"]["id"], c["skill"]["version"], c["contract_version"]), ("imagemagick-skill", pinned_version("imagemagick"), "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(drift(c), [])
         self.assertEqual(breaking_drift(c), [])
@@ -225,7 +226,7 @@ class AdapterTests(_Base):
         self.assertEqual(r.data["parameters"], {"width": 320, "height": 320, "mode": "fit"})
         from video_agent.tools.imagemagick import lift_observation
         obs = lift_observation(r, "a")
-        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.fingerprint), ("image.resize", "OBSERVED", "imagemagick-skill", "0.10.1", r.data["output"]["sha256"]))
+        self.assertEqual((obs.kind, obs.provenance, obs.skill, obs.skill_version, obs.fingerprint), ("image.resize", "OBSERVED", "imagemagick-skill", pinned_version("imagemagick"), r.data["output"]["sha256"]))
         dry = self.run_op(TOOL_STRIP, {"input": "img", "output": "out2"}, dry_run=True)
         self.assertTrue(dry.ok and dry.dry_run)
         self.assertEqual(len(self.calls()), 1, "the dry run checks the request and runs nothing")

@@ -1,4 +1,4 @@
-"""Fake nle-bridge-skill process for the ADR-089 tests: `contract --json` (the pinned src/video_agent/tools/nle_bridge/contract_0.1.2.json),
+"""Fake nle-bridge-skill process for the ADR-089 tests: `contract --json` (the pinned src/video_agent/tools/nle_bridge/contract_<version>.json),
 `doctor --json` and `export` / `conform` with `--flag=value` options and the project IR after `--`, in the result shapes of nle-bridge-skill main.
 It reads the project IR as the real Skill does (the subject's `delivery.timelines` record, else INVALID_PLAN) and writes one small file per
 format. `diff --json --overwrite --subject=S --output=F --timeline-out=G -- <project.json> <returned>` (ADR-098) reads a returned file written by
@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "nle_bridge" / "contract_0.1.2.json"
+PINNED, = (Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "nle_bridge").glob("contract_*.json")   # the one pin, whatever its release (ADR-117 addendum 1)
 EXT = {"otio": ".otio", "fcp7": ".xml", "edl": ".edl", "srt": ".srt"}
 
 
@@ -40,7 +40,7 @@ def main() -> int:
         sys.stdout.write(PINNED.read_text(encoding="utf-8"))
         return 0
     if argv[:1] == ["doctor"]:
-        emit({"ok": True, "skill": "nle-bridge-skill", "version": "0.1.2", "problems": [], "notes": ["fake"]})
+        emit({"ok": True, "skill": "nle-bridge-skill", "version": json.loads(PINNED.read_text(encoding="utf-8"))["version"], "problems": [], "notes": ["fake"]})
         return 0
     if argv[:1] == ["diff"] and "--" in argv:
         return diff(argv)

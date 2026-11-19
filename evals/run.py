@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 from fake_adapter import FakeAdapter  # noqa: E402
 from fake_ai_provider import FakeAIProvider  # noqa: E402
+from pinned_versions import pinned_version  # noqa: E402
 from test_unit import FakeCaps  # noqa: E402
 from video_agent.service import Service  # noqa: E402
 
@@ -1297,13 +1299,26 @@ def run_case(case: dict) -> dict:
     return {"case": case["name"], "ok": not failures, "failures": failures}
 
 
+PINNED_RE = re.compile(r"\{pinned:([a-z-]+)\}")
+
+
+def expand_pinned(x):
+    """A case names a sibling's pinned release as `{pinned:<sibling>}` (ADR-117 addendum 1: read from the pin file, so a re-pin moves
+    no case): `"media-analysis/silence@{pinned:media-analysis}"`."""
+    if isinstance(x, dict):
+        return {k: expand_pinned(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [expand_pinned(v) for v in x]
+    return PINNED_RE.sub(lambda m: pinned_version(m.group(1)), x) if isinstance(x, str) else x
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--case")
     args = ap.parse_args()
     results = []
     for p in sorted((ROOT / "evals" / "cases").glob("*.json")):
-        case = json.loads(p.read_text(encoding="utf-8"))
+        case = expand_pinned(json.loads(p.read_text(encoding="utf-8")))
         if args.case and case["name"] != args.case:
             continue
         results.append(run_case(case))

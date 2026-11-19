@@ -1,6 +1,6 @@
 """Fake imagemagick-skill for the ADR-077 tests: `make_checkout(dir)` writes a checkout whose `scripts/_contract.py`, `resize.py`, `pad.py`
 and `strip.py` hand over to this file, so the agent launches it exactly as the real one (`python <dir>/scripts/<tool>.py ...`). It speaks
-the slice of imagemagick-skill 0.10.0 the agent uses: `_contract.py contract --json` (the pinned src/video_agent/tools/imagemagick/contract_0.10.1.json),
+the slice of imagemagick-skill 0.10.0 the agent uses: `_contract.py contract --json` (the pinned src/video_agent/tools/imagemagick/contract_<version>.json),
 `_contract.py doctor --json` (`tools.<name>.usable`), and resize / pad / strip with `--flag=value` options and the input after `--`, in the
 result shapes of its contract (`{"ok": true, ...}`, `{"ok": false, "reason"}` exit 1, the timeout shape exit 124). A fake image is the PNG
 signature followed by a JSON `{"w", "h"}` (a file without it counts as 400x300). Nothing runs ImageMagick.
@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "imagemagick" / "contract_0.10.1.json"
+PINNED, = (Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "imagemagick").glob("contract_*.json")   # the one pin, whatever its release (ADR-117 addendum 1)
 SIG = b"\x89PNG\r\n\x1a\n"
 STUB = "import runpy, sys\nsys.argv.insert(1, {name!r})\nrunpy.run_path({fake!r}, run_name='__main__')\n"
 

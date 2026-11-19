@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from fake_adapter import FakeAdapter  # noqa: E402
 from pipeline_harness import clear_modes, pipeline_service, plan_and_render  # noqa: E402
 from pipeline_harness import fake_media as pipeline_media  # noqa: E402
@@ -1207,7 +1208,7 @@ class AudioVoiceCleanupTests(unittest.TestCase):
     def test_vocabulary_matches_the_pinned_contract(self):
         from video_agent.agent.audio import AUDIO_ORDER, OPERATIONS, VOICE_CLEANUP_LEVELS
         c = audio_contract()
-        self.assertEqual(c["version"], "1.4.2")
+        self.assertEqual(c["version"], pinned_version("audio-production"))
         vc = {o["type"]: o for o in c["operations"]}["VOICE_CLEANUP"]
         self.assertEqual(set(vc["parameters"]), {"level", "audio_stream"})
         self.assertEqual((tuple(vc["parameters"]["level"]["enum"]), vc["parameters"]["level"]["required"], "default" in vc["parameters"]["level"]), (VOICE_CLEANUP_LEVELS, True, False))

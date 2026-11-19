@@ -11,6 +11,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from video_agent.tools.audio_production import adapter as ap  # noqa: E402
 from video_agent.tools.color_grading import adapter as cg  # noqa: E402
@@ -20,6 +21,7 @@ from video_agent.tools.qc import adapter as qc  # noqa: E402
 from video_agent.tools.subtitle import adapter as st  # noqa: E402
 from video_agent.tools.transcription import adapter as tr  # noqa: E402
 from video_agent.tools.video_editing import adapter as ve  # noqa: E402
+from pinned_versions import pinned_version  # noqa: E402
 
 
 def with_version(contract, version):
@@ -31,8 +33,8 @@ def with_version(contract, version):
 
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
-        self.assertEqual(mg.pinned_contract()["version"], "0.4.3")   # addendum 24: 0.4.0 adds rendered_layer title_json; ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only; addendum 6: 0.2.16; ADR-106: 0.2.17 (layer_export); ADR-107: 0.2.18 / 0.2.19 version-only; addendum 19: 0.3.0 adds the kit block and options.kit?
-        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16", "0.2.17", "0.2.18", "0.2.19", "0.2.20", "0.3.0", "0.3.4", "0.4.0", "0.4.3"):
+        self.assertEqual(mg.pinned_contract()["version"], pinned_version("motion-graphics"))   # addendum 24: 0.4.0 adds rendered_layer title_json; ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only; addendum 6: 0.2.16; ADR-106: 0.2.17 (layer_export); ADR-107: 0.2.18 / 0.2.19 version-only; addendum 19: 0.3.0 adds the kit block and options.kit?
+        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16", "0.2.17", "0.2.18", "0.2.19", "0.2.20", "0.3.0", "0.3.4", "0.4.0", "0.4.3", pinned_version("motion-graphics")):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
             self.assertEqual(mg.contract_breaking_drift(live), [], v)
@@ -45,9 +47,9 @@ class VersionGateTests(unittest.TestCase):
         # optional models and per-model language limits (a refusal reason), additive; 0.11.0 (addendum 8): optional engine qwen3_asr added;
         # 0.11.2 / 0.11.3 (addendum 12): opt-in chunk_seconds / parallel / speech_regions and transcribe --follow, additive; 0.12.0 / 0.12.1 (addendum 15):
         # tool transcription/find and capability transcript_search, additive; 0.13.0 (addendum 30): opt-in domain_vocabulary / corrections, additive
-        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2", "0.11.3", "0.11.9", "0.12.0", "0.12.1", "0.12.4", "0.13.0", "0.13.3"):
+        for v in ("0.2.0", "0.7.3", "0.8.0", "0.8.2", "0.9.0", "0.9.1", "0.9.3", "0.10.0", "0.10.4", "0.11.0", "0.11.2", "0.11.3", "0.11.9", "0.12.0", "0.12.1", "0.12.4", "0.13.0", "0.13.3", pinned_version("transcription")):
             self.assertEqual(tr.check_contract(with_version(tr.pinned_contract(), v)), [], v)
-        self.assertEqual(tr.pinned_contract()["version"], "0.13.1")
+        self.assertEqual(tr.pinned_contract()["version"], pinned_version("transcription"))
         self.assertTrue({"follow_growing_files", "chunked_long_recordings", "transcript_search", "domain_vocabulary", "post_correction"} <= set(tr.pinned_contract()["capabilities"]))
         self.assertIn("transcription/find", [t["name"] for t in tr.pinned_contract()["tools"]])
         self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")
@@ -56,8 +58,8 @@ class VersionGateTests(unittest.TestCase):
 
     def test_qc_release_versions(self):
         """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
-        self.assertEqual(qc.pinned_contract()["version"], "1.4.5")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only; ADR-107 addendum 2: 1.1.0 adds opt-in subtitle checks; addendum 7: 1.2.0 / 1.3.0 add opt-in stinger and loop-seam checks
-        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.1", "1.0.3", "1.1.0", "1.1.1", "1.2.0", "1.2.4", "1.3.0", "1.3.1", "1.4.0", "1.4.2"):
+        self.assertEqual(qc.pinned_contract()["version"], pinned_version("qc"))   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only; ADR-107 addendum 2: 1.1.0 adds opt-in subtitle checks; addendum 7: 1.2.0 / 1.3.0 add opt-in stinger and loop-seam checks
+        for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.1", "1.0.3", "1.1.0", "1.1.1", "1.2.0", "1.2.4", "1.3.0", "1.3.1", "1.4.0", "1.4.2", pinned_version("qc")):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
             self.assertEqual(qc.contract_breaking_drift(live), [], v)
@@ -68,8 +70,8 @@ class VersionGateTests(unittest.TestCase):
         # subtitle-skill 0.2.0 (#19, ja/zh/ko locale profiles) reports its release version; the contract is otherwise the 0.1.x one
         # ADR-097 addendum 6: 0.5.0 .. 0.8.0 add opt-in render / generate inputs and formats; the request the adapter builds is unchanged, so the gate takes 0.5.x .. 0.8.x
         # ADR-107: 0.9.0 adds render's optional fonts_dir (burn only), 0.9.1 is version-only; re-pinned from the v0.9.1 tag and the gate takes 0.9.x
-        self.assertEqual(st.pinned_contract()["version"], "0.10.3")   # addendum 20: 0.10.0 adds opt-in animated captions; ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
-        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3", "0.9.0", "0.9.1", "0.9.2", "0.10.0", "0.10.3"):
+        self.assertEqual(st.pinned_contract()["version"], pinned_version("subtitle"))   # addendum 20: 0.10.0 adds opt-in animated captions; ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
+        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3", "0.9.0", "0.9.1", "0.9.2", "0.10.0", "0.10.3", pinned_version("subtitle")):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)
@@ -87,8 +89,8 @@ class VersionGateTests(unittest.TestCase):
     def test_diarization_versions(self):
         # ADR-097 addendum 5: diarization-skill main reports 0.3.0 (0.2.0 enroll / name, 0.3.0 --chunk-seconds; both opt-in, the diarize
         # wire the adapter sends is unchanged), so the gate takes 0.2.x and 0.3.x besides 0.1.x
-        self.assertEqual(dia.pinned_contract()["version"], "0.3.5")
-        for v in ("0.1.0", "0.2.0", "0.3.0", "0.3.4"):
+        self.assertEqual(dia.pinned_contract()["version"], pinned_version("diarization"))
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.3.4", pinned_version("diarization")):
             live = with_version(dia.pinned_contract(), v)
             self.assertEqual(dia.check_contract(live), [], v)
             self.assertEqual(dia.breaking_drift(live), [], v)
@@ -102,9 +104,9 @@ class VersionGateTests(unittest.TestCase):
         # ADR-107: 0.6.1 / 0.6.2 are version-only (the version is also in response_shape / doctor_shape / versioning, so the pin is re-taken from the tag)
         # ADR-107 addendum 4: 0.7.0 (contract_version still 6.0) measures the stinger's cover at its cut point; the request is unchanged
         # ADR-107 addendum 25: 0.8.0 (contract_version 7.0) refuses a video in OVERLAY.params.image with INVALID_INPUT overlay_video_layer
-        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), ("0.8.5", "7.0"))
-        self.assertEqual({ve.pinned_contract()[k]["skill"]["version"] for k in ("response_shape", "doctor_shape")} | {ve.pinned_contract()["versioning"]["version"]}, {"0.8.5"})
-        for v in ("0.4.0", "0.4.18", "0.5.0", "0.5.3", "0.6.0", "0.6.1", "0.6.2", "0.6.4", "0.7.0", "0.7.2", "0.8.0", "0.8.3"):
+        self.assertEqual((ve.pinned_contract()["version"], ve.pinned_contract()["contract_version"]), (pinned_version("video-editing"), "7.0"))
+        self.assertEqual({ve.pinned_contract()[k]["skill"]["version"] for k in ("response_shape", "doctor_shape")} | {ve.pinned_contract()["versioning"]["version"]}, {pinned_version("video-editing")})
+        for v in ("0.4.0", "0.4.18", "0.5.0", "0.5.3", "0.6.0", "0.6.1", "0.6.2", "0.6.4", "0.7.0", "0.7.2", "0.8.0", "0.8.3", pinned_version("video-editing")):
             live = with_version(ve.pinned_contract(), v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
@@ -121,11 +123,11 @@ class VersionGateTests(unittest.TestCase):
             c = with_version(json.loads(json.dumps(ve.pinned_contract())), v)
             c["response_shape"]["skill"]["version"] = c["doctor_shape"]["skill"]["version"] = c["versioning"]["version"] = v
             return c
-        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.8.0", "0.8.1", "0.8.3", "0.8.5"):
+        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.8.0", "0.8.1", "0.8.3", "0.8.5", pinned_version("video-editing")):
             live = release(v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
-            self.assertEqual(bool(ve.contract_drift(live)), v != "0.8.5", "the full drift report still names the difference")
+            self.assertEqual(bool(ve.contract_drift(live)), v != pinned_version("video-editing"), "the full drift report still names the difference")
         self.assertTrue(any(d.startswith("response_shape:") for d in ve.contract_drift(release("0.6.1"))))
         for change in (lambda c: c["response_shape"].update(status="completed"), lambda c: c["response_shape"]["skill"].update(id="other"),
                        lambda c: c["response_shape"].update(schema="video-editing/response@2"), lambda c: c["response_shape"].pop("execution")):
@@ -140,8 +142,8 @@ class VersionGateTests(unittest.TestCase):
         # ADR-107: 1.0.0 was an unintended version number for the 0.6 line (the 0.6.1 contract, version only), so the gate takes 1.0.x and 0.6.x of the
         # same contract; 1.0 is not a new contract generation, and 0.7 / 1.1 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only
         # ADR-107 addendum 5: 1.1.0 adds opt-in alpha_mode / drop_alpha (the alpha block changed: re-pinned); the gate takes 1.1.x, 1.2 / 2.0 stay out
-        self.assertEqual(cg.pinned_contract()["version"], "1.1.3")   # ADR-105: 0.5.1, HLG tone map defaults to mobius
-        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1", "1.1.0", "1.1.3"):
+        self.assertEqual(cg.pinned_contract()["version"], pinned_version("color-grading"))   # ADR-105: 0.5.1, HLG tone map defaults to mobius
+        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1", "1.1.0", "1.1.3", pinned_version("color-grading")):
             live = with_version(cg.pinned_contract(), v)
             self.assertEqual(cg.check_contract(live), [], v)
             self.assertEqual(cg.contract_breaking_drift(live), [], v)
@@ -153,9 +155,9 @@ class VersionGateTests(unittest.TestCase):
         # same contract; 1.0 is not a new contract generation, and 0.5 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only.
         # Addendum 12: 1.1.0 / 1.2.0 add LOUDNESS_SET and STEMS (operations, a fatal drift key: re-pinned); the gate takes 1.1.x / 1.2.x
         # addendum 32: 1.4.0 adds the top-level loudness.loudnorm_mode (additive); the gate takes 1.4.x
-        self.assertEqual(ap.pinned_contract()["version"], "1.4.2")   # addendum 17: 1.3.0 adds the opt-in filler_lexicons.opt_in / opt_in_use
+        self.assertEqual(ap.pinned_contract()["version"], pinned_version("audio-production"))   # addendum 17: 1.3.0 adds the opt-in filler_lexicons.opt_in / opt_in_use
         self.assertTrue({"LOUDNESS_SET", "STEMS"} <= {o["type"] for o in ap.pinned_contract()["operations"]})
-        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2", "1.4.0", "1.4.3"):
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2", "1.4.0", "1.4.2", "1.4.3", pinned_version("audio-production")):
             live = with_version(ap.pinned_contract(), v)
             self.assertEqual(ap.check_contract(live), [], v)
             self.assertEqual(ap.contract_breaking_drift(live), [], v)

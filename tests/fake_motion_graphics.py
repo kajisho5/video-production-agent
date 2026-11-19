@@ -22,7 +22,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "motion_graphics" / "contract_0.4.3.json").read_text(encoding="utf-8"))
+PINNED, = (HERE.parent / "src" / "video_agent" / "tools" / "motion_graphics").glob("contract_*.json")   # the one pin, whatever its release (ADR-117 addendum 1)
+CONTRACT = json.loads(PINNED.read_text(encoding="utf-8"))
 MODE = os.environ.get("FAKE_MG_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_MG_CALLS")
 EXIT = CONTRACT["errors"]["exit_codes"]

@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from pipeline_harness import PipelineCaps, clear_modes, fake_media, pipeline_service, plan_and_render  # noqa: E402
 
 from video_agent.agent.editing import EditRequirementError  # noqa: E402
@@ -111,7 +112,7 @@ class ContractTests(_Base):
     def test_pin_shape_and_contract_checks(self):
         c = pinned_contract()
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual((c["skill_id"], c["version"]), ("publish", "0.2.5"))
+        self.assertEqual((c["skill_id"], c["version"]), ("publish", pinned_version("publish")))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]))
         p = platforms(c)

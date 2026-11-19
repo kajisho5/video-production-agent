@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from pipeline_harness import AUDIO_PRODUCTION_CAPS, PipelineCaps, clear_modes, fake_media, pipeline_service  # noqa: E402
 
 from video_agent.agent.bgm import parse_bgm_requirements  # noqa: E402
@@ -108,7 +109,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("sound-design", "0.3.6", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("sound-design", pinned_version("sound-design"), "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
         self.assertEqual(set(ERROR_CLASSES) | set(OPTIONAL_ERROR_CLASSES), set(c["errors"]), "every sound-design code has a recovery class")
         self.assertEqual(c["errors"]["INSUFFICIENT_VRAM"], {"exit_code": 3, "retryable": False})

@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from fake_adapter import FakeAdapter  # noqa: E402
 from test_unit import FakeCaps  # noqa: E402
 import fake_ingest  # noqa: E402
@@ -131,7 +132,7 @@ class OffloadPlanTests(_Base):
         kinds = {o["kind"]: o for o in d["analysis"]["observations"]}
         self.assertEqual(set(kinds), {"ingest_offload_plan", "ingest_card_inventory"})
         plan = kinds["ingest_offload_plan"]
-        self.assertEqual((plan["source"], plan["provenance"], plan["data"]["files"]), ("ingest/offload@0.1.2", "OBSERVED", 7))
+        self.assertEqual((plan["source"], plan["provenance"], plan["data"]["files"]), (f"ingest/offload@{pinned_version('ingest')}", "OBSERVED", 7))
         self.assertEqual(plan["data"]["roots"], [str(self.a / "event" / "EX_CARD"), str(self.b / "event" / "EX_CARD")])
         inv = kinds["ingest_card_inventory"]["data"]
         self.assertEqual((inv["clip_count"], inv["spanned_count"], inv["file_count"]), (2, 1, 3))
@@ -219,13 +220,13 @@ class OffloadRunTests(_Base):
         clip_obs = [o for o in d["analysis"]["observations"] if o["kind"] == "ingest_clip"]
         self.assertEqual(len(clip_obs), 3)
         for o in clip_obs:
-            self.assertEqual((o["provenance"], o["source"], o["skill"], o["tool"]), ("OBSERVED", "ingest/inventory@0.1.2", "ingest", "ingest/inventory"))
+            self.assertEqual((o["provenance"], o["source"], o["skill"], o["tool"]), ("OBSERVED", f"ingest/inventory@{pinned_version('ingest')}", "ingest", "ingest/inventory"))
             a = d["assets"][o["asset_id"]]
             self.assertEqual(a["hash"], sha[o["data"]["path"]], "the agent's own sha256 equals ingest-skill's")
             self.assertEqual(o["fingerprint"], a["hash"])
             self.assertEqual([c["root"] for c in o["data"]["copies"]], [str(self.a / "event" / "EX_CARD"), str(self.b / "event" / "EX_CARD")])
             self.assertTrue(all(c["manifest"] and c["mhl"] for c in o["data"]["copies"]), "manifest and ASC MHL generation per destination")
-            self.assertEqual((o["data"]["ingest_version"], o["data"]["job_id"], o["data"]["hash_algorithm"]), ("0.1.2", out["job"]["id"], "sha256"))
+            self.assertEqual((o["data"]["ingest_version"], o["data"]["job_id"], o["data"]["hash_algorithm"]), (pinned_version("ingest"), out["job"]["id"], "sha256"))
             self.assertEqual(o["data"]["reel"]["source"], "manifest")
         spanned = sorted((o for o in clip_obs if o["data"]["clip_id"] == "709_0001"), key=lambda o: o["data"]["member_index"])
         self.assertEqual([(o["data"]["member_index"], o["data"]["member_count"], o["data"]["spanned"]) for o in spanned], [(0, 2, True), (1, 2, True)])
@@ -346,12 +347,12 @@ class OffloadRunTests(_Base):
 class IngestAdapterContractTests(_Base):
     def test_pinned_contract_is_ingest_main(self):
         c = pinned_contract()
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("ingest", "0.1.2", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("ingest", pinned_version("ingest"), "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
         self.assertEqual(set(ERROR_KINDS), set(c["errors"]), "every ingest-skill error code has a kind")
         ad = IngestAdapter(fake_skill())
-        self.assertEqual((ad.drift(), ad.breaking_drift(), ad.version), ([], [], "0.1.2"))
+        self.assertEqual((ad.drift(), ad.breaking_drift(), ad.version), ([], [], pinned_version("ingest")))
         self.assertEqual(FATAL_DRIFT_KEYS, ("skill_id", "contract_version", "manifest", "inventory"))
 
     def test_drift_classification(self):

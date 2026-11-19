@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONTRACT = json.loads((HERE.parent / "src" / "video_agent" / "tools" / "media_analysis" / "contract_0.1.22.json").read_text(encoding="utf-8"))
+PINNED, = (HERE.parent / "src" / "video_agent" / "tools" / "media_analysis").glob("contract_*.json")   # the one pin, whatever its release (ADR-117 addendum 1)
+CONTRACT = json.loads(PINNED.read_text(encoding="utf-8"))
 TOOLS = {t["tool_id"]: t for t in CONTRACT["tools"]}
 MODE = os.environ.get("FAKE_MA_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_MA_CALLS")
