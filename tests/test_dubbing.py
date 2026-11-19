@@ -119,7 +119,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("dubbing", "0.2.1", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("dubbing", "0.2.3", "1.0"))
         self.assertEqual(check_contract(c), [])
         # ADR-107 addendum 14: 0.2.1's `terms --transcript` is pinned; `terms` is not a tool the adapter runs, and a 0.2.0 install is not breaking drift
         from video_agent.tools.dubbing.adapter import TOOLS

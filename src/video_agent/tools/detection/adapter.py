@@ -6,7 +6,7 @@
         `detection tracks --json --overwrite --output=<workspace>/cache/detection/<asset>.tracks.json [--window=S] -- <faces.json>`
                                                               (boxes linked over time into redact-ready rectangles, a documented heuristic)
 
-Protocol (detection-skill's own contract, `detection contract --json`, pinned from main in contract_0.2.2.json -- the repository has no
+Protocol (detection-skill's own contract, `detection contract --json`, pinned from main in contract_0.2.3.json -- the repository has no
 release tag, so the pin follows main as diarization / ingest / voice-enhance do):
     contract → `detection contract --json`
     doctor   → `detection doctor --json` (ok, ready.{faces, text, objects, video_frames, tracks, check}, checks with install lines,
@@ -103,7 +103,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "tracks", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

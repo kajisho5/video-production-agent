@@ -106,7 +106,7 @@ class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "pinned from the v0.14.0 tag")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("remotion-ffmpeg-skill", "0.14.0", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("remotion-ffmpeg-skill", "0.14.2", "1.0"))
         self.assertEqual((check_contract(c), drift(c), breaking_drift(c)), ([], [], []))
         self.assertEqual((recovery_class("missing_tool"), recovery_class("timeout"), recovery_class("other")), ("TOOL_MISSING", "TIMEOUT", "SKILL_ERROR"))
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["name"] == "pipeline")["flags"].pop("out_dir")

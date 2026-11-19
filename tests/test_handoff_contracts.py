@@ -57,7 +57,7 @@ class PinnedSkillSpecTests(unittest.TestCase):
         adds the scene request keys stinger / title and five stinger templates, not handed off; 0.9.1 changes only `version`; 0.10.0
         (ADR-107 addendum 29) adds --kit on template / batch, not handed off. The pin is the 0.10.0 contract."""
         c = load_pin(PINS["html_scene_render"].pin_file)
-        self.assertEqual((c["version"], PINS["html_scene_render"].version), ("0.10.0", "0.10.0"))
+        self.assertEqual((c["version"], PINS["html_scene_render"].version), ("0.10.3", "0.10.3"))
         ex = c["execution"]
         self.assertIn("argv_recorder", ex)
         self.assertNotIn("argv_shims", ex)
@@ -70,7 +70,7 @@ class PinnedSkillSpecTests(unittest.TestCase):
     def test_png_is_pinned_but_not_handed_off(self):
         """The 0.8.0 PNG sequence is in the pin (the live check compares every codec) but is withheld from job.html_scene_render.codec."""
         p = PINS["html_scene_render"]
-        with self.assertRaisesRegex(HandoffParameterError, "codec=png is in the hyperframes-skill 0.10.0 contract but is not handed off"):
+        with self.assertRaisesRegex(HandoffParameterError, "codec=png is in the hyperframes-skill 0.10.3 contract but is not handed off"):
             parse_param(p, "codec", "png")
         with self.assertRaisesRegex(HandoffParameterError, "must be one of h264, vp9, prores \\("):
             parse_param(p, "codec", "av1")
@@ -107,14 +107,14 @@ class Render3dHandoffTests(unittest.TestCase):
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
         asked = next(d for d in ir.doc["decisions"] if d["id"] == step["decision_id"])
         self.assertEqual(asked["approval"], "CONFIRM")
-        self.assertIn("blender-skill/render, contract 0.31.0 pinned", asked["reason"])
+        self.assertIn("blender-skill/render, contract 0.31.1 pinned", asked["reason"])
         keys = {r["id"]: r["key"] for r in ir.doc["requirements"]}
         self.assertEqual({keys[e] for e in asked["evidence"] if e in keys},
                          {"job.render_3d", "job.render_3d.model", "job.render_3d.preset", "job.render_3d.transparent"})
         h = _handoff(svc, ir, "render_3d")
         self.assertEqual(h["provided_by"], ["blender-skill"])
         k = h["contract"]
-        self.assertEqual((k["package"], k["version"], k["tool"], k["capability"], k["lifecycle"]), ("blender-skill", "0.31.0", "blender-skill/render", "3d.render", "EXPERIMENTAL"))
+        self.assertEqual((k["package"], k["version"], k["tool"], k["capability"], k["lifecycle"]), ("blender-skill", "0.31.1", "blender-skill/render", "3d.render", "EXPERIMENTAL"))
         self.assertEqual(k["args"], {"file": str(model.resolve()), "--resolution-preset": "1080p", "--transparent": True})
         self.assertEqual(k["missing"], [])
         self.assertIn("ffmpeg-skill/overlay", k["next"])
@@ -167,7 +167,7 @@ class HtmlSceneHandoffTests(unittest.TestCase):
         ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.html_scene_render": True, "job.html_scene_render.scene": str(scene),
                                                                         "job.html_scene_render.codec": "prores"})
         k = _handoff(svc, ir, "html_scene_render")["contract"]
-        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.10.0", "hyperframes-skill/render"))
+        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.10.3", "hyperframes-skill/render"))
         self.assertEqual(k["args"], {"scene_dir": str(scene.resolve()), "codec": "prores"})
         self.assertEqual(k["missing"], [])
         self.assertIn("ffmpeg-skill/overlay", k["next"])

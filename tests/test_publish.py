@@ -111,7 +111,7 @@ class ContractTests(_Base):
     def test_pin_shape_and_contract_checks(self):
         c = pinned_contract()
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual((c["skill_id"], c["version"]), ("publish", "0.2.0"))
+        self.assertEqual((c["skill_id"], c["version"]), ("publish", "0.2.3"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]))
         p = platforms(c)

@@ -1,5 +1,5 @@
 """Fake diarization-skill process for the ADR-086 tests: speaks the slice of the real `diarization` CLI the agent uses -- `contract --json`
-(the pinned src/video_agent/tools/diarization/contract_0.3.0.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok)
+(the pinned src/video_agent/tools/diarization/contract_0.3.3.json), `doctor --json` (ok / ready / checks / problems, exit 3 while not ok)
 and `diarize --json --overwrite --output=F [--num-speakers=N ...] -- <media>` in the result shape of diarization-skill main
 (diarization-skill/turns@1 with the sha256 of the input file, printed with ok / turns_file and written to --output). The media are the
 self-describing fake files of tests/pipeline_harness.py: the turns are their `turns` fact ([[start, end, "SPEAKER_00"], ...]) or, without
@@ -22,7 +22,7 @@ MODE = os.environ.get("FAKE_DIA_MODE", "ok")
 READY = os.environ.get("FAKE_DIA_READY", "all")
 CONTRACT_MODE = os.environ.get("FAKE_DIA_CONTRACT", "pinned")
 CALLS_LOG = os.environ.get("FAKE_DIA_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "diarization" / "contract_0.3.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "diarization" / "contract_0.3.3.json"
 
 
 def _emit(doc) -> None:

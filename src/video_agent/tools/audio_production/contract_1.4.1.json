@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "1.3.0",
+  "version": "1.4.1",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, several delivery loudness versions in one run, stems (dialogue / music / effects files that sum to the mix), mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "1.3.0",
+      "version": "1.4.1",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -1426,7 +1426,8 @@
       }
     },
     "default_profile": null,
-    "loudness_set": "LOUDNESS_SET writes several versions of one input in one run; each version must measure within tolerance_lufs of its target and at or under its true-peak ceiling (no slack), on the intermediate and on every delivered output; response key loudness_sets"
+    "loudness_set": "LOUDNESS_SET writes several versions of one input in one run; each version must measure within tolerance_lufs of its target and at or under its true-peak ceiling (no slack), on the intermediate and on every delivered output; response key loudness_sets",
+    "loudnorm_mode": "per LOUDNESS_SET version (loudness_sets[].versions[].loudnorm_mode) and in every loudness measurement (measurements.loudness.loudnorm_mode): the mode loudnorm ran its second pass in, as ffmpeg-skill/loudness reports it (result.loudnorm_mode, same name and values): linear (one gain) or dynamic (loudnorm fell back to range compression: the input's range is above the LRA target, loudness_range_lu or ffmpeg-skill's default, or a linear gain would pass the true-peak ceiling); null when the located ffmpeg-skill does not report it, and in a plan"
   },
   "execution": {
     "mode": "local",

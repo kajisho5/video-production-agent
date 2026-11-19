@@ -89,7 +89,7 @@ DRIFT_OPERATION_KEYS = ("type", "inputs", "parameters", "tool", "required_capabi
 # ADR-048: `ffmpeg_skill` is the Skill's own engine-compatibility business (capability detection, reported by its doctor).
 FATAL_DRIFT_KEYS = tuple(k for k in DRIFT_KEYS if k not in ("version", "unsupported_operations", "output_formats", "tools", "ffmpeg_skill"))
 FATAL_DRIFT_OPERATION_KEYS = tuple(k for k in DRIFT_OPERATION_KEYS if k != "parameters")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.0.json")   # ADR-107 addendum 5: 1.1.0 (alpha_mode / drop_alpha, opt-in); ADR-107 addendum 1: 1.0.1 (version only); ADR-107: 1.0.0 (= the 0.6.1 contract but for the version); ADR-106 addendum 1: 0.6.1 (hdr_sdr wording only); ADR-106: 0.6.0 (ADR-105: 0.5.1, HLG tone map defaults to mobius)
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.2.json")   # ADR-107 addendum 5: 1.1.0 (alpha_mode / drop_alpha, opt-in); ADR-107 addendum 1: 1.0.1 (version only); ADR-107: 1.0.0 (= the 0.6.1 contract but for the version); ADR-106 addendum 1: 0.6.1 (hdr_sdr wording only); ADR-106: 0.6.0 (ADR-105: 0.5.1, HLG tone map defaults to mobius)
 
 
 def pinned_contract() -> Dict[str, Any]:
