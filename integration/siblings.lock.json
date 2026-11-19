@@ -1,0 +1,167 @@
+{
+  "format": "video-agent/siblings-lock@1",
+  "note": "Written by scripts/repin.py (ADR-117): the release each sibling Skill's pin was taken from. Integration clones each sibling at this tag and checks the commit.",
+  "siblings": {
+    "artifacts": {
+      "repo": "kajisho5/artifacts-skill",
+      "tag": "v0.4.0",
+      "sha": "ae039d3002d5d0c9a786d320ec30ebeb67b8ee43",
+      "version": "0.4.0",
+      "pin": "src/video_agent/tools/artifacts/contract_0.4.0.json"
+    },
+    "audio-production": {
+      "repo": "kajisho5/audio-production-skill",
+      "tag": "v1.4.1",
+      "sha": "aa9b25b77f78985a9472965f9316823c8811be26",
+      "version": "1.4.1",
+      "pin": "src/video_agent/tools/audio_production/contract_1.4.1.json"
+    },
+    "blender": {
+      "repo": "kajisho5/blender-skill",
+      "tag": "blender-skill-v0.31.1",
+      "sha": "ff882b1687ca4edf5f98a57672cc8ad736809831",
+      "version": "0.31.1",
+      "pin": "src/video_agent/skills/pins/blender-skill_0.31.1.json"
+    },
+    "color-grading": {
+      "repo": "kajisho5/color-grading-skill",
+      "tag": "v1.1.2",
+      "sha": "b84932beca3f06e39e0a85ea59cd4819e3f983f8",
+      "version": "1.1.2",
+      "pin": "src/video_agent/tools/color_grading/contract_1.1.2.json"
+    },
+    "detection": {
+      "repo": "kajisho5/detection-skill",
+      "tag": "v0.2.3",
+      "sha": "f980ab71b26ac17a5e419a61cc62fc48b5351eff",
+      "version": "0.2.3",
+      "pin": "src/video_agent/tools/detection/contract_0.2.3.json"
+    },
+    "diarization": {
+      "repo": "kajisho5/diarization-skill",
+      "tag": "v0.3.3",
+      "sha": "3c96fdff59a53902b122058ccd111c91fd435db7",
+      "version": "0.3.3",
+      "pin": "src/video_agent/tools/diarization/contract_0.3.3.json"
+    },
+    "dubbing": {
+      "repo": "kajisho5/dubbing-skill",
+      "tag": "v0.2.3",
+      "sha": "9c3343acea88bb9b7b536e0bccdaa3163754083b",
+      "version": "0.2.3",
+      "pin": "src/video_agent/tools/dubbing/contract_0.2.3.json"
+    },
+    "hyperframes": {
+      "repo": "kajisho5/hyperframes-skill",
+      "tag": "v0.10.3",
+      "sha": "2c02b6273cfe2423ea3bc62d621b516160b609db",
+      "version": "0.10.3",
+      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.10.3.json"
+    },
+    "imagemagick": {
+      "repo": "kajisho5/imagemagick-skill",
+      "tag": "v0.10.1",
+      "sha": "ab5bf175147f7755cd7cb214b8ecb88bb9c2c451",
+      "version": "0.10.1",
+      "pin": "src/video_agent/tools/imagemagick/contract_0.10.1.json"
+    },
+    "ingest": {
+      "repo": "kajisho5/ingest-skill",
+      "tag": "v0.1.0",
+      "sha": "ca9ea1ca735a77eabd4d690a3066630eb54f2ae5",
+      "version": "0.1.0",
+      "pin": "src/video_agent/tools/ingest/contract_0.1.0.json"
+    },
+    "media-analysis": {
+      "repo": "kajisho5/media-analysis-skill",
+      "tag": "v0.1.21",
+      "sha": "af49b926ff3b63482478ecc2d77aab1dd6cab8a8",
+      "version": "0.1.21",
+      "pin": "src/video_agent/tools/media_analysis/contract_0.1.21.json"
+    },
+    "motion-graphics": {
+      "repo": "kajisho5/motion-graphics-skill",
+      "tag": "v0.4.2",
+      "sha": "dff6ef0c6a601aada2be0496877928c0f254f260",
+      "version": "0.4.2",
+      "pin": "src/video_agent/tools/motion_graphics/contract_0.4.2.json"
+    },
+    "nle-bridge": {
+      "repo": "kajisho5/nle-bridge-skill",
+      "tag": "v0.1.0",
+      "sha": "4478bed4bb835491ae5eb9daeb9bf1717f872755",
+      "version": "0.1.0",
+      "pin": "src/video_agent/tools/nle_bridge/contract_0.1.0.json"
+    },
+    "publish": {
+      "repo": "kajisho5/publish-skill",
+      "tag": "v0.2.3",
+      "sha": "3506305af34f2d3e78a7eecccbf28d01bfe7a521",
+      "version": "0.2.3",
+      "pin": "src/video_agent/tools/publish/contract_0.2.3.json"
+    },
+    "qc": {
+      "repo": "kajisho5/qc-skill",
+      "tag": "v1.4.4",
+      "sha": "6fba4efc7c29344b0bd113ed1789df3d8d3e5ccd",
+      "version": "1.4.4",
+      "pin": "src/video_agent/tools/qc/contract_1.4.4.json"
+    },
+    "remotion-ffmpeg": {
+      "repo": "kajisho5/remotion-ffmpeg-skill",
+      "tag": "v0.14.2",
+      "sha": "25d919130428e1896a02f3ea0c3ec8eb8c1b029c",
+      "version": "0.14.2",
+      "pin": "src/video_agent/tools/remotion/contract_0.14.2.json"
+    },
+    "slide-sync": {
+      "repo": "kajisho5/slide-sync-skill",
+      "tag": "v0.1.1",
+      "sha": "edabbed6bd03fa91148bf9ce1462824d784382d5",
+      "version": "0.1.1",
+      "pin": "src/video_agent/tools/slide_sync/contract_0.1.1.json"
+    },
+    "sound-design": {
+      "repo": "kajisho5/sound-design-skill",
+      "tag": "v0.3.4",
+      "sha": "ce120901e00f6f07df9fabd90abe6f7650136e45",
+      "version": "0.3.4",
+      "pin": "src/video_agent/tools/sound_design/contract_0.3.4.json"
+    },
+    "subtitle": {
+      "repo": "kajisho5/subtitle-skill",
+      "tag": "v0.10.2",
+      "sha": "13a7ae7fd5b5974273bc267d3e5f681d541bd99b",
+      "version": "0.10.2",
+      "pin": "src/video_agent/tools/subtitle/contract_0.10.2.json"
+    },
+    "thumbnail": {
+      "repo": "kajisho5/thumbnail-skill",
+      "tag": "v0.1.20",
+      "sha": "e0147c9a2f9267cf0708aae97cc99d0441049c1c",
+      "version": "0.1.20",
+      "pin": "src/video_agent/tools/thumbnail/contract_0.1.20.json"
+    },
+    "transcription": {
+      "repo": "kajisho5/transcription-skill",
+      "tag": "v0.13.1",
+      "sha": "f3734256ab89556a55930e2538ab5b616372af8d",
+      "version": "0.13.1",
+      "pin": "src/video_agent/tools/transcription/contract_0.13.1.json"
+    },
+    "video-editing": {
+      "repo": "kajisho5/video-editing-skill",
+      "tag": "v0.8.4",
+      "sha": "2f77b39f55e75c00474e1a9885e360a29639b940",
+      "version": "0.8.4",
+      "pin": "src/video_agent/tools/video_editing/contract_0.8.4.json"
+    },
+    "voice-enhance": {
+      "repo": "kajisho5/voice-enhance-skill",
+      "tag": "v0.1.2",
+      "sha": "68b4e57e467ac41b8912e9b6c4d1b06a931542ba",
+      "version": "0.1.2",
+      "pin": "src/video_agent/tools/voice_enhance/contract_0.1.2.json"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+# ADR-117: a re-pin that is breaking or a major change is labelled `repin: needs review` by the repin workflow. This check stays red
+# while the label is on, so such a pull request never turns green by itself. Any other pull request passes it at once.
+name: repin review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:     # the repin workflow starts it on bot/repin when it opened the pull request with the workflow token
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  repin-review:
+    name: repin review
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            LABELS="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?head=${GITHUB_REPOSITORY_OWNER}:${GITHUB_REF_NAME}&state=open" --jq '[.[0].labels[]?.name]')"
+          fi
+          if jq -e 'index("repin: needs review") != null' <<<"$LABELS" >/dev/null; then
+            echo "::error::This re-pin needs a person's review (label 'repin: needs review'); see the pull request's comment. Remove the label to pass."
+            exit 1
+          fi
+          echo "no review label"

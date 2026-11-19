@@ -1,8 +1,9 @@
 # Runs by itself on every pull request, on every push to main and once a night; `workflow_dispatch` stays for a run by hand.
 # The repository is public, so the standard GitHub-hosted runners cost no Actions minutes.
-# The nightly run is the early warning for contract drift: the integration job installs the sibling Skills from their main
-# branches, so a Skill release that breaks a pinned contract fails here without any change to this repository. A failed
-# nightly run opens the "Nightly tests failed" issue (or comments on the open one): see the `nightly-failure` job.
+# ADR-117: the integration job runs the sibling Skills at the releases in integration/siblings.lock.json (the releases the pins were
+# taken from; scripts/repin.py and the `repin` workflow move pins and lock together), so this run changes only with this repository or
+# ffmpeg-skill main. The early warning for a sibling's main is the `canary` workflow. A failed nightly run here (ffmpeg-skill main, or
+# Velisa main's ecosystem.json) opens the "Nightly tests failed" issue (or comments on the open one): see the `nightly-failure` job.
 name: tests
 on:
   pull_request:
@@ -37,166 +38,19 @@ jobs:
       - run: python -m unittest -v tests/test_pipeline.py
       # the provides / Capability-id diagnostic (skills/diagnostics.py, `video-agent skills --check-provides`): synthetic cases and the pinned contracts, no Skill checkout
       - run: python -m unittest -v tests/test_skills_diagnostics.py
+      # ADR-117: scripts/repin.py (tags, gate, decision, moving a pin's readers) and the integration lock against the pins; no network
+      - run: python -m unittest -v tests/test_repin.py
       # ADR-048 / ADR-049: loudness result shapes and the Anthropic provider (fake client; the SDK-error mapping test skips without the `ai` extra); ADR-061: brief → requirements; ADR-062: colour / trim / rotate parameters; ADR-063: audio mix / noise reduction / dynamics, subtitle mux; ADR-066: card offload through a fake `ingest`; ADR-073: voice-enhance through a fake `voice-enhance`; ADR-077: overlay image preparation through a fake imagemagick-skill checkout; ADR-085: dubbing through a fake `dubbing`; ADR-086: speaker turns through a fake `diarization`; ADR-087: publishing through a fake `publish`; ADR-088: the full ThumbnailDocument (logo, several texts); ADR-089: the NLE hand-off through a fake `nle-bridge`; ADR-090: face tracks through a fake `detection`, blurred by the fake engine; ADR-091: slide timeline through a fake `slide-sync`; ADR-092: the music bed through a fake `sound-design`; ADR-093: measured motion through a fake remotion-ffmpeg-skill checkout; ADR-095: document verification through a fake `artifacts-skill`; ADR-096: speaker ids through fake diarization / transcription / subtitle; ADR-099: video-editing 0.5.0 (punch in, proposals / condense, precision auto, segment cache, stinger, AI-generated inputs) through the fake `video-editing`; ADR-100: color-grading 0.5.0 (OCIO transform, camera match, legalize) through the fake `color-grading`; ADR-101: subtitle 0.8.0 (TTML / EBU-TT-D, placement, regional / caption profiles, ruby, words, vertical) through the fake `subtitle`; ADR-102: motion-graphics 0.2.16 (logo, rendered layer, style / fit, brand kit, themes, reserved regions) through the fake `motion-graphics`; ADR-103: the edit_style analysis kind through the fake `media-analysis`; ADR-104: thumbnail 0.1.15 (choose_frame / place_text / variants / layers / batch) through the fake `thumbnail` and `detection`; ADR-107: subtitle 0.9.0 `fonts_dir` (burn only) and its guided refusal through the fake `subtitle`; ADR-108: live contract vs pin, the release version by the gate's range and the rest by the adapter's drift function, on every adapter's real pin; ADR-109: word-index plans (numbering, word ranges → seconds, refusals) through the fake `transcription` and a fake provider; ADR-110: the post-render transcript check (normalisation, alignment, report, skip paths) through the fake `transcription`; ADR-111: feedback scopes, the versioned preference store, corrections per minute; ADR-112: the opt-in qc-skill stinger cut-point and loop-seam checks (keys, IR, QA items, the stinger file) through the fake `qc`, `video-editing` and `sound-design`; ADR-113: opt-in transcription engine / model / word segmentation in plans (explicit --set only, the contract's declarations, the Skill's own dry run before any analysis) through the fake `transcription`; ADR-115: the concat timeline on video-editing's whole-frame grid (take picks on frames too), and the real-media tests' temporary directories removed on failure / interrupt; ADR-116: the loudness comparison's meter parsers (tools/loudness_compare.py)
       - run: python -m unittest -v tests/test_loudness_measured.py tests/test_ai_claude.py tests/test_ai_host.py tests/test_version_gates.py tests/test_timeline.py tests/test_takes.py tests/test_crop.py tests/test_brief.py tests/test_satellite_params.py tests/test_offload.py tests/test_voice_enhance.py tests/test_image_prepare.py tests/test_face_redaction.py tests/test_handoff_contracts.py tests/test_dubbing.py tests/test_diarization.py tests/test_publish.py tests/test_thumbnail_document.py tests/test_nle.py tests/test_slides.py tests/test_bgm.py tests/test_remotion.py tests/test_documents.py tests/test_speaker_ids.py tests/test_video_editing_features.py tests/test_color_grading_features.py tests/test_subtitle_features.py tests/test_motion_graphics_features.py tests/test_edit_style.py tests/test_thumbnail_features.py tests/test_release_version.py tests/test_word_cut.py tests/test_transcript_verify.py tests/test_preferences.py tests/test_qc_checks.py tests/test_transcribe_options.py tests/test_html_layer.py tests/test_measurements.py tests/test_concat_whole_frames.py tests/test_tmp_dirs.py tests/test_loudness_compare.py
       - run: python evals/run.py
   integration:
-    # ADR-082: the real-Skill suite against ffmpeg-skill main (3.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0) and against
-    # v2.24.1 (the last 2.x, contract_version 1.0), both inside SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg
-    # (>= 6.1) satisfy both. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
-    #
-    # Each engine leg is split across INTEGRATION_SHARDS runners, because one runner took about an hour for the suite. Nothing is
-    # listed by hand: tests/integration_shards.py puts every test class of tests/test_integration.py in exactly one shard (whole
-    # classes, balanced by measured duration) and refuses to run unless every test id is in exactly one shard. Shard 1 is the
-    # lightest and also runs the three small real-Skill suites at the end of this job. To change the number of shards, change
-    # `shard` and INTEGRATION_SHARDS together: the "shard matrix" step fails when they disagree.
-    strategy:
-      fail-fast: false
-      matrix:
-        ffmpeg_skill: ["main", "v2.24.1"]
-        shard: [1, 2, 3, 4, 5, 6]
-    name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }}, shard ${{ matrix.shard }})
-    env:
-      INTEGRATION_SHARDS: "6"
-    runs-on: ubuntu-latest
-    steps:
-      - name: shard matrix matches INTEGRATION_SHARDS
-        # strategy.job-total = engine legs (2) x shards in the matrix; a shard missing from the matrix would silently drop its tests
-        run: test "${{ strategy.job-total }}" -eq "$(( 2 * INTEGRATION_SHARDS ))"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core imagemagick   # imagemagick: ADR-077's ImagePrepareRealTests (imagemagick-skill uses IM6's convert / identify)
-      - run: git clone --depth 1 --branch "${{ matrix.ffmpeg_skill }}" https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
-      - run: python3 ../ffmpeg-skill/scripts/_contract.py --json --static | python3 -c "import json,sys; d=json.load(sys.stdin); print('ffmpeg-skill', d['skill']['version'], 'contract', d['contract_version'])"
-      - run: git clone --depth 1 https://github.com/kajisho5/media-analysis-skill ../media-analysis-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/transcription-skill ../transcription-skill   # contract / doctor / path policy only: no ASR engine, no model download in CI
-      # video-editing-skill (ADR-028): main (PR #1 merged); no install needed, the checkout is run as `python -m video_editing_skill.cli`
-      - run: git clone --depth 1 https://github.com/kajisho5/video-editing-skill ../video-editing-skill
-      # audio-production-skill (ADR-030): main (PR #1 merged); run as `python -m audio_production.cli` from the checkout, no install
-      - run: git clone --depth 1 https://github.com/kajisho5/audio-production-skill ../audio-production-skill
-      # Phase 3 finishing Skills (ADR-031 / ADR-032): main (PR #1 merged in each); run from the checkouts, no install. thumbnail-skill renders with Pillow.
-      - run: git clone --depth 1 https://github.com/kajisho5/subtitle-skill ../subtitle-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/thumbnail-skill ../thumbnail-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/color-grading-skill ../color-grading-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/motion-graphics-skill ../motion-graphics-skill
-      - run: git clone --depth 1 https://github.com/kajisho5/qc-skill ../qc-skill
-      # ingest-skill (ADR-059): URL inputs go through `ingest fetch`; its fetch extra installs yt-dlp. The test downloads from 127.0.0.1 only. ADR-066: the card offload (IngestOffloadRealTests) runs on a synthetic XDCAM EX-like card
-      - run: git clone --depth 1 https://github.com/kajisho5/ingest-skill ../ingest-skill
-      # voice-enhance-skill (ADR-073): main (no release tag); run from the checkout. No engine in CI: the tests stand in a deep-filter that copies its input
-      # and a nara_wpe whose wpe_v8 is the identity (as voice-enhance-skill's own tests do); numpy is for those engines' STFT and the real crosstalk engine
-      - run: git clone --depth 1 https://github.com/kajisho5/voice-enhance-skill ../voice-enhance-skill
-      # imagemagick-skill (ADR-077): main (contract 0.10.0, = the v0.10.0 tag); its scripts run from the checkout, standard library only
-      - run: git clone --depth 1 https://github.com/kajisho5/imagemagick-skill ../imagemagick-skill
-      # detection-skill (ADR-090): main (no release tag); run from the checkout, its `faces` extra installs opencv-python-headless + numpy. The YuNet model file is
-      # fetched here, pinned by sha256, the way detection-skill's own CI does (the Skill never downloads anything); its fixture astronaut.jpg is the face filmed
-      - run: git clone --depth 1 https://github.com/kajisho5/detection-skill ../detection-skill
-      - run: |
-          mkdir -p ../detection-models
-          curl -fsSL -o ../detection-models/face_detection_yunet_2026may.onnx https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
-          echo "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0  ../detection-models/face_detection_yunet_2026may.onnx" | sha256sum -c -
-      # dubbing-skill (ADR-085): main (no release tag); run from the checkout, standard library only. No TTS engine in CI: DubbingRealTests checks the
-      # live contract against the pin, the doctor's ENGINE_UNAVAILABLE, the blocked plan and that the real CLI accepts the adapter's argv
-      - run: git clone --depth 1 https://github.com/kajisho5/dubbing-skill ../dubbing-skill
-      # diarization-skill (ADR-086): main (no release tag); run from the checkout. No pyannote.audio and no gated pipeline in CI: the tests check the
-      # live contract, the doctor's not-ready verdict and the handoff
-      - run: git clone --depth 1 https://github.com/kajisho5/diarization-skill ../diarization-skill
-      # publish-skill (ADR-087): main (no release tag); run from the checkout, standard library only. PublishRealTests is offline: the live contract,
-      # publish plan and the dry run of a real file (no credentials, no upload, no network)
-      - run: git clone --depth 1 https://github.com/kajisho5/publish-skill ../publish-skill
-      # nle-bridge-skill (ADR-089): main (no release tag); run from the checkout, standard library only. NleBridgeRealTests: a conform package from the IR
-      - run: git clone --depth 1 https://github.com/kajisho5/nle-bridge-skill ../nle-bridge-skill
-      # slide-sync-skill (ADR-091): main (no release tag); run from the checkout, its `pdf` extra installs pypdfium2 for the deck import (no LibreOffice: pptx / key are not tested)
-      - run: git clone --depth 1 https://github.com/kajisho5/slide-sync-skill ../slide-sync-skill
-      # sound-design-skill (ADR-092): main (no release tag); run from the checkout, stdlib only. Library mode only in CI (no ACE-Step): the bed is the user's licensed file
-      - run: git clone --depth 1 https://github.com/kajisho5/sound-design-skill ../sound-design-skill
-      # remotion-ffmpeg-skill (ADR-093): main (= v0.13.0); its scripts run from the checkout. No npm install / Remotion render in CI: contract, doctor, the project check
-      - run: git clone --depth 1 https://github.com/kajisho5/remotion-ffmpeg-skill ../remotion-ffmpeg-skill
-      # artifacts-skill (ADR-095): main (contract 0.4.0, = the v0.4.0 tag); run from the checkout (Python 3.10+). Markdown verification needs only the standard library: no extra installed
-      - run: git clone --depth 1 https://github.com/kajisho5/artifacts-skill ../artifacts-skill
-      - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]" -e "../detection-skill[faces]" -e "../slide-sync-skill[pdf]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
-      - run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS"
-        env:
-          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
-          VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
-          VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
-          VIDEO_AGENT_VIDEO_EDITING_DIR: "${{ github.workspace }}/../video-editing-skill"
-          VIDEO_AGENT_AUDIO_PRODUCTION_DIR: "${{ github.workspace }}/../audio-production-skill"
-          VIDEO_AGENT_SUBTITLE_DIR: "${{ github.workspace }}/../subtitle-skill"
-          VIDEO_AGENT_THUMBNAIL_DIR: "${{ github.workspace }}/../thumbnail-skill"
-          VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
-          VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
-          VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
-          VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
-          VIDEO_AGENT_VOICE_ENHANCE_DIR: "${{ github.workspace }}/../voice-enhance-skill"
-          VIDEO_AGENT_IMAGEMAGICK_DIR: "${{ github.workspace }}/../imagemagick-skill"
-          VIDEO_AGENT_DETECTION_DIR: "${{ github.workspace }}/../detection-skill"
-          DETECTION_MODELS_DIR: "${{ github.workspace }}/../detection-models"
-          VIDEO_AGENT_DUBBING_DIR: "${{ github.workspace }}/../dubbing-skill"
-          VIDEO_AGENT_DIARIZATION_DIR: "${{ github.workspace }}/../diarization-skill"
-          VIDEO_AGENT_PUBLISH_DIR: "${{ github.workspace }}/../publish-skill"
-          VIDEO_AGENT_NLE_BRIDGE_DIR: "${{ github.workspace }}/../nle-bridge-skill"
-          VIDEO_AGENT_SLIDE_SYNC_DIR: "${{ github.workspace }}/../slide-sync-skill"
-          VIDEO_AGENT_SOUND_DESIGN_DIR: "${{ github.workspace }}/../sound-design-skill"
-          VIDEO_AGENT_REMOTION_DIR: "${{ github.workspace }}/../remotion-ffmpeg-skill"
-          VIDEO_AGENT_ARTIFACTS_DIR: "${{ github.workspace }}/../artifacts-skill"
-      # ADR-076: the color-grading adapter against color-grading-skill main (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests
-        env:
-          VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
-          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
-      # ADR-058: the qc adapter against qc-skill main (contract drift, reference metrics SSIM / PSNR; ADR-112: a stinger file and loop seams); the fake-based tests of the same file run in the unit job
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests
-        env:
-          VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
-      # ADR-080: the pinned blender-skill / hyperframes-skill contracts of the render_3d / html_scene_render handoffs against each main
-      # (contract only: no Blender, no Chromium; hyperframes' contract needs its npm dependencies, installed without their install scripts)
-      - if: matrix.shard == 1
-        uses: actions/setup-node@v4
-        with: {node-version: "22"}
-      - if: matrix.shard == 1
-        run: git clone --depth 1 https://github.com/kajisho5/blender-skill ../blender-skill
-      - if: matrix.shard == 1
-        run: git clone --depth 1 https://github.com/kajisho5/hyperframes-skill ../hyperframes-skill && cd ../hyperframes-skill && npm ci --ignore-scripts
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests
-        env:
-          VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
-          VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
-      # ADR-057 addendum 1: skills/ecosystem.py (every status, plugin, owns) and the marketplace name against Velisa main's ecosystem.json
-      - if: matrix.shard == 1
-        run: git clone --depth 1 https://github.com/kajisho5/Velisa ../Velisa
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_ai_host.EcosystemSnapshotTests
-        env:
-          VIDEO_AGENT_VELISA_DIR: "${{ github.workspace }}/../Velisa"
-      # roadmap step 33: text / shots on the real detection-skill and speech regions on the real media-analysis-skill, where the doctors say their
-      # engines are ready (Tesseract, PySceneDetect, the vad extra); none is installed here, so the tests skip or check the BLOCK with the Skill's code
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_measurements.RealSkillTests
-        env:
-          VIDEO_AGENT_DETECTION_DIR: "${{ github.workspace }}/../detection-skill"
-          DETECTION_MODELS_DIR: "${{ github.workspace }}/../detection-models"
-          VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
-          VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
-          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
-      # ADR-116 (roadmap step 34): the loudness comparison on 10 s fixtures: ffmpeg-skill loudness and audio-production-skill LOUDNESS_SET write the same
-      # samples, on target by both the loudnorm and the ebur128 meter; `python3 tools/loudness_compare.py --repeat 3` re-runs the ADR's full table
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_loudness_compare.RealComparisonTests
-        env:
-          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
-          VIDEO_AGENT_AUDIO_PRODUCTION_DIR: "${{ github.workspace }}/../audio-production-skill"
-      # ADR-114: the motion.layer clip on the real hyperframes-skill (main): its live contract against the adapter's checks and the pin, and its doctor's
-      # verdict. No Chromium here, so the doctor says render is not usable and the two render tests skip (they run where a headless Chromium is found)
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_html_layer.HtmlLayerRealSkillTests
-        env:
-          VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
-          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
-          VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
+    # ADR-117: the real-Skill suite (.github/workflows/integration.yml), with every sibling Skill at the release its pin was taken from
+    # (integration/siblings.lock.json: tag, commit, and the tag's contract/contract.json equal to the pin). A sibling's main moving cannot
+    # turn this run red; the nightly `canary` workflow runs the same suite against the siblings' mains and reports, without failing.
+    # ffmpeg-skill keeps its two legs (main and v2.24.1) as before.
+    uses: ./.github/workflows/integration.yml
+    with:
+      siblings: lock
   nightly-failure:
     # Only for the nightly run: make its failure visible as an issue. One open issue at a time; later failures comment on it.
     name: report nightly failure
@@ -213,7 +67,7 @@ jobs:
         run: |
           body="The nightly \`tests\` run failed on \`${GITHUB_SHA}\`: ${RUN_URL}
 
-          The integration job installs the sibling Skills from their main branches, so the usual cause is a Skill release that moved a contract this repository pins. Close this issue once a nightly run is green again."
+          The integration job runs the sibling Skills at the releases in integration/siblings.lock.json (ADR-117), so the usual cause is ffmpeg-skill main (its main leg), Velisa main's ecosystem.json, or a change on this repository's main. Sibling Skills' mains are the canary workflow's. Close this issue once a nightly run is green again."
           number="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
             | jq -s --arg t "$TITLE" '[.[][] | select(.pull_request == null and .title == $t) | .number] | first // empty')"
           if [ -n "$number" ]; then
