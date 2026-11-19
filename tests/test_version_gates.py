@@ -56,7 +56,7 @@ class VersionGateTests(unittest.TestCase):
 
     def test_qc_release_versions(self):
         """qc-skill #22: the contract reports the pyproject version (0.2.1, 0.2.2) instead of a hard-coded 0.1.0; #23 (reference metrics) is 0.2.3."""
-        self.assertEqual(qc.pinned_contract()["version"], "1.4.3")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only; ADR-107 addendum 2: 1.1.0 adds opt-in subtitle checks; addendum 7: 1.2.0 / 1.3.0 add opt-in stinger and loop-seam checks
+        self.assertEqual(qc.pinned_contract()["version"], "1.4.4")   # ADR-078: qc-skill #25 (per-operation tool_ids); ADR-081: 0.2.6 is version-only; ADR-097: 1.0.0 is version-only; ADR-107: 1.0.1 is version-only; ADR-107 addendum 2: 1.1.0 adds opt-in subtitle checks; addendum 7: 1.2.0 / 1.3.0 add opt-in stinger and loop-seam checks
         for v in ("0.1.0", "0.2.1", "0.2.2", "0.2.3", "0.2.6", "0.2.9", "1.0.0", "1.0.1", "1.0.3", "1.1.0", "1.1.1", "1.2.0", "1.2.4", "1.3.0", "1.3.1", "1.4.0", "1.4.2"):
             live = with_version(qc.pinned_contract(), v)
             self.assertEqual(qc.check_contract(live), [], v)
@@ -87,7 +87,7 @@ class VersionGateTests(unittest.TestCase):
     def test_diarization_versions(self):
         # ADR-097 addendum 5: diarization-skill main reports 0.3.0 (0.2.0 enroll / name, 0.3.0 --chunk-seconds; both opt-in, the diarize
         # wire the adapter sends is unchanged), so the gate takes 0.2.x and 0.3.x besides 0.1.x
-        self.assertEqual(dia.pinned_contract()["version"], "0.3.2")
+        self.assertEqual(dia.pinned_contract()["version"], "0.3.3")
         for v in ("0.1.0", "0.2.0", "0.3.0", "0.3.4"):
             live = with_version(dia.pinned_contract(), v)
             self.assertEqual(dia.check_contract(live), [], v)
