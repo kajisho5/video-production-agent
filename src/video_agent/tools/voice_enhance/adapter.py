@@ -5,7 +5,7 @@
         `voice-enhance bleed-reduce --json --offline --overwrite --ffmpeg-skill=<dir> --output=<dir> [--dominance-db=N] -- <track> <track> ...`
           ─(its own engine worker: deep-filter / nara_wpe / crosstalk; every media step through ffmpeg-skill)─→ WAV stem(s)
 
-Protocol (voice-enhance-skill's own contract, `voice-enhance contract --json`, pinned from main in contract_0.1.2.json -- the
+Protocol (voice-enhance-skill's own contract, `voice-enhance contract --json`, pinned from main in contract_0.1.3.json -- the
 repository has no release tag, so the pin follows main as ingest-skill's does, ADR-066):
     contract     → `voice-enhance contract --json`
     doctor       → `voice-enhance doctor --json --offline --ffmpeg-skill=<dir>` (voice-enhance/doctor@1: python / ffmpeg_skill / ffmpeg / engines /
@@ -92,7 +92,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "im
 # code that vanished or changed its exit / retryable is fatal, a new code is not). What is left changes the wire or the files the adapter admits.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "error_shape")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv", "schema", "output")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
