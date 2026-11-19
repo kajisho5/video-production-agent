@@ -13,7 +13,7 @@ FAKE_INGEST_CALLS: a file every invocation's argv is appended to (one JSON list 
 ADR-066 (card offload) adds `offload <card> --dest D [--dest D ...] [--project P] [--hash H] [--name-by folder|reel] [--reel R] [--dry-run] --json`,
 `inventory <folder> [--reel R] --json` and `verify <folder> --json` in the shapes of ingest-skill main (ingest/offload-report@1,
 ingest/inventory@2, ingest/verify-report@1, its manifest and its refusals), and `contract --json` returns the pinned contract
-(src/video_agent/tools/ingest/contract_0.1.2.json). The copy is real (files are written to <dest>/<project>/<name>/...); the card
+(src/video_agent/tools/ingest/contract_<version>.json). The copy is real (files are written to <dest>/<project>/<name>/...); the card
 structure is read in miniature: every .mp4 / .mxf / .mov / .mts / .braw file is a recording, except that XDCAM EX clip folders
 `CLPR/<take>_<nn>/<take>_<nn>.MP4` of one take are one spanned recording in <nn> order, and `<name>M01.XML` beside a recording is its
 sidecar. Controlled via:
@@ -38,14 +38,14 @@ from pathlib import Path
 
 MODE = os.environ.get("FAKE_INGEST_MODE", "ok")
 CALLS_LOG = os.environ.get("FAKE_INGEST_CALLS")
-VERSION = "0.1.2"
 YT_DLP_VERSION = "2026.10.26"
 VIDEO_ID = "vid0000001"
 EXIT = {"URL_INVALID": 2, "FETCH_UNAVAILABLE": 2, "FETCH_FAILED": 3, "INCOMPLETE": 3, "SOURCE_NOT_FOUND": 2, "HASH_UNAVAILABLE": 2, "REEL_INVALID": 2,
         "NO_DESTINATION": 2, "DUPLICATE_DESTINATION": 2, "DESTINATION_OVERLAPS_SOURCE": 2, "MANIFEST_NOT_FOUND": 2}
 OFFLOAD_MODE = os.environ.get("FAKE_INGEST_OFFLOAD", "ok")
 CONTRACT_MODE = os.environ.get("FAKE_INGEST_CONTRACT", "pinned")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "ingest" / "contract_0.1.2.json"
+PINNED, = (Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "ingest").glob("contract_*.json")   # the one pin, whatever its release (ADR-117 addendum 1)
+VERSION = json.loads(PINNED.read_text(encoding="utf-8"))["version"]   # the release the pin is
 MEDIA = (".mp4", ".mxf", ".mov", ".mts", ".braw")
 JUNK = (".DS_Store", "Thumbs.db")
 REEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

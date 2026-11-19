@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from pipeline_harness import clear_modes, fake_media, pipeline_service, plan_and_render  # noqa: E402
 
 from video_agent.agent import transcribe_options as topts  # noqa: E402
@@ -104,7 +105,7 @@ class PlanTests(_Base):
         self.assertEqual((o["parameters"]["engine"], o["parameters"]["model"]), ("qwen3_asr", "small"))
         rec = ir.doc["provenance"]["transcription_options"]
         self.assertEqual((rec["rule"], rec["requested"], rec["source"], rec["skill"], rec["skill_version"]),
-                         ("transcribe_options@1", {"engine": "qwen3_asr", "model": "small"}, "--set", "transcription-skill", "0.13.1"))
+                         ("transcribe_options@1", {"engine": "qwen3_asr", "model": "small"}, "--set", "transcription-skill", pinned_version("transcription")))
         self.assertEqual((rec["checked"]["status"], rec["checked"]["input"]), ("accepted", "talk.mp4"))
         self.assertEqual(rec["measured"], [{"asset_id": o["asset_id"], "status": "OK", "engine": "qwen3_asr", "model": "small"}])
         reqs = {r["key"]: (r["value"], r["provenance"]) for r in ir.doc["requirements"]}

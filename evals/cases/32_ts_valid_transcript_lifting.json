@@ -9,10 +9,10 @@
  "expect": {
   "transcript": {
    "skill": "transcription",
-   "skill_version": "0.13.1",
+   "skill_version": "{pinned:transcription}",
    "tool": "transcription/transcribe",
    "provenance": "OBSERVED",
-   "source": "transcription/transcribe@0.13.1",
+   "source": "transcription/transcribe@{pinned:transcription}",
    "cache_status": "miss",
    "cache_owner": "transcription",
    "external": true,

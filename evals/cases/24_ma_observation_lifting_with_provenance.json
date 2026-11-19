@@ -13,9 +13,9 @@
   "observations": {
    "silence": {
     "skill": "media-analysis",
-    "skill_version": "0.1.22",
+    "skill_version": "{pinned:media-analysis}",
     "tool": "media-analysis/silence",
-    "source": "media-analysis/silence@0.1.22",
+    "source": "media-analysis/silence@{pinned:media-analysis}",
     "provenance": "OBSERVED",
     "cache_status": "miss",
     "external": true

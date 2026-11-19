@@ -1,5 +1,5 @@
 """Fake remotion-ffmpeg-skill checkout for the ADR-093 tests: copied as <dir>/scripts/_contract.py, doctor.py and pipeline.py, it acts by the name it
-runs under -- `_contract.py --json` (the pinned src/video_agent/tools/remotion/contract_0.14.2.json), `doctor.py --json [--project=DIR]` (checks
+runs under -- `_contract.py --json` (the pinned src/video_agent/tools/remotion/contract_<version>.json), `doctor.py --json [--project=DIR]` (checks
 python / node / npm / ffmpeg-skill / ffmpeg, and the project's node_modules/remotion), and `pipeline.py <video> --project=P --comp=C ... --out-dir=D
 --json --timeout=T` in the result shape of remotion-ffmpeg-skill v0.14.0 (status, output, timeline, render, look, verified, warnings, steps). The render
 is a self-describing fake media file (tests/pipeline_harness.py) as long as the input, written to D/<stem>_<comp>.mp4. Nothing renders.

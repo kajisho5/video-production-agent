@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pin_path, pinned_version, version_tuple  # noqa: E402
 from fake_adapter import FakeAdapter  # noqa: E402
 from test_unit import FakeCaps, fake_media  # noqa: E402
 
@@ -51,13 +53,16 @@ class PinnedSkillSpecTests(unittest.TestCase):
         self.assertEqual(PINS["render_3d"].param("preset").choices(load_pin(PINS["render_3d"].pin_file)), ("thumbnail", "square", "720p", "1080p", "4k", "vertical"))
         self.assertEqual(PINS["html_scene_render"].param("codec").choices(load_pin(PINS["html_scene_render"].pin_file)), ("h264", "vp9", "prores", "png"))
 
-    def test_hyperframes_pin_is_0_10_0_with_the_argv_recorder(self):
+    def test_hyperframes_pin_is_0_10_0_or_later_with_the_argv_recorder(self):
         """hyperframes-skill 0.6.2 renamed execution.argv_shims to execution.argv_recorder (its D10); 0.7.0 / 0.8.0 (ADR-107 addendum 12)
         add render --segments, --codec png and probe --alpha; 0.8.1 (ADR-114) changes only `version`; 0.9.0 (ADR-107 addendum 21)
         adds the scene request keys stinger / title and five stinger templates, not handed off; 0.9.1 changes only `version`; 0.10.0
-        (ADR-107 addendum 29) adds --kit on template / batch, not handed off. The pin is the 0.10.0 contract."""
+        (ADR-107 addendum 29) adds --kit on template / batch, not handed off. The pin is a 0.10.x (or later) contract: the release is the pin
+        file's (ADR-117 addendum 1), the handoff names the same one, and what is checked below has been there since 0.10.0."""
         c = load_pin(PINS["html_scene_render"].pin_file)
-        self.assertEqual((c["version"], PINS["html_scene_render"].version), ("0.10.3", "0.10.3"))
+        self.assertEqual((c["version"], PINS["html_scene_render"].version), (pinned_version("hyperframes"), pinned_version("hyperframes")))
+        self.assertEqual(PINS["html_scene_render"].pin_file, pin_path("hyperframes").name)
+        self.assertGreaterEqual(version_tuple(c["version"]), (0, 10, 0))
         ex = c["execution"]
         self.assertIn("argv_recorder", ex)
         self.assertNotIn("argv_shims", ex)
@@ -70,7 +75,7 @@ class PinnedSkillSpecTests(unittest.TestCase):
     def test_png_is_pinned_but_not_handed_off(self):
         """The 0.8.0 PNG sequence is in the pin (the live check compares every codec) but is withheld from job.html_scene_render.codec."""
         p = PINS["html_scene_render"]
-        with self.assertRaisesRegex(HandoffParameterError, "codec=png is in the hyperframes-skill 0.10.3 contract but is not handed off"):
+        with self.assertRaisesRegex(HandoffParameterError, re.escape(f"codec=png is in the hyperframes-skill {pinned_version('hyperframes')} contract but is not handed off")):
             parse_param(p, "codec", "png")
         with self.assertRaisesRegex(HandoffParameterError, "must be one of h264, vp9, prores \\("):
             parse_param(p, "codec", "av1")
@@ -107,14 +112,14 @@ class Render3dHandoffTests(unittest.TestCase):
         self.assertEqual(ir.doc["plan"]["status"], "BLOCKED")
         asked = next(d for d in ir.doc["decisions"] if d["id"] == step["decision_id"])
         self.assertEqual(asked["approval"], "CONFIRM")
-        self.assertIn("blender-skill/render, contract 0.31.1 pinned", asked["reason"])
+        self.assertIn(f"blender-skill/render, contract {pinned_version('blender')} pinned", asked["reason"])
         keys = {r["id"]: r["key"] for r in ir.doc["requirements"]}
         self.assertEqual({keys[e] for e in asked["evidence"] if e in keys},
                          {"job.render_3d", "job.render_3d.model", "job.render_3d.preset", "job.render_3d.transparent"})
         h = _handoff(svc, ir, "render_3d")
         self.assertEqual(h["provided_by"], ["blender-skill"])
         k = h["contract"]
-        self.assertEqual((k["package"], k["version"], k["tool"], k["capability"], k["lifecycle"]), ("blender-skill", "0.31.1", "blender-skill/render", "3d.render", "EXPERIMENTAL"))
+        self.assertEqual((k["package"], k["version"], k["tool"], k["capability"], k["lifecycle"]), ("blender-skill", pinned_version("blender"), "blender-skill/render", "3d.render", "EXPERIMENTAL"))
         self.assertEqual(k["args"], {"file": str(model.resolve()), "--resolution-preset": "1080p", "--transparent": True})
         self.assertEqual(k["missing"], [])
         self.assertIn("ffmpeg-skill/overlay", k["next"])
@@ -167,7 +172,7 @@ class HtmlSceneHandoffTests(unittest.TestCase):
         ir = svc.plan([fake_media(tmp)], "youtube", user_requirements={"job.html_scene_render": True, "job.html_scene_render.scene": str(scene),
                                                                         "job.html_scene_render.codec": "prores"})
         k = _handoff(svc, ir, "html_scene_render")["contract"]
-        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", "0.10.3", "hyperframes-skill/render"))
+        self.assertEqual((k["package"], k["version"], k["tool"]), ("hyperframes-skill", pinned_version("hyperframes"), "hyperframes-skill/render"))
         self.assertEqual(k["args"], {"scene_dir": str(scene.resolve()), "codec": "prores"})
         self.assertEqual(k["missing"], [])
         self.assertIn("ffmpeg-skill/overlay", k["next"])

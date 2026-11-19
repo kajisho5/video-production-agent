@@ -5,6 +5,7 @@ import ast
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -298,6 +299,73 @@ class ApplyTests(unittest.TestCase):
         self.assertIn(f"contract_{new}.json", (self.tmp / sib("qc").gate_file).read_text(encoding="utf-8"))
         self.assertEqual(repin.read_gate((self.tmp / sib("qc").gate_file).read_text(encoding="utf-8")), repin.read_gate(gate_before))
         self.assertIn("must review", repin.pr_body([u], True))
+
+
+class VerifyTests(unittest.TestCase):
+    """Addendum 1: what the rewrite left in tests/ and evals/ heads the body; failing unit tests make the re-pin a `review` one."""
+
+    def update(self, leftovers):
+        return repin.Update("hyperframes", "0.10.3", "0.10.4", "v0.10.4", "f" * 40, "none", repin.Decision("auto", ["inside the gate"]),
+                            leftovers=leftovers)
+
+    def test_test_lines_are_listed_apart_and_first(self):
+        u = self.update(["tests/test_handoff_contracts.py:60: self.assertEqual(v, \"0.10.3\")", "src/video_agent/x.py:3: # 0.10.3 history",
+                         "evals/cases/a.json:4: \"0.10.3\""])
+        body = repin.pr_body([u], True)
+        head, table = body.split("| Skill |", 1)
+        self.assertIn("Check before merging", head)
+        self.assertIn("tests/test_handoff_contracts.py:60", head); self.assertIn("evals/cases/a.json:4", head)
+        self.assertNotIn("src/video_agent/x.py", head)
+        self.assertIn("src/video_agent/x.py:3", table); self.assertNotIn("tests/test_handoff_contracts.py:60", table)
+        self.assertNotIn("Check before merging", repin.pr_body([self.update(["src/video_agent/x.py:3: # 0.10.3"])], True))
+
+    def test_unit_commands_are_the_unit_jobs(self):
+        cmds = repin.unit_commands(ROOT)
+        text = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertEqual(len(cmds) - 1, text.count("- run: python -m unittest -v tests/"))
+        self.assertIn("tests/test_handoff_contracts.py", [a for c in cmds for a in c])
+        self.assertEqual(cmds[-1][1:], ["evals/run.py"])
+
+    def test_failed_ids(self):
+        out = "FAIL: test_a (tests.test_x.C.test_a)\nERROR: test_b (tests.test_y.D)\nok\n"
+        self.assertEqual(repin.failed_ids(["py", "-m", "unittest", "t"], out, 1), ["tests.test_x.C.test_a", "tests.test_y.D.test_b"])
+        self.assertEqual(repin.failed_ids(["py", "-m", "unittest", "t"], out, 0), [])
+        self.assertEqual(repin.failed_ids(["py", "evals/run.py"], "PASS a\nFAIL b  why\n1/2 passed\n", 1), ["evals b"])
+        self.assertEqual(repin.failed_ids(["/x/python3", "-m", "unittest", "t"], "ImportError", 1), ["python3 -m unittest t: exit 1, no test id"])
+
+    def test_a_failure_makes_the_re_pin_a_review_one(self):
+        tmp = Path(tempfile.mkdtemp(prefix="repin-verify-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / ".github" / "workflows").mkdir(parents=True)
+        (tmp / ".github" / "workflows" / "tests.yml").write_text("      - run: python -m unittest -v tests/test_a.py tests/test_b.py\n", encoding="utf-8")
+        u = self.update(["tests/test_a.py:9: self.assertEqual(v, \"0.10.3\")"])
+        report = {"updates": [{"sibling": u.sibling, "leftovers": u.leftovers}], "review": False, "review_reasons": []}
+        (tmp / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        (tmp / "body.md").write_text(repin.pr_body([u], True), encoding="utf-8")
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "FAIL: test_v (tests.test_a.T.test_v)\n", "")
+        real = repin.run_unit
+        repin.run_unit = lambda root: real(root, runner)
+        self.addCleanup(setattr, repin, "run_unit", real)
+        self.assertEqual(repin.main(["--root", str(tmp), "verify", "--report", str(tmp / "report.json"), "--pr-body", str(tmp / "body.md")]), 0)
+        self.assertEqual([c[1:] for c in calls], [["-m", "unittest", "tests/test_a.py", "tests/test_b.py"]])
+        got = json.loads((tmp / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(got["review"])
+        self.assertEqual(got["unit_failures"], ["tests.test_a.T.test_v"])
+        self.assertIn("tests.test_a.T.test_v", got["review_reasons"][0])
+        body = (tmp / "body.md").read_text(encoding="utf-8")
+        self.assertTrue(body.startswith("**A person must review this pull request: 1 unit test"))
+        self.assertIn("tests/test_a.py:9", body.split("| Skill |")[0])
+
+        repin.run_unit = lambda root: []
+        (tmp / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        (tmp / "body.md").write_text("table\n", encoding="utf-8")
+        repin.main(["--root", str(tmp), "verify", "--report", str(tmp / "report.json"), "--pr-body", str(tmp / "body.md")])
+        self.assertFalse(json.loads((tmp / "report.json").read_text(encoding="utf-8"))["review"])
+        self.assertTrue((tmp / "body.md").read_text(encoding="utf-8").startswith("The unit tests and the evals pass"))
 
 
 class LockTests(unittest.TestCase):

@@ -12,11 +12,12 @@ from fractions import Fraction
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pin_path  # noqa: E402
 
 from video_agent.agent.editing import concat_rate, concat_segments, input_rate, joined_transition, programme_rate, whole_frame_length  # noqa: E402
 from video_agent.agent.takes import align_to_frames  # noqa: E402
 
-PIN = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "video_editing" / "contract_0.8.5.json"
+PIN = pin_path("video-editing")
 
 
 def tech(fps, vfr=False):

@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from pipeline_harness import PipelineCaps, clear_modes, fake_media, pipeline_service  # noqa: E402
 
 from video_agent.agent.editing import EditRequirementError  # noqa: E402
@@ -118,13 +119,13 @@ class _Base(unittest.TestCase):
 class ContractTests(_Base):
     def test_pin_is_0_10_0_and_the_handoff_reads_the_same_file(self):
         c = pinned_contract()
-        self.assertEqual((c["skill_id"], c["version"]), ("hyperframes-skill", "0.10.3"))
+        self.assertEqual((c["skill_id"], c["version"]), ("hyperframes-skill", pinned_version("hyperframes")))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(PINS["html_scene_render"].pin_file, PINNED_CONTRACT_PATH.name)
         self.assertEqual((drift(c), breaking_drift(c)), ([], []))
 
     def test_gate_is_the_0_8_0_9_and_0_10_lines(self):
-        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.10.3", True), ("0.11.0", False),
+        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.10.3", True), (pinned_version("hyperframes"), True), ("0.11.0", False),
                       ("1.0.0", False), ("0.7.0", False)):
             with self.subTest(version=v):
                 c = dict(pinned_contract(), version=v)
@@ -300,7 +301,7 @@ class PlanTests(_Base):
         [render] = self.hf_calls("render")
         self.assertIn("--codec=prores", render)
         hres = next(r for r in out["execution"]["results"] if r["tool"] == "hyperframes-skill/render")
-        self.assertEqual((hres["data"]["skill"], hres["data"]["layer_timing"]), ({"id": "hyperframes-skill", "version": "0.10.3"}, {"in_duration": 0.5, "out_duration": 0.5, "loop": True}))
+        self.assertEqual((hres["data"]["skill"], hres["data"]["layer_timing"]), ({"id": "hyperframes-skill", "version": pinned_version("hyperframes")}, {"in_duration": 0.5, "out_duration": 0.5, "loop": True}))
         prov = json.loads((Path(self.svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         row = next(e for e in prov["operations"] if e["tool"] == "motion-graphics/run")
         sent = next(e for e in row["args"]["elements"] if e["type"] == "rendered_layer")
@@ -331,7 +332,7 @@ class PlanTests(_Base):
         [h] = [h for h in self.svc.handoffs(ir) if h["skill"] == "html_scene_layer"]
         self.assertEqual(h["provided_by"], ["hyperframes-skill"])
         c = h["contract"]
-        self.assertEqual((c["tool"], c["version"], c["args"]["codec"], c["args"]["segments"]), ("hyperframes-skill/render", "0.10.3", "prores", True))
+        self.assertEqual((c["tool"], c["version"], c["args"]["codec"], c["args"]["segments"]), ("hyperframes-skill/render", pinned_version("hyperframes"), "prores", True))
         self.assertIn("motion.layer=<file>", c["next"])
         self.assertIn("--segments", c["steps"][-1])
 

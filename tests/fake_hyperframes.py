@@ -17,7 +17,7 @@ from pathlib import Path
 
 MODE = os.environ.get("FAKE_HF_MODE", "ok")
 READY = os.environ.get("FAKE_HF_READY", "all")
-PINNED = os.environ.get("FAKE_HF_PIN", "")
+PINNED = os.environ.get("FAKE_HF_PIN", "") or str(next((Path(__file__).resolve().parents[1] / "src" / "video_agent" / "skills" / "pins").glob("hyperframes-skill_*.json")))
 KINDS = {"input": ("INPUT_INVALID", 1), "missing_tool": ("DEPENDENCY_MISSING", 127), "render": ("RENDER_FAILED", 1), "timeout": ("TIMEOUT", 124)}
 
 
@@ -69,7 +69,7 @@ def main(argv):
         caps = {k: {"status": "available", "detail": k} for k in ("node", "hyperframes", "ffmpeg", "ffprobe", "encoder:libx264", "encoder:prores_ks", "disk:tmp")}
         caps["chromium:headless"] = {"status": "available" if chromium else "missing", "detail": "fake" if chromium else "no Chromium found in any searched location"}
         render = {"usable": "yes"} if chromium else {"usable": "no", "missing": ["chromium:headless"]}
-        emit({"status": "completed" if chromium else "failed", "ok": chromium, "skill": {"id": "hyperframes-skill", "version": "0.10.3"}, "missing": [] if chromium else ["chromium:headless"],
+        emit({"status": "completed" if chromium else "failed", "ok": chromium, "skill": {"id": "hyperframes-skill", "version": json.loads(Path(PINNED).read_text(encoding="utf-8"))["version"]}, "missing": [] if chromium else ["chromium:headless"],
               "capabilities": caps, "tools": {"doctor": {"usable": "yes"}, "template": {"usable": "yes"}, "scene": {"usable": "yes"}, "render": render}})
         return 0 if chromium else 1
     if MODE.startswith("fail:") and tool == "render":

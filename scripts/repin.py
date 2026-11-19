@@ -9,6 +9,10 @@
           review breaking, or a major change: the pin moves, the gate does not, and the pull request asks a person to look
                  (it is labelled, and the `repin review` check stays red until a person removes the label)
         Then the lock (integration/siblings.lock.json) is written for the new pins.
+    python scripts/repin.py verify --report report.json --pr-body body.md
+        after `update`: run the unit job's test commands (read from .github/workflows/tests.yml) and the evals on the re-pinned tree.
+        A failure makes the re-pin a `review` one (the pull request is a draft, labelled, and lists the failing tests with the lines in
+        tests/ and evals/ that still name an old release); either way the result heads the pull request body
     python scripts/repin.py lock        write the lock from the pins as they are (tag and commit of each pinned version)
     python scripts/repin.py check       offline: the lock names every sibling and agrees with the pins (also a unit test)
     python scripts/repin.py clone --dest DIR [--main] [--only NAME ...] [--skip NAME ...]
@@ -547,12 +551,25 @@ def apply_update(root: Path, sib: Sibling, tag: str, sha: str, data: bytes, diff
     return Update(sib.name, old, new, tag, sha, classification, decision, changes, rw.changed, rw.leftovers)
 
 
+def is_test_line(leftover: str) -> bool:
+    """A leftover (`file:line: text`) in tests/ or evals/: possibly what a test expects of the pin."""
+    return leftover.startswith(("tests/", "evals/"))
+
+
 def pr_body(updates: List[Update], lock_changed: bool, skipped: Sequence[str] = ()) -> str:
     review = [u for u in updates if u.decision.kind == "review"]
     out = ["Automatic re-pin of sibling Skill contracts from their release tags (`scripts/repin.py update`, ADR-117).", ""]
     if review:
         out += ["**A person must review this pull request**: " + ", ".join(f"{u.sibling} ({'; '.join(u.decision.reasons)})" for u in review)
                 + ". The check `repin review` stays red while the label `repin: needs review` is on.", ""]
+    expectations = [(u, l) for u in updates for l in u.leftovers if is_test_line(l)]
+    if expectations:
+        out += ["**Check before merging: lines in tests/ or evals/ still name an old release.** The rewrite could not place them. One that "
+                "is history (a release the gate still takes, a prose note) can stay; one that is what a test expects of the pin fails the "
+                "unit tests (see `scripts/repin.py verify` above) and should read the pin instead (`tests/pinned_versions.py`, ADR-117 "
+                "addendum 1):", ""]
+        out += [f"- {u.sibling} {u.old}: `{l}`" for u, l in expectations[:30]]
+        out.append("")
     out += ["| Skill | pin | tag | commit | si contract-diff | decision |", "|---|---|---|---|---|---|"]
     for u in updates:
         out.append(f"| {u.sibling} | {u.old} → {u.new} | `{u.tag}` | `{u.sha[:7]}` | {u.classification} | {u.decision.kind}: {'; '.join(u.decision.reasons)} |")
@@ -561,10 +578,11 @@ def pr_body(updates: List[Update], lock_changed: bool, skipped: Sequence[str] = 
             out += ["", f"<details><summary>{u.sibling}: {len(u.changes)} non-informational change(s)</summary>", ""]
             out += [f"- `{c.get('pointer')}` {c.get('effect')} ({c.get('rule')}): {c.get('detail')}" for c in u.changes[:50]]
             out += ["", "</details>"]
-        if u.leftovers:
-            out += ["", f"{u.sibling}: lines that still name {u.old}, left unchanged (history, or a reader the rewrite could not place; "
-                    "a failing test points at the second kind):", ""]
-            out += [f"- `{l}`" for l in u.leftovers[:30]]
+        rest = [l for l in u.leftovers if not is_test_line(l)]
+        if rest:
+            out += ["", f"{u.sibling}: lines outside tests/ and evals/ that still name {u.old}, left unchanged (history, or a reader the "
+                    "rewrite could not place; a failing test points at the second kind):", ""]
+            out += [f"- `{l}`" for l in rest[:30]]
     out += ["", f"Each new pin is the tag's committed `{CONTRACT_IN_TAG}`, byte for byte; the old pin file is replaced and its readers "
             "(adapters, agent modules, fakes, tests and evals) move with it."]
     if skipped:
@@ -623,12 +641,82 @@ def cmd_update(args: argparse.Namespace) -> int:
     report = {"updates": [{"sibling": u.sibling, "old": u.old, "new": u.new, "tag": u.tag, "sha": u.sha, "classification": u.classification,
                            "decision": u.decision.kind, "reasons": u.decision.reasons, "readers": u.readers, "leftovers": u.leftovers}
                           for u in updates],
-              "skipped": skipped, "review": any(u.decision.kind == "review" for u in updates), "lock_changed": lock_changed}
+              "skipped": skipped, "review": any(u.decision.kind == "review" for u in updates), "lock_changed": lock_changed,
+              "review_reasons": [f"{u.sibling} {u.old} -> {u.new}: {'; '.join(u.decision.reasons)}" for u in updates if u.decision.kind == "review"]}
     if args.report:
         Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if args.pr_body:
         Path(args.pr_body).write_text(pr_body(updates, lock_changed, skipped), encoding="utf-8")
     print(json.dumps({k: report[k] for k in ("review", "lock_changed")} | {"updated": [u.sibling for u in updates]}))
+    return 0
+
+
+# ---- verify: the unit tests on the re-pinned tree -------------------------------------------------------------------------------------
+
+UNIT_RUN_RE = re.compile(r"^\s*-\s*run:\s*python -m unittest -v ((?:tests/\S+\.py\s*)+)$", re.M)
+FAILED_TEST_RE = re.compile(r"^(?:FAIL|ERROR): (\w+) \(([\w.]+)\)", re.M)
+FAILED_EVAL_RE = re.compile(r"^FAIL (\S+)", re.M)
+
+
+def unit_commands(root: Path) -> List[List[str]]:
+    """The unit job's test commands, as .github/workflows/tests.yml runs them, then the evals."""
+    text = (root / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    cmds = [[sys.executable, "-m", "unittest", *m.group(1).split()] for m in UNIT_RUN_RE.finditer(text)]
+    if (root / "evals" / "run.py").is_file():
+        cmds.append([sys.executable, "evals/run.py"])
+    return cmds
+
+
+def failed_ids(cmd: Sequence[str], output: str, returncode: int) -> List[str]:
+    """Test ids (`tests.test_x.Class.test_y`, both unittest spellings) or eval cases (`evals <case>`) that failed in one command."""
+    if returncode == 0:
+        return []
+    if cmd[-1].endswith("run.py"):
+        ids = [f"evals {m.group(1)}" for m in FAILED_EVAL_RE.finditer(output)]
+    else:
+        ids = [where if where.endswith("." + name) else f"{where}.{name}" for name, where in FAILED_TEST_RE.findall(output)]
+    return ids or [f"{' '.join(Path(c).name if i == 0 else c for i, c in enumerate(cmd))}: exit {returncode}, no test id"]
+
+
+def run_unit(root: Path, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> List[str]:
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [str(root / "src"), os.environ.get("PYTHONPATH")])))
+    failures: List[str] = []
+    for cmd in unit_commands(root):
+        r = runner(cmd, cwd=str(root), env=env, capture_output=True, text=True)
+        failures += failed_ids(cmd, (r.stdout or "") + (r.stderr or ""), r.returncode)
+    return failures
+
+
+def verify_section(failures: Sequence[str], report: dict) -> str:
+    if not failures:
+        return "The unit tests and the evals pass on this re-pin (`scripts/repin.py verify`).\n\n"
+    out = [f"**A person must review this pull request: {len(failures)} unit test(s) or eval(s) fail on this re-pin** (`scripts/repin.py "
+           "verify`). The pull request is a draft and labelled `repin: needs review`; fix the tests on this branch (a test that expects "
+           "the pinned release reads it from the pin: `tests/pinned_versions.py`, ADR-117 addendum 1), then remove the label and mark it "
+           "ready.", ""]
+    out += [f"- `{f}`" for f in failures[:40]]
+    if len(failures) > 40:
+        out.append(f"- ... and {len(failures) - 40} more")
+    lines = [l for u in report.get("updates", []) for l in u.get("leftovers", []) if is_test_line(l)]
+    if lines:
+        out += ["", "Lines in tests/ and evals/ the rewrite left on an old release (the likely cause):", ""] + [f"- `{l}`" for l in lines[:30]]
+    return "\n".join(out) + "\n\n"
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    failures = run_unit(root)
+    report["unit_failures"] = failures
+    if failures:
+        report["review"] = True
+        report.setdefault("review_reasons", []).append(f"{len(failures)} unit test(s) or eval(s) fail on the re-pin: " + ", ".join(failures[:10])
+                                                       + (" ..." if len(failures) > 10 else ""))
+    Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if args.pr_body:
+        body = Path(args.pr_body).read_text(encoding="utf-8")
+        Path(args.pr_body).write_text(verify_section(failures, report) + body, encoding="utf-8")
+    print(json.dumps({"review": report["review"], "unit_failures": len(failures)}))
     return 0
 
 
@@ -697,6 +785,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     up.add_argument("--report")
     up.add_argument("--pr-body")
     up.add_argument("--today")
+    ve = sub.add_parser("verify")
+    ve.add_argument("--report", required=True)
+    ve.add_argument("--pr-body")
     sub.add_parser("lock")
     sub.add_parser("check")
     cl = sub.add_parser("clone")
@@ -705,7 +796,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cl.add_argument("--only", action="append", choices=sorted(BY_NAME))
     cl.add_argument("--skip", action="append", choices=sorted(BY_NAME))
     args = ap.parse_args(argv)
-    return {"update": cmd_update, "lock": cmd_lock, "check": cmd_check, "clone": cmd_clone}[args.cmd](args)
+    return {"update": cmd_update, "verify": cmd_verify, "lock": cmd_lock, "check": cmd_check, "clone": cmd_clone}[args.cmd](args)
 
 
 if __name__ == "__main__":

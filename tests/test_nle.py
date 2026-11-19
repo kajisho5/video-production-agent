@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pinned_versions import pinned_version  # noqa: E402
 from pipeline_harness import PipelineCaps, clear_modes, fake_media, pipeline_service, plan_and_render  # noqa: E402
 
 from video_agent.project import load_ir  # noqa: E402
@@ -78,7 +79,7 @@ class _Base(unittest.TestCase):
 class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
-        self.assertEqual((c["skill_id"], c["version"], check_contract(c)), ("nle-bridge", "0.1.2", []))
+        self.assertEqual((c["skill_id"], c["version"], check_contract(c)), ("nle-bridge", pinned_version("nle-bridge"), []))
         self.assertEqual(c["dependencies"][0]["version_range"], ">=2.0.0 <4.0.0", "pinned at main c0ab78f (step 12)")
         self.assertEqual((formats(), default_formats()), (("edl", "fcp7", "otio", "srt"), ("otio", "fcp7", "edl", "srt")))
         for bad, msg in ((dict(c, inputs=["nle-bridge/timeline@1"]), "project IR"), (dict(c, execution=dict(c["execution"], network=True)), "network false")):
