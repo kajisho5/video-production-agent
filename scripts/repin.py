@@ -106,6 +106,8 @@ SIBLINGS: Tuple[Sibling, ...] = (
             gate_file=(TOOLS / "hyperframes" / "adapter.py").as_posix(), owned=("tests/fake_hyperframes.py", "tests/test_html_layer.py")),
 )
 BY_NAME: Dict[str, Sibling] = {s.name: s for s in SIBLINGS}
+# releases cut before the Skill committed contract/contract.json: the locked clone has nothing to compare, the tests check the live contract
+NO_COMMITTED_CONTRACT = {("artifacts", "v0.4.0")}
 
 VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
@@ -172,40 +174,41 @@ def widen_gate(source: str, prefix: str, note: str) -> str:
     node = _gate_node(source)
     if node is None:
         raise ValueError("no SUPPORTED_SKILL_VERSIONS = (...) tuple")
+    if not node.elts:
+        raise ValueError("the gate tuple is empty")
     lines = source.splitlines(keepends=True)
-    end_line, end_col = node.end_lineno - 1, node.end_col_offset - 1     # the closing parenthesis
-    line = lines[end_line]
-    if line[end_col] != ")":
-        raise ValueError("the gate tuple does not end with ')' where the parser says")
-    inner = line[:end_col].rstrip()
-    if inner.endswith(","):     # a one-element tuple `("0.1.",)` or a trailing comma
-        inner = inner[:-1]
-    lines[end_line] = f'{inner}, "{prefix}"' + line[end_col:]
+    last = node.elts[-1]          # insert right after the last element: a trailing comma or a `)` on its own line stays valid
+    line_no, col = last.end_lineno - 1, last.end_col_offset
+    line = lines[line_no]
+    lines[line_no] = f'{line[:col]}, "{prefix}"{line[col:]}'
     start = next(i for i, l in enumerate(lines) if l.startswith("SUPPORTED_SKILL_VERSIONS"))
     newline = "\r\n" if lines[start].endswith("\r\n") else "\n"
     lines.insert(start, f"# {note}{newline}")
     return "".join(lines)
 
 
-GATE_TESTS = "tests/test_version_gates.py"
+GATE_TESTS = ("tests/test_version_gates.py", "tests/test_release_version.py")
 
 
 def move_refusal_probe(text: str, sib: Sibling, prefix: str) -> Tuple[str, int]:
     """After the gate takes `X.Y.`, the gate tests' probe `"X.Y.0"` (a version they expect refused) moves to the next minor, `"X.(Y+1).0"`:
-    only on a `for v in (...)` line about this Skill (named on the line or on one of the lines above it)."""
+    on a `for v in (...)` line about this Skill (named on the line or on one of the lines above it), and in a `("<repo>", "X.Y.0")` pair."""
     major, minor = (int(x) for x in prefix.rstrip(".").split("."))
     probe, moved = f'"{major}.{minor}.0"', f'"{major}.{minor + 1}.0"'
     aliases = adapter_aliases(text)
     mine = sib.identifiers + (tuple(aliases.get(Path(sib.gate_file).parent.name, ())) if sib.gate_file else ())
+    pair = re.compile(r'(\(\s*"' + re.escape(sib.repo) + r'",\s*)' + re.escape(probe) + r"(\s*\))")
     lines = text.splitlines(keepends=True)
     count = 0
     for i, line in enumerate(lines):
-        if probe not in line or not line.lstrip().startswith("for v in ("):
+        if probe not in line:
             continue
-        if not any(_mentions(l, mine) for l in lines[max(0, i - CONTEXT_LINES):i + 1]):
-            continue
-        lines[i] = line.replace(probe, moved) if moved not in line else line.replace(probe + ", ", "").replace(", " + probe, "")
-        count += 1
+        out = pair.sub(lambda m: m.group(1) + moved + m.group(2), line)
+        if line.lstrip().startswith("for v in (") and any(_mentions(l, mine) for l in lines[max(0, i - CONTEXT_LINES):i + 1]):
+            out = out.replace(probe, moved)
+        if out != line:
+            lines[i] = out
+            count += 1
     return "".join(lines), count
 
 
@@ -285,8 +288,11 @@ class Rewrite:
     leftovers: List[str] = field(default_factory=list)          # file:line: text, an old version literal on a line about this Skill
 
 
-def rewrite_text(text: str, rel: str, sib: Sibling, others: Sequence[Sibling], old: str, new: str, new_sha: str) -> Tuple[str, int, List[str]]:
-    """Move one file's references from the old pin to the new one. Returns (text, lines changed, leftovers)."""
+def rewrite_text(text: str, rel: str, sib: Sibling, others: Sequence[Sibling], old: str, new: str, new_sha: str,
+                 same_version: Sequence[Sibling] = ()) -> Tuple[str, int, List[str]]:
+    """Move one file's references from the old pin to the new one. Returns (text, lines changed, leftovers).
+    `same_version`: the other siblings pinned at `old` too. A line that names one of them as well as this Skill is ambiguous (whose
+    "0.2.3" is it?): it is left as it is and listed."""
     old_file, new_file = f"{sib.pin_prefix}{old}.json", f"{sib.pin_prefix}{new}.json"
     owned = rel in sib.owned_files() or rel.startswith(sib.pin_dir + "/") and sib.pin_dir != PINS.as_posix()
     aliases = adapter_aliases(text)        # `from video_agent.tools.qc import adapter as qc_adapter`: `qc_adapter.` names qc here
@@ -298,6 +304,8 @@ def rewrite_text(text: str, rel: str, sib: Sibling, others: Sequence[Sibling], o
     src_tag = re.compile(SOURCE_TAG_RE.format(old=re.escape(old)))
     lines = text.splitlines(keepends=True)
     file_mine = owned or _mentions(text, mine)
+    twins = tuple(w for o in same_version for w in o.identifiers + tuple(aliases.get(Path(o.gate_file).parent.name, ()) if o.gate_file else ())
+                  if w not in mine)
     count, leftovers = 0, []
     for i, line in enumerate(lines):
         if old not in line:
@@ -310,6 +318,10 @@ def rewrite_text(text: str, rel: str, sib: Sibling, others: Sequence[Sibling], o
             near_other = any(_mentions(prev, theirs) for prev in above)
             about_me = near_me and not near_other
         applies = about_me or (owned and not about_other)
+        ambiguous = applies and bool(twins) and _mentions(line, twins)
+        if ambiguous:
+            leftovers.append(f"{rel}:{i + 1}: (also names a Skill pinned at {old}) {line.strip()[:140]}")
+            continue
         out = line
         if old_file in out and (unique_file or applies):
             out = out.replace(old_file, new_file)
@@ -342,6 +354,7 @@ def scan_files(root: Path) -> List[Path]:
 def rewrite_readers(root: Path, sib: Sibling, old: str, new: str, new_sha: str) -> Rewrite:
     result = Rewrite()
     others = [s for s in SIBLINGS if s is not sib]
+    same_version = [s for s in others if current_pin(root, s)[1] == old] if all((root / s.pin_dir).is_dir() for s in others) else []
     for p in scan_files(root):
         raw = p.read_bytes()
         try:
@@ -351,7 +364,7 @@ def rewrite_readers(root: Path, sib: Sibling, old: str, new: str, new_sha: str) 
         if old not in text:
             continue
         rel = p.relative_to(root).as_posix()
-        out, n, left = rewrite_text(text, rel, sib, others, old, new, new_sha)
+        out, n, left = rewrite_text(text, rel, sib, others, old, new, new_sha, same_version)
         if n:
             p.write_bytes(out.encode("utf-8"))
             result.changed[rel] = n
@@ -390,12 +403,41 @@ class TagFiles:
     def __init__(self, cache: Path):
         self.cache = cache
 
-    def show(self, repo: str, tag: str, path: str) -> bytes:
+    def show(self, repo: str, tag: str, path: str, sha: str) -> bytes:
+        """The file at the commit `sha` that ls-remote gave for `tag`; refused when the fetched tag is another commit (the tag moved)."""
         bare = self.cache / repo
         if not bare.exists():
             _git("init", "-q", "--bare", str(bare))
         _git("fetch", "-q", "--depth", "1", "--no-tags", repo_url(repo), f"+refs/tags/{tag}:refs/tags/{tag}", cwd=bare)
-        return subprocess.run(["git", "show", f"{tag}:{path}"], cwd=bare, check=True, capture_output=True).stdout
+        fetched = _git("rev-parse", f"refs/tags/{tag}^{{commit}}", cwd=bare).strip()
+        if fetched != sha:
+            raise TagMoved(f"{tag} is {fetched} now, ls-remote said {sha}")
+        return subprocess.run(["git", "show", f"{sha}:{path}"], cwd=bare, check=True, capture_output=True).stdout
+
+
+class TagMoved(RuntimeError):
+    pass
+
+
+def contract_identity(contract: dict) -> Optional[str]:
+    """The Skill a contract says it is: `skill_id`, else `skill.id`, else `skill` (a string)."""
+    s = contract.get("skill")
+    return contract.get("skill_id") or (s.get("id") if isinstance(s, dict) else s)
+
+
+def validate_contract(data: bytes, version: str, pinned: dict) -> Optional[str]:
+    """Why these bytes cannot be the new pin (None when they can): a JSON object of the tag's version, the same Skill as the pin."""
+    try:
+        doc = json.loads(data)
+    except ValueError as e:
+        return f"not JSON ({e})"
+    if not isinstance(doc, dict):
+        return f"not a contract object ({type(doc).__name__})"
+    if doc.get("version") != version:
+        return f"declares version {doc.get('version')!r}, the tag is {version}"
+    if contract_identity(doc) != contract_identity(pinned):
+        return f"is {contract_identity(doc)!r}, the pin is {contract_identity(pinned)!r}"
+    return None
 
 
 def contract_diff(si: str, old: Path, new: Path) -> dict:
@@ -494,12 +536,13 @@ def apply_update(root: Path, sib: Sibling, tag: str, sha: str, data: bytes, diff
                 f"the gate takes {decision.new_prefix}")
         gp.write_bytes(widen_gate(gp.read_bytes().decode("utf-8"), decision.new_prefix or "", note).encode("utf-8"))
         rw.changed[sib.gate_file] = rw.changed.get(sib.gate_file, 0) + 2
-        gt = root / GATE_TESTS
-        if gt.exists():
-            text, n = move_refusal_probe(gt.read_bytes().decode("utf-8"), sib, decision.new_prefix or "")
-            if n:
-                gt.write_bytes(text.encode("utf-8"))
-                rw.changed[GATE_TESTS] = rw.changed.get(GATE_TESTS, 0) + n
+        for rel in GATE_TESTS:
+            gt = root / rel
+            if gt.exists():
+                text, n = move_refusal_probe(gt.read_bytes().decode("utf-8"), sib, decision.new_prefix or "")
+                if n:
+                    gt.write_bytes(text.encode("utf-8"))
+                    rw.changed[rel] = rw.changed.get(rel, 0) + n
     changes = [c for c in diff.get("changes", []) if c.get("effect") != "info"]
     return Update(sib.name, old, new, tag, sha, classification, decision, changes, rw.changed, rw.leftovers)
 
@@ -556,11 +599,16 @@ def cmd_update(args: argparse.Namespace) -> int:
             print(f"{name}: {pinned} is the latest release", file=sys.stderr)
             continue
         try:
-            data = files.show(sib.repo, tag, CONTRACT_IN_TAG)
-            json.loads(data)          # a contract, not something else
-        except (subprocess.CalledProcessError, ValueError) as e:
-            print(f"{name}: {tag} has no readable {CONTRACT_IN_TAG} ({e}); pin {pinned} kept", file=sys.stderr)
-            skipped.append(f"{name} {tag}: no readable {CONTRACT_IN_TAG}, pin {pinned} kept")
+            data = files.show(sib.repo, tag, CONTRACT_IN_TAG, tags[tag])
+        except (subprocess.CalledProcessError, TagMoved) as e:
+            why = str(e) if isinstance(e, TagMoved) else f"no {CONTRACT_IN_TAG} at the tag"
+            print(f"{name}: {tag}: {why}; pin {pinned} kept", file=sys.stderr)
+            skipped.append(f"{name} {tag}: {why}; pin {pinned} kept")
+            continue
+        bad = validate_contract(data, version, json.loads(pin_path.read_text(encoding="utf-8")))
+        if bad:
+            print(f"{name}: {tag}:{CONTRACT_IN_TAG} {bad}; pin {pinned} kept", file=sys.stderr)
+            skipped.append(f"{name} {tag}: {CONTRACT_IN_TAG} {bad}; pin {pinned} kept")
             continue
         with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False, dir=cache) as tmp:
             tmp.write(data)
@@ -621,8 +669,10 @@ def cmd_clone(args: argparse.Namespace) -> int:
         if not args.main and head != e["sha"]:
             raise SystemExit(f"{name}: {e['tag']} is {head}, the lock says {e['sha']} (the tag moved: re-run `scripts/repin.py lock`)")
         committed = target / CONTRACT_IN_TAG
-        if not committed.is_file():      # a release cut before the Skill committed its contract (artifacts v0.4.0): nothing to compare
-            same, state = True, f"none committed (the pin is checked live by the tests)"
+        if not committed.is_file() and (args.main or (name, e["tag"]) in NO_COMMITTED_CONTRACT):
+            same, state = True, "none committed (the pin is checked live by the tests)"
+        elif not committed.is_file():
+            raise SystemExit(f"{name}: {e['tag']} has no {CONTRACT_IN_TAG} to compare with the pin {e['pin']}")
         else:
             same = committed.read_bytes() == (root / e["pin"]).read_bytes()
             state = "= pin" if same else f"differs from the pin {e['version']}"

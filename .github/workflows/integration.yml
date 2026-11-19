@@ -37,12 +37,13 @@ jobs:
       INTEGRATION_SHARDS: "6"
       CANARY: ${{ inputs.siblings == 'main' && '1' || '' }}
       SIBLINGS_REF: ${{ inputs.siblings == 'main' && '--main' || '' }}
-      TEST_LOG: ${{ github.workspace }}/../integration-tests.log
+      TEST_LOGS: ${{ github.workspace }}/../integration-logs   # one log per test step, for the canary's record
     defaults:
       run:
         shell: bash    # -eo pipefail: a test step piped into `tee` fails when the tests fail
     runs-on: ubuntu-latest
     steps:
+      - run: mkdir -p "$TEST_LOGS"
       - name: shard matrix matches INTEGRATION_SHARDS
         # strategy.job-total = engine legs (2) x shards in the matrix; a shard missing from the matrix would silently drop its tests
         run: test "${{ strategy.job-total }}" -eq "$(( 2 * INTEGRATION_SHARDS ))"
@@ -73,7 +74,7 @@ jobs:
           echo "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0  ../detection-models/face_detection_yunet_2026may.onnx" | sha256sum -c -
       - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]" -e "../detection-skill[faces]" -e "../slide-sync-skill[pdf]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
       - id: shard
-        run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS" 2>&1 | tee -a "$TEST_LOG"
+        run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS" 2>&1 | tee "$TEST_LOGS/shard.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
@@ -100,15 +101,17 @@ jobs:
           VIDEO_AGENT_REMOTION_DIR: "${{ github.workspace }}/../remotion-ffmpeg-skill"
           VIDEO_AGENT_ARTIFACTS_DIR: "${{ github.workspace }}/../artifacts-skill"
       # ADR-076: the color-grading adapter against the real color-grading-skill (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests 2>&1 | tee -a "$TEST_LOG"
+      - id: color
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests 2>&1 | tee "$TEST_LOGS/color.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
       # ADR-058: the qc adapter against the real qc-skill (contract drift, reference metrics SSIM / PSNR; ADR-112: a stinger file and loop seams); the fake-based tests of the same file run in the unit job
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests 2>&1 | tee -a "$TEST_LOG"
+      - id: qc
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests 2>&1 | tee "$TEST_LOGS/qc.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
@@ -119,8 +122,9 @@ jobs:
         with: {node-version: "22"}
       - if: matrix.shard == 1
         run: python scripts/repin.py clone --dest .. --only blender --only hyperframes $SIBLINGS_REF && cd ../hyperframes-skill && npm ci --ignore-scripts
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests 2>&1 | tee -a "$TEST_LOG"
+      - id: handoff
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests 2>&1 | tee "$TEST_LOGS/handoff.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
@@ -129,15 +133,17 @@ jobs:
       # (Velisa is the ecosystem's catalogue, not a Skill with a pin: it is not in the lock)
       - if: matrix.shard == 1
         run: git clone --depth 1 https://github.com/kajisho5/Velisa ../Velisa
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_ai_host.EcosystemSnapshotTests 2>&1 | tee -a "$TEST_LOG"
+      - id: ecosystem
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_ai_host.EcosystemSnapshotTests 2>&1 | tee "$TEST_LOGS/ecosystem.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_VELISA_DIR: "${{ github.workspace }}/../Velisa"
       # roadmap step 33: text / shots on the real detection-skill and speech regions on the real media-analysis-skill, where the doctors say their
       # engines are ready (Tesseract, PySceneDetect, the vad extra); none is installed here, so the tests skip or check the BLOCK with the Skill's code
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_measurements.RealSkillTests 2>&1 | tee -a "$TEST_LOG"
+      - id: measurements
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_measurements.RealSkillTests 2>&1 | tee "$TEST_LOGS/measurements.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_DETECTION_DIR: "${{ github.workspace }}/../detection-skill"
@@ -147,22 +153,33 @@ jobs:
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
       # ADR-114: the motion.layer clip on the real hyperframes-skill: its live contract against the adapter's checks and the pin, and its doctor's
       # verdict. No Chromium here, so the doctor says render is not usable and the two render tests skip (they run where a headless Chromium is found)
-      - if: matrix.shard == 1
-        run: python -m unittest -v tests.test_html_layer.HtmlLayerRealSkillTests 2>&1 | tee -a "$TEST_LOG"
+      - id: html
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_html_layer.HtmlLayerRealSkillTests 2>&1 | tee "$TEST_LOGS/html.log"
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
           VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
           VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
-      # the canary keeps what failed: one line per failing test (unittest's FAIL: / ERROR: lines), and whether the shard's suite ran at all
+      # the canary keeps, per test step this shard runs, its outcome (success / failure when it ran; skipped / cancelled when a step before it
+      # failed) and its failing test ids (unittest's FAIL: / ERROR: lines). A step that failed with no test id (discovery, an import, a crash)
+      # is reported by the canary as a failure of its own.
       - if: always() && inputs.siblings == 'main'
+        env:
+          OUTCOMES: >-
+            shard=${{ steps.shard.outcome }}
+            ${{ matrix.shard == 1 && format('color={0} qc={1} handoff={2} ecosystem={3} measurements={4} html={5}', steps.color.outcome, steps.qc.outcome,
+            steps.handoff.outcome, steps.ecosystem.outcome, steps.measurements.outcome, steps.html.outcome) || '' }}
         run: |
           mkdir -p canary-result
-          out="canary-result/ffmpeg-${{ matrix.ffmpeg_skill }}-shard-${{ matrix.shard }}.txt"
-          { grep -E '^(FAIL|ERROR): ' "$TEST_LOG" 2>/dev/null || true; } | sort -u > "$out"
-          # the shard's suite step: success / failure when it ran; skipped / cancelled when the setup before it failed
-          echo "${{ steps.shard.outcome }}" > "${out%.txt}.outcome"
-          cat "$out"
+          base="canary-result/ffmpeg-${{ matrix.ffmpeg_skill }}-shard-${{ matrix.shard }}"
+          : > "$base.suites"; : > "$base.txt"
+          for pair in $OUTCOMES; do
+            suite="${pair%%=*}"; outcome="${pair#*=}"
+            echo "$suite ${outcome:-missing}" >> "$base.suites"
+            { grep -E '^(FAIL|ERROR): ' "$TEST_LOGS/$suite.log" 2>/dev/null || true; } | sort -u | sed "s/^/$suite\t/" >> "$base.txt"
+          done
+          cat "$base.suites" "$base.txt"
       - if: always() && inputs.siblings == 'main'
         uses: actions/upload-artifact@v4
         with:

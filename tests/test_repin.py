@@ -63,6 +63,8 @@ class GateTests(unittest.TestCase):
         self.assertIn("# 0.3.0 (automatic re-pin): additive\nSUPPORTED_SKILL_VERSIONS", out)
         one = repin.widen_gate('SUPPORTED_SKILL_VERSIONS = ("0.1.",)\n', "0.2.", "n")
         self.assertEqual(repin.read_gate(one), ("0.1.", "0.2."))
+        own_line = repin.widen_gate('SUPPORTED_SKILL_VERSIONS = (\n    "0.1.",\n    "0.2.",\n)\n', "0.3.", "n")
+        self.assertEqual(repin.read_gate(own_line), ("0.1.", "0.2.", "0.3."))     # a `)` on its own line, a trailing comma
         crlf = repin.widen_gate(GATE_SRC.replace("\n", "\r\n"), "0.3.", "n")
         self.assertIn("# n\r\nSUPPORTED_SKILL_VERSIONS", crlf)
         with self.assertRaises(ValueError):
@@ -203,9 +205,41 @@ class RewriteTests(unittest.TestCase):
         text = 'from video_agent.tools.qc import adapter as qc\n' + text
         out, n = repin.move_refusal_probe(text, sib("qc"), "1.5.")
         self.assertIn('for v in ("0.3.0", "1.6.0", "2.0.0"):', out)
-        self.assertIn('for v in ("1.6.0"):', out)
+        self.assertIn('for v in ("1.6.0", "1.6.0"):', out)      # still a tuple of two, never a bare string
         self.assertIn('for v in ("1.5.0",):', out)     # nothing names qc on it or the 3 lines above
         self.assertEqual(n, 2)
+        pairs = ('        for skill, new in (("qc-skill", "1.5.0"), ("thumbnail-skill", "1.5.0"),\n'
+                 '                           ("qc-skill" , "2.0.0")):\n')
+        out, n = repin.move_refusal_probe(pairs, sib("qc"), "1.5.")
+        self.assertEqual(out, pairs.replace('("qc-skill", "1.5.0")', '("qc-skill", "1.6.0")')); self.assertEqual(n, 1)
+
+    def test_a_line_naming_two_skills_on_one_version_is_left(self):
+        text = 'self.assertEqual((det["version"], dub["version"]), ("0.2.3", "0.2.3"))   # detection, dubbing\n'
+        out, n, left = repin.rewrite_text(text, "tests/test_unit.py", sib("detection"), [o for o in repin.SIBLINGS if o.name != "detection"],
+                                          "0.2.3", "0.2.4", "f" * 40, [sib("dubbing")])
+        self.assertEqual((out, n), (text, 0))
+        self.assertEqual(len(left), 1); self.assertIn("also names a Skill pinned at 0.2.3", left[0])
+
+
+class ContractTests(unittest.TestCase):
+    def test_validate(self):
+        pinned = {"skill_id": "qc", "version": "1.4.4"}
+        self.assertIsNone(repin.validate_contract(b'{"skill_id": "qc", "version": "1.4.5"}', "1.4.5", pinned))
+        self.assertIn("not JSON", repin.validate_contract(b"{", "1.4.5", pinned))
+        self.assertIn("not a contract object", repin.validate_contract(b"[]", "1.4.5", pinned))
+        self.assertIn("declares version '1.4.4'", repin.validate_contract(b'{"skill_id": "qc", "version": "1.4.4"}', "1.4.5", pinned))
+        self.assertIn("is 'subtitle'", repin.validate_contract(b'{"skill_id": "subtitle", "version": "1.4.5"}', "1.4.5", pinned))
+        # the three ways a contract names its Skill
+        self.assertIsNone(repin.validate_contract(b'{"skill": {"id": "dubbing"}, "version": "0.2.4"}', "0.2.4", {"skill": {"id": "dubbing"}}))
+        self.assertIsNone(repin.validate_contract(b'{"skill": "imagemagick-skill", "version": "0.10.2"}', "0.10.2", {"skill": "imagemagick-skill"}))
+
+    def test_every_pin_validates_against_itself(self):
+        for s in repin.SIBLINGS:
+            path, version = repin.current_pin(ROOT, s)
+            self.assertIsNone(repin.validate_contract(path.read_bytes(), version, json.loads(path.read_text(encoding="utf-8"))), s.name)
+
+    def test_only_documented_releases_lack_a_committed_contract(self):
+        self.assertEqual(repin.NO_COMMITTED_CONTRACT, {("artifacts", "v0.4.0")})
 
 
 class ApplyTests(unittest.TestCase):
@@ -221,7 +255,8 @@ class ApplyTests(unittest.TestCase):
         shutil.copy(ROOT / s.gate_file, self.tmp / s.gate_file)
         (self.tmp / "tests").mkdir()
         (self.tmp / "tests" / "test_adapter_qc.py").write_text(f'self.assertEqual(ad.version, "{self.old}")\n', encoding="utf-8")
-        shutil.copy(ROOT / repin.GATE_TESTS, self.tmp / repin.GATE_TESTS)
+        for rel in repin.GATE_TESTS:
+            shutil.copy(ROOT / rel, self.tmp / rel)
         self.contract = json.loads(pin.read_text(encoding="utf-8"))
 
     def new_release(self, version):
@@ -251,7 +286,8 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(gate[-1], f"{a}.{b + 1}.")
         body = repin.pr_body([u], True)
         self.assertIn("widen", body); self.assertIn("x added", body); self.assertNotIn("must review", body)
-        self.assertNotIn(f'"{a}.{b + 1}.0", ', (self.tmp / repin.GATE_TESTS).read_text(encoding="utf-8").split("def test_qc_release_versions")[1].split("def ")[0])
+        self.assertNotIn(f'"{a}.{b + 1}.0", ', (self.tmp / repin.GATE_TESTS[0]).read_text(encoding="utf-8").split("def test_qc_release_versions")[1].split("def ")[0])
+        self.assertNotIn(f'("qc-skill", "{a}.{b + 1}.0")', (self.tmp / repin.GATE_TESTS[1]).read_text(encoding="utf-8"))
 
     def test_breaking_asks_for_review(self):
         a, b, c = repin.parse_version(self.old)

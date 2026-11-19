@@ -1,8 +1,8 @@
 # ADR-117: the nightly canary. The real-Skill integration suite with every sibling Skill at its main branch (ffmpeg-skill at main and
 # v2.24.1, as in `tests`). `tests` runs the siblings at the releases the pins were taken from (integration/siblings.lock.json), so
 # this is where a sibling's unreleased or newly released change shows first. The canary never fails its run: every test step continues
-# on error, and the report job compares the failures with integration/canary_known_failures.txt. New failures (or a shard whose suite
-# never ran) open the "Nightly canary failed" issue, or comment on the open one; the summary lists every failure either way.
+# on error, and the report job compares the failures with integration/canary_known_failures.txt. New failures (a failing test, a test step that failed with no
+# test id, or a suite that never ran) open the "Nightly canary failed" issue, or comment on the open one; the summary lists every failure either way.
 name: canary
 on:
   schedule:
@@ -42,23 +42,31 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p canary-result
-          known="$(grep -vE '^\s*(#|$)' integration/canary_known_failures.txt | sed -E 's/\s*#.*//' | sort -u || true)"
+          # known failures: "<leg> <test method>" (leg: main or v2.24.1, the ffmpeg-skill leg), or "* <test method>" for both legs
+          known="$(grep -vE '^\s*(#|$)' integration/canary_known_failures.txt | sed -E 's/\s*#.*//; s/\s+/ /g; s/ $//' | sort -u || true)"
           new=""; known_hit=""; missing=""
           for leg in main v2.24.1; do
             for shard in 1 2 3 4 5 6; do
               base="canary-result/ffmpeg-${leg}-shard-${shard}"
-              outcome="$(cat "${base}.outcome" 2>/dev/null || echo missing)"
-              if [ "$outcome" != success ] && [ "$outcome" != failure ]; then
-                missing="${missing}- ffmpeg-skill ${leg}, shard ${shard}: the suite did not run (${outcome})"$'\n'
+              if [ ! -f "${base}.suites" ]; then
+                missing="${missing}- ffmpeg-skill ${leg}, shard ${shard}: no result (the job did not finish)"$'\n'
                 continue
               fi
-              while IFS= read -r line; do
+              while read -r suite outcome; do
+                [ -n "$suite" ] || continue
+                if [ "$outcome" != success ] && [ "$outcome" != failure ]; then
+                  missing="${missing}- ffmpeg-skill ${leg}, shard ${shard}, ${suite}: did not run (${outcome})"$'\n'
+                elif [ "$outcome" = failure ] && ! grep -q "^${suite}"$'\t' "${base}.txt"; then
+                  new="${new}- ffmpeg-skill ${leg}, shard ${shard}, ${suite}: failed with no test id (see the job log)"$'\n'
+                fi
+              done < "${base}.suites"
+              while IFS=$'\t' read -r suite line; do
                 [ -n "$line" ] || continue
                 name="$(echo "$line" | sed -E 's/^(FAIL|ERROR): ([^ ]+).*/\2/')"
-                if [ -n "$known" ] && grep -qxF "$name" <<<"$known"; then
+                if [ -n "$known" ] && { grep -qxF "${leg} ${name}" <<<"$known" || grep -qxF "* ${name}" <<<"$known"; }; then
                   known_hit="${known_hit}- ffmpeg-skill ${leg}, shard ${shard}: \`${line}\` (known)"$'\n'
                 else
-                  new="${new}- ffmpeg-skill ${leg}, shard ${shard}: \`${line}\`"$'\n'
+                  new="${new}- ffmpeg-skill ${leg}, shard ${shard}, ${suite}: \`${line}\`"$'\n'
                 fi
               done < "${base}.txt"
             done
@@ -67,7 +75,7 @@ jobs:
             echo "## Canary: sibling Skills at main"
             echo
             if [ -z "$new$missing" ]; then echo "No failure beyond the known ones."; fi
-            [ -z "$missing" ] || { echo "### Shards whose suite did not run"; echo; printf '%s' "$missing"; echo; }
+            [ -z "$missing" ] || { echo "### Suites that did not run"; echo; printf '%s' "$missing"; echo; }
             [ -z "$new" ] || { echo "### New failures"; echo; printf '%s' "$new"; echo; }
             [ -z "$known_hit" ] || { echo "### Known failures (integration/canary_known_failures.txt)"; echo; printf '%s' "$known_hit"; echo; }
             echo "Each shard's job summary lists the sibling commits it ran against."

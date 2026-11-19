@@ -3,10 +3,13 @@
 # with `si contract-diff` (system-intelligence v0.7.0) and writes integration/siblings.lock.json. One pull request per run, always from
 # the bot branch `bot/repin`, rebuilt from main each time (this workflow force-pushes that branch and no other); an open one is updated.
 #   none / additive inside the gate: the pull request as is.  none / additive, a 0.x / 1.x minor outside the gate: the gate is widened.
-#   breaking, or a major change: the pull request is labelled `repin: needs review` with a comment, and the `repin review` check stays
-#   red until a person removes the label. Nothing is merged here.
+#   breaking, or a major change: the pull request is a draft (it cannot be merged until a person marks it ready), labelled
+#   `repin: needs review`, with a comment; the `repin review` check is red while the label is on. Nothing is merged here.
+# The branch is never overwritten once someone else has pushed to it (every commit on it past main must be this workflow's); the push
+# is a lease on the commit that was checked.
 # A pull request opened with the workflow token starts no workflow by itself, so this workflow starts `tests` and `repin review` on the
-# branch (workflow_dispatch). With a REPIN_TOKEN secret (a token that may push and open pull requests), the push starts them as usual.
+# branch (workflow_dispatch): their results are on the branch's commit, not in the pull request's checks list, and the draft state is
+# the merge gate. With a REPIN_TOKEN secret (a token that may push and open pull requests), the push starts them on the pull request.
 name: repin
 on:
   schedule:
@@ -43,8 +46,9 @@ jobs:
           cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
           if [ -z "$(git status --porcelain)" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
           echo "review=$(jq -r .review "$RUNNER_TEMP/report.json")" >> "$GITHUB_OUTPUT"
+          echo "skipped=$(jq -r '.skipped | length' "$RUNNER_TEMP/report.json")" >> "$GITHUB_OUTPUT"
       - name: no change, close a stale pull request
-        if: steps.update.outputs.changed == 'false'
+        if: steps.update.outputs.changed == 'false' && steps.update.outputs.skipped == '0'   # a skipped release (tag moved, no contract) may still be wanted
         run: |
           number="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}&state=open" --jq '.[0].number // empty')"
           if [ -n "$number" ]; then
@@ -63,16 +67,30 @@ jobs:
           updated="$(jq -r '[.updates[] | "\(.sibling) \(.new)"] | join(", ")' "$RUNNER_TEMP/report.json")"
           title="Re-pin sibling contracts from their release tags: ${updated}"
           [ "${#title}" -le 200 ] || title="Re-pin $(jq '.updates | length' "$RUNNER_TEMP/report.json") sibling contracts from their release tags"
+          bot_email="41898282+github-actions[bot]@users.noreply.github.com"
+          lease=""
+          if remote="$(git ls-remote --exit-code origin "refs/heads/${BRANCH}" | cut -f1)"; then
+            git fetch -q origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            others="$(git log --format='%ce' "origin/main..${remote}" | grep -vxF "$bot_email" || true)"
+            if [ -n "$others" ]; then
+              echo "::warning::${BRANCH} has commits pushed by someone else; it is not overwritten. Merge or close its pull request (or delete the branch) to let the next run re-pin."
+              echo "${BRANCH} has commits by others: not overwritten" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            lease="--force-with-lease=refs/heads/${BRANCH}:${remote}"
+          fi
           git switch -C "$BRANCH"
           git add -A
           git commit -q -m "$title" -m "Automatic re-pin (scripts/repin.py update, ADR-117). Each pin is the tag's committed contract/contract.json, byte for byte."
-          git push --force origin "HEAD:refs/heads/${BRANCH}"     # the bot branch only: rebuilt from main on every run
+          # the bot branch only, rebuilt from main on every run; the lease refuses the push if the branch moved since the check above
+          git push ${lease:---force} origin "HEAD:refs/heads/${BRANCH}"
           body="$(cat "$RUNNER_TEMP/body.md")"
           number="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}&state=open" --jq '.[0].number // empty')"
           if [ -n "$number" ]; then
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${number}" -f title="$title" -f body="$body" --jq .html_url
           else
-            number="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" -f title="$title" -f head="$BRANCH" -f base=main -f body="$body" --jq .number)"
+            number="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" -f title="$title" -f head="$BRANCH" -f base=main -f body="$body" \
+              -F draft="$([ "$REVIEW" = true ] && echo true || echo false)" --jq .number)"
           fi
           for label in "repin" "repin: needs review"; do
             gh api "repos/${GITHUB_REPOSITORY}/labels/$(jq -rn --arg l "$label" '$l|@uri')" --silent 2>/dev/null \
@@ -80,13 +98,14 @@ jobs:
           done
           gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${number}/labels" -f "labels[]=repin" --silent
           if [ "$REVIEW" = true ]; then
+            gh pr ready "$number" --undo --repo "$GITHUB_REPOSITORY" 2>/dev/null || true     # an open pull request goes back to draft
             gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${number}/labels" -f "labels[]=repin: needs review" --silent
             reasons="$(jq -r '.updates[] | select(.decision == "review") | "- \(.sibling) \(.old) -> \(.new): \(.reasons | join("; "))"' "$RUNNER_TEMP/report.json")"
             gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" -f body="A person must review this re-pin before it is merged:
 
           ${reasons}
 
-          The gate was not widened for these. Remove the label \`repin: needs review\` once the change is understood (and the adapter, tests or gate are updated where needed); the \`repin review\` check turns green then.
+          The gate was not widened for these. Once the change is understood (and the adapter, tests or gate are updated where needed, on this branch: the workflow does not overwrite a branch someone else pushed to), remove the label \`repin: needs review\` and mark the pull request ready for review.
 
           ---
           _Generated by the repin workflow (ADR-117)_" --jq .html_url
