@@ -5,7 +5,7 @@
         `publish upload --json --platform=P [metadata] -- <file>`                      (dry run: no network, prints the confirm_token)
         `publish upload --json --platform=P [metadata] --confirm=<token> -- <file>`    (the upload: only with the token a human typed)
 
-Protocol (publish-skill's own contract, `publish contract --json`, pinned from the v0.2.0 tag in contract_0.2.0.json, one sorted compact
+Protocol (publish-skill's own contract, `publish contract --json`, pinned from the v0.2.0 tag in contract_0.2.1.json, one sorted compact
 line; before v0.1.0 the repository had no release tag and the pin followed main as dubbing-skill's does, ADR-085):
     platforms  → `platforms.registered.<id>` (implemented, metadata_fields) and `tools[publish/upload].uploaders.<id>`: only a platform whose
                  uploader exists on the pinned main is offered; a platform added later is refused until the pin is renewed
@@ -70,7 +70,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "network", "writes_media", "mutates_input", "implemented", "schema", "argv", "uploaders", "verdicts", "row_statuses")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "confirmation", "error_shape")
 FATAL_DRIFT_TOOL_KEYS = ("role", "network", "writes_media", "mutates_input", "schema", "argv", "verdicts")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.2.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

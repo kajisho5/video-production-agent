@@ -6,7 +6,7 @@
         `python <checkout>/scripts/strip.py --output=<out.png> --overwrite --json --timeout=T -- <image>`
           ─(ImageMagick 7 `magick` / ImageMagick 6 `convert`, or macOS `sips` for resize / pad)─→ a new image file
 
-Protocol (imagemagick-skill's own contract, `python scripts/_contract.py contract --json`, pinned in contract_0.10.0.json = the v0.10.0
+Protocol (imagemagick-skill's own contract, `python scripts/_contract.py contract --json`, pinned in contract_0.10.1.json = the v0.10.0
 release, = main ab89bf9; 0.9.0 added the `alpha` tool and 0.10.0 the `brandkit` tool, neither of which this adapter runs):
     contract → `_contract.py contract --json` (contract_version 1.0; each tool's input_schema is derived from its own argparse parser)
     doctor   → `_contract.py doctor --json` (backends found, `tools.<name>.usable` per tool; never downloads anything)
@@ -75,7 +75,7 @@ DRIFT_TOOL_KEYS = ("id", "script", "description", "role", "backends", "requires_
 # three tools' script / output / input-mutation flags, and (parameter_drift) every parameter the adapter sends and every result key it reads.
 FATAL_DRIFT_KEYS = ("contract_version", "execution", "result_shapes")
 FATAL_DRIFT_TOOL_KEYS = ("id", "script", "writes_output", "supports_json", "mutates_input")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.10.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.10.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

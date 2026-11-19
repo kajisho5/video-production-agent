@@ -118,7 +118,7 @@ DRIFT_TOOL_KEYS = ("role", "produces_output", "deterministic", "writes_media", "
 # blocks; validate / extract_frame / render / generate_background unchanged. Re-pinned from the v0.1.15 tag (ADR-097 addendum 6). 0.1.16 (ADR-107): version-only, re-pinned from the tag.
 # 0.1.17 (docs only) and 0.1.18 (thumbnail-skill #31; ADR-107 addendum 28): a top-level `kit` block (render --kit, options.kit); otherwise unchanged.
 # The agent sends no kit. Re-pinned from the v0.1.18 tag.
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.18.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.19.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

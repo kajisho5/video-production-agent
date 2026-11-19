@@ -1,5 +1,5 @@
 """Fake slide-sync-skill process for the ADR-091 tests: speaks the slice of the real `slide-sync` CLI the agent uses -- `contract --json` (the pinned
-src/video_agent/tools/slide_sync/contract_0.1.0.json), `doctor --json` (engine / import readiness, exit 3 while the engine is not ready),
+src/video_agent/tools/slide_sync/contract_0.1.1.json), `doctor --json` (engine / import readiness, exit 3 while the engine is not ready),
 `detect --json --overwrite --output=F [--threshold=X] [--min-dwell=S] [--ffmpeg-skill=D] --timeout=T -- <video>` (slide-sync/timeline@1),
 `import --json --overwrite --output=DIR -- <deck>` (slide-sync/deck@1 with the deck's sha256, deck.json written into DIR) and
 `match --json --overwrite --output=F --deck=DIR --timeline=T ... -- <video>` (slide-sync/match@1), each printed with ok and written where asked.
@@ -22,7 +22,7 @@ from pathlib import Path
 MODE = os.environ.get("FAKE_SS_MODE", "ok")
 READY = os.environ.get("FAKE_SS_READY", "all")
 CALLS_LOG = os.environ.get("FAKE_SS_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "slide_sync" / "contract_0.1.0.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "slide_sync" / "contract_0.1.1.json"
 
 
 def _emit(doc) -> None:

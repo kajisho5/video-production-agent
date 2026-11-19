@@ -101,8 +101,8 @@ _BLENDER_MODELS = (".glb", ".gltf", ".fbx", ".obj", ".stl", ".usd", ".usda", ".u
 
 PINS: Dict[str, HandoffPin] = {p.skill: p for p in (
     HandoffPin(
-        skill="render_3d", package="blender-skill", version="0.31.0", pin_file="blender-skill_0.31.0.json",
-        source="kajisho5/blender-skill main befc3e3 (`python3 scripts/_contract.py --json`; = the blender-skill-v0.31.0 contract)",
+        skill="render_3d", package="blender-skill", version="0.31.1", pin_file="blender-skill_0.31.1.json",
+        source="kajisho5/blender-skill blender-skill-v0.31.1 tag ff882b1 (contract/contract.json, = `python3 scripts/_contract.py --json`)",
         tool="blender-skill/render",
         params=(
             HandoffParam("model", "file", "file", suffixes=_BLENDER_MODELS, required=True, doc="the 3D file to render (positional FILE)"),
@@ -112,8 +112,8 @@ PINS: Dict[str, HandoffPin] = {p.skill: p for p in (
         next_step=_render_3d_next,
         note="needs Blender 4.2+ on the machine (the contract's external_tools.required); `python3 scripts/_contract.py doctor --json` says whether it is found"),
     HandoffPin(
-        skill="html_scene_render", package="hyperframes-skill", version="0.10.0", pin_file="hyperframes-skill_0.10.0.json",
-        source="kajisho5/hyperframes-skill v0.10.0 tag 193f84d (`node bin/hyperframes-skill.mjs contract --json`)",
+        skill="html_scene_render", package="hyperframes-skill", version="0.10.2", pin_file="hyperframes-skill_0.10.2.json",
+        source="kajisho5/hyperframes-skill v0.10.2 tag f2631e2 (contract/contract.json, = `node bin/hyperframes-skill.mjs contract --json`)",
         tool="hyperframes-skill/render",
         params=(
             HandoffParam("scene", "scene_dir", "dir", marker="index.html", required=True, doc="the scene directory with index.html"),

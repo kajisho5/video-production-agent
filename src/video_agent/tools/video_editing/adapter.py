@@ -193,7 +193,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
 # 0.6.0 (contract_version "6.0"): TRIM / CUT precision smart (opt-in; frame stays the default and auto never picks it), contract.smart_cut,
 # execution.operations[].cuts[].smart / .fallbacks and plan.steps[].smart. response_shape names the version (fatal drift until ADR-107 left that label out of the fatal comparison), so the re-pin was required;
 # re-pinned from the v0.6.0 tag (ADR-106). The agent sends smart only when the user asked for it (edit.precision=smart).
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.8.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.8.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

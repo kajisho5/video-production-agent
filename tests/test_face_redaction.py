@@ -102,7 +102,7 @@ class ContractTests(_Base):
         c = pinned_contract()
         raw = PINNED_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line (no release tag: pinned from main)")
-        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("detection", "0.2.2", "1.0"))
+        self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("detection", "0.2.3", "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(drift(c), [])
         self.assertEqual(breaking_drift(c), [])
