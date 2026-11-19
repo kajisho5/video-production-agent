@@ -1,0 +1,188 @@
+# The real-Skill integration suite, called by `tests` (the sibling Skills at the releases in integration/siblings.lock.json) and by
+# `canary` (the sibling Skills at their main branches). ADR-117: a pull request and main are tested against the releases the pins were
+# taken from, so a sibling's main moving never turns this repository's main red; the nightly canary reports what main would break.
+name: integration
+on:
+  workflow_call:
+    inputs:
+      siblings:
+        description: "lock: each sibling at the lock's tag (commit and contract checked); main: each sibling at its default branch (the canary)"
+        type: string
+        default: lock
+permissions:
+  contents: read
+jobs:
+  integration:
+    # ADR-082: the real-Skill suite against ffmpeg-skill main (3.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0) and against
+    # v2.24.1 (the last 2.x, contract_version 1.0), both inside SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg
+    # (>= 6.1) satisfy both. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
+    # ffmpeg-skill is not in the lock: both legs are cloned by name here, for `tests` and for `canary` alike.
+    #
+    # Each engine leg is split across INTEGRATION_SHARDS runners, because one runner took about an hour for the suite. Nothing is
+    # listed by hand: tests/integration_shards.py puts every test class of tests/test_integration.py in exactly one shard (whole
+    # classes, balanced by measured duration) and refuses to run unless every test id is in exactly one shard. Shard 1 is the
+    # lightest and also runs the small real-Skill suites at the end of this job. To change the number of shards, change
+    # `shard` and INTEGRATION_SHARDS together: the "shard matrix" step fails when they disagree.
+    #
+    # In the canary (siblings: main) every test step continues on error and its output is kept; the canary's report job compares the
+    # failures with integration/canary_known_failures.txt. The job itself continues on error too, so a canary never fails its run.
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg_skill: ["main", "v2.24.1"]
+        shard: [1, 2, 3, 4, 5, 6]
+    name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }}, shard ${{ matrix.shard }})
+    continue-on-error: ${{ inputs.siblings == 'main' }}
+    env:
+      INTEGRATION_SHARDS: "6"
+      CANARY: ${{ inputs.siblings == 'main' && '1' || '' }}
+      SIBLINGS_REF: ${{ inputs.siblings == 'main' && '--main' || '' }}
+      TEST_LOGS: ${{ github.workspace }}/../integration-logs   # one log per test step, for the canary's record
+    defaults:
+      run:
+        shell: bash    # -eo pipefail: a test step piped into `tee` fails when the tests fail
+    runs-on: ubuntu-latest
+    steps:
+      - run: mkdir -p "$TEST_LOGS"
+      - name: shard matrix matches INTEGRATION_SHARDS
+        # strategy.job-total = engine legs (2) x shards in the matrix; a shard missing from the matrix would silently drop its tests
+        run: test "${{ strategy.job-total }}" -eq "$(( 2 * INTEGRATION_SHARDS ))"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core imagemagick   # imagemagick: ADR-077's ImagePrepareRealTests (imagemagick-skill uses IM6's convert / identify)
+      - run: git clone --depth 1 --branch "${{ matrix.ffmpeg_skill }}" https://github.com/kajisho5/ffmpeg-skill ../ffmpeg-skill
+      - run: python3 ../ffmpeg-skill/scripts/_contract.py --json --static | python3 -c "import json,sys; d=json.load(sys.stdin); print('ffmpeg-skill', d['skill']['version'], 'contract', d['contract_version'])"
+      # ADR-117: every sibling Skill (all but ffmpeg-skill, blender-skill and hyperframes-skill, which only shard 1 needs) into ../<repo>.
+      # lock: at the tag integration/siblings.lock.json names, refused unless the tag is the lock's commit and its committed
+      # contract/contract.json is the pin byte for byte (a tag cut before the Skill committed its contract is said so). main: the default
+      # branch, with each committed contract compared with the pin in the job summary. No Skill needs an install step for its own
+      # checkout: each runs as `python -m <package>.cli` or its scripts from the checkout. Where a suite needs more, it is said below.
+      #   transcription-skill: contract / doctor / path policy only, no ASR engine, no model download in CI
+      #   ingest-skill (ADR-059 / ADR-066): its fetch extra installs yt-dlp; the test downloads from 127.0.0.1 only; the card offload runs on a synthetic card
+      #   voice-enhance-skill (ADR-073): no engine in CI, the tests stand in a deep-filter that copies its input and a nara_wpe whose wpe_v8 is the
+      #     identity (as voice-enhance-skill's own tests do); numpy is for those engines' STFT and the real crosstalk engine
+      #   detection-skill (ADR-090): its `faces` extra installs opencv-python-headless + numpy; the YuNet model is fetched below, pinned by sha256
+      #   dubbing / diarization / publish / nle-bridge / sound-design (ADR-085 / 086 / 087 / 089 / 092): offline, no engine, no credentials
+      #   slide-sync-skill (ADR-091): its `pdf` extra installs pypdfium2 for the deck import (no LibreOffice: pptx / key are not tested)
+      #   remotion-ffmpeg-skill (ADR-093): contract, doctor, the project check; no npm install / Remotion render in CI
+      #   artifacts-skill (ADR-095): Markdown verification needs only the standard library
+      - run: python scripts/repin.py clone --dest .. --skip blender --skip hyperframes $SIBLINGS_REF
+      - run: |
+          mkdir -p ../detection-models
+          curl -fsSL -o ../detection-models/face_detection_yunet_2026may.onnx https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
+          echo "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0  ../detection-models/face_detection_yunet_2026may.onnx" | sha256sum -c -
+      - run: pip install -e . Pillow opentimelineio numpy -e "../ingest-skill[fetch]" -e "../detection-skill[faces]" -e "../slide-sync-skill[pdf]"   # opentimelineio: read the exported timeline back (ADR-052); not a runtime dependency
+      - id: shard
+        run: python -m tests.integration_shards --shard "${{ matrix.shard }}" --of "$INTEGRATION_SHARDS" 2>&1 | tee "$TEST_LOGS/shard.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
+          VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
+          VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
+          VIDEO_AGENT_VIDEO_EDITING_DIR: "${{ github.workspace }}/../video-editing-skill"
+          VIDEO_AGENT_AUDIO_PRODUCTION_DIR: "${{ github.workspace }}/../audio-production-skill"
+          VIDEO_AGENT_SUBTITLE_DIR: "${{ github.workspace }}/../subtitle-skill"
+          VIDEO_AGENT_THUMBNAIL_DIR: "${{ github.workspace }}/../thumbnail-skill"
+          VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
+          VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
+          VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
+          VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
+          VIDEO_AGENT_VOICE_ENHANCE_DIR: "${{ github.workspace }}/../voice-enhance-skill"
+          VIDEO_AGENT_IMAGEMAGICK_DIR: "${{ github.workspace }}/../imagemagick-skill"
+          VIDEO_AGENT_DETECTION_DIR: "${{ github.workspace }}/../detection-skill"
+          DETECTION_MODELS_DIR: "${{ github.workspace }}/../detection-models"
+          VIDEO_AGENT_DUBBING_DIR: "${{ github.workspace }}/../dubbing-skill"
+          VIDEO_AGENT_DIARIZATION_DIR: "${{ github.workspace }}/../diarization-skill"
+          VIDEO_AGENT_PUBLISH_DIR: "${{ github.workspace }}/../publish-skill"
+          VIDEO_AGENT_NLE_BRIDGE_DIR: "${{ github.workspace }}/../nle-bridge-skill"
+          VIDEO_AGENT_SLIDE_SYNC_DIR: "${{ github.workspace }}/../slide-sync-skill"
+          VIDEO_AGENT_SOUND_DESIGN_DIR: "${{ github.workspace }}/../sound-design-skill"
+          VIDEO_AGENT_REMOTION_DIR: "${{ github.workspace }}/../remotion-ffmpeg-skill"
+          VIDEO_AGENT_ARTIFACTS_DIR: "${{ github.workspace }}/../artifacts-skill"
+      # ADR-076: the color-grading adapter against the real color-grading-skill (live contract = the colour vocabulary the agent's keys are read from; RETAG / PRIMARY_CORRECTION on real media); the fake-based tests of the same file run in the unit job
+      - id: color
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_adapter_color_grading.ColorGradingRealSkillTests 2>&1 | tee "$TEST_LOGS/color.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_COLOR_GRADING_DIR: "${{ github.workspace }}/../color-grading-skill"
+          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
+      # ADR-058: the qc adapter against the real qc-skill (contract drift, reference metrics SSIM / PSNR; ADR-112: a stinger file and loop seams); the fake-based tests of the same file run in the unit job
+      - id: qc
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_adapter_qc.QcRealSkillTests 2>&1 | tee "$TEST_LOGS/qc.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
+      # ADR-080: the pinned blender-skill / hyperframes-skill contracts of the render_3d / html_scene_render handoffs against the real checkouts
+      # (contract only: no Blender, no Chromium; hyperframes' contract needs its npm dependencies, installed without their install scripts)
+      - if: matrix.shard == 1
+        uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - if: matrix.shard == 1
+        run: python scripts/repin.py clone --dest .. --only blender --only hyperframes $SIBLINGS_REF && cd ../hyperframes-skill && npm ci --ignore-scripts
+      - id: handoff
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_handoff_contracts.HandoffPinLiveTests 2>&1 | tee "$TEST_LOGS/handoff.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_BLENDER_DIR: "${{ github.workspace }}/../blender-skill"
+          VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
+      # ADR-057 addendum 1: skills/ecosystem.py (every status, plugin, owns) and the marketplace name against Velisa main's ecosystem.json
+      # (Velisa is the ecosystem's catalogue, not a Skill with a pin: it is not in the lock)
+      - if: matrix.shard == 1
+        run: git clone --depth 1 https://github.com/kajisho5/Velisa ../Velisa
+      - id: ecosystem
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_ai_host.EcosystemSnapshotTests 2>&1 | tee "$TEST_LOGS/ecosystem.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_VELISA_DIR: "${{ github.workspace }}/../Velisa"
+      # roadmap step 33: text / shots on the real detection-skill and speech regions on the real media-analysis-skill, where the doctors say their
+      # engines are ready (Tesseract, PySceneDetect, the vad extra); none is installed here, so the tests skip or check the BLOCK with the Skill's code
+      - id: measurements
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_measurements.RealSkillTests 2>&1 | tee "$TEST_LOGS/measurements.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_DETECTION_DIR: "${{ github.workspace }}/../detection-skill"
+          DETECTION_MODELS_DIR: "${{ github.workspace }}/../detection-models"
+          VIDEO_AGENT_MEDIA_ANALYSIS_DIR: "${{ github.workspace }}/../media-analysis-skill"
+          VIDEO_AGENT_TRANSCRIPTION_DIR: "${{ github.workspace }}/../transcription-skill"
+          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
+      # ADR-114: the motion.layer clip on the real hyperframes-skill: its live contract against the adapter's checks and the pin, and its doctor's
+      # verdict. No Chromium here, so the doctor says render is not usable and the two render tests skip (they run where a headless Chromium is found)
+      - id: html
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_html_layer.HtmlLayerRealSkillTests 2>&1 | tee "$TEST_LOGS/html.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_HYPERFRAMES_DIR: "${{ github.workspace }}/../hyperframes-skill"
+          VIDEO_AGENT_FFMPEG_SKILL_DIR: "${{ github.workspace }}/../ffmpeg-skill"
+          VIDEO_AGENT_MOTION_GRAPHICS_DIR: "${{ github.workspace }}/../motion-graphics-skill"
+      # the canary keeps, per test step this shard runs, its outcome (success / failure when it ran; skipped / cancelled when a step before it
+      # failed) and its failing test ids (unittest's FAIL: / ERROR: lines). A step that failed with no test id (discovery, an import, a crash)
+      # is reported by the canary as a failure of its own.
+      - if: always() && inputs.siblings == 'main'
+        env:
+          OUTCOMES: >-
+            shard=${{ steps.shard.outcome }}
+            ${{ matrix.shard == 1 && format('color={0} qc={1} handoff={2} ecosystem={3} measurements={4} html={5}', steps.color.outcome, steps.qc.outcome,
+            steps.handoff.outcome, steps.ecosystem.outcome, steps.measurements.outcome, steps.html.outcome) || '' }}
+        run: |
+          mkdir -p canary-result
+          base="canary-result/ffmpeg-${{ matrix.ffmpeg_skill }}-shard-${{ matrix.shard }}"
+          : > "$base.suites"; : > "$base.txt"
+          for pair in $OUTCOMES; do
+            suite="${pair%%=*}"; outcome="${pair#*=}"
+            echo "$suite ${outcome:-missing}" >> "$base.suites"
+            { grep -E '^(FAIL|ERROR): ' "$TEST_LOGS/$suite.log" 2>/dev/null || true; } | sort -u | sed "s/^/$suite\t/" >> "$base.txt"
+          done
+          cat "$base.suites" "$base.txt"
+      - if: always() && inputs.siblings == 'main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-ffmpeg-${{ matrix.ffmpeg_skill }}-shard-${{ matrix.shard }}
+          path: canary-result/
+          if-no-files-found: ignore

@@ -1,0 +1,5 @@
+# Tests the nightly canary (sibling Skills at their mains) expects to fail: "<ffmpeg-skill leg> <test method>" per line (leg: main or
+# v2.24.1; "*" for both), with the reason.
+# A failure listed here is reported in the canary's summary but opens no issue. Remove a line once the cause is fixed.
+# (ADR-117; the canary's report job reads this file.)
+main test_punch_in_keeps_frame_and_duration   # ffmpeg-skill #479

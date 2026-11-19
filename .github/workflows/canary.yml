@@ -1,0 +1,96 @@
+# ADR-117: the nightly canary. The real-Skill integration suite with every sibling Skill at its main branch (ffmpeg-skill at main and
+# v2.24.1, as in `tests`). `tests` runs the siblings at the releases the pins were taken from (integration/siblings.lock.json), so
+# this is where a sibling's unreleased or newly released change shows first. The canary never fails its run: every test step continues
+# on error, and the report job compares the failures with integration/canary_known_failures.txt. New failures (a failing test, a test step that failed with no
+# test id, or a suite that never ran) open the "Nightly canary failed" issue, or comment on the open one; the summary lists every failure either way.
+name: canary
+on:
+  schedule:
+    - cron: "43 19 * * *"   # 19:43 UTC every day (04:43 JST), after the nightly `tests` run; off the hour, where scheduled runs queue up
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: canary
+  cancel-in-progress: false
+jobs:
+  integration:
+    uses: ./.github/workflows/integration.yml
+    with:
+      siblings: main
+  report:
+    name: canary report
+    needs: [integration]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: integration
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: canary-*
+          path: canary-result
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Nightly canary failed
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p canary-result
+          # known failures: "<leg> <test method>" (leg: main or v2.24.1, the ffmpeg-skill leg), or "* <test method>" for both legs
+          known="$(grep -vE '^\s*(#|$)' integration/canary_known_failures.txt | sed -E 's/\s*#.*//; s/\s+/ /g; s/ $//' | sort -u || true)"
+          new=""; known_hit=""; missing=""
+          for leg in main v2.24.1; do
+            for shard in 1 2 3 4 5 6; do
+              base="canary-result/ffmpeg-${leg}-shard-${shard}"
+              if [ ! -f "${base}.suites" ]; then
+                missing="${missing}- ffmpeg-skill ${leg}, shard ${shard}: no result (the job did not finish)"$'\n'
+                continue
+              fi
+              while read -r suite outcome; do
+                [ -n "$suite" ] || continue
+                if [ "$outcome" != success ] && [ "$outcome" != failure ]; then
+                  missing="${missing}- ffmpeg-skill ${leg}, shard ${shard}, ${suite}: did not run (${outcome})"$'\n'
+                elif [ "$outcome" = failure ] && ! grep -q "^${suite}"$'\t' "${base}.txt"; then
+                  new="${new}- ffmpeg-skill ${leg}, shard ${shard}, ${suite}: failed with no test id (see the job log)"$'\n'
+                fi
+              done < "${base}.suites"
+              while IFS=$'\t' read -r suite line; do
+                [ -n "$line" ] || continue
+                name="$(echo "$line" | sed -E 's/^(FAIL|ERROR): ([^ ]+).*/\2/')"
+                if [ -n "$known" ] && { grep -qxF "${leg} ${name}" <<<"$known" || grep -qxF "* ${name}" <<<"$known"; }; then
+                  known_hit="${known_hit}- ffmpeg-skill ${leg}, shard ${shard}: \`${line}\` (known)"$'\n'
+                else
+                  new="${new}- ffmpeg-skill ${leg}, shard ${shard}, ${suite}: \`${line}\`"$'\n'
+                fi
+              done < "${base}.txt"
+            done
+          done
+          {
+            echo "## Canary: sibling Skills at main"
+            echo
+            if [ -z "$new$missing" ]; then echo "No failure beyond the known ones."; fi
+            [ -z "$missing" ] || { echo "### Suites that did not run"; echo; printf '%s' "$missing"; echo; }
+            [ -z "$new" ] || { echo "### New failures"; echo; printf '%s' "$new"; echo; }
+            [ -z "$known_hit" ] || { echo "### Known failures (integration/canary_known_failures.txt)"; echo; printf '%s' "$known_hit"; echo; }
+            echo "Each shard's job summary lists the sibling commits it ran against."
+          } | tee report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$new$missing" ]; then
+            body="The nightly canary (sibling Skills at their main branches) found failures on \`${GITHUB_SHA}\`: ${RUN_URL}
+
+          $(cat report.md)
+
+          main is not affected: \`tests\` runs the siblings at the releases in integration/siblings.lock.json. A failure here is what the next re-pin would bring in, or a sibling change that is not released yet. Close this issue once a canary run reports no new failure."
+            number="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+              | jq -s --arg t "$TITLE" '[.[][] | select(.pull_request == null and .title == $t) | .number] | first // empty')"
+            if [ -n "$number" ]; then
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" -f body="$body" --jq .html_url
+            else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues" -f title="$TITLE" -f body="$body" --jq .html_url
+            fi
+          fi
