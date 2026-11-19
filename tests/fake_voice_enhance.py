@@ -1,5 +1,5 @@
 """Fake voice-enhance-skill process for the ADR-073 tests: speaks the slice of the real `voice-enhance` CLI the agent uses -- `contract --json`
-(the pinned src/video_agent/tools/voice_enhance/contract_0.1.1.json), `doctor --json --offline --ffmpeg-skill=DIR` (voice-enhance/doctor@1 with
+(the pinned src/video_agent/tools/voice_enhance/contract_0.1.2.json), `doctor --json --offline --ffmpeg-skill=DIR` (voice-enhance/doctor@1 with
 engines and operations.<op>.ready) and `isolate` / `dereverb` / `bleed-reduce` with `--flag=value` options and the inputs after `--`, in the
 result shapes of voice-enhance-skill main (voice-enhance/<op>@1, its provenance block with sha256 of every input and output, its error
 document). The media are the self-describing fake files of tests/fake_adapter.py: an output is such a file (isolate: 48 kHz mono, 30 ms
@@ -26,7 +26,7 @@ MODE = os.environ.get("FAKE_VOICE_MODE", "ok")
 ENGINES = os.environ.get("FAKE_VOICE_ENGINES", "all")
 CONTRACT_MODE = os.environ.get("FAKE_VOICE_CONTRACT", "pinned")
 CALLS_LOG = os.environ.get("FAKE_VOICE_CALLS")
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "voice_enhance" / "contract_0.1.1.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "voice_enhance" / "contract_0.1.2.json"
 OP_ENGINE = {"isolate": "deepfilternet", "dereverb": "nara_wpe", "bleed_reduce": "crosstalk"}
 
 

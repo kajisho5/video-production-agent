@@ -1,5 +1,5 @@
 """Fake publish-skill process for the ADR-087 tests: speaks the slice of the real `publish` CLI the agent uses -- `contract --json` (the pinned
-src/video_agent/tools/publish/contract_0.2.1.json), `doctor --json --offline` (publish/doctor@1 with checks.platforms) and `plan` / `upload` with
+src/video_agent/tools/publish/contract_0.2.2.json), `doctor --json --offline` (publish/doctor@1 with checks.platforms) and `plan` / `upload` with
 `--flag=value` options and the deliverable after `--`, in the result shapes of publish-skill main (publish/plan@1; the dry run with its
 confirm_token = the real formula over platform, sha256, size and the canonical metadata; the upload result; its error document). Nothing touches
 a network: an upload with the right token writes a receipt line to FAKE_PUB_UPLOADS instead.
@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "publish" / "contract_0.2.1.json"
+PINNED = Path(__file__).resolve().parents[1] / "src" / "video_agent" / "tools" / "publish" / "contract_0.2.2.json"
 CALLS_LOG = os.environ.get("FAKE_PUB_CALLS")
 
 

@@ -110,7 +110,7 @@ class VersionOnlyDriftTests(unittest.TestCase):
         self.assertEqual(sorted(c.restated), sorted(["version", "response_shape.skill.version", "doctor_shape.skill.version", "versioning.version"]
                                                      + [f"tools[{i}].version" for i in range(len(pinned["tools"]))]))
         pinned = adapter("color-grading-skill")[0]
-        c = compare_to_pin("color-grading-skill", by_hand(pinned, "1.1.2"), pinned, *adapter("color-grading-skill")[1:])
+        c = compare_to_pin("color-grading-skill", by_hand(pinned, "1.1.3"), pinned, *adapter("color-grading-skill")[1:])
         self.assertEqual(c.restated, ["version", "tools[0].version"])
         for skill, field in (("imagemagick-skill", "skill.version"), ("artifacts-skill", "tool_version")):
             pinned = adapter(skill)[0]
@@ -172,8 +172,8 @@ class VersionOnlyDriftTests(unittest.TestCase):
 
     def test_restate_leaves_the_input_alone(self):
         pinned = adapter("video-editing-skill")[0]
-        live = by_hand(pinned, "0.8.4"); before = copy.deepcopy(live)
-        out, changed = restate_release_version(live, "0.8.3")
+        live = by_hand(pinned, "0.8.5"); before = copy.deepcopy(live)
+        out, changed = restate_release_version(live, "0.8.4")
         self.assertEqual(live, before); self.assertEqual(out, pinned); self.assertTrue(changed)
         self.assertEqual(restate_release_version({"name": "x"}, "1.0.0"), ({"name": "x"}, []))
 

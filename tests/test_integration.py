@@ -2875,7 +2875,9 @@ class AudioProductionRealTests(unittest.TestCase):
                                                                        "audio.mix.duck.threshold_db": -40},
                                            ["audio_mix"], ["MIX"])
         self.assertEqual(res[0]["data"]["operation"]["parameters"]["duck"], {"input": 1, "amount_db": 18.0, "threshold_db": -40.0})
-        self.assertTrue(any("sidechaincompress" in c for c in res[0]["data"].get("commands") or []), "the engine ran its sidechain compressor (observed command, provenance only)")
+        # ffmpeg-skill 2.x ducks with sidechaincompress; 3.x (its #516) with a sidechain gate keyed by the speech (sidechaingate)
+        self.assertTrue(any(f in c for c in res[0]["data"].get("commands") or [] for f in ("sidechaincompress", "sidechaingate")),
+                        "the engine ran its sidechain filter (observed command, provenance only)")
         dur, ch, _, has_v = self._probe(res[0]["output"])
         self.assertAlmostEqual(dur, 16.0, delta=0.1); self.assertEqual((ch, has_v), (2, False))
 
