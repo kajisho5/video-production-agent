@@ -24,6 +24,7 @@ import re
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import selects as _sel
 from ..models import Requirement
 from ..tools.base import ToolError
 from ..tools.video_editing.adapter import check_proposals, proposal_seconds
@@ -105,6 +106,8 @@ SEGMENT_CACHE_OP = "video.segment_cache"  # ADR-099: options.segment_cache on ev
 SEGMENT_CACHE_KEY = "edit.segment_cache"
 AI_OP = "media.ai_generated"              # ADR-099: the user's declaration that an input is AI-generated (sources[].ai_generated)
 AI_KEY = "edit.ai_generated"
+SELECTS_OP = _sel.SUBJECT                 # ADR-124: batch selects -- the kept shots of each clip, from the file `video-agent selects` wrote
+SELECTS_KEY = _sel.KEY
 # requirement keys: edit.<op> switches the operation on (its value is the main parameter), edit.<op>.<param> refines it
 REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     "video.concat": ("edit.concat", "edit.concat.transition", "edit.concat.transition_duration", "edit.concat.width", "edit.concat.height", "edit.concat.fps", "edit.concat.mode", "edit.concat.pad_color",
@@ -123,6 +126,7 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     PUNCH_IN_OP: ("edit.punch_in", "edit.punch_in.scale", "edit.punch_in.subject"),
     # ADR-099: approved cut proposals (the proposals file and the approved ids), the segment cache, AI-generated inputs
     CONDENSE_OP: (CONDENSE_KEY, CONDENSE_APPROVE_KEY),
+    SELECTS_OP: (SELECTS_KEY,),   # ADR-124: the selects file (every shot kept or rejected with its reasons)
     SEGMENT_CACHE_OP: (SEGMENT_CACHE_KEY,),
     AI_OP: (AI_KEY,),
     "video.speed": ("edit.speed",),
@@ -446,6 +450,11 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
             p["subject"] = sub
         elif op == CONDENSE_OP:   # ADR-099
             p.update(parse_condense(vals[CONDENSE_KEY], vals.get(CONDENSE_APPROVE_KEY)))
+        elif op == SELECTS_OP:   # ADR-124
+            try:
+                p.update(_sel.parse_requirement(vals[SELECTS_KEY]))
+            except _sel.SelectsError as e:
+                raise EditRequirementError(str(e))
         elif op == SEGMENT_CACHE_OP:   # ADR-099
             if not _bool(vals[SEGMENT_CACHE_KEY], SEGMENT_CACHE_KEY):
                 continue

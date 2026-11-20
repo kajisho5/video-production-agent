@@ -160,6 +160,22 @@ def cmd_propose(args, svc: Service) -> int:
     return 0
 
 
+def cmd_selects(args, svc: Service) -> int:
+    """ADR-124: batch selects -- every shot of 1-50 clips kept or rejected with its reasons and the total duration. Nothing is rendered: the
+    selects file is written for the user to approve, then `plan <clips> --set edit.selects=<file>`."""
+    opts = {"min_shot": args.min_shot, "max_blur": args.max_blur, "max_jitter": args.max_jitter, "under_luma": args.under_luma, "over_luma": args.over_luma,
+            "min_score": args.min_score, "max_duration": args.max_duration, "reject_dead_air": True if args.reject_dead_air else None}
+    res = svc.selects(args.inputs, {k: v for k, v in opts.items() if v is not None}, output=args.output)
+    if args.json:
+        _print({"path": res["path"], "lines": res["lines"], "next": res["next"], **res["document"]}, True)
+        return 0
+    print(f"Nothing is rendered yet. The selects (written to {res['path']}):")
+    for line in res["lines"]:
+        print("  " + line)
+    print(res["next"])
+    return 0
+
+
 def cmd_analyze(args, svc: Service) -> int:
     ingest, blocked = _url_inputs_or_handoff(args, svc)
     if blocked is not None:
@@ -993,6 +1009,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--combine", choices=["and", "or"], help="silence and static together: both (and) or either (or)")
     p.add_argument("-o", "--output", help="where to write the proposals (default <workspace>/proposals/<stem>.proposals.json)")
     p.set_defaults(fn=cmd_propose)
+    p = sub.add_parser("selects", help="batch selects: keep or reject every shot of 1-50 clips with the reasons; nothing is rendered (ADR-124)")
+    p.add_argument("inputs", nargs="+", help="a folder of clips or the clips (1-50)")
+    p.add_argument("--min-shot", type=float, help="shortest usable shot in seconds (default 1.0)")
+    p.add_argument("--max-blur", type=float, help="soft above this blurdetect value (default: 1.3 x the batch's 25th percentile)")
+    p.add_argument("--max-jitter", type=float, help="shaky above this camera jitter, %% of the width (default 1.0)")
+    p.add_argument("--under-luma", type=float, help="under-exposed below this mean luma (default 40)")
+    p.add_argument("--over-luma", type=float, help="over-exposed above this mean luma (default 210)")
+    p.add_argument("--min-score", type=float, help="reject usable shots scoring below this (0-100)")
+    p.add_argument("--max-duration", type=float, help="keep the best-scored usable shots that fit this many seconds (then source order)")
+    p.add_argument("--reject-dead-air", action="store_true", help="reject silent / speechless shots (default: flagged only)")
+    p.add_argument("-o", "--output", help="where to write the selects file (default <workspace>/selects/selects.json)")
+    p.set_defaults(fn=cmd_selects)
     p = sub.add_parser("plan", help="analyze, decide and write a Project IR")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--request", help="free-text request (only unambiguous phrases are used)")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="explicit USER requirement, e.g. audio.loudness.target_lufs=-16 or edit.trim_leading_silence=true")
