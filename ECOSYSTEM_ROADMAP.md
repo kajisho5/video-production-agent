@@ -198,7 +198,7 @@ Uses 17 of ffmpeg-skill's 42 tools directly (3.x, contract_version 2.0 read like
   - Done when: every candidate in a plan comes from `propose`, each is a CONFIRM decision with the quoted words, and an approved candidate becomes the cut
 - [x] **36. Capability-driven planning, first step** — read the capabilities from the pinned contracts' `provides[]` (`tools/<dir>/contract_<ver>.json`, `skills/pins/`) so production skills name a capability instead of a hand-written tool id: capability → operation → adapter, a gate in the adapters' contract check driven by `provides[]`, and a clear error when no pinned Skill provides a capability. One shared loader first, then a few skills; the rest migrate one package per PR
   - Done when: a migrated skill's tool comes from its pin and existing plans run the same tools; a live contract that drops a consumed capability is refused; a capability no pin provides stops with a message naming the pins
-  - Done (ADR-118): `skills/capabilities.py` (loader, `resolve` / `route`, `contract_gate`, `CapabilityNotProvided`); voice-enhance (3 skills), detection (4) and diarization (1) migrated, their adapters gate on `provides[]`; every SkillSpec unchanged byte for byte; the remaining migrations are listed in ADR-118 (PR_LINK)
+  - Done (ADR-118): `skills/capabilities.py` (loader, `resolve` / `route`, `contract_gate`, `CapabilityNotProvided`); voice-enhance (3 skills), detection (4) and diarization (1) migrated, their adapters gate on `provides[]`; every SkillSpec unchanged byte for byte; the remaining migrations are listed in ADR-118 ([#171](https://github.com/kajisho5/video-production-agent/pull/171))
 
 ## Boundaries
 
