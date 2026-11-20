@@ -286,6 +286,40 @@ class Service:
         out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return {"path": str(out), "document": doc}
 
+    def selects(self, inputs: List[str], opts: Optional[Dict[str, Any]] = None, output: Optional[str] = None, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """ADR-124: batch selects. Each clip (a folder or a list, 1-50) is measured by media-analysis-skill (shots, picture, silence, speech) and
+        qc-skill inspect (black / frozen frames); rule selects@1 keeps or rejects every shot with its reasons. Nothing is rendered: the selects
+        file is written to `output` (default <workspace>/selects/selects.json) and returned with the lines to show the user; after their yes,
+        plan the clips with --set edit.selects=<file> and approve the selects.keep decisions."""
+        from .agent import selects as sel
+        try:
+            clips_in = sel.expand_inputs(inputs)
+            o = sel.options(opts)
+        except sel.SelectsError as e:
+            raise ValueError(str(e))
+        roots = sorted({str(Path(p_).parent) for p_ in clips_in})
+        router = self.adapter(roots)
+        ma = router.adapter_for(sel.MA_KINDS["scene_detection"])
+        if ma is None or not hasattr(ma, "measure"):
+            raise ValueError("selects needs media-analysis-skill (set VIDEO_AGENT_MEDIA_ANALYSIS_DIR or install the `media-analysis` command)")
+        qc = router.adapter_for(sel.QC_INSPECT)
+        qc = qc if qc is not None and hasattr(qc, "measure") else None
+        out = Path(output) if output else Path(self.workspace) / "selects" / "selects.json"
+        if not output and any(out.resolve().parent == Path(p_).parent for p_ in clips_in):
+            raise ValueError("selects: refusing to write next to the clips (give --output)")
+        try:
+            clips = [sel.measure_clip(ma, qc, p_, i, timeout=timeout) for i, p_ in enumerate(clips_in)]
+        except (sel.SelectsError, ToolError) as e:
+            raise ValueError(str(e))
+        skills = {"media-analysis": getattr(ma, "version", None), "qc": getattr(qc, "version", None) if qc is not None else None}
+        doc = sel.preview(clips, o, skills)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        used = [c["path"] for c in doc["clips"] if c["keep"]]
+        return {"path": str(out), "document": doc, "lines": sel.approval_lines(doc), "clips": [c["path"] for c in doc["clips"]],
+                "next": (f"show these lines to the user; only after their yes: plan {' '.join(used)} --set {sel.KEY}={out} and approve the {sel.SUBJECT} decision(s)"
+                         if used else "no shot is kept: nothing to assemble")}
+
     def transcript_edit(self, source: str, transcript: str, mode: str, words: Optional[List[List[int]]] = None, segments: Optional[List[str]] = None,
                         overlap: str = "refuse", subtitles: Optional[List[str]] = None, output: Optional[str] = None, silence: bool = True) -> Dict[str, Any]:
         """ADR-123: preview a transcript edit. transcription-skill `select` turns the user's selection into removed spans with their gaps, then
@@ -2173,7 +2207,7 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS | 
 # is a file path (overlay / joined still (ADR-070) / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
 _PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
-                                    "edit.concat.stinger", "edit.condense", "edit.transcript_edit", "edit.ai_generated", "motion.layer", "motion.themes",
+                                    "edit.concat.stinger", "edit.condense", "edit.transcript_edit", "edit.selects", "edit.ai_generated", "motion.layer", "motion.themes",
                                     "subtitle.fonts_dir"})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 

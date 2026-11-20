@@ -1781,3 +1781,84 @@
 **Measured (synthetic, ffmpeg 6, ffmpeg-skill 3.8.3).** A 9 s 30000/1001 clip with ten tone bursts standing for words, two speakers. "um" (word 2) and sentence `seg_0002` were removed, and a trailing silence trimmed by the plan. The render delivered 110 frames, the retimed EDL says 110, and each kept burst starts within 1 ms of the retimed subtitle / transcript time ("Now" heard 2.3959 s, cue 2.396 s).
 
 **Contract.** Additive on both Skills (a tool; a top-level block). The pins move only through the repin workflow (ADR-117).
+## ADR-124 Batch selects: every shot of 1-50 clips measured by the Skills, kept or rejected by rule `selects@1` with its reasons, rendered through the existing trim and join only after a yes (Velisa ADR-033, 2026-11-20)
+
+**Decision.**
+- **Preview.** `video-agent selects <folder | clips>` and MCP `selects` take 1–50 clips (a folder means its video files, by name, not
+  recursive). Each clip is measured by the Skills; nothing is measured here:
+  - media-analysis-skill: `media_probe`, `scene_detection` (the shots), `picture_quality` (per-second blur, luma, camera jitter and motion
+    agreement; 0.2.0+), `silence` and `speech_regions` (`UNKNOWN` without its optional extra; dead air is then judged from silence alone, and
+    the file says so);
+  - qc-skill `inspect`: `video.black_segments` and `video.freeze_segments`.
+
+  A measurement that cannot be taken is listed under the clip's `unmeasured`. Without shots or picture facts the clip is refused, never guessed.
+- **Rule `selects@1`** (`agent/selects.py`). Each shot reads the facts in its span: the median of the picture windows whose middle lies in it,
+  and the share covered by black / frozen / silent / speech spans.
+  - **Reject reasons**: black or frozen ≥ 50 % of the shot; soft (median blur ≥ 1.3 × the batch's 25th percentile, or above `max_blur`);
+    under-exposed (mean luma < 40, not repeated for a black shot); over-exposed (> 210); shaky (jitter > 1.0 % of the width, judged only
+    when motion agreement ≥ 0.6, else flagged "camera motion not judged"); shorter than 1.0 s.
+  - **Dead air** (silent ≥ 90 %, no audio track, or no speech when speech was measured) is a flag. It rejects only with `--reject-dead-air`.
+  - **Score**: 100 minus soft 30, exposure 25, shaky 25, short 20, dead air 10, and black / frozen 40 × their share.
+  - **Selection**: the usable shots in source order. `--min-score` rejects below a score. `--max-duration` keeps the best scores that fit,
+    then source order.
+
+  Every threshold is an option and is written into the file.
+- **The file** `video-agent/selects@1`: every clip with its sha256, the observation ids, the kept ranges, and every shot with its facts,
+  flags, score, kept or not and why; plus the options, the batch's blur reference and the total duration. The lines shown to the user list
+  every shot (KEEP / REJECT, steady / shaky, the facts, the reasons) and the total.
+- **Plan step.** `--set edit.selects=<file>` (a path key: never from a brief or a stored preference). The file is refused if it is not a
+  selects file, says it was applied, or a clip changed since the preview. Per clip with kept shots it makes one `selects.keep` TRANSFORM
+  (policy `selects.keep.approval`, CONFIRM floor; leaving shots out is an editorial choice). With two or more such clips it adds a
+  `video.concat` of them in source order that cites them (`picks`), so a rejected `selects.keep` makes the assembly rejected-cited.
+  - The render reuses the existing path. Each clip's `video.trim` keeps exactly its kept ranges, frame-accurately, as for the editor's
+    timeline (ADR-098): one multi-range cut, with touching shots merged into one range. The trimmed clips are joined by `video.concat`.
+  - A selected clip gets no silence trims of its own. A clip of the plan with no kept shot gets no decision and no step.
+  - A clip of the file that is not an input, a kept range past a clip's end, or `edit.concat` / `edit.switch` / `edit.grid` / `edit.takes`
+    with it is a BLOCK naming why.
+- **Order by score is not rendered**: the plan joins each source once (Velisa ADR-033 §5).
+
+**Measured** (synthetic, ffmpeg 6.1, media-analysis-skill `picture_quality` branch, qc-skill 1.4.5, ffmpeg-skill main, video-editing-skill 0.9.0).
+Six 6 s clips:
+- good: two moving test patterns, a hard cut at 3 s;
+- blurred: Gaussian sigma 4;
+- shaky: the crop jumps up to ±16 / ±10 px per frame;
+- silent: digital silence;
+- black;
+- mixed: sharp, then a blurred second picture.
+
+The preview took 17 s. It kept 4 of 8 shots (15.0 s of 36 s):
+- the two good shots;
+- the silent clip, flagged "dead air (silent over 100 %, no speech)";
+- the sharp half of the mixed clip.
+
+It rejected:
+- blurred: blur 14.2 ≥ 6.35, the batch's soft limit;
+- shaky: jitter 1.82 %;
+- black: black frames over 99 %;
+- the blurred half of the mixed clip: blur 16.2.
+
+`render` refused before the three CONFIRMs. After approval the delivered file is 15.000 s (375 frames). Every second of it measures blur
+4.8–5.1 (no soft frame). The cuts are at 3.0 s and 12.0 s, where the mixed clip's sharp shot begins.
+
+**Contract.** None sent to a Skill changes. The agent reads one new media-analysis kind (`picture_quality`, additive in media-analysis-skill
+0.2.0); the pin moves only through the repin workflow (ADR-117).
+
+**Verification.** `tests/test_selects.py` (14):
+- every reject reason and the dead-air flag;
+- the relative blur reference and `max_blur`;
+- the motion-agreement gate;
+- the duration cap and `min_score`;
+- the option and input checks;
+- merged ranges;
+- the plan: decisions, multi-range trims, concat in source order citing the selects, no step for an unused clip, no silence trims;
+- no render before the yes, then a completed render;
+- a changed clip, an applied or missing file and conflicts refused or blocked;
+- one clip delivered alone;
+- the MCP argv as data;
+- `measure_clip` reading the observations and listing what was not measured.
+- **Addendum (the re-pin of media-analysis 0.2.0).** The repin bot's PR #190 (media-analysis 0.1.23 → 0.2.0 and subtitle 0.10.3 → 0.11.0,
+  both `widen`, si contract-diff `additive`) was labelled `repin: needs review`, because one test failed:
+  `MediaAnalysisAdapterTests.test_contract_discovery_package_and_tool_mapping`. 0.2.0 declares two new filter capabilities,
+  `filter:blurdetect` and `filter:signalstats`. The capability resolver did not probe them, and the test lists the names it accepts. This
+  PR adds both to `capabilities/resolver.py` `FILTERS` and to that list. With this change, the bot's tree passes the test. The pin itself is
+  left to the bot.

@@ -2732,7 +2732,9 @@ class MediaAnalysisAdapterTests(unittest.TestCase):
         self.assertEqual(pinned_contract()["skill_id"], "media-analysis")
         # capability names of the contract are CapabilityResolver names
         # filter:astats: 0.1.7 noise_floor; filter:edgedetect: 0.1.10 edit_style (ADR-097 addendum 6)
-        self.assertTrue(set(ad.contract["capability_names"]) <= {"ffmpeg", "ffprobe", "filter:astats", "filter:ebur128", "filter:edgedetect", "filter:scdet", "filter:silencedetect"})
+        # filter:blurdetect / filter:signalstats: 0.2.0 picture_quality (ADR-124)
+        self.assertTrue(set(ad.contract["capability_names"]) <= {"ffmpeg", "ffprobe", "filter:astats", "filter:blurdetect", "filter:ebur128", "filter:edgedetect", "filter:scdet",
+                                                                  "filter:signalstats", "filter:silencedetect"})
         from video_agent.capabilities.resolver import FILTERS
         self.assertTrue({c.split(":", 1)[1] for c in ad.contract["capability_names"] if c.startswith("filter:")} <= set(FILTERS), "every filter the contract names is probed by the resolver")
 

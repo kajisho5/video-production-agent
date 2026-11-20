@@ -107,6 +107,20 @@ TOOLS: List[Dict[str, Any]] = [
     {"name": "check", "description": "Probe an output file and check platform compliance (loudness, codec, resolution).",
      "inputSchema": {"type": "object", "required": ["output"], "properties": {
          "output": _STR, "platform": {"type": "string", "description": "e.g. youtube (default custom)"}, "qc": {"type": "boolean"}}}},
+    {"name": "selects", "description": (
+        "Batch selects (preview only): for 1-50 clips (a folder or files), media-analysis-skill and qc-skill measure every shot (cuts, blur, exposure, "
+        "camera shake, black / frozen frames, silence, speech) and rule selects@1 keeps or rejects each one with its reasons. Nothing is rendered. "
+        "Show the user the returned lines (every shot, why, the total duration) and ask; only after their yes call `plan` with the clips and "
+        "set {\"edit.selects\": <path>}, then `approve` the selects.keep decisions."),
+     "inputSchema": {"type": "object", "required": ["inputs"], "properties": {
+         "inputs": {"type": "array", "items": _STR, "description": "a folder of clips, or the clip files (1-50)"},
+         "max_duration": {"type": "number", "description": "keep the best-scored usable shots that fit this many seconds"},
+         "min_score": {"type": "number", "description": "reject usable shots scoring below this (0-100)"},
+         "max_blur": {"type": "number", "description": "soft above this blurdetect value (default: relative to the batch)"},
+         "max_jitter": {"type": "number", "description": "shaky above this camera jitter, % of the width (default 1.0)"},
+         "min_shot": {"type": "number", "description": "shortest usable shot in seconds (default 1.0)"},
+         "reject_dead_air": {"type": "boolean", "description": "reject silent / speechless shots (default: flagged only)"},
+         "output": {"type": "string", "description": "where to write the selects file"}}}},
     {"name": "transcript_edit", "description": (
         "Preview a transcript edit: the user names words (index ranges) or sentences (segment ids) of the transcript to remove, or to keep. "
         "transcription-skill finds their times and gaps, video-editing-skill places each cut on silence and on a frame and retimes the "
@@ -215,6 +229,13 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         return cmd("check", [*opt("--platform", "platform"), *(["--qc"] if a.get("qc") else [])], [need("output")])
     if name == "artifacts":
         return cmd("artifacts", [], [str(a["project"])] if a.get("project") else [])
+    if name == "selects":   # ADR-124: a preview; the render needs plan + approve
+        ins = a.get("inputs")
+        if not isinstance(ins, list) or not ins or not all(isinstance(x, str) and x for x in ins):
+            raise ValueError("selects: 'inputs' must be a non-empty list of paths")
+        options = [*opt("--max-duration", "max_duration"), *opt("--min-score", "min_score"), *opt("--max-blur", "max_blur"), *opt("--max-jitter", "max_jitter"),
+                   *opt("--min-shot", "min_shot"), *(["--reject-dead-air"] if a.get("reject_dead_air") else []), *opt("--output", "output")]
+        return cmd("selects", options, [str(x) for x in ins])
     if name == "transcript_edit":   # ADR-123: a preview; the cut needs plan + approve
         mode = a.get("mode")
         if mode not in ("remove", "keep"):

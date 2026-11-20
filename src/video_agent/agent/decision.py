@@ -30,6 +30,8 @@ from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUB
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import (AI_KEY, AI_OP, CONDENSE_APPROVE_KEY, CONDENSE_KEY, CONDENSE_OP, CONDENSE_SKILL, IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, PUNCH_IN_OP,
                       SINGLE_SOURCE_ORDER, TRIM_KEY, TRIM_OP, TRIM_SKILL, parse_edit_requirements, switch_cams)
+from .editing import SELECTS_OP
+from .selects import decide_selects
 from .image_insert import decide_image_insert
 from .requirements import requirement_map
 from .takes import AI_INTENT as TAKE_AI_INTENT, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT, decide_takes
@@ -324,6 +326,24 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
             by_id = {a.id: a for a in analysis.assets}
             video_assets = [by_id[a] for a in takes["picks"]]
             concat_ok = len(video_assets) >= 2
+    # ---- batch selects (ADR-124): the kept shots of each clip (the selects file the user previewed); the clips with kept shots become the
+    # concat inputs in source order, the others get no decision and no step. It builds the programme, so it excludes takes / concat / switch / grid
+    if SELECTS_OP in edits:
+        if takes is not None:
+            sreq = edits[SELECTS_OP]["requirements"]
+            eng.decide(subject=SELECTS_OP, type="BLOCK", decision="BLOCK: edit.selects with edit.takes",
+                       reason="both build the programme from chosen parts of the inputs, each its own way; which one was meant is not guessed",
+                       confidence=1.0, evidence=[r.id for r in sreq] + probe_ids_of([a.id for a in analysis.assets]), risk="MEDIUM", approval="BLOCK",
+                       provenance="USER", requirements=sreq)
+        else:
+            sel = decide_selects(eng, edits[SELECTS_OP], analysis, edits, approval_for, probe_ids_of, cap_block, PROGRAMME, "silence_cleanup")
+            takes = {"excluded": set(sel["left_out"]), "picks": list(sel["used"]), "ok": sel["ok"]}
+            excluded = set(sel["left_out"])
+            take_picks = set(sel["used"])   # like a pick, a selected clip is cut to its kept ranges only: no silence trims of its own
+            if sel["ok"]:
+                by_id = {a.id: a for a in analysis.assets}
+                video_assets = [by_id[a] for a in sel["used"]]
+                concat_ok = len(video_assets) >= 2
     if "video.concat" in edits and takes is None:
         req = edits["video.concat"]["requirements"]
         ev = [r.id for r in req] + probe_ids_of([a.id for a in analysis.assets])
