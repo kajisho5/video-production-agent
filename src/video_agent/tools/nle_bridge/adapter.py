@@ -8,7 +8,7 @@ nle-bridge reads video-production-agent's project IR itself (its contract `input
 `timeline.export` record of the subject, the assets' paths and probe facts, the subject's caption cues, and the `not_exported` list of the
 timeline decision (as warnings). The agent hands it the IR it is executing -- nothing is converted or re-described here.
 
-Protocol (nle-bridge-skill's own contract, `nle-bridge contract --json`, pinned from main in contract_0.1.2.json at c0ab78f -- step 12, ffmpeg-skill
+Protocol (nle-bridge-skill's own contract, `nle-bridge contract --json`, pinned from main in contract_0.1.4.json at c0ab78f -- step 12, ffmpeg-skill
 `>=2.0.0 <4.0.0` and start timecodes in relink.json; no release tag, so the pin follows main):
     export   → {ok, files[{format, path, sha256, verification}], warnings[{code, message}], timeline, plan}
     conform  → {ok, package, zip {path, sha256} | null, files, relink (nle-bridge/relink@1), manifest, warnings, timeline, plan}
@@ -65,7 +65,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "formats")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.4.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

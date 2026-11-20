@@ -15,10 +15,17 @@ CATALOG: Dict[str, Dict[str, Any]] = {
                  "produces_output": True, "result_keys": ["input_i", "input_tp", "input_lra", "silent"]},
     "cut": {"positional": ["input"], "flags": {"start": "str", "end": "str", "duration": "str", "segments": "str", "accurate": "bool", "tolerance": "float", "output": "path_out", "preset": "str", "crf": "int"},
             "produces_output": True, "result_keys": ["output", "probe"]},
+    # ADR-121: ffmpeg-skill 4.0.0 refuses --duration without --method beyond a 1.15x retime (fit_method_required); the adapter refuses a
+    # `duration` without a `method` before the call, so the agent always names the method
     "fit": {"positional": ["input"], "flags": {"duration": "str", "method": "str", "aspect": "str", "fit": "str", "width": "int", "fps": "float", "output": "path_out", "preset": "str"},
             "produces_output": True, "result_keys": ["output", "probe"]},
-    "export": {"positional": ["input"], "flags": {"preset": "str", "fit": "str", "crf": "int", "allow_long": "bool", "no_scale": "bool", "output": "path_out"},
-               "produces_output": True, "result_keys": ["output", "probe"]},
+    # ADR-121 (ffmpeg-skill 4.0.0): a platform preset normalises the loudness by default; `no_normalize` (--no-normalize) keeps the agent's own
+    # loudness decision. It is a detected flag: emitted only where the checkout's contract publishes it, and only for a platform preset (one
+    # whose name is also a check.py platform), since 4.0 refuses it on any other preset. Exit 1 with error.kind `verification` (a required
+    # delivery property missed, the file kept) is a QA failure, not a tool failure (`verification_keeps_output`).
+    "export": {"positional": ["input"], "flags": {"preset": "str", "fit": "str", "crf": "int", "allow_long": "bool", "no_scale": "bool", "no_normalize": "bool", "output": "path_out"},
+               "detected_flags": ["no_normalize"], "verification_keeps_output": True,
+               "produces_output": True, "result_keys": ["output", "probe", "verification", "loudness"]},
     "check": {"positional": ["input"], "flags": {"platform": "str", "max_duration": "float", "aspect": "str", "lufs": "float", "tp": "float", "max_mb": "float", "no_loudness": "bool"},
               "produces_output": False, "result_keys": ["platform", "checks", "failed", "warnings", "ok"], "exit_code_means_fail": True},
     "look": {"positional": ["input"], "flags": {"at": "list[str]", "tiles": "str", "width": "int", "output": "path_out"},

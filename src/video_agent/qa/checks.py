@@ -82,8 +82,33 @@ def filler_removed_seconds(ir_doc: Dict[str, Any], paths: Dict[str, str], result
     return out
 
 
+def export_verification_items(result: Optional[ToolResult], art: str, incidents: List[Incident]) -> List[QAItem]:
+    """ADR-121: the delivery export tool may report error.kind `verification` when the written file misses a required delivery
+    property (streams, codec, frame_size, frame_rate, duration, file_size); the file is kept. Each failed step is a delivery FAIL here,
+    with an incident, so the job's QA fails on it. Nothing for a result without that error."""
+    if result is None or not isinstance(result.data, dict):
+        return []
+    err = result.data.get("error")
+    if not isinstance(err, dict) or err.get("kind") != "verification":
+        return []
+    items: List[QAItem] = []
+    for step in result.data.get("verification") or []:
+        if not isinstance(step, dict) or step.get("ok") is not False:
+            continue
+        name = str(step.get("step") or "export")
+        items.append(QAItem("delivery", f"export_{name}", "FAIL", step.get("measured"), step.get("expected"), artifact=art,
+                            fix_hint=f"export verification: {step.get('attribution') or 'unresolved'}"))
+    if not items:   # the error says verification failed but names no step: still a failure, never a pass
+        items.append(QAItem("delivery", "export_verification", "FAIL", str(err.get("message") or "failed")[:200], "every required delivery property", artifact=art))
+    incidents.append(Incident(type="DELIVERY_SPEC_FAILURE", severity="MEDIUM", evidence=[art],
+                              possible_cause=str(err.get("message") or "export verification failed")[:300],
+                              recommended_action="inspect the export's verification rows; the file was kept for review"))
+    return items
+
+
 def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], results: List[ToolResult], tools: Dict[str, str], sheet_dir: Optional[str] = None,
            check_by_artifact: Optional[Dict[str, ToolResult]] = None, qc_by_artifact: Optional[Dict[str, ToolResult]] = None,
+           export_by_artifact: Optional[Dict[str, ToolResult]] = None,
            qc_packages: Optional[List[Any]] = None, documents: Optional[Dict[str, Optional[ToolResult]]] = None) -> QAReport:
     """check_by_artifact maps artifact id -> the check ToolResult the executor already produced, so QA does not measure twice.
     qc_by_artifact maps artifact id -> the qc/check ToolResult of the QC gate (ADR-032): admitted only when its fingerprint is the
@@ -101,6 +126,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
     rep = QAReport()
     check_by_artifact = check_by_artifact or {}
     qc_by_artifact = qc_by_artifact or {}
+    export_by_artifact = export_by_artifact or {}
     qc_enabled = bool(((ir_doc.get("qa") or {}).get("qc") or {}).get("enabled"))
 
     def qc_items(art: str, path: str, expected_kind: str, qc_key: Optional[str] = None) -> None:
@@ -263,6 +289,7 @@ def run_qa(adapter: ToolAdapter, ir_doc: Dict[str, Any], paths: Dict[str, str], 
                         rep.items.append(QAItem("audio", "silence", "WARN", "silent", "programme audio", artifact=art))
                         rep.incidents.append(Incident(type="UNEXPECTED_SILENCE", severity="HIGH", start=0.0, end=p.get("duration"), evidence=[art], possible_cause="output audio is silent", recommended_action="verify the source track and the audio mapping"))
             if "delivery" in required and t.get("preset"):
+                rep.items.extend(export_verification_items(export_by_artifact.get(art), art, rep.incidents))
                 cr = check_by_artifact.get(art)
                 if cr is None or not cr.data.get("checks"):
                     cr = measure(tools["delivery_check"], {"input": path, "platform": t.get("platform", "custom")})

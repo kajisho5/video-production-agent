@@ -30,7 +30,12 @@ SUPPORTED_MIN = (0, 8, 4)
 # positional and switch arity is unchanged, contract_version is 2.0 with the 1.0 shape, and the agent reads only
 # `output` from cut.py's result. CI's integration job runs the whole real-Skill suite against ffmpeg-skill main (3.x)
 # and against v2.24.1 (the last 2.x).
-SUPPORTED_MAX_EXCLUSIVE = (4, 0, 0)
+# Widened to 4.x (2026-11-20, ADR-121): 4.0.0 keeps contract_version 2.0 and every catalogued tool, flag, positional and
+# switch arity. Its breaking changes are behaviour the adapter now handles: export normalises a platform preset's loudness
+# by default (the agent passes the detected --no-normalize), export exits 1 with kind `verification` on a missed delivery
+# property (a QA failure, the file kept), and fit.py --duration needs --method beyond 1.15x (the adapter requires it).
+# CI's integration job runs the real-Skill suite against ffmpeg-skill main (4.x) and v3.15.1 (the last 3.x).
+SUPPORTED_MAX_EXCLUSIVE = (5, 0, 0)
 
 
 @dataclass

@@ -94,6 +94,10 @@ class FfmpegSkillAdapter(ToolAdapter):
         if why:   # ADR-056: refused here with the contract's reason, never handed to argparse to fail on a renamed flag
             raise ToolError(f"{tool} is unavailable: {why}")
         args = dict(args)
+        self._drop_undetected(script, spec, args)
+        if script == "fit" and args.get("duration") is not None and not args.get("method"):
+            # ADR-121: ffmpeg-skill 4.0 refuses a retime beyond 1.15x without --method (fit_method_required); the agent names it always
+            raise ToolError(f"{tool}: 'duration' needs an explicit 'method' (speed, trim, ...)")
         argv: List[str] = []
         inputs: List[str] = []
         for key in spec["positional"]:
@@ -149,6 +153,23 @@ class FfmpegSkillAdapter(ToolAdapter):
                 argv += [flag, str(val)]
         return argv
 
+    def _drop_undetected(self, script: str, spec: Dict[str, Any], args: Dict[str, Any]) -> None:
+        """ADR-121: a detected flag is passed only where the checkout's contract publishes it; export's --no-normalize also only with a
+        platform preset (4.0 refuses it on any other). Dropping it keeps the older engine's behaviour, which is what the flag asks for."""
+        detected = spec.get("detected_flags") or ()
+        if not detected:
+            return
+        chk = self.skill.catalog_check()
+        for key in detected:
+            if args.get(key) is None or args.get(key) is False:
+                continue
+            keep = chk.offers(script, key)
+            if keep and script == "export" and key == "no_normalize":
+                platform = chk.platform_presets()
+                keep = platform is not None and str(args.get("preset")) in platform
+            if not keep:
+                args.pop(key)
+
     def _timeline_clips(self, tool: str, clips: Any, paths: Dict[str, str]) -> List[Dict[str, Any]]:
         """Typed clip records {input (artifact id or path), in, out} → render-project clips {src, in, out}; every source must lie
         inside the allowed input roots and every range must be a forward range of non-negative seconds."""
@@ -203,12 +224,17 @@ class FfmpegSkillAdapter(ToolAdapter):
         t0 = time.time()
         out_path = paths.get(op.args["output"], op.args["output"]) if isinstance(op.args.get("output"), str) else None
         code, out, err = run_process_group(cmd, timeout)
-        if code != 0 and out_path and not dry_run and code != 124 and os.path.exists(out_path) and _is_fresh(out_path, t0):
+        data = _parse_json(out)
+        # ADR-121: export.py 4.0 exits 1 with error.kind `verification` when the written file misses a required delivery property; the file
+        # is kept and the verification attached. That is a QA failure of a delivered file (QA reports it), not a tool failure to retry.
+        kept = (bool(CATALOG[script].get("verification_keeps_output")) and code == 1 and not dry_run and isinstance(data, dict)
+                and isinstance(data.get("error"), dict) and data["error"].get("kind") == "verification"
+                and bool(out_path) and os.path.exists(str(out_path)))
+        if code != 0 and not kept and out_path and not dry_run and code != 124 and os.path.exists(out_path) and _is_fresh(out_path, t0):
             _remove_partial(out_path)
         if code == 124 and out_path and os.path.exists(out_path) and _is_fresh(out_path, t0):
             _remove_partial(out_path)  # never let a retry write next to a half-written file
-        data = _parse_json(out)
-        exit_is_result = CATALOG[script].get("exit_code_means_fail") and data is not None
+        exit_is_result = (CATALOG[script].get("exit_code_means_fail") and data is not None) or kept
         ok = code == 0 or bool(exit_is_result)
         output = data.get("output") if isinstance(data, dict) else None
         if output is None and CATALOG[script]["produces_output"] and isinstance(op.args.get("output"), str):
