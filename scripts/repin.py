@@ -3,7 +3,8 @@
     python scripts/repin.py update [--only NAME ...] [--report report.json] [--pr-body body.md] [--si si]
         For each sibling Skill, find its latest release tag (`vX.Y.Z`, or `blender-skill-vX.Y.Z`), and when it is newer than the pin,
         replace the pin with the tag's committed `contract/contract.json` (byte for byte, no Skill code run), move every reader of
-        the pin with it, classify the change with `si contract-diff OLD NEW --json` and decide:
+        the pin with it, classify the change with `si contract-diff OLD NEW --json` (a dependency's version range that only widened
+        is additive, not si's breaking: addendum 2) and decide:
           auto   none / additive, inside the adapter's SUPPORTED_SKILL_VERSIONS gate: the pin moves, nothing else
           widen  none / additive, a new minor of a 0.x / 1.x line outside the gate: the gate takes the new `X.Y.` prefix
           review breaking, or a major change: the pin moves, the gate does not, and the pull request asks a person to look
@@ -448,7 +449,87 @@ def contract_diff(si: str, old: Path, new: Path) -> dict:
     proc = subprocess.run([si, "contract-diff", str(old), str(new), "--json"], capture_output=True, text=True)
     if proc.returncode != 0:
         raise SystemExit(f"si contract-diff failed ({proc.returncode}): {proc.stderr.strip()}")
-    return json.loads(proc.stdout)
+    diff = json.loads(proc.stdout)
+    return reclassify_dependency_ranges(diff, json.loads(old.read_text(encoding="utf-8")), json.loads(new.read_text(encoding="utf-8")))
+
+
+# ---- a dependency's version range that only widened (addendum 2) ---------------------------------------------------------------------
+# `si contract-diff` compares `dependencies[].version_range` as an opaque string: any change is `breaking` (value-changed). A range that
+# only widens (`>=2.0.0 <4.0.0` -> `>=2.0.0 <5.0.0`: the Skill now also runs with ffmpeg-skill 4.x) takes nothing from a caller of the
+# Skill: every engine release it ran with before, it still runs with. Such a change is `additive` here. A narrowed, moved or unreadable
+# range, or one whose dependency changed its skill_id, stays `breaking`.
+
+_RANGE_TERM_RE = re.compile(r"^(>=|<=|>|<|==|=)?\s*(\d+(?:\.\d+){0,2})$")
+_DEPENDENCY_RANGE_RE = re.compile(r"^/dependencies/(\d+)/version_range$")
+Bound = Optional[Tuple[Tuple[int, int, int], bool]]   # (version, inclusive); None = unbounded
+
+
+def parse_range(text: str) -> Optional[Tuple[Bound, Bound]]:
+    """`>=2.0.0 <4.0.0` (space- or comma-separated comparators; `1.0` reads as 1.0.0) -> (lower, upper). None when not readable."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    lower: Bound = None
+    upper: Bound = None
+    for term in re.split(r"[\s,]+", text.strip()):
+        m = _RANGE_TERM_RE.match(term)
+        if not m:
+            return None
+        parts = [int(p) for p in m.group(2).split(".")]
+        v = tuple(parts + [0] * (3 - len(parts)))
+        op = m.group(1) or "=="
+        if op in ("==", "="):
+            if lower is not None or upper is not None:
+                return None
+            lower, upper = (v, True), (v, True)
+        elif op in (">=", ">"):
+            if lower is not None:
+                return None
+            lower = (v, op == ">=")
+        else:
+            if upper is not None:
+                return None
+            upper = (v, op == "<=")
+    return lower, upper
+
+
+def range_widened(old: str, new: str) -> bool:
+    """True when every version `old` accepts, `new` accepts too, and the two differ."""
+    a, b = parse_range(old), parse_range(new)
+    if a is None or b is None or a == b:
+        return False
+    (alo, ahi), (blo, bhi) = a, b
+    lower_ok = blo is None or (alo is not None and (blo[0] < alo[0] or (blo[0] == alo[0] and (blo[1] or not alo[1]))))
+    upper_ok = bhi is None or (ahi is not None and (bhi[0] > ahi[0] or (bhi[0] == ahi[0] and (bhi[1] or not ahi[1]))))
+    return lower_ok and upper_ok
+
+
+def reclassify_dependency_ranges(diff: dict, old_doc: dict, new_doc: dict) -> dict:
+    """Mark each `breaking` change of `/dependencies/N/version_range` that only widened the range (same dependency skill_id) `additive`
+    (rule `range-widened`), then classify again: breaking if any change still is, else additive if any is, else as si said."""
+    changes = diff.get("changes")
+    if not isinstance(changes, list):
+        return diff
+    old_deps = old_doc.get("dependencies") if isinstance(old_doc, dict) else None
+    new_deps = new_doc.get("dependencies") if isinstance(new_doc, dict) else None
+    touched = False
+    for c in changes:
+        m = _DEPENDENCY_RANGE_RE.match(str(c.get("pointer") or ""))
+        if not m or c.get("effect") != "breaking" or not isinstance(old_deps, list) or not isinstance(new_deps, list):
+            continue
+        i = int(m.group(1))
+        if i >= len(old_deps) or i >= len(new_deps) or not isinstance(old_deps[i], dict) or not isinstance(new_deps[i], dict):
+            continue
+        o, n = old_deps[i], new_deps[i]
+        if o.get("skill_id") != n.get("skill_id") or not range_widened(o.get("version_range"), n.get("version_range")):
+            continue
+        c["effect"], c["rule"] = "additive", "range-widened"
+        c["detail"] = f"{n.get('skill_id')} version range widened: {o.get('version_range')} -> {n.get('version_range')}"
+        touched = True
+    if touched:
+        effects = [c.get("effect") for c in changes]
+        diff["classification"] = "breaking" if "breaking" in effects else "additive" if "additive" in effects else diff.get("classification")
+        diff.setdefault("notes", []).append("repin.py: a dependency version range that only widened is additive (ADR-117 addendum 2)")
+    return diff
 
 
 # ---- the lock ------------------------------------------------------------------------------------------------------------------------

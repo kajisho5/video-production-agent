@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
+import io
 import json
 import shutil
 import subprocess
@@ -81,6 +83,71 @@ class GateTests(unittest.TestCase):
             ast.parse(out)
             self.assertEqual(repin.read_gate(out), gate + ("9.9.",), sib.name)
             self.assertTrue(repin.in_gate(json.loads(repin.current_pin(ROOT, sib)[0].read_text(encoding="utf-8"))["version"], gate), sib.name)
+
+
+class DependencyRangeTests(unittest.TestCase):
+    """Addendum 2: a dependency's version range that only widened is additive, not si contract-diff's opaque-string `breaking`."""
+
+    def test_widened_or_not(self):
+        for old, new in ((">=2.0.0 <4.0.0", ">=2.0.0 <5.0.0"), (">=1.0 <3.0", ">=1.0 <4.0"), (">=2.0.0 <4.0.0", ">=1.0.0 <4.0.0"),
+                         (">=2.0.0 <4.0.0", ">=2.0.0"), (">2.0.0 <4.0.0", ">=2.0.0 <4.0.0"), (">=2.0.0 <4.0.0", ">=2.0.0 <=4.0.0")):
+            self.assertTrue(repin.range_widened(old, new), (old, new))
+        for old, new in ((">=2.0.0 <5.0.0", ">=2.0.0 <4.0.0"), (">=2.0.0 <4.0.0", ">=3.0.0 <5.0.0"), (">=2.0.0 <4.0.0", ">=2.0.0 <4.0.0"),
+                         (">=2.0.0", ">=2.0.0 <9.0.0"), (">=2.0.0 <4.0.0", "^2.0.0"), (">=2.0.0 <4.0.0", ""), (None, ">=2.0.0 <5.0.0"),
+                         (">=2.0.0 <=4.0.0", ">=2.0.0 <4.0.0"), (">=2.0.0 <4.0.0", "==3.0.0")):
+            self.assertFalse(repin.range_widened(old, new), (old, new))
+
+    @staticmethod
+    def _diff(*changes, classification="breaking"):
+        return {"classification": classification, "changes": [dict(c) for c in changes]}
+
+    def test_the_ffmpeg_skill_4_widening_is_additive(self):
+        old = {"dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <4.0.0"}]}
+        new = {"dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <5.0.0"}]}
+        rng = {"pointer": "/dependencies/0/version_range", "effect": "breaking", "rule": "value-changed", "detail": "value changed"}
+        info = {"pointer": "/version", "effect": "info", "rule": "release-version"}
+        d = repin.reclassify_dependency_ranges(self._diff(rng, info), old, new)
+        self.assertEqual(d["classification"], "additive")
+        self.assertEqual((d["changes"][0]["effect"], d["changes"][0]["rule"]), ("additive", "range-widened"))
+        self.assertIn(">=2.0.0 <5.0.0", d["changes"][0]["detail"])
+        self.assertEqual(repin.decide("0.2.5", "0.2.7", d["classification"], ("0.1.", "0.2.")).kind, "auto")
+
+    def test_other_breaking_changes_keep_it_breaking(self):
+        old = {"dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <4.0.0"}]}
+        new = {"dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <5.0.0"}]}
+        rng = {"pointer": "/dependencies/0/version_range", "effect": "breaking", "rule": "value-changed"}
+        fps = {"pointer": "/tools/4/input_schema/properties/fps/type", "effect": "breaking", "rule": "value-changed"}
+        d = repin.reclassify_dependency_ranges(self._diff(rng, fps), old, new)
+        self.assertEqual(d["classification"], "breaking")
+        self.assertEqual([c["effect"] for c in d["changes"]], ["additive", "breaking"])
+
+    def test_narrowed_moved_or_another_dependency_stays_breaking(self):
+        rng = {"pointer": "/dependencies/0/version_range", "effect": "breaking", "rule": "value-changed"}
+        for o, n in (({"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <5.0.0"}, {"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <4.0.0"}),
+                     ({"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <4.0.0"}, {"skill_id": "ffmpeg-skill", "version_range": ">=3.0.0 <5.0.0"}),
+                     ({"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <4.0.0"}, {"skill_id": "other-skill", "version_range": ">=2.0.0 <5.0.0"})):
+            d = repin.reclassify_dependency_ranges(self._diff(rng), {"dependencies": [o]}, {"dependencies": [n]})
+            self.assertEqual((d["classification"], d["changes"][0]["effect"]), ("breaking", "breaking"), (o, n))
+        # a pointer past the arrays (si reported an added entry) is left as si said
+        d = repin.reclassify_dependency_ranges(self._diff(dict(rng, pointer="/dependencies/3/version_range")), {"dependencies": []}, {"dependencies": []})
+        self.assertEqual(d["classification"], "breaking")
+
+    def test_through_contract_diff(self):
+        """contract_diff() applies it to what si reports, reading both ranges from the files (si's `old` / `new` are display strings)."""
+        tmp = Path(tempfile.mkdtemp(prefix="repin-range-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "old.json").write_text(json.dumps({"dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <4.0.0"}]}), encoding="utf-8")
+        (tmp / "new.json").write_text(json.dumps({"dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ">=2.0.0 <5.0.0"}]}), encoding="utf-8")
+        si_out = {"classification": "breaking", "changes": [{"pointer": "/dependencies/0/version_range", "effect": "breaking", "rule": "value-changed"}]}
+        fake_si = tmp / "si.py"
+        fake_si.write_text("import json, sys\nprint(json.dumps(%r))\n" % (si_out,), encoding="utf-8")
+        real = repin.subprocess.run
+
+        def run(cmd, **kw):
+            return real([sys.executable, str(fake_si)] + list(cmd[1:]), **kw)
+        repin.subprocess.run = run
+        self.addCleanup(setattr, repin.subprocess, "run", real)
+        self.assertEqual(repin.contract_diff("si", tmp / "old.json", tmp / "new.json")["classification"], "additive")
 
 
 class DecisionTests(unittest.TestCase):
@@ -350,7 +417,9 @@ class VerifyTests(unittest.TestCase):
         real = repin.run_unit
         repin.run_unit = lambda root: real(root, runner)
         self.addCleanup(setattr, repin, "run_unit", real)
-        self.assertEqual(repin.main(["--root", str(tmp), "verify", "--report", str(tmp / "report.json"), "--pr-body", str(tmp / "body.md")]), 0)
+        # quiet: the fake failure's log line would otherwise reach this test run's own output, which `repin.py verify` parses for ids
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(repin.main(["--root", str(tmp), "verify", "--report", str(tmp / "report.json"), "--pr-body", str(tmp / "body.md")]), 0)
         self.assertEqual([c[1:] for c in calls], [["-m", "unittest", "tests/test_a.py", "tests/test_b.py"]])
         got = json.loads((tmp / "report.json").read_text(encoding="utf-8"))
         self.assertTrue(got["review"])
@@ -363,7 +432,8 @@ class VerifyTests(unittest.TestCase):
         repin.run_unit = lambda root: []
         (tmp / "report.json").write_text(json.dumps(report), encoding="utf-8")
         (tmp / "body.md").write_text("table\n", encoding="utf-8")
-        repin.main(["--root", str(tmp), "verify", "--report", str(tmp / "report.json"), "--pr-body", str(tmp / "body.md")])
+        with contextlib.redirect_stdout(io.StringIO()):
+            repin.main(["--root", str(tmp), "verify", "--report", str(tmp / "report.json"), "--pr-body", str(tmp / "body.md")])
         self.assertFalse(json.loads((tmp / "report.json").read_text(encoding="utf-8"))["review"])
         self.assertTrue((tmp / "body.md").read_text(encoding="utf-8").startswith("The unit tests and the evals pass"))
 
