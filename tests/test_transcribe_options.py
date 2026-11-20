@@ -112,7 +112,7 @@ class RequirementTests(_Base):
         c = pinned_contract()
         for v in ("0.11.0", "0.11.1"):   # 0.11.1: qwen3_asr's cache identity gains `words`; the contract is otherwise the 0.11.0 one
             self.assertEqual(check_contract(dict(c, version=v)), [], v)
-        self.assertTrue(check_contract(dict(c, version="0.14.0")))   # 0.12.0 (addendum 15: + find) and 0.13.0 (addendum 30: + domain_vocabulary / corrections) are inside the gate
+        self.assertTrue(check_contract(dict(c, version="0.15.0")))   # 0.12.0 (addendum 15: + find), 0.13.0 (addendum 30: + domain_vocabulary / corrections) and 0.14.0 (+ select, ADR-123) are inside the gate
 
 
 class PlanTests(_Base):
