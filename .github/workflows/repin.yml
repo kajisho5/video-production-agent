@@ -37,11 +37,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0   # main's history: the check below (`origin/main..bot/repin`) needs the merge base, which a shallow clone lacks
           token: ${{ secrets.REPIN_TOKEN || github.token }}
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       # system-intelligence v0.7.0 (32e087f), for `si contract-diff`
       - run: pip install "system-intelligence @ git+https://github.com/kajisho5/system-intelligence@32e087fb3aa499d054e71338e27bcf967eed91cc"
+      # the package and its dependencies (jsonschema), as the unit job installs them: `repin.py verify` runs the unit tests
+      - run: pip install -e .
       - id: update
         run: |
           python scripts/repin.py update --si si --report "$RUNNER_TEMP/report.json" --pr-body "$RUNNER_TEMP/body.md"
