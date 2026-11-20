@@ -177,6 +177,53 @@ def main() -> int:
         for k in p:
             if k.lower() in ("command", "argv", "cmd", "shell", "exec", "args", "script", "binary", "api_key", "token", "secret", "password", "credentials", "env"):
                 return _err("INVALID_INPUT", f"key '{k}' is not allowed")
+        if req["tool"] == "transcription/select":   # ADR-123: the selected words / segments -> removed spans with the gaps to the kept words (no overlap rule)
+            tr = p["transcript"]
+            units = []
+            for sg in tr["segments"]:
+                for w in (sg.get("words") or [None]):
+                    src = w if w is not None else sg
+                    units.append({"seg": sg["id"], "idx": w.get("index") if w is not None else None, "start": src["start"], "end": src["end"], "text": src["text"],
+                                  "speaker": (w or {}).get("speaker_id", sg.get("speaker_id"))})
+            sel = {k for k, u in enumerate(units) if u["seg"] in (p.get("segments") or []) or any(a <= (u["idx"] if u["idx"] is not None else -1) <= b for a, b in p.get("words") or [])}
+            if not sel:
+                return _err("INVALID_INPUT", "the selection names nothing", {"reason": "empty_selection"})
+            gone = sel if p["mode"] == "remove" else set(range(len(units))) - sel
+            if len(gone) == len(units):
+                return _err("INVALID_INPUT", "nothing would be kept", {"reason": "nothing_kept"})
+            runs, cur = [], []
+            for k, u in enumerate(units):
+                if k in gone:
+                    cur.append(u)
+                elif cur:
+                    runs.append(cur); cur = []
+            if cur:
+                runs.append(cur)
+            kept = [u for k, u in enumerate(units) if k not in gone]
+            spans = []
+            for i, run in enumerate(runs, 1):
+                s, e = run[0]["start"], run[-1]["end"]
+                before = [u["end"] for u in kept if u["end"] <= s]
+                after = [u["start"] for u in kept if u["start"] >= e]
+                spans.append({"id": f"r{i}", "start": s, "end": e, "in": {"lo": max(before) if before else 0.0, "hi": s, "after_kept": bool(before)},
+                              "out": {"lo": e, "hi": min(after) if after else tr["duration"], "before_kept": bool(after)},
+                              "word_ranges": [], "units": len(run), "segment_ids": sorted({u["seg"] for u in run}), "speaker_ids": sorted({u["speaker"] for u in run if u["speaker"]}),
+                              "text": " ".join(u["text"] for u in run), "speech_seconds": round(sum(u["end"] - u["start"] for u in run), 6), "most_seconds": 0.0})
+            sentences = []
+            for sg in tr["segments"]:
+                mine = [k for k, u in enumerate(units) if u["seg"] == sg["id"]]
+                g = [k for k in mine if k in gone]
+                if g:
+                    sentences.append({"segment_id": sg["id"], "speaker_id": sg.get("speaker_id"), "start": sg["start"], "end": sg["end"], "text": sg["text"],
+                                      "removed": "whole" if len(g) == len(mine) else "part", "removed_text": " ".join(units[k]["text"] for k in g),
+                                      "removed_units": len(g), "units": len(mine), "speech_seconds": 0.0})
+            res = {"rule": {"version": "transcript-selection@1"}, "mode": p["mode"], "overlap": p.get("overlap", "refuse"), "transcript_id": tr["id"],
+                   "asset_id": tr.get("asset_id"), "language": tr.get("language"), "duration": tr["duration"],
+                   "selection": {"words": p.get("words") or [], "segments": p.get("segments") or []}, "counts": {"spans": len(spans)},
+                   "speech_seconds": round(sum(sp["speech_seconds"] for sp in spans), 6), "most_seconds": 0.0, "spans": spans, "sentences": sentences,
+                   "included_by_overlap": [], "applied": False, "next": "fake"}
+            print(json.dumps({"ok": True, "tool": req["tool"], "result": res}, ensure_ascii=False))
+            return 0
         if req["tool"] == "transcription/find":   # roadmap step 33: a plain case-folded substring search over the segment texts (the real Skill normalises more)
             tr, phrase = p["transcript"], p["phrase"]
             hits = [{"source": tr["source"]["filename"], "transcript_id": tr["id"], "match": "normalized", "ratio": 1.0, "start": sg["start"], "end": sg["end"],

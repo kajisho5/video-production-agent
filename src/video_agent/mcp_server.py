@@ -11,7 +11,7 @@ server never approves on its own, and `render` has no inline approve.
 The child is started without the current directory on its import path (ADR-075): the host's working directory may be any
 folder, and a `json.py` or `video_agent/` there must not run as the agent.
 
-Permission scopes (ADR-123, mcp_permissions.py): every tool call has a class (read / write / destructive / publish) and runs only
+Permission scopes (ADR-124, mcp_permissions.py): every tool call has a class (read / write / destructive / publish) and runs only
 when that class is enabled (default read + write); a disabled call returns a structured error naming the setting that enables it.
 A destructive or publish call returns a preview and a single-use, short-lived confirm_token first, and runs only when repeated with it.
 
@@ -116,6 +116,19 @@ TOOLS: List[Dict[str, Any]] = [
     {"name": "check", "description": "Probe an output file and check platform compliance (loudness, codec, resolution).",
      "inputSchema": {"type": "object", "required": ["output"], "properties": {
          "output": _STR, "platform": {"type": "string", "description": "e.g. youtube (default custom)"}, "qc": {"type": "boolean"}}}},
+    {"name": "transcript_edit", "description": (
+        "Preview a transcript edit: the user names words (index ranges) or sentences (segment ids) of the transcript to remove, or to keep. "
+        "transcription-skill finds their times and gaps, video-editing-skill places each cut on silence and on a frame and retimes the "
+        "transcript and subtitles. Nothing is cut. Show the user the returned lines (each cut's seconds, speakers and sentences, and the total) "
+        "and ask; only after their yes call `plan` with set {\"edit.transcript_edit\": <path>} and `approve` the transcript.ripple decision. "
+        "Never choose the words yourself here."),
+     "inputSchema": {"type": "object", "required": ["input", "transcript", "mode"], "properties": {
+         "input": {"type": "string", "description": "the video file"}, "transcript": {"type": "string", "description": "its transcript JSON (word timings)"},
+         "mode": {"type": "string", "enum": ["remove", "keep"]},
+         "words": {"type": "string", "description": "word index ranges, e.g. 12-40,55"}, "segments": {"type": "string", "description": "segment ids, e.g. seg_0003,seg_0007"},
+         "include_overlap": {"type": "boolean", "description": "also remove kept words that overlap the removed speech (default: refused)"},
+         "subtitles": {"type": "array", "items": _STR, "description": "SRT / VTT files of the input to retime"},
+         "output": {"type": "string", "description": "where to write the transcript-edit file"}}}},
     {"name": "artifacts", "description": "Registered artifacts of a project (or all), with QA status.",
      "inputSchema": {"type": "object", "properties": {"project": _PROJECT}}},
 ]
@@ -239,6 +252,15 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         return cmd("check", [*opt("--platform", "platform"), *(["--qc"] if a.get("qc") else [])], [need("output")])
     if name == "artifacts":
         return cmd("artifacts", [], [str(a["project"])] if a.get("project") else [])
+    if name == "transcript_edit":   # ADR-123: a preview; the cut needs plan + approve
+        mode = a.get("mode")
+        if mode not in ("remove", "keep"):
+            raise ValueError("transcript_edit: 'mode' must be remove or keep")
+        if not a.get("words") and not a.get("segments"):
+            raise ValueError("transcript_edit: give 'words' and / or 'segments'")
+        options = [f"--transcript={need('transcript')}", *opt(f"--{mode}-words", "words"), *opt(f"--{mode}-segments", "segments"),
+                   *(["--include-overlap"] if a.get("include_overlap") else []), *[f"--subtitles={s}" for s in a.get("subtitles") or []], *opt("--output", "output")]
+        return cmd("transcript-edit", options, [need("input")])
     raise KeyError(name)
 
 

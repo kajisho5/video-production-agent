@@ -1,4 +1,4 @@
-"""MCP permission scopes and the confirmation step before destructive or outward-facing calls (ADR-123).
+"""MCP permission scopes and the confirmation step before destructive or outward-facing calls (ADR-124).
 
 Every MCP tool has a permission class (TOOL_CLASSES). A call's effective class is worked out from its arguments and the files it
 would touch (classify): `plan` is `write`, but `destructive` when it would replace an existing plan; `render` is `write`, `read` as a
@@ -47,9 +47,9 @@ FREE_AI_PROVIDERS = ("", "null", "none", "host")
 TOOL_CLASSES: Dict[str, str] = {
     "doctor": READ, "skills": READ, "brief": READ, "corrections": READ, "validate": READ, "explain": READ, "diff": READ,
     "check": READ, "artifacts": READ,
-    "plan": WRITE, "revise": WRITE, "approve": WRITE, "reject": WRITE, "preferences": WRITE, "render": WRITE,
+    "plan": WRITE, "revise": WRITE, "approve": WRITE, "reject": WRITE, "preferences": WRITE, "render": WRITE, "transcript_edit": WRITE,
 }
-ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,)}
+ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,), "transcript_edit": (DESTRUCTIVE,)}
 
 
 class PermissionConfigError(ValueError):
@@ -248,6 +248,20 @@ def classify(name: str, args: Mapping[str, Any], perms: Permissions, workspace: 
             if outside:
                 raise_to(PUBLISH, {"action": "copy_outside_roots", "source": off.get("source"), "destinations": outside,
                                    "detail": "the card offload copies the card onto these folders, outside the server's allowed roots"})
+    elif name == "transcript_edit":
+        source = args.get("input")
+        if source:
+            stem = Path(str(source)).stem
+            out = str(args.get("output") or Path(workspace) / "transcript_edits" / f"{stem}.transcript-edit.json")
+            preview_dir = str(Path(workspace) / "transcript_edits" / f"{stem}.preview")   # video-editing ripple's outputs (overwritten)
+            call.writes += [out, preview_dir]
+            if os.path.lexists(out) or os.path.lexists(preview_dir):
+                item: Dict[str, Any] = {"action": "overwrite", "preview_dir": os.path.abspath(preview_dir),
+                                        "detail": "a transcript edit of this input exists; a new one replaces the file (a plan's edit.transcript_edit may point "
+                                                  "to it) and the preview files"}
+                if os.path.lexists(out):
+                    item.update(_file_facts(out))
+                raise_to(DESTRUCTIVE, item)
     elif name == "preferences":
         if (args.get("action") or "list") in ("list", "show", "diff"):
             call.cls = READ

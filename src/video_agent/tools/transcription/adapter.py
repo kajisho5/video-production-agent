@@ -89,6 +89,12 @@ FIND_TOOL = "transcription/find"
 FIND_KIND = "transcript_hits"
 FIND_PARAMETERS = {"find_phrase": "phrase", "find_fuzzy": "fuzzy", "find_context": "context"}   # analysis request names -> the tool's input names
 FIND_RESULT_KEYS = ("phrase", "normalized_phrase", "normalization", "fuzzy", "context", "count", "hits", "transcripts")
+# transcript edits (ADR-123, Velisa ADR-032): a person's selection of words / sentences -> the removed spans and the gaps around them
+# (transcription-skill 0.14.0, its ADR-050). Read-only; the agent never names the words itself here, the user does
+SELECT_TOOL = "transcription/select"
+SELECT_RULE = "transcript-selection@1"
+SELECT_MODES = ("remove", "keep")
+SELECT_OVERLAP = ("refuse", "include")
 SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
 TURNS_KEYS = ("schema", "source", "speakers", "turns", "overlap", "engine", "parameters", "created_at", "speaker_count", "speech_seconds", "skill", "skill_version",
               "tool", "warnings", "duration", "processing_seconds", "counts")
@@ -554,6 +560,54 @@ class TranscriptionAdapter(ToolAdapter):
         data = {"hits": {k: res.get(k) for k in FIND_RESULT_KEYS}, "skill": {"id": CONTRACT_ID, "version": self.version},
                 "transcript": {"id": tr.get("id"), "fingerprint": (tr.get("source") or {}).get("fingerprint")}}
         return ToolResult(op.id, op.tool, code == 0, code, None, data, [f"{FIND_TOOL}: {res.get('count')} hit(s)"], tail, secs, attempt, False)
+
+    def select(self, transcript: Dict[str, Any], mode: str, words: Optional[List[List[int]]] = None, segments: Optional[List[str]] = None,
+               overlap: str = "refuse", timeout: float = 120.0) -> Dict[str, Any]:
+        """ADR-123: one `run -` of transcription/select on a transcript the agent holds (inline). Returns the Skill's result after checking it is
+        this selection of this transcript (rule, mode, transcript id, applied false, every span with forward in / out windows inside the
+        duration); raises ToolError with the Skill's code and reason otherwise. Nothing is cut."""
+        if SELECT_TOOL not in self.tools:
+            raise ToolError(f"transcription-skill {self.version} has no {SELECT_TOOL} (it needs 0.14.0 or later)")
+        if not isinstance(transcript, dict) or transcript.get("schema") != TRANSCRIPT_SCHEMA:
+            raise ToolError(f"transcription: select needs a {TRANSCRIPT_SCHEMA} document")
+        if mode not in SELECT_MODES or overlap not in SELECT_OVERLAP:
+            raise ToolError(f"transcription: select mode must be one of {SELECT_MODES} and overlap one of {SELECT_OVERLAP}")
+        params: Dict[str, Any] = {"transcript": transcript, "mode": mode, "overlap": overlap}
+        if words is not None:
+            if not isinstance(words, list) or not all(isinstance(r, list) and len(r) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in r)
+                                                      for r in words):
+                raise ToolError("transcription: select words must be [[first, last], ...] word indices")
+            params["words"] = words
+        if segments is not None:
+            if not isinstance(segments, list) or not all(isinstance(x, str) and _ID_RE.match(x) for x in segments):
+                raise ToolError("transcription: select segments must be segment ids")
+            params["segments"] = segments
+        code, out, err = self._invoke(["run", "-"], stdin=json.dumps({"tool": SELECT_TOOL, "params": params}, ensure_ascii=False), timeout=timeout)
+        doc = _one_json_document(out) if out.strip() else {}
+        if doc.get("ok") is not True:
+            e = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+            reason = (e.get("details") or {}).get("reason") if isinstance(e.get("details"), dict) else None
+            raise ToolError(f"transcription select [{e.get('code') or code}{'/' + str(reason) if reason else ''}] {str(e.get('message') or err.strip()[-300:])[:500]}")
+        res = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+        why: List[str] = []
+        if doc.get("tool") != SELECT_TOOL or (res.get("rule") or {}).get("version") != SELECT_RULE:
+            why.append(f"not a {SELECT_TOOL} result of rule {SELECT_RULE}")
+        if res.get("mode") != mode or res.get("transcript_id") != transcript.get("id") or res.get("applied") is not False:
+            why.append("the result is about another selection or transcript, or says it applied something")
+        dur = float(transcript.get("duration") or 0)
+        spans = res.get("spans")
+        if not isinstance(spans, list) or not spans:
+            why.append("no spans")
+        else:
+            for sp in spans:
+                ok = (isinstance(sp, dict) and all(isinstance((sp.get(w) or {}).get(k), (int, float)) for w in ("in", "out") for k in ("lo", "hi"))
+                      and sp["in"]["lo"] <= sp["in"]["hi"] <= sp["out"]["lo"] <= sp["out"]["hi"] <= dur + 0.001)
+                if not ok:
+                    why.append(f"span {sp.get('id') if isinstance(sp, dict) else sp!r} has no forward windows inside the transcript")
+                    break
+        if why:
+            raise ToolError("transcription select: " + "; ".join(why))
+        return res
 
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         return self.run(Operation(tool=tool, args=args, inputs=[], outputs=[], kind="measure"), paths or {}, timeout=timeout)
