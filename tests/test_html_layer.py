@@ -125,7 +125,7 @@ class ContractTests(_Base):
         self.assertEqual((drift(c), breaking_drift(c)), ([], []))
 
     def test_gate_is_the_0_8_0_9_and_0_10_lines(self):
-        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.10.3", True), (pinned_version("hyperframes"), True), ("0.11.0", False),
+        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.10.4", True), (pinned_version("hyperframes"), True), ("0.11.0", False),
                       ("1.0.0", False), ("0.7.0", False)):
             with self.subTest(version=v):
                 c = dict(pinned_contract(), version=v)
