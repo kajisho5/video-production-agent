@@ -196,7 +196,43 @@ def widen_gate(source: str, prefix: str, note: str) -> str:
 GATE_TESTS = ("tests/test_version_gates.py", "tests/test_release_version.py")
 
 
-_ACCEPTS = re.compile(r"assertEqual\(.*,\s*\[\]\s*,")    # `self.assertEqual(x.check_contract(live), [], v)`: the version is accepted
+def _call_args(text: str, start: int) -> Optional[List[str]]:
+    """The top-level arguments of the call whose `(` is at `text[start]`, read across lines; None when it never closes.
+    Brackets inside string literals are skipped."""
+    depth, args, current, quote = 0, [], [], ""
+    for ch in text[start:]:
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(current).strip())
+                return args
+        elif ch == "," and depth == 1:
+            args.append("".join(current).strip())
+            current = []
+            continue
+        current.append(ch)
+    return None
+
+
+def _accepts(body: str) -> bool:
+    """An `assertEqual(..., [])` call, with or without a message and on one line or several, is in `body`:
+    `self.assertEqual(x.check_contract(live), [], v)` says the version is accepted."""
+    for m in re.finditer(r"assertEqual\s*\(", body):
+        args = _call_args(body, m.end() - 1)
+        if args and "[]" in args[:2]:
+            return True
+    return False
 
 
 def _is_refusal_loop(lines: Sequence[str], i: int) -> bool:
@@ -215,7 +251,7 @@ def _is_refusal_loop(lines: Sequence[str], i: int) -> bool:
             break
         body.append(line)
     refuses = any("assertTrue(" in b or "assertRaises(" in b for b in body)
-    return refuses and not any(_ACCEPTS.search(b) for b in body)
+    return refuses and not _accepts("".join(body))
 
 
 def move_refusal_probe(text: str, sib: Sibling, prefix: str) -> Tuple[str, int]:
