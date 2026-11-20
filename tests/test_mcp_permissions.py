@@ -304,6 +304,23 @@ class RootTests(_Base):
         res, run = self.call(server, "render", {"project": str(self.outside / "p.project.json")})
         self.assert_outside(res, run)
 
+    def test_tilde_is_read_as_the_child_reads_it(self):
+        """The CLI child opens `~/...` literally (under its working directory), so the check must not expand it to a home inside a root."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.tmp), "USERPROFILE": str(self.tmp)}):
+            res, run = self.call(self.server(scopes="all"), "approve", {"project": "~/ws/plans/p.project.json", "decision": "all"})
+        self.assert_outside(res, run)
+
+    def test_paid_revise_token_is_bound_to_the_project_state(self):
+        proj = self.ws / "plans" / "p.project.json"
+        proj.write_text(json.dumps({"plan": {"version": 1}}), encoding="utf-8")
+        server = self.server(scopes="all", env={"VIDEO_AGENT_AI_PROVIDER": "anthropic"})
+        res, _ = self.call(server, "revise", {"project": str(proj)})
+        tok = body(res)["confirm_token"]
+        proj.write_text(json.dumps({"plan": {"version": 2}}), encoding="utf-8")
+        res, run = self.call(server, "revise", {"project": str(proj), "confirm_token": tok})
+        self.assertEqual(body(res)["error"], "CONFIRM_TOKEN_MISMATCH")
+        run.assert_not_called()
+
     def test_symlink_escapes_are_refused(self):
         server = self.server(scopes="all")
         target = self.outside / "real.project.json"

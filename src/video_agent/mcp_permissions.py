@@ -92,8 +92,10 @@ class Permissions:
 
 
 def real_path(path: str) -> str:
-    """The path with every symlink and `..` resolved (as far as it exists), case-normalised where the OS ignores case."""
-    return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(str(path)))))
+    """The path with every symlink and `..` resolved (as far as it exists), case-normalised where the OS ignores case. `~` is not
+    expanded: the CLI child opens a tool argument literally (relative to the same working directory), so the path checked here must
+    be read the same way (a `~/x` argument is `<cwd>/~/x` for both)."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(str(path))))
 
 
 def _within(path: str, root: str) -> bool:
@@ -136,7 +138,7 @@ def load_permissions(workspace: str, scopes: Optional[str] = None, roots: Option
     for r in extra:
         if not os.path.isabs(os.path.expanduser(r)):
             raise PermissionConfigError(f"allowed root {r!r} is not an absolute path")
-    all_roots = tuple(dict.fromkeys(real_path(r) for r in [workspace, *extra]))
+    all_roots = tuple(dict.fromkeys(real_path(os.path.expanduser(r)) for r in [workspace, *extra]))
     ttl_raw: Any = confirm_ttl_s if confirm_ttl_s is not None else env.get(ENV_TTL) or cfg.get("confirm_ttl_s") or DEFAULT_CONFIRM_TTL_S
     try:
         ttl = float(ttl_raw)
@@ -231,6 +233,8 @@ def classify(name: str, args: Mapping[str, Any], perms: Permissions, workspace: 
             call.writes.append(str(project))
         if args.get("ai_recommendations") is None:
             spend("revise without ai_recommendations asks the configured AI provider")
+            if call.spends and project and os.path.isfile(str(project)):   # bind the token to the plan the spend is about
+                call.preview.append({"action": "project_state", **_file_facts(str(project))})
     elif name in ("approve", "reject"):
         if project:
             call.writes.append(str(project))
