@@ -178,7 +178,8 @@ class PipelineTests(unittest.TestCase):
         item = rt["items"][0]
         self.assertEqual(item["decision"], dec["id"])
         self.assertTrue(Path(item["edl"]).is_file() and Path(item["transcript"]["path"]).is_file() and Path(item["subtitles"][0]["path"]).is_file())
-        self.assertIn(str(Path(self.tmp)), item["edl"])
+        # resolve both sides: on Windows the temp dir can be an 8.3 short name (RUNNER~1) while outputs carry the long one
+        self.assertTrue(Path(item["edl"]).resolve().is_relative_to(Path(self.tmp).resolve()), item["edl"])
 
     def test_requirement_refusals(self):
         res = self.svc.transcript_edit(self.a, self.tr, "remove", segments=["seg_0002"])
