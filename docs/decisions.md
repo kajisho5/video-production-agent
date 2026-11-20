@@ -1846,3 +1846,9 @@ It rejected:
 - one clip delivered alone;
 - the MCP argv as data;
 - `measure_clip` reading the observations and listing what was not measured.
+- **Addendum (the re-pin of media-analysis 0.2.0).** The repin bot's PR #190 (media-analysis 0.1.23 → 0.2.0 and subtitle 0.10.3 → 0.11.0,
+  both `widen`, si contract-diff `additive`) was labelled `repin: needs review`, because one test failed:
+  `MediaAnalysisAdapterTests.test_contract_discovery_package_and_tool_mapping`. 0.2.0 declares two new filter capabilities,
+  `filter:blurdetect` and `filter:signalstats`. The capability resolver did not probe them, and the test lists the names it accepts. This
+  PR adds both to `capabilities/resolver.py` `FILTERS` and to that list. With this change, the bot's tree passes the test. The pin itself is
+  left to the bot.

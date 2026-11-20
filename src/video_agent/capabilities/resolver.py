@@ -51,7 +51,9 @@ FILTERS = {"libass": ["subtitles", "ass"], "zimg": ["zscale"], "tonemap": ["tone
            "subtitles": ["subtitles"], "drawtext": ["drawtext"], "drawbox": ["drawbox"], "overlay": ["overlay"], "color": ["color"], "scale": ["scale"],
            "colorchannelmixer": ["colorchannelmixer"], "chromakey": ["chromakey"], "lut3d": ["lut3d"], "ebur128": ["ebur128"], "silencedetect": ["silencedetect"],
            # media-analysis 0.1.10+ (edit_style, tool media-analysis/style) declares it; probed so the pinned contract's names all resolve (ADR-097 addendum 6)
-           "edgedetect": ["edgedetect"]}
+           "edgedetect": ["edgedetect"],
+           # media-analysis 0.2.0+ (picture_quality, tool media-analysis/picture; batch selects, ADR-124) declares both
+           "blurdetect": ["blurdetect"], "signalstats": ["signalstats"]}
 AI_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
