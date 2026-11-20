@@ -144,17 +144,17 @@
     },
     "transcription": {
       "repo": "kajisho5/transcription-skill",
-      "tag": "v0.13.1",
-      "sha": "f3734256ab89556a55930e2538ab5b616372af8d",
-      "version": "0.13.1",
-      "pin": "src/video_agent/tools/transcription/contract_0.13.1.json"
+      "tag": "v0.14.0",
+      "sha": "96e9a08d625811d426d8b693763e26b5c5a9167d",
+      "version": "0.14.0",
+      "pin": "src/video_agent/tools/transcription/contract_0.14.0.json"
     },
     "video-editing": {
       "repo": "kajisho5/video-editing-skill",
-      "tag": "v0.8.8",
-      "sha": "6c1a39864552a3dea44670e0cea896732d3efebc",
-      "version": "0.8.8",
-      "pin": "src/video_agent/tools/video_editing/contract_0.8.8.json"
+      "tag": "v0.9.0",
+      "sha": "873a0ee581493d84ed3838b3833cbd183f29a1e3",
+      "version": "0.9.0",
+      "pin": "src/video_agent/tools/video_editing/contract_0.9.0.json"
     },
     "voice-enhance": {
       "repo": "kajisho5/voice-enhance-skill",

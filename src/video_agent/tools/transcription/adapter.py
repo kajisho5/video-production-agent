@@ -36,7 +36,8 @@ TRANSCRIBE_TOOL = "transcription/transcribe"
 TRANSCRIPT_SCHEMA = "transcription-skill/transcript/0.1"
 SPEECH_EVENT_SCHEMA = "transcription-skill/speech-event/0.1"
 ENGINE_SPEC_SCHEMA = "transcription-skill/engine-spec/0.1"
-SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0.12.", "0.13.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
+# 0.14.0 (https://github.com/kajisho5/transcription-skill v0.14.0, automatic re-pin 2026-11-20, ADR-117): si contract-diff additive; the gate takes 0.14.
+SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0.12.", "0.13.", "0.14.")  # 0.2.x: the contract this adapter was verified against; 0.7.x: the same
                                              # contract, now reporting the release version instead of a stale "0.2.0"
                                              # 0.8.0 (ADR-078): optional engine whisperx appended to engines; the tools / schemas the adapter uses are unchanged
                                              # 0.9.0 (ADR-107 addendum 2): every word carries `index`; dictionary words (opt-in, ja) carry `pos` / `timing`;
@@ -180,7 +181,7 @@ def _one_json_document(stdout: str) -> Dict[str, Any]:
     return doc
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.13.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.14.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

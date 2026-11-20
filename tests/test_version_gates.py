@@ -53,7 +53,7 @@ class VersionGateTests(unittest.TestCase):
         self.assertTrue({"follow_growing_files", "chunked_long_recordings", "transcript_search", "domain_vocabulary", "post_correction"} <= set(tr.pinned_contract()["capabilities"]))
         self.assertIn("transcription/find", [t["name"] for t in tr.pinned_contract()["tools"]])
         self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")
-        for v in ("0.1.0", "0.3.0", "0.14.0", "0.130.0", "1.0.0"):
+        for v in ("0.1.0", "0.3.0", "0.15.0", "0.130.0", "1.0.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
@@ -110,7 +110,7 @@ class VersionGateTests(unittest.TestCase):
             live = with_version(ve.pinned_contract(), v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
-        for v in ("0.9.0", "1.0.0"):
+        for v in ("0.10.0", "1.0.0"):
             self.assertTrue(ve.check_contract(with_version(ve.pinned_contract(), v)), v)
 
     def test_video_editing_release_label_in_response_shape_is_not_fatal(self):
@@ -123,7 +123,7 @@ class VersionGateTests(unittest.TestCase):
             c = with_version(json.loads(json.dumps(ve.pinned_contract())), v)
             c["response_shape"]["skill"]["version"] = c["doctor_shape"]["skill"]["version"] = c["versioning"]["version"] = v
             return c
-        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.8.0", "0.8.1", "0.8.3", "0.8.8", pinned_version("video-editing")):
+        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.8.0", "0.8.1", "0.8.3", "0.9.0", pinned_version("video-editing")):
             live = release(v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
