@@ -7,6 +7,7 @@
         is additive, not si's breaking: addendum 2) and decide:
           auto   none / additive, inside the adapter's SUPPORTED_SKILL_VERSIONS gate: the pin moves, nothing else
           widen  none / additive, a new minor of a 0.x / 1.x line outside the gate: the gate takes the new `X.Y.` prefix
+                 (a 0.x -> 1.0.0 promotion included: the gate takes `1.0.`, addendum 3)
           review breaking, or a major change: the pin moves, the gate does not, and the pull request asks a person to look
                  (it is labelled, and the `repin review` check stays red until a person removes the label)
         Then the lock (integration/siblings.lock.json) is written for the new pins.
@@ -231,7 +232,10 @@ def decide(old: str, new: str, classification: str, gate: Optional[Sequence[str]
     if n <= o:
         return Decision("review", [f"the tag {new} is not newer than the pin {old}"])
     reasons: List[str] = []
-    if n[0] != o[0]:
+    # addendum 3 (Velisa ADR-030): a Skill's first 1.0.0 after 0.x is a promotion, not a break; with a none / additive diff it
+    # widens the gate to `1.0.` like any minor. Every other major change (1.x -> 2.0.0, 0.x -> 1.1.0, ...) stays a review.
+    promotion = o[0] == 0 and n == (1, 0, 0)
+    if n[0] != o[0] and not promotion:
         reasons.append(f"major version change {old} -> {new}: the gate is not widened")
     if classification not in ("none", "additive"):
         reasons.append(f"si contract-diff: {classification}")
