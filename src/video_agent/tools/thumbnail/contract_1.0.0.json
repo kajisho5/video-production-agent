@@ -4,7 +4,7 @@
   "id": "thumbnail-skill",
   "name": "thumbnail-skill",
   "package": "thumbnail-skill",
-  "version": "0.1.22",
+  "version": "1.0.0",
   "contract_version": "1",
   "kind": "execution",
   "role": "thumbnail rendering (deterministic execution); not decision, not selection, not design",
@@ -330,12 +330,12 @@
   "provides": [
     {
       "id": "thumbnail.render",
-      "lifecycle": "EXPERIMENTAL",
+      "lifecycle": "STABLE",
       "tool_id": "thumbnail/render"
     },
     {
       "id": "thumbnail.extract_frame",
-      "lifecycle": "EXPERIMENTAL",
+      "lifecycle": "STABLE",
       "tool_id": "thumbnail/extract_frame"
     },
     {

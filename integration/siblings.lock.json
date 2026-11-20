@@ -81,10 +81,10 @@
     },
     "motion-graphics": {
       "repo": "kajisho5/motion-graphics-skill",
-      "tag": "v0.4.4",
-      "sha": "e5c6cf0fbfbecb08c003fcbf77187ebd4ddb591d",
-      "version": "0.4.4",
-      "pin": "src/video_agent/tools/motion_graphics/contract_0.4.4.json"
+      "tag": "v0.4.5",
+      "sha": "b10658529dfb60c36d08013ea03fe0efc3e23fb6",
+      "version": "0.4.5",
+      "pin": "src/video_agent/tools/motion_graphics/contract_0.4.5.json"
     },
     "nle-bridge": {
       "repo": "kajisho5/nle-bridge-skill",
@@ -137,10 +137,10 @@
     },
     "thumbnail": {
       "repo": "kajisho5/thumbnail-skill",
-      "tag": "v0.1.22",
-      "sha": "b575e74fdc2b46c86d4792ea71ab0b78b3d90f86",
-      "version": "0.1.22",
-      "pin": "src/video_agent/tools/thumbnail/contract_0.1.22.json"
+      "tag": "v1.0.0",
+      "sha": "fc4b4edeb2298228e2f6db336918f5269cd0c52b",
+      "version": "1.0.0",
+      "pin": "src/video_agent/tools/thumbnail/contract_1.0.0.json"
     },
     "transcription": {
       "repo": "kajisho5/transcription-skill",

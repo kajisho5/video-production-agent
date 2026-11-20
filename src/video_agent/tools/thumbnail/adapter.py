@@ -91,7 +91,8 @@ CONTRACT_SCHEMA = "thumbnail-skill/contract@1"
 REQUEST_SCHEMA = "thumbnail-skill/request@1"
 RESPONSE_SCHEMA = "thumbnail-skill/response@1"
 DOCTOR_SCHEMA = "thumbnail-skill/doctor@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 1.0.0 (https://github.com/kajisho5/thumbnail-skill v1.0.0, automatic re-pin 2026-11-20, ADR-117): si contract-diff none; the gate takes 1.0.
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "1.0.",)
 # 0.1.8 (CI changes only): version-only; the pin is re-taken from main (ADR-083).
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["thumbnail", "run", "-", "--json"]
@@ -118,7 +119,7 @@ DRIFT_TOOL_KEYS = ("role", "produces_output", "deterministic", "writes_media", "
 # blocks; validate / extract_frame / render / generate_background unchanged. Re-pinned from the v0.1.15 tag (ADR-097 addendum 6). 0.1.16 (ADR-107): version-only, re-pinned from the tag.
 # 0.1.17 (docs only) and 0.1.18 (thumbnail-skill #31; ADR-107 addendum 28): a top-level `kit` block (render --kit, options.kit); otherwise unchanged.
 # The agent sends no kit. Re-pinned from the v0.1.18 tag.
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.22.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
