@@ -11,10 +11,10 @@
     },
     "audio-production": {
       "repo": "kajisho5/audio-production-skill",
-      "tag": "v1.4.2",
-      "sha": "03000d0d32bcbb1a69884485378594c5b6e78cf6",
-      "version": "1.4.2",
-      "pin": "src/video_agent/tools/audio_production/contract_1.4.2.json"
+      "tag": "v1.4.3",
+      "sha": "2e2eef1417642e6542845c6dde2313b1df436515",
+      "version": "1.4.3",
+      "pin": "src/video_agent/tools/audio_production/contract_1.4.3.json"
     },
     "blender": {
       "repo": "kajisho5/blender-skill",
@@ -25,10 +25,10 @@
     },
     "color-grading": {
       "repo": "kajisho5/color-grading-skill",
-      "tag": "v1.1.3",
-      "sha": "92da7062a682b66173e40c03dae35b24020aafbc",
-      "version": "1.1.3",
-      "pin": "src/video_agent/tools/color_grading/contract_1.1.3.json"
+      "tag": "v1.1.4",
+      "sha": "f4fe5dda3f6ccf14b09ae92c9468d80dff7a8081",
+      "version": "1.1.4",
+      "pin": "src/video_agent/tools/color_grading/contract_1.1.4.json"
     },
     "detection": {
       "repo": "kajisho5/detection-skill",
@@ -46,17 +46,17 @@
     },
     "dubbing": {
       "repo": "kajisho5/dubbing-skill",
-      "tag": "v0.2.3",
-      "sha": "9c3343acea88bb9b7b536e0bccdaa3163754083b",
-      "version": "0.2.3",
-      "pin": "src/video_agent/tools/dubbing/contract_0.2.3.json"
+      "tag": "v0.2.4",
+      "sha": "829547566af7b57a96e9401172efdcc98a67d889",
+      "version": "0.2.4",
+      "pin": "src/video_agent/tools/dubbing/contract_0.2.4.json"
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
-      "tag": "v0.10.3",
-      "sha": "2c02b6273cfe2423ea3bc62d621b516160b609db",
-      "version": "0.10.3",
-      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.10.3.json"
+      "tag": "v0.10.4",
+      "sha": "9cade4c926d60d143a377f232ba6068ec35a8f00",
+      "version": "0.10.4",
+      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.10.4.json"
     },
     "imagemagick": {
       "repo": "kajisho5/imagemagick-skill",
@@ -81,10 +81,10 @@
     },
     "motion-graphics": {
       "repo": "kajisho5/motion-graphics-skill",
-      "tag": "v0.4.3",
-      "sha": "ef65632af148519f1d54275728ea4eebd5da0424",
-      "version": "0.4.3",
-      "pin": "src/video_agent/tools/motion_graphics/contract_0.4.3.json"
+      "tag": "v0.4.4",
+      "sha": "e5c6cf0fbfbecb08c003fcbf77187ebd4ddb591d",
+      "version": "0.4.4",
+      "pin": "src/video_agent/tools/motion_graphics/contract_0.4.4.json"
     },
     "nle-bridge": {
       "repo": "kajisho5/nle-bridge-skill",
@@ -116,10 +116,10 @@
     },
     "slide-sync": {
       "repo": "kajisho5/slide-sync-skill",
-      "tag": "v0.1.1",
-      "sha": "edabbed6bd03fa91148bf9ce1462824d784382d5",
-      "version": "0.1.1",
-      "pin": "src/video_agent/tools/slide_sync/contract_0.1.1.json"
+      "tag": "v0.1.2",
+      "sha": "6b4a92fca06dbcf54d9dce7182c8d27043d3f855",
+      "version": "0.1.2",
+      "pin": "src/video_agent/tools/slide_sync/contract_0.1.2.json"
     },
     "sound-design": {
       "repo": "kajisho5/sound-design-skill",
@@ -151,10 +151,10 @@
     },
     "video-editing": {
       "repo": "kajisho5/video-editing-skill",
-      "tag": "v0.8.5",
-      "sha": "8b5a5ed504d04b4af8bb25f313102369b167e30a",
-      "version": "0.8.5",
-      "pin": "src/video_agent/tools/video_editing/contract_0.8.5.json"
+      "tag": "v0.8.6",
+      "sha": "9a41835d73deec7fe8e6f2d23ce607a474fa15ec",
+      "version": "0.8.6",
+      "pin": "src/video_agent/tools/video_editing/contract_0.8.6.json"
     },
     "voice-enhance": {
       "repo": "kajisho5/voice-enhance-skill",

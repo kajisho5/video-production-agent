@@ -181,7 +181,7 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                         role="deterministic audio production (typed operation graph, executed through ffmpeg-skill)")
 
 
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.4.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.4.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
