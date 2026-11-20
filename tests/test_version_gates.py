@@ -123,7 +123,7 @@ class VersionGateTests(unittest.TestCase):
             c = with_version(json.loads(json.dumps(ve.pinned_contract())), v)
             c["response_shape"]["skill"]["version"] = c["doctor_shape"]["skill"]["version"] = c["versioning"]["version"] = v
             return c
-        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.8.0", "0.8.1", "0.8.3", "0.8.6", pinned_version("video-editing")):
+        for v in ("0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.8.0", "0.8.1", "0.8.3", "0.8.8", pinned_version("video-editing")):
             live = release(v)
             self.assertEqual(ve.check_contract(live), [], v)
             self.assertEqual(ve.contract_breaking_drift(live), [], v)
