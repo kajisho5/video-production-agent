@@ -761,6 +761,10 @@ class FfmpegSkillContractTests(unittest.TestCase):
                 cli = FLAG_ALIASES.get((name, flag)) or FLAG_ALIASES.get(("*", flag)) or "--" + flag.replace("_", "-")
                 if flag == "crf" and skill.offers_flag(name, QUALITY_FLAG):
                     cli = QUALITY_FLAG   # ADR-048: the adapter emits --quality where the installed script offers it
+                if flag in (spec.get("detected_flags") or ()):
+                    # ADR-121: a detected flag may be absent (export --no-normalize is 4.0+); --help and the contract must agree on it
+                    self.assertEqual(cli in out, skill.catalog_check().offers(name, flag), f"{name}.py {cli}: --help and the contract disagree")
+                    continue
                 self.assertIn(cli, out, f"{name}.py --help does not mention {cli}")
             for common in ("--dry-run", "--json"):
                 self.assertIn(common, out)
