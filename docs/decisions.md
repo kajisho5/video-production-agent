@@ -1642,6 +1642,22 @@
   - Decision: `decide()` treats 0.x -> exactly 1.0.0 with a `none` / `additive` diff as a promotion: `widen` with the prefix `1.0.` outside the gate, `auto` inside it or with no gate. The gate keeps its 0.x prefixes, so an older release is still accepted. The refusal probe `"1.0.0"` in the gate tests moves to `"1.1.0"`, as for any widen. Still `review`: a `breaking` 1.0.0, 0.x -> 1.0.1 / 1.1.0 (a release skipped past the promotion), and every major after 1 (1.x -> 2.0.0).
   - Verification: `tests/test_repin.py` `DecisionTests.test_a_first_1_0_0_after_0x_widens` and the extended `test_review` cases.
 
+- Addendum 4 (2026-11-20): after a widen, the refusal probe moves only in a refusal loop.
+  - Facts: re-pin #182 (motion-graphics 0.4.5 -> 1.0.0, si contract-diff `none`, `widen` to `1.0.` under addendum 3) failed `tests.test_version_gates.VersionGateTests.test_motion_graphics_release_versions` and became a `review` re-pin. Two steps combined:
+    - the reader rewrite turned the accepted `"0.4.5"` into `"1.0.0"` in the acceptance loop (`for v in (..., "1.0.0", pinned_version("motion-graphics"))` / `assertEqual(..., [], v)`);
+    - `move_refusal_probe` then moved every `"1.0.0"` on a `for v in (` line naming the Skill to `"1.1.0"`, the accepted one too, so the acceptance loop asked for a release the gate refuses.
+    A first 1.0.0 is the first widen whose probe `"X.Y.0"` is also the new pin. A minor widen pins `X.Y.0` too, but the gate tests' acceptance loops had not listed it.
+  - Decision:
+    - `move_refusal_probe` moves the probe on a `for v in (` line only when `_is_refusal_loop` holds:
+      - the loop's body (the lines indented under it) asserts a refusal (`assertTrue(` / `assertRaises(`);
+      - the body never asserts acceptance (`assertEqual(..., [], ...)`);
+      - the line does not list the pinned release (`pinned_version(`).
+    - A loop whose body is not read is left alone: a probe left unmoved fails `verify`, which is a `review`, never a silent wrong pass. The `("<repo>", "X.Y.0")` pairs move as before.
+  - Verification:
+    - `tests/test_repin.py` `test_the_probe_is_moved_only_in_a_refusal_loop` builds #182's shape: an acceptance loop holding `"1.0.0"` with and without `pinned_version(`, and the refusal loop. Only the refusal loop moves.
+    - `test_the_real_gate_tests_after_a_1_0_0_promotion` runs the same on the real `tests/test_version_gates.py`. Both fail on the previous code.
+    - On the real gate tests, for every sibling and every `0.N.` / `1.N.` prefix, the new code moves the same probes as before for every prefix outside the current gates. It differs only where the old code would also have moved an accepted release.
+
 ## ADR-118 Capability-driven planning, first step: one loader reads every pinned contract's `provides[]`; eight production skills take their tool from the capability the pin provides, the adapters' contract check refuses a live contract that dropped or moved one, and a capability no pin provides stops the registry with a message naming the pins (2026-11-20)
 - Background:
   - Every production skill (`SkillSpec`, `skills/registry.py`) named its tool candidates by hand (`["voice-enhance/isolate"]`), and each adapter kept its own copy of the capability ids it relies on (voice-enhance's `CAPABILITY_IDS`, checked in its `check_contract`; detection and diarization checked tools and schemas, not `provides[]`). Every sibling Skill already publishes `provides[]` (`{id, tool_id, lifecycle}`, plus `operation` / `element_type` / `kind` where one tool serves several capabilities) in the contract the repin bot pins byte for byte (ADR-117). The pins said which tool provides which capability; the agent did not read it.
