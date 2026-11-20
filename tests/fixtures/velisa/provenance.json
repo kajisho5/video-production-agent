@@ -7,6 +7,13 @@
       "spec": "velisa/error-taxonomy@1",
       "commit": "b7df1d82586f0b7c00fed4074aecac75cbadf893",
       "sha256": "8f66db2dc687ed0e18a24a445a221f9c4cfc0e6787a39c36a48baa1e5ffdd580"
+    },
+    "timebase-vectors.json": {
+      "repository": "kajisho5/Velisa",
+      "path": "docs/specs/timebase-vectors.json",
+      "spec": "velisa/timebase@1",
+      "commit": "b7df1d82586f0b7c00fed4074aecac75cbadf893",
+      "sha256": "fecd9730470fd79fb0b8dce6a55ef1ac8fd743ea044a1f1541474ebd249e5aa1"
     }
   }
 }

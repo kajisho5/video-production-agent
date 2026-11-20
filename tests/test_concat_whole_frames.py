@@ -74,10 +74,10 @@ class ConcatWholeFramesTests(unittest.TestCase):
         self.assertEqual(total, 4.0)
 
     def test_within_one_ms_of_the_next_frame_keeps_it(self):
-        """120 frames at 29.97 fps (the rate as the Skill reads 29.97: 2997/100) last 4.004004 s; a probe of 4.004 s keeps them."""
+        """120 frames at 29.97 fps (30000/1001 by velisa/timebase@1, ADR-120; 2997/100 before) last 4.004 s; a probe of 4.004 s keeps them."""
         techn = {a: tech(29.97) for a in "ab"}
         segs, total = self.plan(["a", "b"], durations={"a": 4.004, "b": 4.004}, techn=techn)
-        self.assertEqual(concat_rate({}, techn["a"]), Fraction(2997, 100))
+        self.assertEqual(concat_rate({}, techn["a"]), Fraction(30000, 1001))
         self.assertEqual(self.starts(segs), [0.0, 4.004])
         self.assertEqual(total, 8.008)
 
@@ -134,7 +134,7 @@ class ConcatWholeFramesTests(unittest.TestCase):
         """Fifty inputs of random lengths, rates and a 29.97 fps edit with a 0.5 s fade: every input starts within the IR's
         millisecond of a frame, and the programme's length is the exact whole-frame sum (no drift of rounding to ms per clip)."""
         rnd = random.Random(115)
-        rate = Fraction(2997, 100)
+        rate = Fraction(30000, 1001)   # 29.97 (ADR-120)
         ids = [f"i{n}" for n in range(50)]
         durations = {a: round(rnd.uniform(1.5, 9.0), 3) for a in ids}
         techn = {a: tech(rnd.choice([29.97, 29.97, 25.0, 30.0]), vfr=rnd.random() < 0.1) for a in ids}

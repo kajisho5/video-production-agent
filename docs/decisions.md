@@ -1697,6 +1697,33 @@
   policy is kept by the action, and that one code is recovered one way across tables; and the timeout / signal split of `CANCELLED`.
   On the tables before this change it fails in each of the places above. Tests that asserted the old labels expect the new ones.
 
+## ADR-120 Frame rates are read by the Velisa timebase spec: the concat rate of 29.97 is 30000/1001, params.fps is written exactly, rates compare as exact fractions (issue #167, 2026-11-20)
+- Background: Velisa ADR-026 (decision D40) made one timebase spec, `velisa/timebase@1`, with conformance vectors. ADR-115 had
+  `concat_rate` read the probe's 3-decimal fps with `Fraction(fps).limit_denominator(1001)` on purpose, because video-editing-skill
+  did the same: 29.97 became 2997/100 and 59.94 2997/50, while ffmpeg-skill's join counts 30000/1001, so plan and file parted by a
+  frame in about 9 hours (4.6 hours at 59.94). `programme_rate` and the planner wrote `params.fps` as the probe's float rounded to 3
+  decimals, and `whole_frame_length` called an input "at the rate" within 0.02 fps (`FPS_TOLERANCE`). An `"N/D"` params.fps
+  (`edit.concat.fps=30000/1001`) was not read at all: `float()` refused it and the plan had no rate.
+- Decision:
+  - `agent/timebase.py` holds the spec's rate functions (`parse_rate`, `rate_str`, `nominal`, `same_rate`, `round_half_up`,
+    `frames_at`, `seconds_of`, `transition_frames`, `format_seconds`, `probed_rate`), the same reading video-editing-skill
+    uses (its ADR-040). A decimal within 0.005 of an NTSC rate is that rate; an explicit `N/D` is taken as written.
+  - `concat_rate` reads params.fps or the first input's probed fps with `parse_rate`.
+  - params.fps the planner names for an AI-generated input (ADR-099) is the exact rate (`concat_fps`: `"30000/1001"`, or `25`),
+    which the IR schema and the Skill's contract (`number or N/D`) already accept.
+  - `whole_frame_length` compares rates with `same_probed_rate`: both read back at the probe's 3 decimals, then compared as exact
+    fractions. 29.97 and 30000/1001 are one rate; 29.97 and 29.98 are not. `FPS_TOLERANCE` is gone. Rounding goes through
+    `frames_at` (`nearest`, a half up; `down`, 1 ms) and `transition_frames`, as before.
+  - ffmpeg-skill is not changed; its probe keeps 3 decimals and the reading is the consumer's.
+  - The video-editing-skill pin is not edited here. Its release that reads rates the same way is re-pinned by the `repin` workflow
+    (ADR-117); its contract change is additive (`whole_frames.rate_reading`).
+- Verification: `tests/test_timebase.py` (added to the unit job) runs the spec's vectors, copied unchanged into
+  `tests/fixtures/velisa/timebase-vectors.json` with the Velisa commit and sha256 in `provenance.json`: the 74 vectors of the
+  functions the agent offers pass, the optional `p` / `i` suffix is refused, the timecode / seek / join / `parse_seconds` vectors
+  are counted and not run. It also checks `concat_rate`, `concat_fps`, `programme_rate` and the exact comparison.
+  `tests/test_concat_whole_frames.py` now expects 30000/1001 for 29.97 (two 4.004 s clips keep their 120 frames each; fifty random
+  clips still start on frames and do not accumulate).
+
 ## ADR-121 ffmpeg-skill 4.x: the version range takes 4.x; the agent's loudness decision wins over export's new default normalisation; an export verification failure is a QA failure; fit.py --duration always has a method (2026-11-20)
 - Background:
   - ffmpeg-skill 4.0.0 is a major release with breaking changes, but its contract_version stays 2.0 and every tool, flag, positional and switch arity the catalog uses is unchanged (contract-diff 3.15.1 → 4.0.0: 13 breaking, 62 additive). `SUPPORTED_MAX_EXCLUSIVE = (4, 0, 0)` refused it, so integration against ffmpeg-skill main failed.
