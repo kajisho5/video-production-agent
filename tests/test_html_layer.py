@@ -124,9 +124,9 @@ class ContractTests(_Base):
         self.assertEqual(PINS["html_scene_render"].pin_file, PINNED_CONTRACT_PATH.name)
         self.assertEqual((drift(c), breaking_drift(c)), ([], []))
 
-    def test_gate_is_the_0_8_0_9_and_0_10_lines(self):
-        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.10.4", True), (pinned_version("hyperframes"), True), ("0.11.0", False),
-                      ("1.0.0", False), ("0.7.0", False)):
+    def test_gate_is_the_0_8_to_0_11_lines(self):
+        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.10.4", True), ("0.11.0", True),
+                      ("0.11.1", True), (pinned_version("hyperframes"), True), ("0.12.0", False), ("1.0.0", False), ("0.7.0", False)):
             with self.subTest(version=v):
                 c = dict(pinned_contract(), version=v)
                 self.assertEqual(check_contract(c) == [], ok, check_contract(c))
@@ -187,6 +187,28 @@ class AdapterTests(_Base):
         self.assertEqual((d["template"], d["values"], d["hyperframes"]["version"]), ("lower-third", VALUES, "0.8.61"))
         self.assertEqual(len(d["sha256"]), 64)
         self.assertTrue(any(c["program"] == "ffmpeg" for c in d["tool_commands"]), "the Skill's own argv record is kept (provenance)")
+
+    def test_a_0_11_contract_and_result(self):
+        """hyperframes-skill 0.11 (ADR-117 addendum 2): render's `--fps` is a string in the input_schema and `expected` carries `frame_rate`. The
+        adapter takes the contract (it sends no --fps), runs the same argv and passes `expected` on as the Skill reported it."""
+        c = json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
+        c["version"] = c["skill"]["version"] = "0.11.1"
+        for t in c["tools"]:
+            t["version"] = "0.11.1"
+        render = next(t for t in c["tools"] if t["id"] == "hyperframes-skill/render")
+        render["input_schema"]["properties"]["fps"] = {"cli": "--fps", "type": "string",
+                                                       "description": "frame rate 1-240: an integer, an exact N/D such as 30000/1001, or an NTSC decimal"}
+        self.assertEqual(check_contract(c), [])
+        pin = Path(self.tmp) / "hyperframes-skill_0.11.1.json"
+        pin.write_text(json.dumps(c), encoding="utf-8")
+        os.environ["FAKE_HF_PIN"] = str(pin)
+        ad, out, r = self.run_op({"template": "lower-third", "values": VALUES, "segments": {"in": 0.5, "loop": 3, "out": 0.5}})
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual((ad.version, r.data["skill"]["version"]), ("0.11.1", "0.11.1"))
+        [render_call] = self.hf_calls("render")
+        self.assertFalse(any(a.startswith("--fps") for a in render_call), render_call)
+        self.assertEqual((r.data["expected"]["frame_rate"], r.data["expected"]["fps"]), ("30", 30))
+        self.assertEqual(r.data["layer_timing"], {"in_duration": 0.5, "out_duration": 0.5, "loop": True})
 
     def test_scene_request_without_segments(self):
         req = self.request_file(segments=False)

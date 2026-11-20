@@ -108,8 +108,11 @@ def main(argv):
                 s.update(output=str(p), verified=True, verification=[], probe={})
             if MODE == "shortseg":
                 segs[1]["duration"] = float(segs[1]["duration"]) - 1.0
+        expected = {"width": 1920, "height": 1080, "duration": req["duration"], "fps": 30, "frames": int(round(float(req["duration"]) * 30)), "codec": o.get("codec")}
+        if tuple(int(x) for x in json.loads(Path(PINNED).read_text(encoding="utf-8"))["version"].split(".")[:2]) >= (0, 11):
+            expected["frame_rate"] = "30"   # 0.11.0: every expected names the exact rate
         doc = done(str(out) if MODE != "elsewhere" else str(out.with_name("other.mov")),
-                   expected={"width": 1920, "height": 1080, "duration": req["duration"], "fps": 30, "frames": int(round(float(req["duration"]) * 30)), "codec": o.get("codec")},
+                   expected=expected,
                    alpha={"mode": "none" if MODE == "noalpha" else "straight", "channel": MODE != "noalpha"},
                    hyperframes={"version": "0.8.61", "chromium": {"path": "/fake/chrome", "source": "fake"}},
                    ffmpeg_skill={"status": "PASSED", "tool": "ffmpeg-skill/probe"},

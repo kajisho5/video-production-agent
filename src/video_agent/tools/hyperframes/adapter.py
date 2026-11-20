@@ -43,8 +43,13 @@ TOOL_RENDER = "hyperframes-skill/render"
 # 0.9.1 (hyperframes-skill #24, docs only; ADR-107 addendum 27): the contract differs in `version` only.
 # 0.10.0 (hyperframes-skill #25; ADR-107 addendum 29): `--kit` on template / batch, an optional result key `kit`, `kit` in `--list` and in the
 # template JSON. The agent sends no `--kit`.
-# Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.11 / 1.x.
-SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.", "0.10.")
+# 0.11.0 (hyperframes-skill #35, velisa/timebase@1; ADR-117 addendum 2): `render --fps` and a scene request's `fps` take an integer, an exact
+# N/D or an NTSC decimal (the input_schema type is string; an integer still works), every `expected` gains `frame_rate`, and `expected.frames`
+# counts every started frame. The agent sends no --fps and no fps of its own (a template's request carries the template's), and admits a
+# render by its output, codec, alpha, ffmpeg-skill's cross-check and the segments, never by `expected.fps` / `frames`, which it passes on as
+# the Skill reports them. 0.11.1 (hyperframes-skill #36): the ffmpeg-skill dependency range widened to <5.0.0 only.
+# Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.12 / 1.x.
+SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.", "0.10.", "0.11.")
 PIN_VERSION = "0.10.4"
 PINNED_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "skills" / "pins" / f"hyperframes-skill_{PIN_VERSION}.json"
 CODEC = "prores"            # ProRes 4444 with alpha: what rendered_layer reads (a VP9 alpha WebM decodes without its alpha there)
