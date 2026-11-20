@@ -290,6 +290,37 @@ class RewriteTests(unittest.TestCase):
         out, n = repin.move_refusal_probe(pairs, sib("qc"), "1.5.")
         self.assertEqual(out, pairs.replace('("qc-skill", "1.5.0")', '("qc-skill", "1.6.0")')); self.assertEqual(n, 1)
 
+    def test_the_probe_is_moved_only_in_a_refusal_loop(self):
+        """Addendum 4 (agent #182): after motion-graphics 0.4.5 -> 1.0.0 the reader rewrite left "1.0.0" in the acceptance loop; the
+        gate's widen to `1.0.` must move the probe "1.0.0" in the refusal loop only, never the accepted release."""
+        text = ('from video_agent.tools.motion_graphics import adapter as mg\n'
+                '    def test_motion_graphics_release_versions(self):\n'
+                '        self.assertEqual(mg.pinned_contract()["version"], pinned_version("motion-graphics"))\n'
+                '        for v in ("0.1.0", "0.4.0", "1.0.0", pinned_version("motion-graphics")):\n'
+                '            live = with_version(mg.pinned_contract(), v)\n'
+                '            self.assertEqual(mg.check_contract(live), [], v)\n'
+                '            self.assertEqual(mg.contract_breaking_drift(live), [], v)\n'
+                '        for v in ("0.5.0", "0.30.0", "1.0.0"):\n'
+                '            self.assertTrue(mg.check_contract(with_version(mg.pinned_contract(), v)), v)\n'
+                '        for v in ("0.4.0", "1.0.0"):   # motion-graphics\n'
+                '            self.assertEqual(mg.check_contract(with_version(mg.pinned_contract(), v)), [], v)\n')
+        out, n = repin.move_refusal_probe(text, sib("motion-graphics"), "1.0.")
+        self.assertIn('for v in ("0.1.0", "0.4.0", "1.0.0", pinned_version("motion-graphics")):', out)   # accepted: kept
+        self.assertIn('for v in ("0.5.0", "0.30.0", "1.1.0"):', out)                                     # refused: moved
+        self.assertIn('for v in ("0.4.0", "1.0.0"):   # motion-graphics', out)                          # accepted, no pinned_version
+        self.assertEqual(n, 1)
+
+    def test_the_real_gate_tests_after_a_1_0_0_promotion(self):
+        """On the real tests/test_version_gates.py, motion-graphics' accepted release list holding "1.0.0" keeps it."""
+        path = Path(__file__).resolve().parent / "test_version_gates.py"
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        i = next(k for k, l in enumerate(lines) if "def test_motion_graphics_release_versions" in l)
+        j = next(k for k in range(i, len(lines)) if lines[k].lstrip().startswith("for v in (") and "pinned_version(" in lines[k])
+        lines[j] = lines[j].replace("pinned_version(", '"1.0.0", pinned_version(', 1)
+        out, _ = repin.move_refusal_probe("".join(lines), sib("motion-graphics"), "1.0.")
+        self.assertIn('"1.0.0", pinned_version("motion-graphics")', out.splitlines()[j])
+
     def test_a_line_naming_two_skills_on_one_version_is_left(self):
         text = 'self.assertEqual((det["version"], dub["version"]), ("0.2.3", "0.2.3"))   # detection, dubbing\n'
         out, n, left = repin.rewrite_text(text, "tests/test_unit.py", sib("detection"), [o for o in repin.SIBLINGS if o.name != "detection"],

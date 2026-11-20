@@ -196,9 +196,32 @@ def widen_gate(source: str, prefix: str, note: str) -> str:
 GATE_TESTS = ("tests/test_version_gates.py", "tests/test_release_version.py")
 
 
+_ACCEPTS = re.compile(r"assertEqual\(.*,\s*\[\]\s*,")    # `self.assertEqual(x.check_contract(live), [], v)`: the version is accepted
+
+
+def _is_refusal_loop(lines: Sequence[str], i: int) -> bool:
+    """Addendum 4: the `for v in (...)` loop at line `i` is a refusal loop. That means its body (the lines indented under it)
+    asserts a refusal (`assertTrue(` / `assertRaises(`), never acceptance (`assertEqual(..., [], ...)`), and the loop does not
+    list the pinned release (`pinned_version(`). An acceptance loop can hold the probe `"X.Y.0"` right after the reader
+    rewrite moved the pin there (motion-graphics 0.4.5 -> 1.0.0, agent #182). A loop with no body read is left alone."""
+    if "pinned_version(" in lines[i]:
+        return False
+    indent = len(lines[i]) - len(lines[i].lstrip())
+    body = []
+    for line in lines[i + 1:]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        body.append(line)
+    refuses = any("assertTrue(" in b or "assertRaises(" in b for b in body)
+    return refuses and not any(_ACCEPTS.search(b) for b in body)
+
+
 def move_refusal_probe(text: str, sib: Sibling, prefix: str) -> Tuple[str, int]:
     """After the gate takes `X.Y.`, the gate tests' probe `"X.Y.0"` (a version they expect refused) moves to the next minor, `"X.(Y+1).0"`:
-    on a `for v in (...)` line about this Skill (named on the line or on one of the lines above it), and in a `("<repo>", "X.Y.0")` pair."""
+    on a `for v in (...)` line about this Skill (named on the line or on one of the lines above it) whose loop is a refusal loop
+    (`_is_refusal_loop`, addendum 4), and in a `("<repo>", "X.Y.0")` pair."""
     major, minor = (int(x) for x in prefix.rstrip(".").split("."))
     probe, moved = f'"{major}.{minor}.0"', f'"{major}.{minor + 1}.0"'
     aliases = adapter_aliases(text)
@@ -210,7 +233,8 @@ def move_refusal_probe(text: str, sib: Sibling, prefix: str) -> Tuple[str, int]:
         if probe not in line:
             continue
         out = pair.sub(lambda m: m.group(1) + moved + m.group(2), line)
-        if line.lstrip().startswith("for v in (") and any(_mentions(l, mine) for l in lines[max(0, i - CONTEXT_LINES):i + 1]):
+        if (line.lstrip().startswith("for v in (") and any(_mentions(l, mine) for l in lines[max(0, i - CONTEXT_LINES):i + 1])
+                and _is_refusal_loop(lines, i)):
             out = out.replace(probe, moved)
         if out != line:
             lines[i] = out
