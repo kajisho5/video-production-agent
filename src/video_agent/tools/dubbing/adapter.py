@@ -43,7 +43,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, invoke, one_json_document,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, cancelled_class, ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, invoke, one_json_document,
                              same_file, scan_forbidden, scrub, sha256_file)
 from .locate import PACKAGE_ID, locate_dubbing  # noqa: F401  (re-exported)
 
@@ -77,12 +77,14 @@ DEFAULT_TIMEOUT = 3600.0        # the Skill's own --timeout default; the process
 PROCESS_MARGIN = 120.0
 # dubbing-skill's error codes (its contract `errors`) → the agent's recovery class (execution/recovery.py). The code is kept verbatim.
 # CONSENT_REQUIRED has its own class (BLOCK, never retried: the record comes from the user, the agent never makes one); TERMS_UNVERIFIED
-# and TIMING_OVERFLOW are the Skill's refusals of this request (SKILL_ERROR); a missing engine / model / ffmpeg-skill tool is TOOL_MISSING.
+# needs a person to accept the engine's terms (ACTION_REQUIRED, ADR-119); TIMING_OVERFLOW is the Skill's refusal of this request (SKILL_ERROR);
+# NOT_IMPLEMENTED an operation the Skill does not offer (INVALID_ARGS); a missing engine / model / ffmpeg-skill tool is TOOL_MISSING.
+# CANCELLED is INTERRUPTED (ADR-119); recovery.py makes a CANCELLED with details.reason "timeout" a TIMEOUT.
 ERROR_CLASSES: Dict[str, str] = {
     "INVALID_ARGUMENT": "INVALID_ARGS", "INPUT_NOT_FOUND": "INPUT_MISSING", "UNSUPPORTED_MEDIA": "INVALID_ARGS", "OUTPUT_EXISTS": "INVALID_ARGS",
-    "OUTPUT_IS_INPUT": "INVALID_ARGS", "TERMS_UNVERIFIED": "SKILL_ERROR", CONSENT_CODE: "CONSENT_REQUIRED", "FFMPEG_SKILL_UNAVAILABLE": "TOOL_MISSING",
+    "OUTPUT_IS_INPUT": "INVALID_ARGS", "TERMS_UNVERIFIED": "ACTION_REQUIRED", CONSENT_CODE: "CONSENT_REQUIRED", "FFMPEG_SKILL_UNAVAILABLE": "TOOL_MISSING",
     "ENGINE_UNAVAILABLE": "TOOL_MISSING", "MODEL_NOT_FOUND": "TOOL_MISSING", "TOOL_ERROR": "UNKNOWN", "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT",
-    "INVALID_RESULT": "SKILL_ERROR", "TIMING_OVERFLOW": "SKILL_ERROR", "NOT_IMPLEMENTED": "SKILL_ERROR", "CANCELLED": "TIMEOUT", "INTERNAL_ERROR": "SKILL_ERROR",
+    "INVALID_RESULT": "SKILL_ERROR", "TIMING_OVERFLOW": "SKILL_ERROR", "NOT_IMPLEMENTED": "INVALID_ARGS", "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR",
 }
 NEVER_RETRIED = (CONSENT_CODE,)   # dubbing-skill ADR-012: "not retryable"; held here whatever a result's `retryable` says
 AGENT_ERRORS: Dict[str, str] = {"INVALID_REQUEST": "INVALID_ARGS", "INVALID_OUTPUT": "SKILL_ERROR", "TIMEOUT": "TIMEOUT"}
@@ -467,7 +469,7 @@ class DubbingAdapter(ToolAdapter):
               details: Optional[Dict[str, Any]] = None) -> ToolResult:
         data: Dict[str, Any] = {"skill": {"id": SKILL_ID, "version": self.version}, "status": "failed",
                                 "error": {"code": code, "message": message[:1200], "retryable": bool(retryable) and code not in NEVER_RETRIED, "details": dict(details or {}),
-                                          "exit_code": exit_code, "recovery_class": recovery_class(code)}}
+                                          "exit_code": exit_code, "recovery_class": cancelled_class(code, details, recovery_class(code))}}
         return ToolResult(op.id, op.tool, False, exit_code, None, data, [], f"{SKILL_ID} [{code}] {message[:600]}", round(time.time() - t0, 3), attempt, dry_run)
 
     @staticmethod

@@ -362,7 +362,7 @@ class ErrorTests(FakeBase):
         self.assertEqual(r.data["error"]["details"]["reason"], "tool_failed")
         self.check("validation_error", "VALIDATION_ERROR", False, "SKILL_ERROR", exit_code=14)
         self.check("internal_error", "INTERNAL_ERROR", False, "SKILL_ERROR", exit_code=16)
-        r = self.check("cancelled", "CANCELLED", True, "TIMEOUT", exit_code=15)
+        r = self.check("cancelled", "CANCELLED", True, "INTERRUPTED", exit_code=15)
         self.assertEqual(r.data["error"]["details"]["reason"], "signal")
         self.check("unknown_code", "INVALID_RESULT", False, "SKILL_ERROR")
         # the Skill's own validation, through the fake: timestamp beyond the duration, a request the transport refuses

@@ -59,7 +59,7 @@ TEMPLATE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 SENT = ("template", "values", "font", "request", "segments", "workers")
 # the contract's error kinds (error.kinds) → the agent's recovery class
 ERROR_CLASSES: Dict[str, str] = {"input": "INVALID_ARGS", "missing_tool": "TOOL_MISSING", "timeout": "TIMEOUT", "render": "SKILL_ERROR", "encode": "SKILL_ERROR",
-                                 "verification": "SKILL_ERROR", "interrupted": "SKILL_ERROR", "internal": "SKILL_ERROR"}
+                                 "verification": "SKILL_ERROR", "interrupted": "INTERRUPTED", "internal": "SKILL_ERROR"}
 AGENT_ERRORS: Dict[str, str] = {"INVALID_REQUEST": "INVALID_ARGS", "INVALID_OUTPUT": "SKILL_ERROR", "TIMEOUT": "TIMEOUT"}
 DEFAULT_TIMEOUT = 1800.0    # render's own default (--timeout)
 PROCESS_MARGIN = 120.0

@@ -36,7 +36,7 @@ from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy, run_process_group
-from ..skill_process import breaking_drift, engine_compat, engine_compat_errors
+from ..skill_process import breaking_drift, cancelled_class, engine_compat, engine_compat_errors
 from .locate import AudioProductionSkill, locate_audio_production
 from .lowering import OPERATION_ID, OUTPUT_ID, TOOL_ID, Lowering
 
@@ -57,10 +57,10 @@ ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["audio-production", "run", "-", "--json"]
 # the Skill's error vocabulary (contract errors.codes) and the agent's reading of each (recovery class)
 ERROR_CODES: Dict[str, str] = {
-    "INVALID_REQUEST": "INVALID_ARGS", "INVALID_INPUT": "INPUT_MISSING", "PATH_NOT_ALLOWED": "INPUT_MISSING", "UNSUPPORTED_OPERATION": "INVALID_ARGS",
+    "INVALID_REQUEST": "INVALID_ARGS", "INVALID_INPUT": "UNSUPPORTED_MEDIA", "PATH_NOT_ALLOWED": "INPUT_MISSING", "UNSUPPORTED_OPERATION": "INVALID_ARGS",
     "UNSUPPORTED_FORMAT": "INVALID_ARGS", "MISSING_INPUT": "INPUT_MISSING", "INVALID_TIME_RANGE": "INVALID_ARGS", "INVALID_CHANNEL_LAYOUT": "INVALID_ARGS",
-    "INVALID_SAMPLE_RATE": "INVALID_ARGS", "DEPENDENCY_ERROR": "INVALID_ARGS", "TOOL_ERROR": "UNKNOWN", "OUTPUT_ERROR": "SKILL_ERROR",
-    "VALIDATION_ERROR": "SKILL_ERROR", "CANCELLED": "TIMEOUT", "INTERNAL_ERROR": "SKILL_ERROR",
+    "INVALID_SAMPLE_RATE": "INVALID_ARGS", "DEPENDENCY_ERROR": "TOOL_MISSING", "TOOL_ERROR": "UNKNOWN", "OUTPUT_ERROR": "SKILL_ERROR",
+    "VALIDATION_ERROR": "SKILL_ERROR", "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR",
 }
 # ADR-068: details.reason of the TOOL_ERROR the Skill (0.4.3) returns when the located ffmpeg-skill cannot run a VOICE_CLEANUP level
 # (details.level, details.available_levels, details.ffmpeg_skill_version; retryable false)
@@ -603,7 +603,7 @@ class AudioProductionAdapter(ToolAdapter):
               details: Optional[Dict[str, Any]] = None, skill_results: Optional[List[Dict[str, Any]]] = None) -> ToolResult:
         data: Dict[str, Any] = {"skill": {"id": SKILL_ID, "version": getattr(self, "version", "")}, "status": "failed",
                                 "error": {"code": errc, "message": message, "retryable": bool(retryable), "details": details or {}, "exit_code": code,
-                                          "recovery_class": ERROR_CODES.get(errc, "SKILL_ERROR")}}
+                                          "recovery_class": cancelled_class(errc, details, ERROR_CODES.get(errc, "SKILL_ERROR"))}}
         if skill_results:
             data["results"] = [{k: r.get(k) for k in ("node_id", "type", "status", "tool")} for r in skill_results if isinstance(r, dict)]
             data["commands"] = [str(c) for r in skill_results if isinstance(r, dict) for c in (r.get("tool_commands_observed") or [])]

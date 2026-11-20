@@ -55,11 +55,14 @@ WORD_RE = re.compile(r"^[^,\x00-\x1f]{1,64}$")
 FILE_RE = re.compile(r"^(?!/)(?!.*(^|/)\.\.(/|$))[^\x00-\x1f]{1,255}$")
 DEFAULT_TIMEOUT = 3600.0
 PROCESS_MARGIN = 120.0
+# sound-design-skill's error codes → the agent's recovery class, by Velisa's error taxonomy (ADR-119): TOOL_ERROR is UNKNOWN (retried once
+# when the Skill says retryable), as in every other table; a confirmation or a licence a person must give is ACTION_REQUIRED; NOT_IMPLEMENTED
+# is an operation the Skill does not offer (INVALID_ARGS).
 ERROR_CLASSES: Dict[str, str] = {
     "INVALID_ARGUMENT": "INVALID_ARGS", "INPUT_NOT_FOUND": "INPUT_MISSING", "UNSUPPORTED_MEDIA": "INVALID_ARGS", "OUTPUT_EXISTS": "INVALID_ARGS",
     "OUTPUT_IS_INPUT": "INVALID_ARGS", "FFMPEG_SKILL_UNAVAILABLE": "TOOL_MISSING", "ENGINE_UNAVAILABLE": "TOOL_MISSING", "MODEL_NOT_FOUND": "TOOL_MISSING",
-    "TOOL_ERROR": "SKILL_ERROR", "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT", "INVALID_RESULT": "SKILL_ERROR", "NOT_IMPLEMENTED": "TOOL_MISSING",
-    "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR", "CONFIRMATION_REQUIRED": "INVALID_ARGS", "LICENCE_REQUIRED": "INVALID_ARGS",
+    "TOOL_ERROR": "UNKNOWN", "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT", "INVALID_RESULT": "SKILL_ERROR", "NOT_IMPLEMENTED": "INVALID_ARGS",
+    "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR", "CONFIRMATION_REQUIRED": "ACTION_REQUIRED", "LICENCE_REQUIRED": "ACTION_REQUIRED",
 }
 # codes a newer contract declares that check_contract() does not require (an older contract without them stays compatible); mapped all the same
 OPTIONAL_ERROR_CLASSES: Dict[str, str] = {"INSUFFICIENT_VRAM": "INSUFFICIENT_VRAM"}   # 0.3.0: a guided BLOCK naming the default model (recovery.py)
