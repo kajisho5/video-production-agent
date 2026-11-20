@@ -32,10 +32,10 @@
     },
     "detection": {
       "repo": "kajisho5/detection-skill",
-      "tag": "v0.2.5",
-      "sha": "9a4933d1dc437f62fe86ea9d8b24d2895b8eed8e",
-      "version": "0.2.5",
-      "pin": "src/video_agent/tools/detection/contract_0.2.5.json"
+      "tag": "v0.2.7",
+      "sha": "eeb0bf0d8000bbbd0e1004305b35cdddf54a53f3",
+      "version": "0.2.7",
+      "pin": "src/video_agent/tools/detection/contract_0.2.7.json"
     },
     "diarization": {
       "repo": "kajisho5/diarization-skill",
@@ -53,10 +53,10 @@
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
-      "tag": "v0.10.4",
-      "sha": "9cade4c926d60d143a377f232ba6068ec35a8f00",
-      "version": "0.10.4",
-      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.10.4.json"
+      "tag": "v0.11.1",
+      "sha": "64b787c8786237b6bd579116020a3ff227a8132a",
+      "version": "0.11.1",
+      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.11.1.json"
     },
     "imagemagick": {
       "repo": "kajisho5/imagemagick-skill",
@@ -67,17 +67,17 @@
     },
     "ingest": {
       "repo": "kajisho5/ingest-skill",
-      "tag": "v0.1.2",
-      "sha": "b6c63fe482c9b1853a2c7c922441542c0e059fad",
-      "version": "0.1.2",
-      "pin": "src/video_agent/tools/ingest/contract_0.1.2.json"
+      "tag": "v0.1.3",
+      "sha": "04954edf09a3b7c8215ce19bc160d7ad76ee360e",
+      "version": "0.1.3",
+      "pin": "src/video_agent/tools/ingest/contract_0.1.3.json"
     },
     "media-analysis": {
       "repo": "kajisho5/media-analysis-skill",
-      "tag": "v0.1.22",
-      "sha": "8a6f942919e95aff386233f01aadaf1c8fd22aaa",
-      "version": "0.1.22",
-      "pin": "src/video_agent/tools/media_analysis/contract_0.1.22.json"
+      "tag": "v0.1.23",
+      "sha": "ba5798c3fc60bdfe9be10ec9bd6fa122cc2a6fe9",
+      "version": "0.1.23",
+      "pin": "src/video_agent/tools/media_analysis/contract_0.1.23.json"
     },
     "motion-graphics": {
       "repo": "kajisho5/motion-graphics-skill",
@@ -88,10 +88,10 @@
     },
     "nle-bridge": {
       "repo": "kajisho5/nle-bridge-skill",
-      "tag": "v0.1.2",
-      "sha": "ca0f649390987021037a335a24e017638e0dfecb",
-      "version": "0.1.2",
-      "pin": "src/video_agent/tools/nle_bridge/contract_0.1.2.json"
+      "tag": "v0.1.4",
+      "sha": "3f1a0bd3535fd069083f868fda5d96191399700e",
+      "version": "0.1.4",
+      "pin": "src/video_agent/tools/nle_bridge/contract_0.1.4.json"
     },
     "publish": {
       "repo": "kajisho5/publish-skill",
@@ -109,17 +109,17 @@
     },
     "remotion-ffmpeg": {
       "repo": "kajisho5/remotion-ffmpeg-skill",
-      "tag": "v0.14.2",
-      "sha": "25d919130428e1896a02f3ea0c3ec8eb8c1b029c",
-      "version": "0.14.2",
-      "pin": "src/video_agent/tools/remotion/contract_0.14.2.json"
+      "tag": "v0.14.4",
+      "sha": "f14b27c334e86afde606c5c558eb91acdeff801f",
+      "version": "0.14.4",
+      "pin": "src/video_agent/tools/remotion/contract_0.14.4.json"
     },
     "slide-sync": {
       "repo": "kajisho5/slide-sync-skill",
-      "tag": "v0.1.2",
-      "sha": "6b4a92fca06dbcf54d9dce7182c8d27043d3f855",
-      "version": "0.1.2",
-      "pin": "src/video_agent/tools/slide_sync/contract_0.1.2.json"
+      "tag": "v0.1.3",
+      "sha": "5d8dfd77222f1a032ba8329d147677d1b2e6c2d1",
+      "version": "0.1.3",
+      "pin": "src/video_agent/tools/slide_sync/contract_0.1.3.json"
     },
     "sound-design": {
       "repo": "kajisho5/sound-design-skill",
@@ -151,10 +151,10 @@
     },
     "video-editing": {
       "repo": "kajisho5/video-editing-skill",
-      "tag": "v0.8.6",
-      "sha": "9a41835d73deec7fe8e6f2d23ce607a474fa15ec",
-      "version": "0.8.6",
-      "pin": "src/video_agent/tools/video_editing/contract_0.8.6.json"
+      "tag": "v0.8.8",
+      "sha": "6c1a39864552a3dea44670e0cea896732d3efebc",
+      "version": "0.8.8",
+      "pin": "src/video_agent/tools/video_editing/contract_0.8.8.json"
     },
     "voice-enhance": {
       "repo": "kajisho5/voice-enhance-skill",

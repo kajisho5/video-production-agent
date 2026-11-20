@@ -3,7 +3,7 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.8.6",
+  "version": "0.8.8",
   "contract_version": "7.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
@@ -175,7 +175,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -229,7 +229,7 @@
     {
       "tool_id": "video-editing/condense",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "CONDENSE",
       "capability": "video.condense",
       "description": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved proposals (retakes, silences, static spans) become segments here",
@@ -280,7 +280,7 @@
     {
       "tool_id": "video-editing/crop",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "CROP",
       "capability": "video.crop",
       "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
@@ -331,7 +331,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -379,7 +379,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -429,7 +429,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -479,7 +479,7 @@
     {
       "tool_id": "video-editing/freeze",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "FREEZE",
       "capability": "video.freeze",
       "description": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end",
@@ -528,7 +528,7 @@
     {
       "tool_id": "video-editing/image_insert",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "IMAGE_INSERT",
       "capability": "video.image_insert",
       "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
@@ -578,7 +578,7 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
       "description": "composite a still image (logo, lower-third PNG) at a named position for a time range; a video layer, picture-in-picture or chroma key is motion-graphics-skill's video_overlay (ADR-035)",
@@ -632,7 +632,7 @@
     {
       "tool_id": "video-editing/punch_in",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "PUNCH_IN",
       "capability": "video.punch_in",
       "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
@@ -683,7 +683,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -731,7 +731,7 @@
     {
       "tool_id": "video-editing/reverse",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "REVERSE",
       "capability": "video.reverse",
       "description": "play the input backwards, picture and audio",
@@ -777,7 +777,7 @@
     {
       "tool_id": "video-editing/rotate",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "ROTATE",
       "capability": "video.rotate",
       "description": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)",
@@ -825,7 +825,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -874,7 +874,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.8.6",
+      "version": "0.8.8",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -1318,7 +1318,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.8.6"
+      "version": "0.8.8"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1778,7 +1778,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.8.6"
+      "version": "0.8.8"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1798,7 +1798,7 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.8.6",
+    "version": "0.8.8",
     "contract_version": "7.0",
     "pinned_blocks": [
       "schema",
@@ -2005,6 +2005,7 @@
     ],
     "why": "join.py trims each clip to its own length and starts the next after it: a length that is not whole frames of the output rate moved every later clip off the frame grid (a one-frame hole in the picture once the remainders reached half a frame, and a timeline that drifted from the file by the remainder of every clip). With an xfade, join.py starts each transition at the lengths before it less the transitions, and xfade starts one only on a frame: an offset between frames started the next clip's picture on the frame after it, up to a frame after its sound and its timeline place",
     "report": "execution.operations[].whole_frames and plan.steps[].whole_frames: {rate: {fps, rational}, inputs: [{input, fps, length, joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}], and with an xfade transition: {type, duration, joined_duration, frames}}; the join's own arguments (plan.steps[].arguments.duration) carry the joined duration",
+    "rate_reading": "velisa/timebase@1 (docs/decisions.md ADR-040): a rate is an exact fraction; params.fps 'N/D' is taken as written, and a decimal (params.fps, or the 3-decimal fps of ffmpeg-skill's probe) within 0.005 of an NTSC rate is that rate (29.97 is 30000/1001, 59.94 is 60000/1001, 23.976 and 23.98 are 24000/1001), any other decimal its exact value; whole frames are nearest = floor(t x rate + 1/2) (a half up) or down = floor((t + 1 ms) x rate); the output's rate (validation) and an input's rate are compared as exact fractions after both are read back at the probe's 3 decimals (29.97 and 30000/1001 are one rate, 29.97 and 29.98 are not), which is within the 0.02 that validation states",
     "validation": "the output's frame rate is the rate within 0.02, also when params.fps is not given (VALIDATION_ERROR fps)",
     "refused": [
       "an input whose whole-frame length is no frame at all (INVALID_TIME_RANGE shorter_than_a_frame), before anything runs",
@@ -2040,6 +2041,12 @@
       "the bytes differ from the single-pass render, so the idempotency key carries render: segments"
     ],
     "fallback": "when ffmpeg-skill refuses the copy join (the parts' picture and sound do not line up within its limit), the operation is rendered in one pass as without the cache; the parts stay cached and the record says single_pass_fallback with the engine's reason",
+    "fallback_record": {
+      "fallback_reason": "string: the engine's refusal message, prefixed once with 'join --copy: '",
+      "fallback_error_reason": "string, optional: the engine's error.reason when it gives one (join_copy_mismatch)",
+      "aac_drift_ms": "number, optional: the sound's predicted delay against the picture at the worst seam, from the engine's error.details (ffmpeg-skill 4.0+, #610: AAC priming at each seam plus each part's sound beyond its picture; more than 50 ms is refused)",
+      "when": "execution.operations[].segments, only when join is single_pass_fallback; the optional fields are left out when the engine does not give them"
+    },
     "needs": "ffmpeg-skill/join --copy (from ffmpeg-skill 2.24.0, detected); without it a request asking for the cache is refused before execution (TOOL_ERROR)",
     "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)"
   },
