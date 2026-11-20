@@ -74,10 +74,10 @@
     },
     "media-analysis": {
       "repo": "kajisho5/media-analysis-skill",
-      "tag": "v0.1.23",
-      "sha": "ba5798c3fc60bdfe9be10ec9bd6fa122cc2a6fe9",
-      "version": "0.1.23",
-      "pin": "src/video_agent/tools/media_analysis/contract_0.1.23.json"
+      "tag": "v0.2.0",
+      "sha": "a11b408f9a9232aa891fe3cd3095955c2c2af2b8",
+      "version": "0.2.0",
+      "pin": "src/video_agent/tools/media_analysis/contract_0.2.0.json"
     },
     "motion-graphics": {
       "repo": "kajisho5/motion-graphics-skill",
@@ -130,10 +130,10 @@
     },
     "subtitle": {
       "repo": "kajisho5/subtitle-skill",
-      "tag": "v0.10.3",
-      "sha": "abbf8effae494abc6ce27222346832f97d0357f0",
-      "version": "0.10.3",
-      "pin": "src/video_agent/tools/subtitle/contract_0.10.3.json"
+      "tag": "v0.11.0",
+      "sha": "3a4874501853a2b11a4988d42eafc8860717eee7",
+      "version": "0.11.0",
+      "pin": "src/video_agent/tools/subtitle/contract_0.11.0.json"
     },
     "thumbnail": {
       "repo": "kajisho5/thumbnail-skill",
