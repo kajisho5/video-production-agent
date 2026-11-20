@@ -1,4 +1,4 @@
-"""MCP permission scopes and the confirmation step before destructive or outward-facing calls (ADR-124).
+"""MCP permission scopes and the confirmation step before destructive or outward-facing calls (ADR-125).
 
 Every MCP tool has a permission class (TOOL_CLASSES). A call's effective class is worked out from its arguments and the files it
 would touch (classify): `plan` is `write`, but `destructive` when it would replace an existing plan; `render` is `write`, `read` as a
@@ -48,8 +48,9 @@ TOOL_CLASSES: Dict[str, str] = {
     "doctor": READ, "skills": READ, "brief": READ, "corrections": READ, "validate": READ, "explain": READ, "diff": READ,
     "check": READ, "artifacts": READ,
     "plan": WRITE, "revise": WRITE, "approve": WRITE, "reject": WRITE, "preferences": WRITE, "render": WRITE, "transcript_edit": WRITE,
+    "selects": WRITE,
 }
-ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,), "transcript_edit": (DESTRUCTIVE,)}
+ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,), "transcript_edit": (DESTRUCTIVE,), "selects": (DESTRUCTIVE,)}
 
 
 class PermissionConfigError(ValueError):
@@ -262,6 +263,12 @@ def classify(name: str, args: Mapping[str, Any], perms: Permissions, workspace: 
                 if os.path.lexists(out):
                     item.update(_file_facts(out))
                 raise_to(DESTRUCTIVE, item)
+    elif name == "selects":
+        out = str(args.get("output") or Path(workspace) / "selects" / "selects.json")
+        call.writes.append(out)
+        if os.path.lexists(out):
+            raise_to(DESTRUCTIVE, {"action": "overwrite", **_file_facts(out),
+                                   "detail": "a selects file exists here; a new batch replaces it (a plan's edit.selects may point to it)"})
     elif name == "preferences":
         if (args.get("action") or "list") in ("list", "show", "diff"):
             call.cls = READ

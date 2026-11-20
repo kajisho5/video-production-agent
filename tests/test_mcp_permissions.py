@@ -1,4 +1,4 @@
-"""ADR-124: MCP permission scopes, the preview + confirm_token step before destructive / publish calls, and the allowed roots.
+"""ADR-125: MCP permission scopes, the preview + confirm_token step before destructive / publish calls, and the allowed roots.
 
 The CLI child is replaced by a mock of subprocess.run: these tests are about what the server lets through, not what the CLI does."""
 from __future__ import annotations
@@ -189,6 +189,22 @@ class ScopeTests(_Base):
         res, run = self.call(self.server(), "transcript_edit", args)
         self.assert_disabled(res, run, "destructive")
         res, run = self.call(self.server(), "transcript_edit", {**args, "output": str(self.outside / "te.json")})
+        self.assertEqual(body(res)["error"], "PATH_OUTSIDE_ROOTS")
+        run.assert_not_called()
+
+    def test_destructive_scope_blocks_selects_overwrite(self):
+        args = {"inputs": [str(self.media)]}
+        res, run = self.call(self.server(), "selects", args)
+        self.assertFalse(res["isError"], res)
+        run.assert_called_once()
+        existing = self.ws / "selects" / "selects.json"
+        existing.parent.mkdir()
+        existing.write_text("{}", encoding="utf-8")
+        res, run = self.call(self.server(), "selects", args)
+        self.assert_disabled(res, run, "destructive")
+        res, run = self.call(self.server(), "selects", {**args, "output": str(self.ws / "selects" / "batch2.json")})
+        self.assertFalse(res["isError"], res)
+        res, run = self.call(self.server(), "selects", {**args, "output": str(self.outside / "s.json")})
         self.assertEqual(body(res)["error"], "PATH_OUTSIDE_ROOTS")
         run.assert_not_called()
 

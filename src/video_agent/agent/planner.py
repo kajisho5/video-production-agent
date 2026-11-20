@@ -30,6 +30,7 @@ from .subtitles import (BURN_SKILL, GENERATE_SKILL, MUX_SKILL, QC_FORMATS, annot
                         words_on_timeline)
 from .editor_timeline import SUBJECT as EDITOR_CUT_SUBJECT
 from .takes import AUDIO_MUX_SKILL, CROSSFADE_SUBJECT, PICK_SUBJECT, SNAP_SUBJECT
+from .selects import SUBJECT as SELECTS_SUBJECT
 from .timeline import TIMELINE_SKILL, TIMELINE_SUBJECT, ir_timeline_export, timeline_clips
 from .nle import MODES as NLE_MODES, SUBJECT as NLE_SUBJECT, ir_nle
 from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepare, prepare_chain, prepared_id
@@ -749,9 +750,16 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     take_crossfade: Optional[Dict[str, Any]] = None
     take_left_out = ({t["asset_id"] for d in pick_decs for t in d.params.get("takes") or []} - {d.params["asset_id"] for d in pick_decs}) \
         | {d.params["music_bed"] for d in pick_decs if d.params.get("music_bed")}
+    # ADR-124: batch selects -- a clip with no kept shot (or not in the selects file) gets no step
+    sel_decs = [d for d in decisions if d.subject == SELECTS_SUBJECT]
+    sel_used = {d.params.get("asset_id") for d in sel_decs if d.type == "TRANSFORM"}
+    sel_left_out = {a.id for a in analysis.assets if a.id not in sel_used} if sel_used else set()
     for asset in analysis.assets:
         if asset.id in take_left_out:
             summary.append(f"{asset.path.split('/')[-1]}: not used (a take that was not picked, or the music bed)")
+            continue
+        if asset.id in sel_left_out:
+            summary.append(f"{asset.path.split('/')[-1]}: not used (no shot of it is kept in the selects)")
             continue
         if asset.id in extract_refused:
             summary.append(f"{asset.path.split('/')[-1]}: audio extraction was rejected; nothing is planned for it on the audio path")
@@ -789,6 +797,11 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         # ranges the decisions above give (they stay in the plan, superseded for this source; rejecting the editor's cut restores them)
         editor_dec = next((d for d in decisions if d.subject == EDITOR_CUT_SUBJECT and d.type == "TRANSFORM" and d.status != "REJECTED"
                            and d.params.get("asset_id") == asset.id), None) if asset.id not in audio_subjects else None
+        # ADR-124: the kept shots of this clip (batch selects) are cut the same way as the editor's kept ranges: exactly these ranges, frame-accurate
+        sel_dec = next((d for d in sel_decs if d.type == "TRANSFORM" and d.status != "REJECTED" and d.params.get("asset_id") == asset.id), None) \
+            if editor_dec is None and asset.id not in audio_subjects else None
+        if sel_dec is not None:
+            editor_dec = sel_dec
         if editor_dec is not None:
             ek = [[round(float(s_), 3), round(float(e_), 3)] for s_, e_ in editor_dec.params["keep"]]
             start, end, dec_ids, internal = ek[0][0], ek[-1][1], [editor_dec.id], []
@@ -881,7 +894,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             if cond_dec is not None:
                 summary.append(f"Cut the {len(cond_dec.params['spans'])} approved proposal(s) out of {asset.path.split('/')[-1]} ({sum(r['end'] - r['start'] for r in condensed):.2f}s, "
                                "video-editing CONDENSE; every other proposal is left in)")
-            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" as the editor's timeline" if editor_dec is not None else " outside the requested in / out range" if explicit_trim else " in all" if cond_spans else " of silence")
+            summary.append(f"Trim {asset.path.split('/')[-1]} to {start:.2f}-{end:.2f}s (removes {dur - kept_total:.2f}s" + (" to the kept shots of the selects" if sel_dec is not None else " as the editor's timeline" if editor_dec is not None else " outside the requested in / out range" if explicit_trim else " in all" if cond_spans else " of silence")
                            + (f", {n_pauses} internal pause(s) pending confirmation" if n_pauses and editor_dec is None else "")
                            + (f", {len(word_cuts)} range(s) around the words the AI chose to cut, pending confirmation" if word_cuts and editor_dec is None else "") + (", audio-production cut" if asset.id in audio_subjects else "") + ")")
         fr_dec = next((d for d in decisions if d.subject == "audio.filler_remove" and d.type == "TRANSFORM" and d.status != "REJECTED" and d.params.get("asset_id") == asset.id), None) \
