@@ -232,7 +232,7 @@ def decide(old: str, new: str, classification: str, gate: Optional[Sequence[str]
     if n <= o:
         return Decision("review", [f"the tag {new} is not newer than the pin {old}"])
     reasons: List[str] = []
-    # addendum 3 (Velisa ADR-030): a Skill's first 1.0.0 after 0.x is a promotion, not a break; with a none / additive diff it
+    # addendum 3 (Velisa ADR-031): a Skill's first 1.0.0 after 0.x is a promotion, not a break; with a none / additive diff it
     # widens the gate to `1.0.` like any minor. Every other major change (1.x -> 2.0.0, 0.x -> 1.1.0, ...) stays a review.
     promotion = o[0] == 0 and n == (1, 0, 0)
     if n[0] != o[0] and not promotion:

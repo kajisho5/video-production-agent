@@ -163,7 +163,7 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual((d.kind, d.new_prefix), ("widen", "1.5."))
 
     def test_a_first_1_0_0_after_0x_widens(self):
-        """Addendum 3 (Velisa ADR-030): 0.x -> 1.0.0 with a none / additive diff is a promotion; the gate takes `1.0.`."""
+        """Addendum 3 (Velisa ADR-031): 0.x -> 1.0.0 with a none / additive diff is a promotion; the gate takes `1.0.`."""
         for old, c in (("0.1.22", "none"), ("0.10.1", "additive"), ("0.9.0", "none")):
             d = repin.decide(old, "1.0.0", c, ("0.1.", "0.9.", "0.10."))
             self.assertEqual((d.kind, d.new_prefix), ("widen", "1.0."), (old, c))
