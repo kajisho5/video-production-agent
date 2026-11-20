@@ -146,7 +146,10 @@ def measured(analysis_rows: List[Dict[str, Any]], observations: List[Any], opts:
         o = by_asset.get(row.get("asset_id"))
         if o is None:
             err = row.get("error") or {}
-            out.append({"asset_id": row.get("asset_id"), "status": row.get("status"), "error": {k: err[k] for k in ("kind", "skill_error", "recovery_class") if err.get(k)}})
+            rec = {"asset_id": row.get("asset_id"), "status": row.get("status"), "error": {k: err[k] for k in ("kind", "skill_error", "recovery_class") if err.get(k)}}
+            if row.get("reason"):   # a SKIPPED row says why (analyzer: "no audio stream"), kept in the provenance
+                rec["reason"] = row["reason"]
+            out.append(rec)
             continue
         p = o.parameters or {}
         rec: Dict[str, Any] = {"asset_id": o.asset_id, "status": "OK", "engine": p.get("engine"), "model": p.get("model")}

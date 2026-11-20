@@ -330,6 +330,15 @@ class PlanTests(_Base):
         self.assertEqual((sent["parameters"]["layer"], sent["parameters"]["in_duration"], sent["parameters"]["loop"]), (f"{subj}_html_layer", 0.5, True))
         self.assertTrue(any(e["tool"] == "hyperframes-skill/render" for e in prov["operations"]), "the render is in the job's provenance")
 
+    def test_the_placing_render_must_hold_a_rendered_layer_element_for_the_layer(self):
+        # issue #162: graphics.render naming the layer as its layer_source is not enough; one of its rendered_layer elements must place it
+        ir = self.plan()
+        self.assertEqual(self.svc.validate(ir).errors, [])
+        render = next(op for op in ir.doc["graphics"]["operations"] if op["type"] == "graphics.render")
+        next(e for e in render["elements"] if e["type"] == "rendered_layer")["parameters"]["layer"] = "other.mov"
+        errs = self.svc.validate(ir).errors
+        self.assertTrue(any("no graphics.render places its output" in e for e in errs), errs)
+
     def test_scene_request_and_no_segments(self):
         req = self.request_file(segments=False)
         ir = self.plan({"motion.layer": "hyperframes", "hyperframes.request": req, "motion.layer.start": 2})
@@ -354,9 +363,22 @@ class PlanTests(_Base):
         [h] = [h for h in self.svc.handoffs(ir) if h["skill"] == "html_scene_layer"]
         self.assertEqual(h["provided_by"], ["hyperframes-skill"])
         c = h["contract"]
-        self.assertEqual((c["tool"], c["version"], c["args"]["codec"], c["args"]["segments"]), ("hyperframes-skill/render", pinned_version("hyperframes"), "prores", True))
+        self.assertEqual((c["tool"], c["version"], c["args"]["codec"], c["args"]["segments"]),
+                         ("hyperframes-skill/render", pinned_version("hyperframes"), "prores", {"in": 0.5, "loop": 3.0, "out": 0.5}))
         self.assertIn("motion.layer=<file>", c["next"])
+        self.assertIn("loop 3 s", c["next"], "the planned loop is named, not only that there are segments")
         self.assertIn("--segments", c["steps"][-1])
+        self.assertTrue(any(st.startswith('add "segments"') for st in c["steps"]), c["steps"])
+
+    def test_the_handoff_keeps_the_font_and_the_segments(self):
+        # issue #162: the font a template is filled with, and the planned IN / LOOP / OUT, reach the handoff
+        from video_agent.skills.handoff_contracts import layer_handoff_request
+        c = layer_handoff_request({"template": "lower-third", "values": {"name": "Ada"}, "font": "fonts/brand.ttf", "segments": {"in": 0.5, "loop": 3.0, "out": 0.5}})
+        self.assertEqual((c["args"]["font"], c["args"]["segments"]), ("fonts/brand.ttf", {"in": 0.5, "loop": 3.0, "out": 0.5}))
+        self.assertIn("--font fonts/brand.ttf", c["steps"][0])
+        self.assertEqual([st.split(" ")[0] for st in c["steps"]], ["hyperframes-skill/template", "add", "hyperframes-skill/scene", "hyperframes-skill/render"])
+        c = layer_handoff_request({"request": "strap.json"})
+        self.assertEqual((c["args"].get("font"), c["args"].get("segments"), len(c["steps"])), (None, None, 2), "a scene request carries its own")
 
     def test_doctor_without_chromium_blocks_by_name(self):
         os.environ["FAKE_HF_READY"] = "nochromium"
@@ -394,7 +416,11 @@ class HtmlLayerRealSkillTests(unittest.TestCase):
     def test_live_contract_against_the_pin(self):
         self.assertEqual(check_contract(self.ad.contract), [])
         self.assertEqual(self.ad.breaking_drift(), [], "re-pin skills/pins/hyperframes-skill_<version>.json")
-        self.assertEqual(self.ad.version, load_pin(PINS["html_scene_render"].pin_file)["version"])
+        # ADR-108: the release version is compared by the gate's range, everything else by the drift function (a compatible patch passes)
+        from video_agent.tools.hyperframes.adapter import SUPPORTED_SKILL_VERSIONS
+        from video_agent.tools.release_version import compare_to_pin
+        c = compare_to_pin("hyperframes-skill", self.ad.contract, load_pin(PINS["html_scene_render"].pin_file), SUPPORTED_SKILL_VERSIONS, breaking_drift)
+        self.assertEqual((c.out_of_range, c.content_drift), ([], []), c)
 
     def test_doctor_decides_and_a_missing_chromium_is_named(self):
         self.assertIn(self.doc["status"], ("ok", "degraded", "fail"))

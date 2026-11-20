@@ -217,11 +217,11 @@ def main() -> int:
             return _err("FILE_NOT_FOUND", "no such input")
         if MODE == "engine_unavailable":
             return _err("ENGINE_UNAVAILABLE", "faster-whisper is not installed", {"engine": "faster_whisper", "reason": "engine_not_installed"})
-        if MODE == "model_unavailable" or (p.get("offline") and p.get("model") not in (None, "base")):
-            return _err("MODEL_UNAVAILABLE", "model not on this machine and cannot be fetched (offline)", {"engine": "faster_whisper", "model": p.get("model") or "base", "availability": "MODEL_MISSING", "offline": bool(p.get("offline"))})
-        if p.get("model") == UNKNOWN_MODEL:
+        if p.get("model") == UNKNOWN_MODEL:   # an unknown model is MODEL_UNKNOWN whether or not the run is offline (checked before availability)
             return _err("MODEL_UNAVAILABLE", f"model {UNKNOWN_MODEL!r}: not a model of this engine; known: tiny, base, small",
                         {"engine": p.get("engine") or ENGINE["id"], "model": UNKNOWN_MODEL, "availability": "MODEL_UNKNOWN", "offline": bool(p.get("offline"))})
+        if MODE == "model_unavailable" or (p.get("offline") and p.get("model") not in (None, "base")):
+            return _err("MODEL_UNAVAILABLE", "model not on this machine and cannot be fetched (offline)", {"engine": "faster_whisper", "model": p.get("model") or "base", "availability": "MODEL_MISSING", "offline": bool(p.get("offline"))})
         if p.get("model") in MODEL_LANGUAGES:   # 0.10.0 (its ADR-040): a model limited to some languages, refused before any audio work
             langs, lang = MODEL_LANGUAGES[p["model"]], p.get("language")
             if lang is None:

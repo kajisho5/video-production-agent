@@ -194,20 +194,24 @@ def layer_handoff_request(params: Dict[str, Any]) -> Dict[str, Any]:
     p = PINS["html_scene_render"]
     prov = p.provides()
     seg = params.get("segments")
-    steps = ([f"hyperframes-skill/template {params['template']} --values <the values> --output request.json"] if params.get("template") else []) \
+    font = f" --font {params['font']}" if params.get("template") and params.get("font") is not None else ""   # a font fills a template only
+    inject = ([f"add \"segments\": {{\"in\": {seg['in']:g}, \"loop\": {seg['loop']:g}, \"out\": {seg['out']:g}}} to request.json (as the adapter does)"]
+              if seg and params.get("template") else [])   # the template's request has no segments; a scene request given by the user carries its own
+    steps = ([f"hyperframes-skill/template {params['template']} --values <the values>{font} --output request.json"] if params.get("template") else []) + inject \
         + [f"hyperframes-skill/scene {'request.json' if params.get('template') else params.get('request')} --output scene",
            "hyperframes-skill/render scene --output layer.mov --codec prores" + (" --segments" if seg else "")]
     args: Dict[str, Any] = {"codec": "prores"}
-    for k in ("template", "values", "request"):
+    for k in ("template", "values", "font", "request"):
         if params.get(k) is not None:
             args[k] = params[k]
     if seg:
-        args["segments"] = True
+        args["segments"] = dict(seg)   # the planned IN / LOOP / OUT seconds, which the rendered pieces must match (not only that there are segments)
     timing = (f"in_duration {seg['in']:g}, out_duration {seg['out']:g}, loop true" if seg else "in_duration 0, out_duration 0, loop false")
+    planned = (f" (planned segments: in {seg['in']:g} s, loop {seg['loop']:g} s, out {seg['out']:g} s)" if seg else "")
     return {"package": p.package, "version": p.version, "source": p.source, "tool": p.tool, "capability": prov.get("id"), "lifecycle": prov.get("lifecycle"),
             "args": args, "steps": steps, "missing": [],
             "output": "a ProRes 4444 .mov with alpha (and with --segments its .in / .loop / .out pieces next to it)",
-            "next": f"give the .mov as motion.layer=<file> with motion.layer.{timing.replace(', ', ' / motion.layer.')}: motion-graphics-skill's rendered_layer places it",
+            "next": f"give the .mov as motion.layer=<file> with motion.layer.{timing.replace(', ', ' / motion.layer.')}: motion-graphics-skill's rendered_layer places it" + planned,
             "note": p.note}
 
 
