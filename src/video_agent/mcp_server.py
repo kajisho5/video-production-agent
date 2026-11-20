@@ -11,7 +11,12 @@ server never approves on its own, and `render` has no inline approve.
 The child is started without the current directory on its import path (ADR-075): the host's working directory may be any
 folder, and a `json.py` or `video_agent/` there must not run as the agent.
 
-    video-agent-mcp [--workspace DIR] [--ffmpeg-skill-dir DIR]      (or python -m video_agent.mcp_server, see ADR-075)
+Permission scopes (ADR-123, mcp_permissions.py): every tool call has a class (read / write / destructive / publish) and runs only
+when that class is enabled (default read + write); a disabled call returns a structured error naming the setting that enables it.
+A destructive or publish call returns a preview and a single-use, short-lived confirm_token first, and runs only when repeated with it.
+
+    video-agent-mcp [--workspace DIR] [--ffmpeg-skill-dir DIR] [--scopes read,write,...] [--allow-root DIR] [--config FILE]
+                    [--confirm-ttl S]      (or python -m video_agent.mcp_server, see ADR-075)
 """
 from __future__ import annotations
 
@@ -21,9 +26,13 @@ import os
 import subprocess
 import sys
 import tempfile
-from typing import Any, Dict, List, Optional
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 from . import __version__
+from .mcp_permissions import (CONFIRMED_CLASSES, DESTRUCTIVE, ENV_AI_PROVIDER, ESCALATES, PUBLISH, READ, TOOL_CLASSES, ConfirmationTokens, Permissions,
+                              PermissionConfigError, call_digest, classify, enable_hint, load_permissions)
 from .tools.discovery import python_module_command
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -110,6 +119,34 @@ TOOLS: List[Dict[str, Any]] = [
     {"name": "artifacts", "description": "Registered artifacts of a project (or all), with QA status.",
      "inputSchema": {"type": "object", "properties": {"project": _PROJECT}}},
 ]
+
+
+_CONFIRM_TOKEN = {"type": "string", "description": "the confirm_token a preview of this same call returned; pass it only after the user agreed to "
+                  "exactly what the preview lists (single use, expires after a few minutes)"}
+
+
+def listed_tools(perms: Permissions) -> List[Dict[str, Any]]:
+    """TOOLS as tools/list shows them on this server: each with its permission class in the description and as MCP annotations,
+    a confirm_token argument on tools whose calls can need confirmation, and a note on what this server's scopes leave disabled."""
+    out = []
+    for t in TOOLS:
+        name = t["name"]
+        cls = TOOL_CLASSES.get(name)
+        if cls is None:   # fail closed: refused when called; shown as such
+            out.append({**t, "description": t["description"] + " [no permission class: refused on this server]"})
+            continue
+        esc = ESCALATES.get(name, ())
+        note = f" [permission class: {cls}" + (f"; a call can be {' / '.join(esc)}, which needs a preview and a confirm_token" if esc else "")
+        off = [c for c in (cls, *esc) if not perms.enabled(c)]
+        if off:
+            note += f"; {' / '.join(off)} disabled on this server"
+        schema = dict(t["inputSchema"])
+        if esc:
+            schema["properties"] = {**schema.get("properties", {}), "confirm_token": _CONFIRM_TOKEN}
+        out.append({**t, "description": t["description"] + note + "]", "inputSchema": schema,
+                    "annotations": {"readOnlyHint": cls == READ and not esc, "destructiveHint": DESTRUCTIVE in (cls, *esc),
+                                    "openWorldHint": PUBLISH in (cls, *esc)}})
+    return out
 
 
 def _sets(values: Optional[Dict[str, Any]]) -> List[str]:
@@ -206,21 +243,69 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
 
 
 class Server:
-    def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, python: str = sys.executable):
+    def __init__(self, workspace: Optional[str] = None, ffmpeg_skill_dir: Optional[str] = None, python: str = sys.executable,
+                 permissions: Optional[Permissions] = None, clock: Callable[[], float] = time.monotonic):
         self.global_args = ["--json", *(["--workspace", workspace] if workspace else []), *(["--ffmpeg-skill-dir", ffmpeg_skill_dir] if ffmpeg_skill_dir else [])]
         self.python = python
+        # the child resolves the workspace the same way (service.Service), from the same working directory
+        self.workspace = str(Path(workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
+        self.permissions = permissions or load_permissions(self.workspace)
+        self.tokens = ConfirmationTokens(self.permissions.confirm_ttl_s, clock)
+
+    def _gate(self, name: str, arguments: Dict[str, Any], token: Optional[str]):
+        """(call, None) when the call may run now; (None, result) for a refusal or a preview."""
+        perms = self.permissions
+        try:
+            call = classify(name, arguments, perms, self.workspace)
+        except KeyError:
+            if any(t["name"] == name for t in TOOLS):
+                return None, _refusal("NO_PERMISSION_CLASS", name, None, f"{name} has no permission class on this server, so it is refused")
+            return None, _text(f"unknown tool: {name}", error=True)
+        if not perms.enabled(call.cls):
+            return None, _refusal("SCOPE_DISABLED", name, call.cls, f"this {name} call is {call.cls}, which is disabled on this server",
+                                  enable_with=enable_hint(call.cls), enabled_scopes=list(perms.scopes), would_do=call.preview or None)
+        outside = [p for p in call.writes if not perms.inside(p)]
+        if outside:
+            return None, _refusal("PATH_OUTSIDE_ROOTS", name, call.cls, "the call writes outside the allowed roots (symlinks and '..' resolved)",
+                                  paths=[{"path": p, "resolved": os.path.realpath(p)} for p in outside], allowed_roots=list(perms.roots),
+                                  enable_with="start the server with --allow-root DIR (or VIDEO_AGENT_MCP_ROOTS, or \"allowed_roots\" in the config file)")
+        if call.cls not in CONFIRMED_CLASSES:
+            return call, None
+        digest = call_digest(name, arguments, call)
+        if token is None:
+            tok = self.tokens.mint(digest)
+            body = {"status": "CONFIRMATION_REQUIRED", "tool": name, "class": call.cls, "preview": call.preview,
+                    "writes": [os.path.realpath(p) for p in call.writes], "confirm_token": tok, "expires_in_s": self.permissions.confirm_ttl_s,
+                    "next": f"show the user this preview; only after they agree, call {name} again with the same arguments and confirm_token "
+                            "(single use; any change to the arguments or to the files listed needs a new preview)"}
+            return None, _text(json.dumps(body, ensure_ascii=False, indent=2), error=False)
+        code = self.tokens.redeem(token, digest)
+        if code:
+            why = {"CONFIRM_TOKEN_UNKNOWN": "the token was never issued here, or was already used (tokens are single use)",
+                   "CONFIRM_TOKEN_EXPIRED": f"the token expired ({self.permissions.confirm_ttl_s:g} s after its preview)",
+                   "CONFIRM_TOKEN_MISMATCH": "the token was issued for a different call, or the files it previewed changed since"}[code]
+            return None, _refusal(code, name, call.cls, why + "; nothing was done. Call without confirm_token for a new preview")
+        return call, None
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        arguments = dict(arguments or {})
+        token = arguments.pop("confirm_token", None)
+        call, refused = self._gate(name, arguments, token)
+        if refused is not None:
+            return refused
+        env = None
+        if self.permissions.paid_ai_provider and not call.spends:   # a call not confirmed as spending never reaches a paid provider
+            env = dict(os.environ, **{ENV_AI_PROVIDER: "null"})
         with tempfile.TemporaryDirectory(prefix="video-agent-mcp-") as tmp:
             try:
-                argv = tool_argv(name, arguments or {}, tmp)
+                argv = tool_argv(name, arguments, tmp)
             except KeyError:
                 return _text(f"unknown tool: {name}", error=True)
             except ValueError as exc:
                 return _text(str(exc), error=True)
             try:
                 p = subprocess.run([*python_module_command("video_agent.cli", self.python), *self.global_args, *argv], capture_output=True, text=True,
-                                   encoding="utf-8", errors="replace", timeout=TOOL_TIMEOUT_S, stdin=subprocess.DEVNULL)
+                                   encoding="utf-8", errors="replace", timeout=TOOL_TIMEOUT_S, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
             except subprocess.TimeoutExpired:
                 return _text(f"{name}: timed out after {TOOL_TIMEOUT_S} s", error=True)
         out = p.stdout.strip()
@@ -237,7 +322,7 @@ class Server:
             result: Any = {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}},
                            "serverInfo": {"name": "video-agent", "version": __version__}}
         elif method == "tools/list":
-            result = {"tools": TOOLS}
+            result = {"tools": listed_tools(self.permissions)}
         elif method == "tools/call":
             params = msg.get("params") or {}
             result = self.call_tool(str(params.get("name")), params.get("arguments") or {})
@@ -271,12 +356,28 @@ def _text(text: str, error: bool = False) -> Dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": error}
 
 
+def _refusal(code: str, tool: str, cls: Optional[str], message: str, **extra: Any) -> Dict[str, Any]:
+    body = {"error": code, "tool": tool, "class": cls, "message": message, **{k: v for k, v in extra.items() if v is not None}}
+    return _text(json.dumps(body, ensure_ascii=False, indent=2), error=True)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="video-agent-mcp", description="video-agent as an MCP server (stdio)")
     ap.add_argument("--workspace", help="workspace root (default $VIDEO_AGENT_WORKSPACE or ./video-agent-work)")
     ap.add_argument("--ffmpeg-skill-dir")
+    ap.add_argument("--scopes", help="enabled permission classes, comma separated: read, write, destructive, publish, or all "
+                                     "(default $VIDEO_AGENT_MCP_SCOPES, the config file, else read,write)")
+    ap.add_argument("--allow-root", action="append", metavar="DIR", help="an absolute directory writing calls may write in, besides the workspace "
+                                                                          "(repeatable; default $VIDEO_AGENT_MCP_ROOTS or the config file)")
+    ap.add_argument("--config", help="JSON file with scopes, allowed_roots and confirm_ttl_s (default $VIDEO_AGENT_MCP_CONFIG)")
+    ap.add_argument("--confirm-ttl", type=float, metavar="S", help="lifetime of a confirm_token in seconds (default 300)")
     a = ap.parse_args(argv)
-    Server(a.workspace, a.ffmpeg_skill_dir).serve()
+    workspace = str(Path(a.workspace or os.environ.get("VIDEO_AGENT_WORKSPACE") or "./video-agent-work").resolve())
+    try:
+        perms = load_permissions(workspace, a.scopes, a.allow_root, a.config, a.confirm_ttl)
+    except PermissionConfigError as exc:
+        ap.error(str(exc))
+    Server(a.workspace, a.ffmpeg_skill_dir, permissions=perms).serve()
     return 0
 
 

@@ -11,7 +11,7 @@ from . import __version__
 from .agent.ingest import IngestError, IngestRecord, fetch_url, is_url, url_fetch_handoff
 from .agent import offload as offload_task
 from .capabilities import CapabilityResolver
-from .project import load_ir, save_ir
+from .project import default_plan_path, load_ir, save_ir
 from .service import Service
 
 
@@ -244,7 +244,7 @@ def cmd_plan_offload(args, svc: Service) -> int:
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    out = getattr(args, "output", None) or str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).resolve().name}.offload.project.json")
+    out = getattr(args, "output", None) or default_plan_path(svc.workspace, args.inputs[:1])
     save_ir(ir, out)
     rep = svc.validate(ir)
     handoff = svc.handoffs(ir)
@@ -288,7 +288,7 @@ def cmd_plan(args, svc: Service) -> int:
     brief = (ir.doc["request"].get("args") or {}).get("brief")
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
-        out = str(Path(svc.workspace) / "plans" / f"{Path(args.inputs[0]).stem}.{args.profile}.project.json")
+        out = default_plan_path(svc.workspace, args.inputs, args.profile)
     save_ir(ir, out)
     rep = svc.validate(ir)
     ai: Dict[str, Any] = {"ai_brief": dict(host.brief() or {}, next=f"write the answer as JSON, then: video-agent revise {out} --ai-recommendations <file>")} if host else {}
