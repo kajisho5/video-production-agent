@@ -1,6 +1,13 @@
 {
-  "description": "Files copied unchanged from the Velisa repository. Update them by copying the file at a newer commit and changing commit and sha256 here; tests/test_timebase.py checks the sha256.",
+  "description": "Files copied unchanged from the Velisa repository. Update them by copying the file at a newer commit and changing commit and sha256 here; the tests that read them check the sha256.",
   "files": {
+    "error-taxonomy.json": {
+      "repository": "kajisho5/Velisa",
+      "path": "docs/specs/error-taxonomy.json",
+      "spec": "velisa/error-taxonomy@1",
+      "commit": "b7df1d82586f0b7c00fed4074aecac75cbadf893",
+      "sha256": "8f66db2dc687ed0e18a24a445a221f9c4cfc0e6787a39c36a48baa1e5ffdd580"
+    },
     "timebase-vectors.json": {
       "repository": "kajisho5/Velisa",
       "path": "docs/specs/timebase-vectors.json",

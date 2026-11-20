@@ -56,12 +56,14 @@ MAX_TEXT = 10000                # an agent-side bound on any one metadata string
 DEFAULT_TIMEOUT = 300.0         # plan / dry run (offline)
 UPLOAD_TIMEOUT = 6 * 3600.0     # an upload of a large file
 # publish-skill's error codes (its contract `errors`) → the agent's recovery class. An upload is never retried by the agent (see module doc),
-# so the retryable codes are recorded as the Skill reports them and the human decides.
+# so the retryable codes are recorded as the Skill reports them and the human decides. The classes follow Velisa's error taxonomy (ADR-119):
+# missing credentials, a failed sign-in and a confirmation that does not match need a person (ACTION_REQUIRED); an interrupted upload is
+# TRANSIENT there (UNKNOWN here), which only names it -- the upload is still sent once (Service.publish).
 ERROR_CLASSES: Dict[str, str] = {
-    "INVALID_ARGUMENT": "INVALID_ARGS", "INPUT_NOT_FOUND": "INPUT_MISSING", "UNKNOWN_PLATFORM": "INVALID_ARGS", "CONFIRM_MISMATCH": "INVALID_ARGS",
-    "METADATA_INVALID": "INVALID_ARGS", "CREDENTIALS_MISSING": "TOOL_MISSING", "KEYCHAIN_UNAVAILABLE": "TOOL_MISSING", "KEYCHAIN_ERROR": "TOOL_MISSING",
-    "AUTH_FAILED": "TOOL_MISSING", "QUOTA_EXCEEDED": "SKILL_ERROR", "UPLOAD_LIMIT_EXCEEDED": "SKILL_ERROR", "UPLOAD_INTERRUPTED": "SKILL_ERROR",
-    "UPLOAD_REJECTED": "SKILL_ERROR", "UPLOAD_PARTIAL": "SKILL_ERROR", "NOT_IMPLEMENTED": "SKILL_ERROR", "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR",
+    "INVALID_ARGUMENT": "INVALID_ARGS", "INPUT_NOT_FOUND": "INPUT_MISSING", "UNKNOWN_PLATFORM": "INVALID_ARGS", "CONFIRM_MISMATCH": "ACTION_REQUIRED",
+    "METADATA_INVALID": "INVALID_ARGS", "CREDENTIALS_MISSING": "ACTION_REQUIRED", "KEYCHAIN_UNAVAILABLE": "TOOL_MISSING", "KEYCHAIN_ERROR": "TOOL_MISSING",
+    "AUTH_FAILED": "ACTION_REQUIRED", "QUOTA_EXCEEDED": "SKILL_ERROR", "UPLOAD_LIMIT_EXCEEDED": "SKILL_ERROR", "UPLOAD_INTERRUPTED": "UNKNOWN",
+    "UPLOAD_REJECTED": "SKILL_ERROR", "UPLOAD_PARTIAL": "SKILL_ERROR", "NOT_IMPLEMENTED": "INVALID_ARGS", "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR",
 }
 AGENT_ERRORS: Dict[str, str] = {"INVALID_REQUEST": "INVALID_ARGS", "INVALID_OUTPUT": "SKILL_ERROR", "TIMEOUT": "TIMEOUT"}
 # contract drift (ADR-045 / ADR-047): what the adapter reads; a platform or limit added on main is reported, not fatal

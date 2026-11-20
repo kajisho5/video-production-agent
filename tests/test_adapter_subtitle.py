@@ -422,9 +422,9 @@ class RunTests(Base):
     def test_error_modes(self):
         cases = (("tool_error", TOOL_RENDER, "TOOL_ERROR", True, "UNKNOWN", 1),
                  ("tool_error", TOOL_GENERATE, "OUTPUT_ERROR", True, "SKILL_ERROR", 1),
-                 ("dependency_error", TOOL_RENDER, "DEPENDENCY_ERROR", True, "INVALID_ARGS", 1),
+                 ("dependency_error", TOOL_RENDER, "DEPENDENCY_ERROR", True, "TOOL_MISSING", 1),
                  ("validation_error", TOOL_GENERATE, "VALIDATION_ERROR", False, "SKILL_ERROR", 1),
-                 ("cancelled", TOOL_GENERATE, "CANCELLED", False, "TIMEOUT", 1),
+                 ("cancelled", TOOL_GENERATE, "CANCELLED", False, "INTERRUPTED", 1),
                  ("internal_error", TOOL_GENERATE, "INTERNAL_ERROR", False, "SKILL_ERROR", 1),
                  ("unknown_code", TOOL_GENERATE, "INVALID_RESULT", False, "SKILL_ERROR", 1),
                  ("output_missing", TOOL_GENERATE, "INVALID_RESULT", False, "SKILL_ERROR", 9),
@@ -603,7 +603,7 @@ class FontsDirTests(Base):
         empty = os.path.join(self.ws, "fonts", "empty")
         os.makedirs(empty)
         none = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=empty)), self.paths)   # the Skill's own refusal, kept as it is
-        self.assertEqual((none.ok, none.data["error"]["code"], none.data["error"]["recovery_class"]), (False, "INVALID_INPUT", "INPUT_MISSING"))
+        self.assertEqual((none.ok, none.data["error"]["code"], none.data["error"]["recovery_class"]), (False, "INVALID_INPUT", "UNSUPPORTED_MEDIA"))
 
     def test_the_guided_refusal_asks_for_a_fonts_directory(self):
         from video_agent.execution.recovery import RECOVERY_TABLE, classify_error, next_attempt
@@ -625,7 +625,7 @@ class FontsDirTests(Base):
         # any other INVALID_INPUT keeps the shared class (the field decides, never the message)
         with Env(mode="ok"):
             other = self.adapter().run(self.op(TOOL_RENDER, self.render_args(fonts_dir=os.path.join(self.ws, "intermediate"))), self.paths)
-        self.assertEqual((other.data["error"]["code"], other.data["error"]["recovery_class"]), ("INVALID_INPUT", "INPUT_MISSING"))
+        self.assertEqual((other.data["error"]["code"], other.data["error"]["recovery_class"]), ("INVALID_INPUT", "UNSUPPORTED_MEDIA"))
 
 
 @unittest.skipUnless(os.environ.get(ENV_DIR), f"set {ENV_DIR} to a subtitle-skill checkout")

@@ -272,7 +272,7 @@ class OffloadRunTests(_Base):
     def test_incomplete_reports_keep_every_destination_and_code(self):
         out, off = self._failed("partial")
         err = off["error"]
-        self.assertEqual((err["code"], err["kind"], err["recovery_class"], err["exit_code"]), ("INCOMPLETE", "PARTIAL", "SKILL_ERROR", 3))
+        self.assertEqual((err["code"], err["kind"], err["recovery_class"], err["exit_code"]), ("INCOMPLETE", "PARTIAL", "UNKNOWN", 3))
         self.assertTrue(err["retryable"], "ingest-skill's verdict kept")
         det = err["details"]
         self.assertEqual((det["complete"], det["incomplete"]), ([str(self.a / "event" / "EX_CARD")], [str(self.b / "event" / "EX_CARD")]))
@@ -397,8 +397,8 @@ class IngestAdapterContractTests(_Base):
     def test_every_code_has_a_kind_and_class(self):
         for code in pinned_contract()["errors"]:
             kind, cls = kind_of(code)
-            self.assertIn(cls, ("INPUT_MISSING", "INVALID_ARGS", "TOOL_MISSING", "SKILL_ERROR"))
-        self.assertEqual(kind_of("VERIFY_MISMATCH"), ("VERIFY_FAILED", "SKILL_ERROR"))
+            self.assertIn(cls, ("INPUT_MISSING", "INVALID_ARGS", "TOOL_MISSING", "SKILL_ERROR", "UNKNOWN"))
+        self.assertEqual(kind_of("VERIFY_MISMATCH"), ("VERIFY_FAILED", "UNKNOWN"))   # TRANSIENT (ADR-119); an offload still runs once
         self.assertEqual(kind_of("MHL_INVALID"), ("HISTORY_DAMAGED", "SKILL_ERROR"))
         self.assertEqual(kind_of("HASH_UNAVAILABLE"), ("ENGINE_MISSING", "TOOL_MISSING"))
         self.assertEqual(kind_of("REEL_INVALID"), ("INVALID_REQUEST", "INVALID_ARGS"))

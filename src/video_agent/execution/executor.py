@@ -101,7 +101,7 @@ class Executor:
                 plan = next_attempt(r, attempt, self.max_attempts, timeout)
                 res.recovery.append({"op": op.id, "attempt": attempt, "class": plan["class"], "action": plan["action"], "reason": plan["reason"], "at": now_iso(), "stderr": r.stderr_tail[-400:]})
                 if plan["action"] != "RETRY":
-                    res.status = "BLOCKED" if plan["class"] in ("TOOL_MISSING", "INPUT_MISSING", "DISK_FULL") else "FAILED"
+                    res.status = "BLOCKED" if plan["class"] in ("TOOL_MISSING", "INPUT_MISSING", "DISK_FULL", "ACTION_REQUIRED") else "FAILED"
                     res.failed_op = op.id
                     return res
                 args.update(plan["args_patch"])

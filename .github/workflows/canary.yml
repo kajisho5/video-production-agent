@@ -1,5 +1,5 @@
-# ADR-117: the nightly canary. The real-Skill integration suite with every sibling Skill at its main branch (ffmpeg-skill at main and
-# v2.24.1, as in `tests`). `tests` runs the siblings at the releases the pins were taken from (integration/siblings.lock.json), so
+# ADR-117: the nightly canary. The real-Skill integration suite with every sibling Skill at its main branch (ffmpeg-skill at main,
+# v3.15.1 and v2.24.1, as in `tests`). `tests` runs the siblings at the releases the pins were taken from (integration/siblings.lock.json), so
 # this is where a sibling's unreleased or newly released change shows first. The canary never fails its run: every test step continues
 # on error, and the report job compares the failures with integration/canary_known_failures.txt. New failures (a failing test, a test step that failed with no
 # test id, or a suite that never ran) open the "Nightly canary failed" issue, or comment on the open one; the summary lists every failure either way.
@@ -42,10 +42,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p canary-result
-          # known failures: "<leg> <test method>" (leg: main or v2.24.1, the ffmpeg-skill leg), or "* <test method>" for both legs
+          # known failures: "<leg> <test method>" (leg: main, v3.15.1 or v2.24.1, the ffmpeg-skill leg), or "* <test method>" for every leg
           known="$(grep -vE '^\s*(#|$)' integration/canary_known_failures.txt | sed -E 's/\s*#.*//; s/\s+/ /g; s/ $//' | sort -u || true)"
           new=""; known_hit=""; missing=""
-          for leg in main v2.24.1; do
+          for leg in main v3.15.1 v2.24.1; do
             for shard in 1 2 3 4 5 6; do
               base="canary-result/ffmpeg-${leg}-shard-${shard}"
               if [ ! -f "${base}.suites" ]; then

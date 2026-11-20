@@ -15,7 +15,13 @@ is affected. A contract the agent cannot read as 1.x / 2.x (another major, anoth
 whole package: none of its facts can be trusted. contract_version 2.0 (ffmpeg-skill 3.0.0, ADR-082) changed no part of
 the shape read here -- top-level keys, `skill`, `tools[].name` / `input_schema.properties[*].cli|type` / `positional` /
 `required` are those of 1.0 for all 42 tools (ffmpeg-skill bumped the major for cut.py's changed `precision` /
-`keyframe_snapped` meaning, a result field the agent does not read), so both majors are read the same way.
+`keyframe_snapped` meaning, a result field the agent does not read), so both majors are read the same way. ffmpeg-skill
+4.x is still contract_version 2.0 with the same shape (ADR-121): its breaking changes are behaviour (export normalises
+a platform preset's loudness by default, export exits 1 with kind `verification` on a missed delivery property, fit.py
+--duration needs --method beyond 1.15x) and are handled by the adapter, not by a new contract major.
+
+Detected flags (ADR-121): a catalogued flag listed in a tool's `detected_flags` is not required of the contract. Its
+absence leaves the tool usable, and the adapter emits it only where the contract publishes it (`offered`).
 
 Fatal / non-fatal (ADR-047's split, applied to this Skill): there is no pinned contract file for ffmpeg-skill because the
 catalog is the pin and the contract grows every release (42 tools, descriptions, diagnostics). Fatal: contract_version
@@ -66,6 +72,18 @@ class CatalogCheck:
     notes: List[str] = field(default_factory=list)
     presets: Optional[List[str]] = None           # export.py --preset names the contract publishes (aliases included); None: not published
     platforms: Optional[List[str]] = None         # check.py --platform names the contract publishes (aliases included); None: not published
+    offered: Dict[str, List[str]] = field(default_factory=dict)   # tool -> the catalog's detected_flags keys its contract publishes (ADR-121)
+
+    def offers(self, name: str, key: str) -> bool:
+        """Whether this checkout's contract publishes the detected flag `key` of catalogued tool `name` (ADR-121)."""
+        return self.status == CHECKED and key in self.offered.get(name, [])
+
+    def platform_presets(self) -> Optional[List[str]]:
+        """Export presets that are also check.py platforms (aliases included): the presets with a platform loudness spec, which
+        4.0's --no-normalize applies to. None when either list is not published."""
+        if self.presets is None or self.platforms is None:
+            return None
+        return sorted(set(self.presets) & set(self.platforms))
 
     def tool_reason(self, name: str) -> Optional[str]:
         if self.status == REFUSED:
@@ -75,7 +93,8 @@ class CatalogCheck:
     def to_dict(self) -> Dict[str, Any]:
         return {"status": self.status, "reason": self.reason, "contract_version": self.contract_version, "skill_version": self.skill_version,
                 "unavailable": dict(self.unavailable), "doctor": self.doctor, "notes": list(self.notes),
-                "presets": None if self.presets is None else list(self.presets), "platforms": None if self.platforms is None else list(self.platforms)}
+                "presets": None if self.presets is None else list(self.presets), "platforms": None if self.platforms is None else list(self.platforms),
+                "offered": {k: list(v) for k, v in self.offered.items()}}
 
 
 def _contract_major(v: Any) -> Optional[int]:
@@ -107,6 +126,9 @@ def check_catalog(contract: Any, doctor: Optional[Dict[str, Any]] = None, script
         why = _tool_problems(name, spec, tools.get(name))
         if why:
             chk.unavailable[name] = "ffmpeg-skill contract: " + "; ".join(why)
+        if spec.get("detected_flags") and tools.get(name) is not None:
+            published = _published_flags(tools[name])
+            chk.offered[name] = [k for k in spec["detected_flags"] if flag_for(name, k) in published]
     if doctor is not None:
         _apply_doctor(chk, doctor, scripts)
     return chk
@@ -122,6 +144,12 @@ def option_enum(tool: Optional[Dict[str, Any]], flag: str) -> Optional[List[str]
             enum = p.get("enum")
             return sorted(str(x) for x in enum) if isinstance(enum, list) and enum else None
     return None
+
+
+def _published_flags(tool: Dict[str, Any]) -> List[str]:
+    schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else {}
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    return [str(f) for p in props.values() if isinstance(p, dict) and isinstance(p.get("cli"), list) for f in p["cli"]]
 
 
 def _tool_problems(name: str, spec: Dict[str, Any], tool: Optional[Dict[str, Any]]) -> List[str]:
@@ -140,6 +168,8 @@ def _tool_problems(name: str, spec: Dict[str, Any], tool: Optional[Dict[str, Any
         if key == "crf":   # ADR-048: --quality where the script offers it, else --crf; either satisfies the catalog
             flag = QUALITY_FLAG if QUALITY_FLAG in by_flag else flag
         p = by_flag.get(flag)
+        if p is None and key in (spec.get("detected_flags") or ()):
+            continue   # ADR-121: a detected flag may be absent; the adapter then does not emit it
         if p is None:
             out.append(f"{name}.py has no {flag} (catalog key {key!r})")
         elif (typ == "bool") != (p.get("type") == "boolean"):

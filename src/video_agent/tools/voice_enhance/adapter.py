@@ -36,7 +36,7 @@ from ...skills.contract import SkillPackage, ToolSpec
 from ...skills.capabilities import contract_gate, resolve as resolve_capability
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
-from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, invoke, one_json_document,
+from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, cancelled_class, ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, invoke, one_json_document,
                              same_file, scan_forbidden, scrub, sha256_file)
 from .locate import PACKAGE_ID, locate_voice_enhance  # noqa: F401  (re-exported)
 
@@ -77,12 +77,13 @@ PROCESS_MARGIN = 120.0
 # voice-enhance-skill's error codes (its contract `errors`) → the agent's recovery class (execution/recovery.py). The code is kept verbatim;
 # a missing engine / model / ffmpeg-skill capability is TOOL_MISSING (blocked: the user installs it), a bad request INVALID_ARGS, the Skill's
 # own refusal of its output SKILL_ERROR. TOOL_ERROR and ENGINE_TIMEOUT keep the Skill's retryable verdict (one more attempt, the second
-# with a doubled timeout); CANCELLED by a signal is never retried.
+# with a doubled timeout); CANCELLED by a signal is never retried (INTERRUPTED, ADR-119); NOT_IMPLEMENTED is an operation the Skill does not
+# offer (INVALID_ARGS).
 ERROR_CLASSES: Dict[str, str] = {
     "INVALID_ARGUMENT": "INVALID_ARGS", "INPUT_NOT_FOUND": "INPUT_MISSING", "UNSUPPORTED_MEDIA": "INVALID_ARGS", "OUTPUT_EXISTS": "INVALID_ARGS",
     "OUTPUT_IS_INPUT": "INVALID_ARGS", "FFMPEG_SKILL_UNAVAILABLE": "TOOL_MISSING", "ENGINE_UNAVAILABLE": "TOOL_MISSING", "MODEL_NOT_FOUND": "TOOL_MISSING",
-    "TOOL_ERROR": "UNKNOWN", "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT", "INVALID_RESULT": "SKILL_ERROR", "NOT_IMPLEMENTED": "SKILL_ERROR",
-    "CANCELLED": "TIMEOUT", "INTERNAL_ERROR": "SKILL_ERROR",
+    "TOOL_ERROR": "UNKNOWN", "ENGINE_FAILED": "SKILL_ERROR", "ENGINE_TIMEOUT": "TIMEOUT", "INVALID_RESULT": "SKILL_ERROR", "NOT_IMPLEMENTED": "INVALID_ARGS",
+    "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR",
 }
 # the agent's own refusals (not voice-enhance codes)
 AGENT_ERRORS: Dict[str, str] = {"INVALID_REQUEST": "INVALID_ARGS", "INVALID_OUTPUT": "SKILL_ERROR", "TIMEOUT": "TIMEOUT"}
@@ -406,7 +407,7 @@ class VoiceEnhanceAdapter(ToolAdapter):
               details: Optional[Dict[str, Any]] = None) -> ToolResult:
         data: Dict[str, Any] = {"skill": {"id": SKILL_ID, "version": self.version}, "status": "failed",
                                 "error": {"code": code, "message": message[:1200], "retryable": bool(retryable), "details": dict(details or {}), "exit_code": exit_code,
-                                          "recovery_class": recovery_class(code)}}
+                                          "recovery_class": cancelled_class(code, details, recovery_class(code))}}
         return ToolResult(op.id, op.tool, False, exit_code, None, data, [], f"{SKILL_ID} [{code}] {message[:600]}", round(time.time() - t0, 3), attempt, dry_run)
 
     @staticmethod

@@ -1298,6 +1298,7 @@ class Service:
         else:
             job.transition("QA")
             checks = {op.args["input"]: r for op in ops if op.skill == "delivery_check" for r in result.results if r.op_id == op.id}
+            exports = {op.outputs[0]: r for op in ops if op.skill == "delivery_export" and op.outputs for r in result.results if r.op_id == op.id}   # ADR-121
             qc_results = {op.args["input"]: r for op in ops if op.skill == "qc_check" and op.args.get("input") for r in result.results if r.op_id == op.id}   # the QC gate's reports, per artifact (ADR-032)
             qc_packages = [(op.args, next((r for r in result.results if r.op_id == op.id), None)) for op in ops if op.skill == "qc_check" and op.args.get("artifacts")]   # ADR-065
             qa_reqs = ((ir.doc.get("request") or {}).get("args") or {}).get("requirements")
@@ -1305,7 +1306,7 @@ class Service:
             self.require_tools(qa_tools, ["media_probe", "loudness_analysis", "delivery_check"], adapter, qa_reqs)
             documents = {op.args["input"]: next((r for r in result.results if r.op_id == op.id), None) for op in ops if op.skill == DOCUMENT_SKILL}   # ADR-095
             qa = run_qa(adapter, ir.doc, paths, result.results, sheet_dir=str(job.dir / "qa"), check_by_artifact=checks, tools=qa_tools, qc_by_artifact=qc_results, qc_packages=qc_packages,
-                        documents=documents)
+                        documents=documents, export_by_artifact=exports)
             out["qa"] = qa.to_dict()
             try:
                 artifacts = self._register_artifacts(ir, ir_path, job, ops, paths, qa)

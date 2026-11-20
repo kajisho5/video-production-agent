@@ -4,7 +4,7 @@
         ─(each file of the card read once, written to every destination, each copy read back)─→ <dest>/<project>/<card folder>/...
           + ingest-manifest.json + an ASC MHL generation (ascmhl/) per destination
 
-Protocol (ingest-skill's own contract, `ingest contract --json`, pinned in contract_0.1.2.json):
+Protocol (ingest-skill's own contract, `ingest contract --json`, pinned in contract_0.1.3.json):
     contract  → `ingest contract --json`
     doctor    → `ingest doctor --json`  (ingest/doctor@1: python / sha256 / c4 / xxhash / ffprobe / yt-dlp checks, hash_algorithms)
     offload   → `ingest offload <source> --dest D [--dest D ...] [--project P] --hash sha256|xxh64 --name-by folder|reel [--reel R] [--dry-run] --json`
@@ -57,8 +57,10 @@ DEFAULT_TIMEOUT = None          # a card is as big as it is: no default bound on
 MEASURE_TIMEOUT = 1800.0        # inventory (ffprobe per clip) / verify (re-reads a copy)
 # ingest-skill's error codes (its contract `errors`) → (the agent's failure kind, recovery class). The code itself is kept verbatim in
 # the result; the kind is the agent's word for it; the class decides recovery (execution/recovery.py: TOOL_MISSING / INPUT_MISSING /
-# INVALID_ARGS block, SKILL_ERROR blocks without a retry). Nothing an offload reports is retried automatically: re-running a copy to the
-# user's drives is the user's call (ingest-skill resumes it: identical files are skipped, nothing is overwritten).
+# INVALID_ARGS block, SKILL_ERROR blocks without a retry). The classes follow Velisa's error taxonomy (ADR-119): a fetch / copy that did not
+# complete or verify is TRANSIENT there, UNKNOWN (retry once, only when the Skill says retryable) here. Nothing an offload reports is retried
+# automatically all the same: the offload runs with max_attempts 1 (Service), and re-running a copy to the user's drives is the user's call
+# (ingest-skill resumes it: identical files are skipped, nothing is overwritten).
 ERROR_KINDS: Dict[str, Tuple[str, str]] = {
     "SOURCE_NOT_FOUND": ("SOURCE_MISSING", "INPUT_MISSING"),
     "NO_DESTINATION": ("INVALID_REQUEST", "INVALID_ARGS"),
@@ -69,13 +71,13 @@ ERROR_KINDS: Dict[str, Tuple[str, str]] = {
     "URL_INVALID": ("INVALID_REQUEST", "INVALID_ARGS"),
     "HASH_UNAVAILABLE": ("ENGINE_MISSING", "TOOL_MISSING"),
     "FETCH_UNAVAILABLE": ("ENGINE_MISSING", "TOOL_MISSING"),
-    "MANIFEST_NOT_FOUND": ("INCOMPLETE", "SKILL_ERROR"),
+    "MANIFEST_NOT_FOUND": ("INCOMPLETE", "INPUT_MISSING"),
     "MANIFEST_INVALID": ("INCOMPLETE", "SKILL_ERROR"),
-    "FETCH_FAILED": ("INCOMPLETE", "SKILL_ERROR"),
-    "INCOMPLETE": ("INCOMPLETE", "SKILL_ERROR"),
-    "SOURCE_CHANGED": ("SOURCE_CHANGED", "SKILL_ERROR"),
-    "VERIFY_MISMATCH": ("VERIFY_FAILED", "SKILL_ERROR"),
-    "FILE_MISSING": ("INCOMPLETE", "SKILL_ERROR"),
+    "FETCH_FAILED": ("INCOMPLETE", "UNKNOWN"),
+    "INCOMPLETE": ("INCOMPLETE", "UNKNOWN"),
+    "SOURCE_CHANGED": ("SOURCE_CHANGED", "UNKNOWN"),
+    "VERIFY_MISMATCH": ("VERIFY_FAILED", "UNKNOWN"),
+    "FILE_MISSING": ("INCOMPLETE", "UNKNOWN"),
     "MHL_INVALID": ("HISTORY_DAMAGED", "SKILL_ERROR"),
     # ingest-skill main (ADR-097 addendum 5): refusals of options the agent does not send (offload --follow / --proxy, inventory with several
     # folders). A missing ffmpeg-skill for --proxy is a missing component, as FETCH_UNAVAILABLE is.
@@ -97,7 +99,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "ne
 # an added error code or network tool does not turn the offload off; what is left changes the wire or the documents the adapter admits.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "manifest", "inventory")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

@@ -783,7 +783,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             if t.get("preset"):
                 ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
                 paths[art_id] = str(job / "artifacts" / f"{st['stem']}_{t['id']}.{ext}")
-                args = {"input": st["current"], "preset": t["preset"], "output": art_id}
+                # ADR-121: the agent's own loudness decision wins over ffmpeg-skill 4.0's platform-preset normalisation; the adapter passes
+                # --no-normalize only where the checkout publishes it and the preset is a platform preset
+                args = {"input": st["current"], "preset": t["preset"], "no_normalize": True, "output": art_id}
                 add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
                 add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), st["fp"], kind="qa", skill="delivery_check")
             elif st["current"] not in d["assets"]:

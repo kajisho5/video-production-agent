@@ -115,7 +115,7 @@ class ContractTests(_Base):
         self.assertEqual(c["errors"]["INSUFFICIENT_VRAM"], {"exit_code": 3, "retryable": False})
         gen = next(t for t in c["tools"] if t["tool_id"] == "sound-design/generate-bgm")
         self.assertIn("[--model acestep-v15-turbo|acestep-v15-xl-turbo]", gen["argv"]); self.assertEqual(gen["models"]["default"], "acestep-v15-turbo")
-        self.assertEqual((recovery_class("LICENCE_REQUIRED"), recovery_class("ENGINE_UNAVAILABLE"), recovery_class("NEW")), ("INVALID_ARGS", "TOOL_MISSING", "SKILL_ERROR"))
+        self.assertEqual((recovery_class("LICENCE_REQUIRED"), recovery_class("ENGINE_UNAVAILABLE"), recovery_class("NEW")), ("ACTION_REQUIRED", "TOOL_MISSING", "SKILL_ERROR"))
 
     def test_refused_contracts(self):
         c = pinned_contract()
