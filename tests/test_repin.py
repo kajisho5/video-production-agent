@@ -162,8 +162,17 @@ class DecisionTests(unittest.TestCase):
         d = repin.decide("1.4.5", "1.5.0", "none", ("1.4.",))
         self.assertEqual((d.kind, d.new_prefix), ("widen", "1.5."))
 
+    def test_a_first_1_0_0_after_0x_widens(self):
+        """Addendum 3 (Velisa ADR-030): 0.x -> 1.0.0 with a none / additive diff is a promotion; the gate takes `1.0.`."""
+        for old, c in (("0.1.22", "none"), ("0.10.1", "additive"), ("0.9.0", "none")):
+            d = repin.decide(old, "1.0.0", c, ("0.1.", "0.9.", "0.10."))
+            self.assertEqual((d.kind, d.new_prefix), ("widen", "1.0."), (old, c))
+        self.assertEqual(repin.decide("0.1.22", "1.0.0", "none", None).kind, "auto")   # no gate (handoff)
+        self.assertEqual(repin.decide("0.1.22", "1.0.0", "none", ("0.1.", "1.0.")).kind, "auto")
+
     def test_review(self):
-        cases = (("0.2.3", "0.2.4", "breaking", ("0.2.",)), ("1.4.5", "2.0.0", "none", ("1.4.",)), ("0.9.0", "1.0.0", "additive", ("0.9.",)),
+        cases = (("0.2.3", "0.2.4", "breaking", ("0.2.",)), ("1.4.5", "2.0.0", "none", ("1.4.",)), ("0.9.0", "1.0.0", "breaking", ("0.9.",)),
+                 ("0.9.0", "1.0.1", "none", ("0.9.",)), ("0.9.0", "1.1.0", "additive", ("0.9.",)), ("0.9.0", "2.0.0", "none", ("0.9.",)),
                  ("2.3.0", "2.4.0", "additive", ("2.3.",)), ("0.2.4", "0.2.4", "none", ("0.2.",)), ("0.2.4", "0.2.3", "none", ("0.2.",)))
         for old, new, c, gate in cases:
             d = repin.decide(old, new, c, gate)
