@@ -13,10 +13,10 @@ permissions:
   contents: read
 jobs:
   integration:
-    # ADR-082: the real-Skill suite against ffmpeg-skill main (3.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0) and against
-    # v2.24.1 (the last 2.x, contract_version 1.0), both inside SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg
-    # (>= 6.1) satisfy both. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
-    # ffmpeg-skill is not in the lock: both legs are cloned by name here, for `tests` and for `canary` alike.
+    # ADR-082 / ADR-121: the real-Skill suite against ffmpeg-skill main (4.x: Python 3.10+, FFmpeg 6.1+, contract_version 2.0), v3.15.1
+    # (the last 3.x, contract_version 2.0) and v2.24.1 (the last 2.x, contract_version 1.0), all inside
+    # SUPPORTED_MIN..SUPPORTED_MAX_EXCLUSIVE. Python 3.11 / Ubuntu's FFmpeg (>= 6.1) satisfy all three. The unit job's Python 3.9 legs never run ffmpeg-skill (fakes only), so they are unaffected by 3.0's floor.
+    # ffmpeg-skill is not in the lock: every leg is cloned by name here, for `tests` and for `canary` alike.
     #
     # Each engine leg is split across INTEGRATION_SHARDS runners, because one runner took about an hour for the suite. Nothing is
     # listed by hand: tests/integration_shards.py puts every test class of tests/test_integration.py in exactly one shard (whole
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ffmpeg_skill: ["main", "v2.24.1"]
+        ffmpeg_skill: ["main", "v3.15.1", "v2.24.1"]
         shard: [1, 2, 3, 4, 5, 6]
     name: integration (ffmpeg-skill ${{ matrix.ffmpeg_skill }}, shard ${{ matrix.shard }})
     continue-on-error: ${{ inputs.siblings == 'main' }}
@@ -45,8 +45,8 @@ jobs:
     steps:
       - run: mkdir -p "$TEST_LOGS"
       - name: shard matrix matches INTEGRATION_SHARDS
-        # strategy.job-total = engine legs (2) x shards in the matrix; a shard missing from the matrix would silently drop its tests
-        run: test "${{ strategy.job-total }}" -eq "$(( 2 * INTEGRATION_SHARDS ))"
+        # strategy.job-total = engine legs (3) x shards in the matrix; a shard missing from the matrix would silently drop its tests
+        run: test "${{ strategy.job-total }}" -eq "$(( 3 * INTEGRATION_SHARDS ))"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}

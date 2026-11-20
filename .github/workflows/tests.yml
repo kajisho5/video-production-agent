@@ -49,7 +49,7 @@ jobs:
     # ADR-117: the real-Skill suite (.github/workflows/integration.yml), with every sibling Skill at the release its pin was taken from
     # (integration/siblings.lock.json: tag, commit, and the tag's contract/contract.json equal to the pin). A sibling's main moving cannot
     # turn this run red; the nightly `canary` workflow runs the same suite against the siblings' mains and reports, without failing.
-    # ffmpeg-skill keeps its two legs (main and v2.24.1) as before.
+    # ffmpeg-skill has three legs: main, v3.15.1 (ADR-121) and v2.24.1.
     uses: ./.github/workflows/integration.yml
     with:
       siblings: lock
