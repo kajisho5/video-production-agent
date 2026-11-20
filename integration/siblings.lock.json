@@ -81,10 +81,10 @@
     },
     "motion-graphics": {
       "repo": "kajisho5/motion-graphics-skill",
-      "tag": "v0.4.5",
-      "sha": "b10658529dfb60c36d08013ea03fe0efc3e23fb6",
-      "version": "0.4.5",
-      "pin": "src/video_agent/tools/motion_graphics/contract_0.4.5.json"
+      "tag": "v1.0.0",
+      "sha": "a7b92dcb395c309d17ef835e5a0c068ad6441626",
+      "version": "1.0.0",
+      "pin": "src/video_agent/tools/motion_graphics/contract_1.0.0.json"
     },
     "nle-bridge": {
       "repo": "kajisho5/nle-bridge-skill",
