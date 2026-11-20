@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .contract import SkillPackage, ToolSpec
+from .capabilities import CAPABILITY_SKILLS, tool_for_skill
 
 # Skills whose phase is above this are declared for the roadmap only: they are never selectable and never "available".
 IMPLEMENTED_PHASE = 1
@@ -100,6 +101,11 @@ class SkillRegistry:
 
     def get(self, name: str) -> SkillSpec:
         return self._skills[name]
+
+    def capability(self, name: str) -> Optional[str]:
+        """ADR-118: the capability id a registered production skill's tool is read from (skills/capabilities.py), None when the
+        SkillSpec is still hand-wired."""
+        return CAPABILITY_SKILLS.get(name) if name in self._skills else None
 
     def names(self) -> List[str]:
         return sorted(self._skills)
@@ -209,6 +215,12 @@ def _with_reason(cap: str, caps: Dict[str, Any]) -> str:
     (ADR-056: the ffmpeg-skill contract's word on why that one tool cannot be used), so a handoff says which flag broke."""
     reason = (getattr(caps.get(cap), "evidence", None) or {}).get("reason")
     return f"{cap}: {reason}" if reason else cap
+
+
+def _pinned(skill: str) -> List[str]:
+    """ADR-118: the tool candidate of a capability-backed production skill, read from the pinned contract that provides its capability
+    (skills/capabilities.py: CAPABILITY_SKILLS). CapabilityNotProvided, naming the pins read, when no pinned Skill provides it."""
+    return [tool_for_skill(skill)]
 
 
 def _job(name: str, desc: str, inputs: Dict[str, str], outputs: Dict[str, str], package: str, tool: str, risk: str, approval: str = "CONFIRM",
@@ -358,7 +370,7 @@ def default_registry() -> SkillRegistry:
     # a measurement (analysis kind speaker_turns) that needs the package and its own DIARIZE readiness (`diarization:DIARIZE`, from its
     # doctor: pyannote.audio, torch and the local pipeline directory). Never a name; nothing is decided from it here.
     r.register(SkillSpec("speaker_diarization", "1.0", "Who spoke when: anonymous exclusive speaker turns (SPEAKER_nn) of a recording, overlapping speech kept apart; measurement only",
-                         {"asset": "media"}, {"observation": "speaker_turns", "events": "SPEAKER"}, ["diarization", "diarization:DIARIZE"], "LOW", False, "AUTO", ["diarization/diarize"]))
+                         {"asset": "media"}, {"observation": "speaker_turns", "events": "SPEAKER"}, ["diarization", "diarization:DIARIZE"], "LOW", False, "AUTO", _pinned("speaker_diarization")))
     # multi-source sync measurement (ADR-035): the offset / drift of a recording relative to the reference, by ffmpeg-skill/sync (audio
     # cross-correlation in the Skill; the agent records the fact and maps the target timeline). Measurement only: no switching, no edit.
     r.register(SkillSpec("sync_analysis", "1.0", "Time offset (and clock drift) of a recording relative to the reference recording, by audio cross-correlation",
@@ -428,16 +440,16 @@ def default_registry() -> SkillRegistry:
     # shots.detect), each with its own readiness from the doctor (`detection:TEXT`: Tesseract and tessdata; `detection:SHOTS`: PySceneDetect). The
     # text replaces ADR-057's `visual_detection` handoff; ffmpeg-skill `scenes` stays the fast cut list (scene_detection) and the default providers do not change
     r.register(SkillSpec("text_detection", "1.0", "Text on screen: OCR lines with their boxes on sampled frames (Tesseract, ja / en); measurement only",
-                         {"asset": "video"}, {"observation": "screen_text"}, ["detection", "detection:TEXT"], "LOW", True, "AUTO", ["detection/text"]))
+                         {"asset": "video"}, {"observation": "screen_text"}, ["detection", "detection:TEXT"], "LOW", True, "AUTO", _pinned("text_detection")))
     r.register(SkillSpec("shot_detection", "1.0", "Frame-accurate shot table: every shot's start / end in frames and seconds and its boundary (cut / gradual); measurement only",
-                         {"asset": "video"}, {"observation": "shot_table"}, ["detection", "detection:SHOTS"], "LOW", True, "AUTO", ["detection/shots"]))
+                         {"asset": "video"}, {"observation": "shot_table"}, ["detection", "detection:SHOTS"], "LOW", True, "AUTO", _pinned("shot_detection")))
     # ---- blur faces (ADR-090): detection-skill's face boxes linked into redact rectangles (analysis kind face_tracks, a measurement that
     # needs the package and its own FACES readiness `detection:FACES` from its doctor: opencv, the YuNet file and ffmpeg-skill frames), then
     # an approved video.redact_faces executed by ffmpeg-skill: each segment cut out frame-accurately, its rectangles redacted, every piece
     # put back over the source at its own time by broll (A's timeline and audio unchanged). Never an identity; no text / object redaction.
     r.register(SkillSpec("face_detection", "1.0", "Face boxes on frames sampled every N seconds, linked over time into redact rectangles (detection-skill faces + tracks); "
                                                     "measurement only, never an identity",
-                         {"asset": "video"}, {"observation": "face_tracks"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", ["detection/faces"]))
+                         {"asset": "video"}, {"observation": "face_tracks"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", _pinned("face_detection")))
     r.register(SkillSpec("face_redact_segment", "1.0", "Cut a time segment that holds measured faces out of the source, frame-accurately, to be blurred",
                          {"asset": "video", "segments": "str"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill"], "HIGH", True, "CONFIRM", ["ffmpeg-skill/cut"]))
     r.register(SkillSpec("face_redact_blur", "1.0", "Blur / pixelate one measured face rectangle on a cut segment (the segment is the rectangle's own span)",
@@ -477,7 +489,7 @@ def default_registry() -> SkillRegistry:
                          ["thumbnail/render_batch"]))
     r.register(SkillSpec("face_attributes", "1.0", "Face boxes with measured attributes (size, pose, sharpness, eyes open) on frames sampled every N seconds "
                                                    "(detection-skill faces --attributes); measurement only, never an identity",
-                         {"asset": "video"}, {"observation": "face_attributes"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", ["detection/faces"]))
+                         {"asset": "video"}, {"observation": "face_attributes"}, ["detection", "detection:FACES"], "LOW", False, "AUTO", _pinned("face_attributes")))
     r.register(SkillSpec("thumbnail_frame_ranking", "1.0", "Rank the sampled frames of a face_attributes file by a stated weighted formula (thumbnail-skill choose_frame); "
                                                            "reads no pixels, the ranking suggests",
                          {"observation": "face_attributes"}, {"observation": "frame_ranking"}, ["thumbnail"], "LOW", True, "AUTO", ["thumbnail/choose_frame"]))
@@ -505,15 +517,15 @@ def default_registry() -> SkillRegistry:
     # ADR-073 (roadmap step 9, voice-enhance-skill's roadmap step 8; replacing ADR-057's phase-2 `voice_enhancement`): one skill per operation,
     # each needing ffmpeg-skill (the Skill's media engine), the package and the Skill's own per-operation readiness (`voice-enhance:<TYPE>`,
     # from its doctor: the engine installed). CONFIRM always: every operation is EXPERIMENTAL in voice-enhance-skill 0.1.0.
-    for name, typ, tool, desc, inputs in (
-        ("voice_isolate", "ISOLATE", "voice-enhance/isolate", "AI voice isolation (DeepFilterNet3): noise and background removed, a 48 kHz mono stem; EXPERIMENTAL",
+    for name, typ, desc, inputs in (
+        ("voice_isolate", "ISOLATE", "AI voice isolation (DeepFilterNet3): noise and background removed, a 48 kHz mono stem; EXPERIMENTAL",
          {"asset": "audio", "atten_lim_db": "float"}),
-        ("voice_dereverb", "DEREVERB", "voice-enhance/dereverb", "Dereverberation (WPE, nara_wpe): late room reverberation removed at the stream's own rate and channels; EXPERIMENTAL",
+        ("voice_dereverb", "DEREVERB", "Dereverberation (WPE, nara_wpe): late room reverberation removed at the stream's own rate and channels; EXPERIMENTAL",
          {"asset": "audio", "taps": "int", "delay": "int", "iterations": "int"}),
-        ("voice_bleed_reduce", "BLEED_REDUCE", "voice-enhance/bleed-reduce", "Mic-bleed reduction between time-aligned microphone tracks (crosstalk, no weights): one mono track per mic; EXPERIMENTAL",
+        ("voice_bleed_reduce", "BLEED_REDUCE", "Mic-bleed reduction between time-aligned microphone tracks (crosstalk, no weights): one mono track per mic; EXPERIMENTAL",
          {"assets": "audio[]", "dominance_db": "float"}),
     ):
-        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "voice-enhance", f"voice-enhance:{typ}"], "MEDIUM", True, "CONFIRM", [tool]))
+        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "voice-enhance", f"voice-enhance:{typ}"], "MEDIUM", True, "CONFIRM", _pinned(name)))
     # ADR-077 (imagemagick-skill's roadmap step 4, agent side): an `edit.overlay` image prepared before video-editing composites it -- GPS / EXIF
     # stripped (orientation baked in), resized to the user's box (fit | fill | exact), padded to that canvas -- each a new file, the user's never
     # written. Each needs the package and the Skill's own per-tool readiness (`imagemagick-skill:<TYPE>`, from its doctor's tools.<name>.usable);

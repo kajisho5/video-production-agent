@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ...models import Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
+from ...skills.capabilities import contract_gate
 from ..base import ToolAdapter, ToolError
 from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, invoke, one_json_document,
                              scan_forbidden, sha256_file, strip_sha_prefix)
@@ -139,6 +140,7 @@ def check_contract(contract: Any) -> List[str]:
             errs.append(f"contract lacks tool {tid} (declares {sorted(tools)})")
         elif t.get("role") != role or t.get("writes_media") is not False or t.get("mutates_input") is not False:
             errs.append(f"tool {tid} must declare role {role}, writes_media false, mutates_input false")
+    errs += contract_gate(contract, SKILL_ID)   # ADR-118: every capability the agent consumes from this Skill, by the tool the pin names
     if as_dict(contract.get("detections")).get("schema") != DETECTIONS_SCHEMA:
         errs.append(f"detections.schema {as_dict(contract.get('detections')).get('schema')!r} != {DETECTIONS_SCHEMA}")
     if as_dict(contract.get("shots")).get("schema") != SHOTS_SCHEMA:
