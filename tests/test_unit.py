@@ -118,12 +118,14 @@ class AdapterTests(unittest.TestCase):
         fix -- no media behaviour changed for either); 0.11.x/0.12.x are accepted after this session's full
         real-Skill integration run against a live 0.12.3 checkout found no failures traced to ffmpeg-skill itself;
         anything unparsable is rejected. Widening the range needs a verified integration run, not a silent edit.
-        ADR-082: 3.x is accepted (CI's integration runs the real-Skill suite against ffmpeg-skill main = 3.x and v2.24.1); 4.0.0 is not."""
+        ADR-082: 3.x is accepted (CI's integration runs the real-Skill suite against ffmpeg-skill main = 3.x and v2.24.1).
+        ADR-121: 4.x is accepted (contract 2.0, behaviour changes handled by the adapter; CI runs main = 4.x and v3.15.1); 5.0.0 is not."""
         from video_agent.tools.ffmpeg_skill.locate import SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (4, 0, 0)))
-        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9", "0.11.0", "0.12.2", "0.12.3", "1.10.0", "2.20.0", "2.24.1", "3.0.0", "3.9.9"):
+        self.assertEqual((SUPPORTED_MIN, SUPPORTED_MAX_EXCLUSIVE), ((0, 8, 4), (5, 0, 0)))
+        for v in ("0.8.4", "0.8.5", "0.9.0", "0.9.1", "0.9.12", "0.10.0", "0.10.9", "0.11.0", "0.12.2", "0.12.3", "1.10.0", "2.20.0", "2.24.1", "3.0.0", "3.9.9",
+                  "3.15.1", "4.0.0", "4.9.9"):
             self.assertTrue(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
-        for v in ("0.8.3", "0.7.9", "4.0.0", "unknown", "", "0.9.x"):
+        for v in ("0.8.3", "0.7.9", "5.0.0", "unknown", "", "0.9.x"):
             self.assertFalse(FfmpegSkill(self.skill.root, v, self.skill.scripts).version_supported(), v)
 
     def test_argv_typed_and_catalog_enforced(self):
@@ -6560,6 +6562,93 @@ class FfmpegSkillContractCatalogTests(unittest.TestCase):
         self.assertIn("--accurate", str(cm.exception))
         self.assertEqual(a.build_argv("ffmpeg-skill/export", {"input": "/x/in.mp4", "preset": "youtube"}, {}), ["/x/in.mp4", "--preset", "youtube"])
         self.assertEqual(a.describe()["contract"]["unavailable"], {"cut": a.unavailable_reason("ffmpeg-skill/cut")})
+
+    def _contract_4x(self, no_normalize=True):
+        """A contract_version 2.0 document like ffmpeg-skill 4.0's: export's preset enum and check's platform enum published,
+        --no-normalize published or not."""
+        c = fake_ffmpeg_contract("2.0")
+        tools = {t["name"]: t for t in c["tools"]}
+        props = tools["export"]["input_schema"]["properties"]
+        props["preset"] = {"type": "string", "cli": ["--preset"], "enum": ["prores", "youtube", "youtube4k", "tiktok", "copy"]}
+        if not no_normalize:
+            del props["no_normalize"]
+        tools["check"]["input_schema"]["properties"]["platform"] = {"type": "string", "cli": ["--platform"], "enum": ["custom", "youtube", "tiktok"]}
+        return c
+
+    def test_no_normalize_is_detected_and_only_for_a_platform_preset(self):
+        """ADR-121: export's --no-normalize (ffmpeg-skill 4.0) is a detected flag. Without it in the contract export stays usable and the
+        flag is not passed (3.x delivers the sound as it is anyway); with it, it is passed for a platform preset only (4.0 refuses it on
+        another preset)."""
+        from video_agent.tools.ffmpeg_skill.contract_check import check_catalog
+        args = {"input": "/x/in.mp4", "no_normalize": True, "output": "/x/out.mp4"}
+        old = check_catalog(self._contract_4x(no_normalize=False))
+        self.assertIsNone(old.tool_reason("export"), "a contract without --no-normalize leaves export usable")
+        self.assertFalse(old.offers("export", "no_normalize"))
+        new = check_catalog(self._contract_4x())
+        self.assertTrue(new.offers("export", "no_normalize"))
+        self.assertEqual(new.platform_presets(), ["tiktok", "youtube"])
+        self.assertEqual(new.to_dict()["offered"], {"export": ["no_normalize"]})
+        a_old = FfmpegSkillAdapter(FfmpegSkill(self._checkout(self._contract_4x(no_normalize=False), version="3.15.1"), "3.15.1", ["export"]))
+        a_new = FfmpegSkillAdapter(FfmpegSkill(self._checkout(self._contract_4x(), version="4.0.0"), "4.0.0", ["export"]))
+        self.assertNotIn("--no-normalize", a_old.build_argv("ffmpeg-skill/export", dict(args, preset="youtube"), {}))
+        self.assertIn("--no-normalize", a_new.build_argv("ffmpeg-skill/export", dict(args, preset="youtube"), {}))
+        self.assertNotIn("--no-normalize", a_new.build_argv("ffmpeg-skill/export", dict(args, preset="prores"), {}), "4.0 refuses it on a non-platform preset")
+        self.assertNotIn("--no-normalize", a_new.build_argv("ffmpeg-skill/export", dict(args, preset="youtube", no_normalize=False), {}))
+
+    def test_compiled_platform_export_asks_for_no_normalize(self):
+        """ADR-121: the compiler asks every preset export for no_normalize, so the agent's own loudness decision (its loudness step, or
+        none) is what the delivery carries; the adapter decides whether the checkout takes the flag."""
+        svc = make_service(self.tmp)
+        ir = svc.plan([fake_media(self.tmp)], "youtube")
+        ops, _ = compile_ir(ir, self.tmp)
+        exports = [op for op in ops if op.skill == "delivery_export" and op.args.get("preset") != "copy"]
+        self.assertTrue(exports)
+        for op in exports:
+            self.assertIs(op.args.get("no_normalize"), True, op.args)
+
+    def test_fit_duration_needs_a_method(self):
+        """ADR-121: ffmpeg-skill 4.0 refuses fit.py --duration without --method beyond 1.15x; the adapter refuses it for every factor."""
+        a = FfmpegSkillAdapter(FfmpegSkill(self._checkout(self._contract_4x(), version="4.0.0"), "4.0.0", ["fit"]))
+        with self.assertRaises(ToolError) as cm:
+            a.build_argv("ffmpeg-skill/fit", {"input": "/x/in.mp4", "duration": "10", "output": "/x/out.mp4"}, {})
+        self.assertIn("method", str(cm.exception))
+        argv = a.build_argv("ffmpeg-skill/fit", {"input": "/x/in.mp4", "duration": "10", "method": "speed", "output": "/x/out.mp4"}, {})
+        self.assertEqual(argv[argv.index("--method") + 1], "speed")
+        self.assertNotIn("--method", a.build_argv("ffmpeg-skill/fit", {"input": "/x/in.mp4", "aspect": "9:16", "output": "/x/out.mp4"}, {}))
+
+    def test_export_verification_failure_keeps_the_file_and_fails_qa(self):
+        """ADR-121: export.py 4.0 exits 1 with error.kind verification when the written file misses a required delivery property, and
+        keeps it. The adapter keeps the file and returns the result (not a tool failure to retry); QA turns each failed step into a
+        delivery FAIL with an incident. Any other exit 1 still removes the fresh output and fails the operation."""
+        from video_agent.qa.checks import export_verification_items
+        root = self._checkout(self._contract_4x(), version="4.0.0")
+        out = Path(self.tmp) / "out.mp4"
+        doc = {"status": "failed", "error": {"kind": "verification", "message": "export verification failed (frame_rate); kept " + str(out)},
+               "output": str(out), "verified": False,
+               "verification": [{"step": "codec", "ok": True, "expected": "h264", "measured": "h264"},
+                                {"step": "frame_rate", "ok": False, "expected": 30.0, "measured": 25.0, "attribution": "unresolved"}]}
+        (root / "scripts" / "export.py").write_text(
+            "import json, sys\nout = sys.argv[sys.argv.index('-o') + 1]\nopen(out, 'wb').write(b'x')\n"
+            f"print({json.dumps(doc)!r})\nsys.exit(1)\n", encoding="utf-8")
+        a = FfmpegSkillAdapter(FfmpegSkill(root, "4.0.0", ["export"]))
+        op = Operation(tool="ffmpeg-skill/export", args={"input": "/x/in.mp4", "preset": "youtube", "output": "art"}, inputs=[], outputs=["art"])
+        r = a.run(op, {"art": str(out)})
+        self.assertTrue(r.ok, r.stderr_tail)
+        self.assertEqual((r.exit_code, r.output), (1, str(out)))
+        self.assertTrue(out.exists(), "the file is kept for QA")
+        incidents = []
+        items = export_verification_items(r, "art", incidents)
+        self.assertEqual([(i.name, i.status, i.observed, i.expected) for i in items], [("export_frame_rate", "FAIL", 25.0, 30.0)])
+        self.assertEqual([i.type for i in incidents], ["DELIVERY_SPEC_FAILURE"])
+        self.assertEqual(export_verification_items(ToolResult("o", "ffmpeg-skill/export", True, 0, str(out), {"output": str(out)}, [], "", 0.1), "art", []), [])
+        # another failure (kind input) is a tool failure: the fresh output is removed
+        doc2 = {"status": "failed", "error": {"kind": "input", "message": "bad"}}
+        (root / "scripts" / "export.py").write_text(
+            "import json, sys\nout = sys.argv[sys.argv.index('-o') + 1]\nopen(out, 'wb').write(b'x')\n"
+            f"print({json.dumps(doc2)!r})\nsys.exit(1)\n", encoding="utf-8")
+        r = a.run(op, {"art": str(out)})
+        self.assertFalse(r.ok)
+        self.assertFalse(out.exists())
 
     def test_satellite_engine_declaration_accepts_contract_1_and_2(self):
         """ADR-082: a satellite may declare it targets ffmpeg-skill contract 1.0 (2.x) or 2.0 (3.x); anything else is refused."""

@@ -707,15 +707,15 @@ class FfmpegSkillContractTests(unittest.TestCase):
 
     def test_contract_publishes_every_catalog_flag(self):
         """ADR-056 (roadmap step 3): ffmpeg-skill main's own `_contract.py --json --static` is contract_version 1.x (ffmpeg-skill 2.x) or
-        2.x (ffmpeg-skill 3.x, ADR-082) and every flag,
+        2.x (ffmpeg-skill 3.x, ADR-082; 4.x, ADR-121) and every flag,
         switch arity and positional the hand-maintained catalog uses is in that tool's input_schema -- so on main no catalogued
         tool is ruled out by the contract (doctor's per-tool verdict depends on this machine's ffmpeg and is checked apart)."""
         from video_agent.tools.ffmpeg_skill.contract_check import check_catalog, read_catalog_check, read_contract
         skill = locate_ffmpeg_skill()
         contract, err = read_contract(skill.root)
         self.assertIsInstance(contract, dict, err)
-        want_major = {"2": "1.", "3": "2."}.get(str(skill.version).split(".", 1)[0])
-        self.assertIsNotNone(want_major, f"ffmpeg-skill {skill.version} is outside the 2.x / 3.x this test knows")
+        want_major = {"2": "1.", "3": "2.", "4": "2."}.get(str(skill.version).split(".", 1)[0])
+        self.assertIsNotNone(want_major, f"ffmpeg-skill {skill.version} is outside the 2.x / 3.x / 4.x this test knows")
         self.assertTrue(str(contract["contract_version"]).startswith(want_major), (skill.version, contract["contract_version"]))
         chk = check_catalog(contract, None, skill.scripts)
         self.assertEqual((chk.status, chk.unavailable), ("checked", {}))
