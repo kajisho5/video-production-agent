@@ -88,6 +88,67 @@ def main() -> int:
         emit({"schema": "video-editing/doctor@1", "ok": ok, "skill": {"id": "video-editing", "version": CONTRACT["version"]}, "checks": checks,
               "problems": [] if ok else ["ffmpeg-skill not found"], "summary": "ready to edit" if ok else "not ready: ffmpeg-skill not found", "secrets_shown": False})
         return 0 if ok else 1
+    if cmd == "ripple":   # ADR-123: frame cut list at the fake media's 25 fps (margins as ripple@1, no silence), the EDL and copies of the retimed files
+        if "ripple" not in CONTRACT:
+            return err("INVALID_REQUEST", "invalid choice: 'ripple'")
+        ws = (flag_values(argv, "--workspace") or [""])[0]
+        req = json.loads(sys.stdin.read() or "{}")
+        log("ripple-request", [json.dumps(req, sort_keys=True)])
+        src = req["source"]
+        try:
+            facts = json.loads(Path(src).read_bytes().decode())
+        except (OSError, ValueError):
+            facts = {"duration": 16.0}
+        rate, total = 25, round(float(facts.get("duration", 16.0)) * 25)
+        spans = (req.get("selection") or {}).get("spans") if "selection" in req else req.get("spans")
+        cuts = []
+        for sp in spans:
+            win_in, win_out = sp.get("in"), sp.get("out")
+            if win_in is None:
+                a, b = round(sp["start"] * rate + 1e-9), round(sp["end"] * rate + 1e-9)
+            else:
+                ti = min(win_in["lo"] + 0.2, (win_in["lo"] + win_in["hi"]) / 2) if win_in["after_kept"] else win_in["lo"]
+                to = max(win_out["hi"] - 0.1, (win_out["lo"] + win_out["hi"]) / 2) if win_out["before_kept"] else win_out["hi"]
+                a, b = int(ti * rate + 0.5), int(to * rate + 0.5)
+            a, b = max(0, min(a, total)), max(0, min(b, total))
+            if b > total or sp["end"] > facts.get("duration", 16.0) + 0.001:
+                return err("INVALID_INPUT", "span past the end", {"reason": "span_past_end"})
+            if b > a:
+                cuts.append((a, b, sp))
+        fr = lambda n: {"frame": n, "seconds": f"{n / rate:.6f}"}   # noqa: E731
+        rows, events, pos, rec = [], [], 0, 0
+        for i, (a, b, sp) in enumerate(cuts, 1):
+            rows.append({"id": f"c{i}", "span_ids": [sp.get("id", f"r{i}")], "source_in": fr(a), "source_out": fr(b), "frames": b - a, "seconds": f"{(b - a) / rate:.6f}",
+                         "text": sp.get("text", ""), "speaker_ids": sp.get("speaker_ids", []), "segment_ids": sp.get("segment_ids", []), "edges": []})
+            if a > pos:
+                events.append({"event": len(events) + 1, "source_in": fr(pos), "source_out": fr(a), "record_in": fr(rec), "record_out": fr(rec + a - pos)})
+                rec += a - pos
+            pos = b
+        if total > pos:
+            events.append({"event": len(events) + 1, "source_in": fr(pos), "source_out": fr(total), "record_in": fr(rec), "record_out": fr(rec + total - pos)})
+            rec += total - pos
+        outs = req.get("outputs") or {}
+        def write(rel, text):
+            path = os.path.join(ws, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            Path(path).write_text(text, encoding="utf-8")
+            return path
+        edl = write(outs.get("edl", "ripple/fake.ripple-edl.json"), json.dumps({"schema": "video-editing/ripple-edl@1", "events": events}))
+        tr = None
+        if req.get("transcript"):
+            tr = {"path": write(outs.get("transcript", "ripple/fake.rippled.json"), Path(req["transcript"]).read_text(encoding="utf-8")),
+                  "words_removed": 0, "segments_removed": 0, "segments_shortened": 0}
+        subs = [{"input": os.path.basename(s), "path": write((outs.get("subtitles") or [])[k] if outs.get("subtitles") else f"ripple/{k}.srt", Path(s).read_text(encoding="utf-8")),
+                 "cues": 0, "dropped": 0, "shortened": 0} for k, s in enumerate(req.get("subtitles") or [])]
+        removed = sum(b - a for a, b, _ in cuts)
+        emit({"ok": True, "schema": CONTRACT["ripple"]["response_schema"], "skill": {"id": "video-editing", "version": CONTRACT["version"]}, "command": "ripple",
+              "status": "planned", "applied": False, "rule": {"version": "ripple@1"}, "rate": "25", "margins": {}, "silence": None,
+              "source": {"file": os.path.basename(src), "frames": total, "seconds": f"{total / rate:.6f}"}, "selection": None, "cuts": rows, "dropped": [],
+              "removed": {"frames": removed, "seconds": f"{removed / rate:.6f}"}, "record": {"frames": rec, "seconds": f"{rec / rate:.6f}"}, "events": events,
+              "edl": edl, "transcript": tr, "subtitles": subs, "inputs": [], "warnings": [],
+              "edit_request": {"schema": "video-editing/request@1", "project": {"id": "ripple", "sources": [{"id": "source", "path": src}],
+                                                                                "operations": [{"id": "ripple", "type": "CONDENSE", "input": "source", "params": {}}], "outputs": []}}})
+        return 0
     if cmd == "propose":   # ADR-099: cut proposals with reasons; applies and writes nothing
         req = json.loads(sys.stdin.read() or "{}")
         if req.get("schema") != CONTRACT["proposals"]["request_schema"]:

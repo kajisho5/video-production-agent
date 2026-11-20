@@ -97,8 +97,11 @@ def lower_video_trim(tool: str, op: Dict[str, Any], current: str, out_id: str) -
     if op.get("condense") is not None:   # ADR-099: approved proposals -- CONDENSE keeps the kept ranges (rule keep) and cuts the rest (default cut)
         if tool != "video-editing/condense":
             raise CompileError(f"a video.trim with approved proposals runs on video-editing/condense, not {tool}")
-        segs = sorted([{"start": s, "end": e, "label": CONDENSE_KEEP_LABEL} for s, e in keep]
-                      + [{"start": round(float(r["start"]), 3), "end": round(float(r["end"]), 3), "label": r["label"]} for r in op["condense"]], key=lambda x: x["start"])
+        # ADR-123: 6 decimals, so the frame-exact cuts of a transcript edit stay on their frames (ffmpeg-skill's cut keeps the frames that start in
+        # [start, end), so a millisecond above a frame's start drops it); a value written to the millisecond is the same at 6 decimals
+        keep6 = [[round(float(s), 6), round(float(e), 6)] for s, e in op["keep"]]
+        segs = sorted([{"start": s, "end": e, "label": CONDENSE_KEEP_LABEL} for s, e in keep6]
+                      + [{"start": round(float(r["start"]), 6), "end": round(float(r["end"]), 6), "label": r["label"]} for r in op["condense"]], key=lambda x: x["start"])
         rules: Dict[str, Any] = {CONDENSE_KEEP_LABEL: "keep"}
         rules.update({r["label"]: "cut" for r in op["condense"] if r["label"] != CONDENSE_KEEP_LABEL})
         return {"input": current, "segments": segs, "rules": rules, "default": "cut", "output": out_id}

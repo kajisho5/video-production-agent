@@ -437,7 +437,8 @@ class McpServerTests(unittest.TestCase):
 
     def test_every_listed_tool_maps_to_a_command(self):
         tmp = tempfile.mkdtemp()
-        full = {"inputs": ["a"], "project": "p", "decision": "all", "reason": "r", "output": "o", "text": "t"}
+        full = {"inputs": ["a"], "project": "p", "decision": "all", "reason": "r", "output": "o", "text": "t",
+                "input": "a", "transcript": "t.json", "mode": "remove", "words": "1"}   # transcript_edit (ADR-123)
         for t in TOOLS:
             tool_argv(t["name"], full, tmp)
 
