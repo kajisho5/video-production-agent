@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
+from ...skills.capabilities import contract_gate, resolve as resolve_capability
 from ..base import ToolAdapter, ToolError
 from ..ffmpeg_skill.adapter import PathPolicy
 from ..skill_process import (FORBIDDEN_ARG_KEYS, CliSkill, ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, invoke, one_json_document,
@@ -51,7 +52,8 @@ RESULT_OP = {TOOL_ISOLATE: "isolate", TOOL_DEREVERB: "dereverb", TOOL_BLEED_REDU
 # the per-operation capability `voice-enhance:<TYPE>` (resolver) ← the doctor's `checks.operations.<op>` row, and the contract capability id
 OPERATION_TYPES = {"isolate": "ISOLATE", "dereverb": "DEREVERB", "bleed_reduce": "BLEED_REDUCE"}
 CAPABILITY_IDS = {"ISOLATE": "voice.isolate", "DEREVERB": "voice.dereverb", "BLEED_REDUCE": "voice.bleed_reduce"}
-TOOL_OF_TYPE = {"ISOLATE": TOOL_ISOLATE, "DEREVERB": TOOL_DEREVERB, "BLEED_REDUCE": TOOL_BLEED_REDUCE}
+# ADR-118: capability → tool from the pinned contract's provides[] (the wire constants above must agree; tests/test_capabilities.py)
+TOOL_OF_TYPE = {typ: resolve_capability(cap, PACKAGE_ID).tool_id for typ, cap in CAPABILITY_IDS.items()}
 SUPPORTED_SKILL_VERSIONS = ("0.1.",)
 DOCTOR_SCHEMA = "voice-enhance/doctor@1"
 ISOLATE_RATE = 48000            # ADR-003: DeepFilterNet3 works at 48 kHz; the stem is always 48 kHz mono
@@ -134,10 +136,7 @@ def check_contract(contract: Any) -> List[str]:
     ex = as_dict(contract.get("execution"))
     if ex.get("shell") is not False or ex.get("network") is not False or ex.get("input_is_read_only") is not True:
         errs.append("execution must declare shell false, network false and input_is_read_only true")
-    provided = {str(p.get("id")) for p in contract.get("provides") or [] if isinstance(p, dict)}
-    for cap in CAPABILITY_IDS.values():
-        if cap not in provided:
-            errs.append(f"provides lacks {cap}")
+    errs += contract_gate(contract, SKILL_ID, CAPABILITY_IDS.values())   # ADR-118: each capability still provided, by the tool the pin names
     errors = as_dict(contract.get("errors"))
     for code in ERROR_CLASSES:
         if not isinstance(as_dict(errors.get(code)).get("exit_code"), int):
