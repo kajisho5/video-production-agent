@@ -606,6 +606,51 @@ class VideoEditingAdapter(ToolAdapter):
             raise ToolError("video-editing propose: " + "; ".join(errs))
         return doc
 
+    # ---- ripple cuts from a transcript selection (ADR-123, Velisa ADR-032): `video-editing ripple` places the cuts on silence and frames,
+    # writes the EDL and the retimed transcript / subtitles, and returns a CONDENSE request; it cuts no media
+    def ripple(self, source: str, selection: Optional[Dict[str, Any]] = None, spans: Optional[List[Dict[str, Any]]] = None, transcript: Optional[str] = None,
+               subtitles: Optional[List[str]] = None, outputs: Optional[Dict[str, Any]] = None, silence: Any = None, overwrite: bool = False,
+               timeout: Optional[float] = None) -> Dict[str, Any]:
+        """One `video-editing ripple - --json` call. Returns the Skill's response after check_ripple; raises ToolError otherwise. `outputs` paths
+        are relative to the workspace; the source, transcript and subtitles must lie under an allowed input root."""
+        rb = self.contract.get("ripple") or {}
+        if rb.get("request_schema") != RIPPLE_SCHEMA or rb.get("response_schema") != RIPPLE_RESULT_SCHEMA:
+            raise ToolError(f"video-editing-skill {self.version} has no `ripple` (contract.ripple; it needs 0.9.0 or later)")
+        if (selection is None) == (spans is None):
+            raise ToolError("video-editing: ripple takes exactly one of selection or spans")
+        req: Dict[str, Any] = {"schema": RIPPLE_SCHEMA, "source": self._check_input(source, "source")}
+        roots = [os.path.dirname(req["source"])]
+        if selection is not None:
+            req["selection"] = selection
+        else:
+            req["spans"] = spans
+        if transcript is not None:
+            req["transcript"] = self._check_input(transcript, "transcript")
+            roots.append(os.path.dirname(req["transcript"]))
+        if subtitles:
+            req["subtitles"] = [self._check_input(x, "subtitles") for x in subtitles]
+            roots += [os.path.dirname(x) for x in req["subtitles"]]
+        if outputs:
+            if not isinstance(outputs, dict) or set(outputs) - {"edl", "transcript", "subtitles", "video"}:
+                raise ToolError("video-editing: ripple outputs must be {edl?, transcript?, subtitles?, video?}")
+            req["outputs"] = outputs
+        if silence is not None:
+            req["silence"] = silence
+        ws = self.workspace or roots[0]
+        os.makedirs(ws, exist_ok=True)
+        allowed = sorted({r for r in list(self.allowed_inputs) + roots if os.path.isdir(r)})
+        argv = ["ripple", "-", "--json", "--workspace", ws] + [x for r in allowed for x in ("--allowed-input", r)] + self._engine_argv() + (["--overwrite"] if overwrite else [])
+        code, out, err = self._invoke(argv, stdin=json.dumps(req, ensure_ascii=False), timeout=(timeout or self.default_timeout) + 5.0)
+        doc = _one_json_document(out) if out.strip() else {}
+        if doc.get("ok") is not True:
+            e = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+            reason = (e.get("details") or {}).get("reason") if isinstance(e.get("details"), dict) else None
+            raise ToolError(f"video-editing ripple [{e.get('code') or code}{'/' + str(reason) if reason else ''}] {e.get('message') or err.strip()[-300:]}")
+        errs = check_ripple(doc, self.version)
+        if errs:
+            raise ToolError("video-editing ripple: " + "; ".join(errs))
+        return doc
+
     def measure(self, tool: str, args: Dict[str, Any], paths: Optional[Dict[str, str]] = None, timeout: Optional[float] = None) -> ToolResult:
         raise ToolError("video-editing: an editing Skill has no measurement tools")
 
@@ -731,6 +776,45 @@ def proposal_seconds(v: Any) -> float:
     if x != x or x < 0 or x == float("inf"):
         raise ToolError(f"video-editing: proposal time {v!r} is not a finite non-negative number")
     return x
+
+
+RIPPLE_SCHEMA = "video-editing/ripple@1"
+RIPPLE_RESULT_SCHEMA = "video-editing/ripple-result@1"
+RIPPLE_RULE = "ripple@1"
+
+
+def check_ripple(doc: Any, version: Optional[str] = None) -> List[str]:
+    """ADR-123: a `video-editing/ripple-result@1` response as the agent accepts it: applied false, rule ripple@1, cuts in frame order inside the
+    source, events whose record positions follow each other, and an edit_request with exactly one CONDENSE."""
+    errs: List[str] = []
+    if not isinstance(doc, dict) or doc.get("schema") != RIPPLE_RESULT_SCHEMA:
+        return [f"not a {RIPPLE_RESULT_SCHEMA} document"]
+    if version is not None and (doc.get("skill") or {}).get("version") != version:
+        errs.append("the response names another video-editing-skill version")
+    if doc.get("applied") is not False or (doc.get("rule") or {}).get("version") != RIPPLE_RULE:
+        errs.append("applied must be false and the rule ripple@1")
+    total = (doc.get("source") or {}).get("frames")
+    last = 0
+    for c in doc.get("cuts") or []:
+        a, b = (c.get("source_in") or {}).get("frame"), (c.get("source_out") or {}).get("frame")
+        if not (isinstance(a, int) and isinstance(b, int) and last <= a < b and isinstance(total, int) and b <= total):
+            errs.append(f"cut {c.get('id')!r} is not a forward frame range in order inside the source")
+            break
+        last = b
+    if not doc.get("cuts"):
+        errs.append("no cuts")
+    rec = 0
+    for e in doc.get("events") or []:
+        if (e.get("record_in") or {}).get("frame") != rec:
+            errs.append("events do not follow each other on the record timeline")
+            break
+        rec = (e.get("record_out") or {}).get("frame")
+    if rec != (doc.get("record") or {}).get("frames"):
+        errs.append("record frames do not add up")
+    ops = (((doc.get("edit_request") or {}).get("project") or {}).get("operations")) or []
+    if len(ops) != 1 or ops[0].get("type") != "CONDENSE":
+        errs.append("edit_request is not one CONDENSE")
+    return errs
 
 
 def check_proposals(doc: Any, version: Optional[str] = None) -> List[str]:

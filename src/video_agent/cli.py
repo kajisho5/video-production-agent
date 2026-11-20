@@ -176,6 +176,33 @@ def cmd_selects(args, svc: Service) -> int:
     return 0
 
 
+def cmd_transcript_edit(args, svc: Service) -> int:
+    """ADR-123: preview a transcript edit (the user's words / sentences to remove or keep) through transcription-skill select and video-editing-skill
+    ripple. Nothing is cut: the transcript-edit file is written and the cuts are listed for the user to approve."""
+    from .agent import transcript_edit as te
+    modes = [m for m, given in (("remove", args.remove_words or args.remove_segments), ("keep", args.keep_words or args.keep_segments)) if given]
+    if len(modes) != 1:
+        raise ValueError("transcript-edit: give what to remove (--remove-words / --remove-segments) or what to keep (--keep-words / --keep-segments), not both")
+    mode = modes[0]
+    try:
+        w = args.remove_words if mode == "remove" else args.keep_words
+        s = args.remove_segments if mode == "remove" else args.keep_segments
+        words = te.parse_word_ranges(w) if w else None
+        segments = te.parse_segment_ids(s) if s else None
+    except te.TranscriptEditError as e:
+        raise ValueError(f"transcript-edit: {e}")
+    res = svc.transcript_edit(args.input, args.transcript, mode, words=words, segments=segments, overlap="include" if args.include_overlap else "refuse",
+                              subtitles=args.subtitles or [], output=args.output, silence=not args.no_silence)
+    if args.json:
+        _print({"path": res["path"], "lines": res["lines"], "next": res["next"], **res["document"]}, True)
+        return 0
+    print(f"Nothing is cut yet. These are the cuts for {args.input} (written to {res['path']}):")
+    for line in res["lines"]:
+        print("  " + line)
+    print(f"After the user says yes: video-agent plan {args.input} --set {te.KEY}={res['path']}  (then approve the {te.SUBJECT} decision)")
+    return 0
+
+
 def cmd_analyze(args, svc: Service) -> int:
     ingest, blocked = _url_inputs_or_handoff(args, svc)
     if blocked is not None:
@@ -1021,6 +1048,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reject-dead-air", action="store_true", help="reject silent / speechless shots (default: flagged only)")
     p.add_argument("-o", "--output", help="where to write the selects file (default <workspace>/selects/selects.json)")
     p.set_defaults(fn=cmd_selects)
+    p = sub.add_parser("transcript-edit", help="preview cutting the words / sentences you choose from the transcript (ripple delete); nothing is cut (ADR-123)")
+    p.add_argument("input"); p.add_argument("--transcript", required=True, help="the input's transcript (transcription-skill transcript JSON with word timings)")
+    p.add_argument("--remove-words", help="word index ranges to remove, e.g. 12-40,55"); p.add_argument("--remove-segments", help="sentences (segment ids) to remove")
+    p.add_argument("--keep-words", help="word index ranges to keep (everything else goes)"); p.add_argument("--keep-segments", help="sentences (segment ids) to keep")
+    p.add_argument("--include-overlap", action="store_true", help="also remove kept words that overlap the removed speech (default: refuse)")
+    p.add_argument("--subtitles", action="append", help="SRT / VTT of the input to retime (repeatable)")
+    p.add_argument("--no-silence", action="store_true", help="do not move cut edges onto measured silence")
+    p.add_argument("-o", "--output", help="where to write the transcript-edit file (default <workspace>/transcript_edits/<stem>.transcript-edit.json)")
+    p.set_defaults(fn=cmd_transcript_edit)
     p = sub.add_parser("plan", help="analyze, decide and write a Project IR")
     p.add_argument("inputs", nargs="+"); p.add_argument("--profile", default="generic"); p.add_argument("--request", help="free-text request (only unambiguous phrases are used)")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="explicit USER requirement, e.g. audio.loudness.target_lufs=-16 or edit.trim_leading_silence=true")

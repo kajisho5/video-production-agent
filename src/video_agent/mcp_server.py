@@ -121,6 +121,19 @@ TOOLS: List[Dict[str, Any]] = [
          "min_shot": {"type": "number", "description": "shortest usable shot in seconds (default 1.0)"},
          "reject_dead_air": {"type": "boolean", "description": "reject silent / speechless shots (default: flagged only)"},
          "output": {"type": "string", "description": "where to write the selects file"}}}},
+    {"name": "transcript_edit", "description": (
+        "Preview a transcript edit: the user names words (index ranges) or sentences (segment ids) of the transcript to remove, or to keep. "
+        "transcription-skill finds their times and gaps, video-editing-skill places each cut on silence and on a frame and retimes the "
+        "transcript and subtitles. Nothing is cut. Show the user the returned lines (each cut's seconds, speakers and sentences, and the total) "
+        "and ask; only after their yes call `plan` with set {\"edit.transcript_edit\": <path>} and `approve` the transcript.ripple decision. "
+        "Never choose the words yourself here."),
+     "inputSchema": {"type": "object", "required": ["input", "transcript", "mode"], "properties": {
+         "input": {"type": "string", "description": "the video file"}, "transcript": {"type": "string", "description": "its transcript JSON (word timings)"},
+         "mode": {"type": "string", "enum": ["remove", "keep"]},
+         "words": {"type": "string", "description": "word index ranges, e.g. 12-40,55"}, "segments": {"type": "string", "description": "segment ids, e.g. seg_0003,seg_0007"},
+         "include_overlap": {"type": "boolean", "description": "also remove kept words that overlap the removed speech (default: refused)"},
+         "subtitles": {"type": "array", "items": _STR, "description": "SRT / VTT files of the input to retime"},
+         "output": {"type": "string", "description": "where to write the transcript-edit file"}}}},
     {"name": "artifacts", "description": "Registered artifacts of a project (or all), with QA status.",
      "inputSchema": {"type": "object", "properties": {"project": _PROJECT}}},
 ]
@@ -223,6 +236,15 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         options = [*opt("--max-duration", "max_duration"), *opt("--min-score", "min_score"), *opt("--max-blur", "max_blur"), *opt("--max-jitter", "max_jitter"),
                    *opt("--min-shot", "min_shot"), *(["--reject-dead-air"] if a.get("reject_dead_air") else []), *opt("--output", "output")]
         return cmd("selects", options, [str(x) for x in ins])
+    if name == "transcript_edit":   # ADR-123: a preview; the cut needs plan + approve
+        mode = a.get("mode")
+        if mode not in ("remove", "keep"):
+            raise ValueError("transcript_edit: 'mode' must be remove or keep")
+        if not a.get("words") and not a.get("segments"):
+            raise ValueError("transcript_edit: give 'words' and / or 'segments'")
+        options = [f"--transcript={need('transcript')}", *opt(f"--{mode}-words", "words"), *opt(f"--{mode}-segments", "segments"),
+                   *(["--include-overlap"] if a.get("include_overlap") else []), *[f"--subtitles={s}" for s in a.get("subtitles") or []], *opt("--output", "output")]
+        return cmd("transcript-edit", options, [need("input")])
     raise KeyError(name)
 
 
