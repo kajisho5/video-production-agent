@@ -61,6 +61,35 @@ class _Base(unittest.TestCase):
         return str(cm.exception)
 
 
+class MeasuredTests(unittest.TestCase):
+    def test_a_skipped_row_keeps_its_reason(self):
+        # issue #162: a source without audio is SKIPPED with "no audio stream"; the provenance says so instead of an empty error
+        rows = [{"asset_id": "a1", "kind": "transcript", "status": "SKIPPED", "reason": "no audio stream"},
+                {"asset_id": "a2", "kind": "transcript", "status": "FAILED", "error": {"kind": "SKILL_ERROR", "skill_error": "ENGINE_UNAVAILABLE"}}]
+        self.assertEqual(topts.measured(rows, [], {}), [
+            {"asset_id": "a1", "status": "SKIPPED", "error": {}, "reason": "no audio stream"},
+            {"asset_id": "a2", "status": "FAILED", "error": {"kind": "SKILL_ERROR", "skill_error": "ENGINE_UNAVAILABLE"}}])
+
+
+class FakeSkillOrderTests(unittest.TestCase):
+    def test_an_unknown_model_offline_is_model_unknown_not_missing(self):
+        # issue #162: the fake checks the model is known before it checks it is on this machine, as the Skill does
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "a.wav"
+            src.write_bytes(b"RIFF")
+            for offline in (True, False):
+                req = {"tool": "transcription/transcribe", "params": {"input": str(src), "model": "no-such-model", "offline": offline}}
+                proc = subprocess.run([sys.executable, str(Path(__file__).with_name("fake_transcription.py")), "run"], input=json.dumps(req),
+                                      capture_output=True, text=True, env={k: v for k, v in os.environ.items() if not k.startswith("FAKE_TS_")})
+                err = json.loads(proc.stdout.strip().splitlines()[-1])["error"]
+                self.assertEqual((err["code"], err["details"]["availability"]), ("MODEL_UNAVAILABLE", "MODEL_UNKNOWN"), offline)
+            req = {"tool": "transcription/transcribe", "params": {"input": str(src), "model": "small", "offline": True}}
+            proc = subprocess.run([sys.executable, str(Path(__file__).with_name("fake_transcription.py")), "run"], input=json.dumps(req),
+                                  capture_output=True, text=True, env={k: v for k, v in os.environ.items() if not k.startswith("FAKE_TS_")})
+            self.assertEqual(json.loads(proc.stdout.strip().splitlines()[-1])["error"]["details"]["availability"], "MODEL_MISSING", "a known model offline is unchanged")
+
+
 class RequirementTests(_Base):
     def test_keys_values_and_the_set_gate(self):
         self.assertEqual(topts.parse_transcribe_requirements({}), None)

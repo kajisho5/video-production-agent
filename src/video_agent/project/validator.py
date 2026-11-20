@@ -801,6 +801,7 @@ def check_finishing_operations(d: Dict[str, Any]) -> List[str]:
                 elif allowed_roots and not any(_under(f, r) for r in allowed_roots):
                     errs.append(f"{HTML_LAYER_SUBJECT} on {subj}: {k} is outside the allowed input roots")
             if not any(x.get("type") == "graphics.render" and x.get("asset") == subj and x.get("layer_source") == op.get("output")
+                       and any(e.get("type") == "rendered_layer" and (e.get("parameters") or {}).get("layer") == op.get("output") for e in x.get("elements") or [])
                        for x in (d.get("graphics") or {}).get("operations") or []):
                 errs.append(f"{HTML_LAYER_SUBJECT} on {subj}: no graphics.render places its output (a rendered_layer element)")
         elif t == "graphics.thumbnail":
