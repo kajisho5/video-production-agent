@@ -683,7 +683,11 @@ def run_unit(root: Path, runner: Callable[..., subprocess.CompletedProcess] = su
     failures: List[str] = []
     for cmd in unit_commands(root):
         r = runner(cmd, cwd=str(root), env=env, capture_output=True, text=True)
-        failures += failed_ids(cmd, (r.stdout or "") + (r.stderr or ""), r.returncode)
+        out = (r.stdout or "") + (r.stderr or "")
+        failed = failed_ids(cmd, out, r.returncode)
+        if failed:   # the run's log keeps why (the body lists the ids only)
+            print(f"{' '.join(cmd[1:])}: exit {r.returncode}\n" + "\n".join(out.splitlines()[-200:]), file=sys.stderr)
+        failures += failed
     return failures
 
 
@@ -716,7 +720,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if args.pr_body:
         body = Path(args.pr_body).read_text(encoding="utf-8")
         Path(args.pr_body).write_text(verify_section(failures, report) + body, encoding="utf-8")
-    print(json.dumps({"review": report["review"], "unit_failures": len(failures)}))
+    print(json.dumps({"review": report["review"], "unit_failures": failures}))
     return 0
 
 
