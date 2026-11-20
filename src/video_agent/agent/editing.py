@@ -24,6 +24,7 @@ import re
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import transcript_edit as _te
 from ..models import Requirement
 from ..tools.base import ToolError
 from ..tools.video_editing.adapter import check_proposals, proposal_seconds
@@ -101,6 +102,8 @@ CONDENSE_OP = "video.condense"            # decision subject: the approved propo
 CONDENSE_KEY = "edit.condense"            # the proposals file `video-agent propose` wrote
 CONDENSE_APPROVE_KEY = "edit.condense.approve"   # the proposal ids the user approved ("p1,p3" or a list); nothing else is cut
 CONDENSE_KEEP_LABEL = "keep"              # CONDENSE label of the kept ranges (rule keep); every other labelled span is cut, the rest by default cut
+TRANSCRIPT_EDIT_OP = _te.SUBJECT          # ADR-123: the user's transcript selection, cut out of the one source it was previewed on
+TRANSCRIPT_EDIT_KEY = _te.KEY
 SEGMENT_CACHE_OP = "video.segment_cache"  # ADR-099: options.segment_cache on every frame-precision CUT of the plan
 SEGMENT_CACHE_KEY = "edit.segment_cache"
 AI_OP = "media.ai_generated"              # ADR-099: the user's declaration that an input is AI-generated (sources[].ai_generated)
@@ -123,6 +126,8 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     PUNCH_IN_OP: ("edit.punch_in", "edit.punch_in.scale", "edit.punch_in.subject"),
     # ADR-099: approved cut proposals (the proposals file and the approved ids), the segment cache, AI-generated inputs
     CONDENSE_OP: (CONDENSE_KEY, CONDENSE_APPROVE_KEY),
+    # ADR-123: the transcript-edit file `video-agent transcript-edit` wrote (the user's selection, placed by the Skills); cut by CONDENSE
+    TRANSCRIPT_EDIT_OP: (TRANSCRIPT_EDIT_KEY,),
     SEGMENT_CACHE_OP: (SEGMENT_CACHE_KEY,),
     AI_OP: (AI_KEY,),
     "video.speed": ("edit.speed",),
@@ -446,6 +451,11 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
             p["subject"] = sub
         elif op == CONDENSE_OP:   # ADR-099
             p.update(parse_condense(vals[CONDENSE_KEY], vals.get(CONDENSE_APPROVE_KEY)))
+        elif op == TRANSCRIPT_EDIT_OP:   # ADR-123
+            try:
+                p.update(_te.parse_requirement(vals[TRANSCRIPT_EDIT_KEY]))
+            except _te.TranscriptEditError as e:
+                raise EditRequirementError(str(e))
         elif op == SEGMENT_CACHE_OP:   # ADR-099
             if not _bool(vals[SEGMENT_CACHE_KEY], SEGMENT_CACHE_KEY):
                 continue
@@ -603,18 +613,19 @@ def parse_ai_generated(v: Any) -> List[Dict[str, str]]:
     return out
 
 
-def subtract_spans(keep: List[List[float]], spans: List[Dict[str, Any]]) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
+def subtract_spans(keep: List[List[float]], spans: List[Dict[str, Any]], places: int = 3) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
     """ADR-099: the kept ranges minus approved CONDENSE spans → (new kept ranges, the labelled spans actually removed: each approved span clipped to
-    the ranges that were still kept, overlaps of two approved spans merged under the earlier one's label). Pure arithmetic on the IR's seconds."""
+    the ranges that were still kept, overlaps of two approved spans merged under the earlier one's label). Pure arithmetic on the IR's seconds.
+    `places` (ADR-123): 6 keeps the frame-exact times of a transcript edit (velisa/timebase@1 TB-3: 6-decimal seconds), 3 the milliseconds."""
     removed: List[Dict[str, Any]] = []
     for sp in sorted(spans, key=lambda r: (r["start"], r["end"])):
         for ks, ke in keep:
             s_, e_ = max(ks, sp["start"]), min(ke, sp["end"])
             if e_ > s_:
                 if removed and s_ <= removed[-1]["end"]:
-                    removed[-1]["end"] = max(removed[-1]["end"], round(e_, 3))
+                    removed[-1]["end"] = max(removed[-1]["end"], round(e_, places))
                 else:
-                    removed.append({"start": round(s_, 3), "end": round(e_, 3), "label": sp["label"]})
+                    removed.append({"start": round(s_, places), "end": round(e_, places), "label": sp["label"]})
     out: List[List[float]] = []
     for ks, ke in keep:
         cur = [[ks, ke]]
@@ -629,7 +640,7 @@ def subtract_spans(keep: List[List[float]], spans: List[Dict[str, Any]]) -> Tupl
                 if r["end"] < b:
                     nxt.append([r["end"], b])
             cur = nxt
-        out += [[round(a, 3), round(b, 3)] for a, b in cur if b - a > 0.0005]
+        out += [[round(a, places), round(b, places)] for a, b in cur if b - a > 0.0005]
     return out, removed
 
 

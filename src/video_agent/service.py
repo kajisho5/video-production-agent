@@ -95,6 +95,7 @@ from .agent.finishing import THUMBNAIL_KEYS as _THUMBNAIL_REQUIREMENT_KEYS, THUM
 from .agent.thumbnail_features import PATH_KEYS as _THUMBNAIL_PATH_KEYS, thumbnail_faces_kinds   # ADR-104
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
+from .agent import transcript_edit as transcript_edit_task
 from .agent import word_cut as word_cut_task
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
@@ -284,6 +285,97 @@ class Service:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return {"path": str(out), "document": doc}
+
+    def transcript_edit(self, source: str, transcript: str, mode: str, words: Optional[List[List[int]]] = None, segments: Optional[List[str]] = None,
+                        overlap: str = "refuse", subtitles: Optional[List[str]] = None, output: Optional[str] = None, silence: bool = True) -> Dict[str, Any]:
+        """ADR-123: preview a transcript edit. transcription-skill `select` turns the user's selection into removed spans with their gaps, then
+        video-editing-skill `ripple` places each cut on silence and on a frame and writes the EDL and the retimed transcript / subtitles (a
+        preview). Nothing is cut: the transcript-edit file is written to `output` (default <workspace>/transcript_edits/<stem>.transcript-edit.json)
+        and returned with the lines to show the user; after their yes, plan with --set edit.transcript_edit=<file> and approve the decision."""
+        for what, p_ in (("source", source), ("transcript", transcript), *(("subtitles", s_) for s_ in subtitles or [])):
+            if not os.path.isfile(p_):
+                raise ValueError(f"transcript-edit: {what} not found: {p_}")
+        if mode not in transcript_edit_task.MODES:
+            raise ValueError("transcript-edit: choose what to remove or what to keep")
+        if words is None and segments is None:
+            raise ValueError("transcript-edit: name the words (index ranges) and / or the sentences (segment ids)")
+        try:
+            tr_doc = json.loads(Path(transcript).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise ValueError(f"transcript-edit: cannot read the transcript: {e}")
+        roots = sorted({str(Path(p_).resolve().parent) for p_ in [source, transcript] + list(subtitles or [])})
+        router = self.adapter(roots)
+        tr_ad = router.adapter_for(TRANSCRIBE_TOOL)
+        ve_ad = router.adapter_for(VIDEO_EDITING_PACKAGE.tools[0].tool_id)
+        if tr_ad is None or not hasattr(tr_ad, "select"):
+            raise ValueError("transcript-edit needs transcription-skill (set VIDEO_AGENT_TRANSCRIPTION_DIR or install the `transcription` command)")
+        if ve_ad is None or not hasattr(ve_ad, "ripple"):
+            raise ValueError("transcript-edit needs video-editing-skill (set VIDEO_AGENT_VIDEO_EDITING_DIR or install the `video-editing` command)")
+        stem = Path(source).stem
+        out = Path(output) if output else Path(self.workspace) / "transcript_edits" / f"{stem}.transcript-edit.json"
+        if out.resolve().parent == Path(source).resolve().parent and not output:
+            raise ValueError("transcript-edit: refusing to write next to the source (give --output)")
+        rel = f"transcript_edits/{stem}.preview"
+        outputs: Dict[str, Any] = {"edl": f"{rel}/{stem}.ripple-edl.json", "transcript": f"{rel}/{Path(transcript).stem}.rippled.json",
+                                   "video": f"{rel}/{stem}.rippled{Path(source).suffix.lower() if Path(source).suffix.lower() in ('.mp4', '.mov', '.mkv') else '.mp4'}"}
+        if subtitles:
+            outputs["subtitles"] = [f"{rel}/{Path(s_).stem}.rippled{Path(s_).suffix.lower()}" for s_ in subtitles]
+        try:
+            sel = tr_ad.select(tr_doc, mode, words=words, segments=segments, overlap=overlap)
+            rip = ve_ad.ripple(source, selection=sel, transcript=transcript, subtitles=list(subtitles or []), outputs=outputs,
+                               silence=None if silence else False, overwrite=True)
+        except ToolError as e:
+            raise ValueError(str(e))
+        doc = transcript_edit_task.build_document(source, transcript, list(subtitles or []), sel, rip)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return {"path": str(out), "document": doc, "lines": transcript_edit_task.approval_lines(doc),
+                "next": f"show these lines to the user; only after their yes: plan {source} --set {transcript_edit_task.KEY}={out} and approve the "
+                        f"{transcript_edit_task.SUBJECT} decision"}
+
+    def _retime_transcript_edits(self, ir: ProjectIR, adapter: Any, job: Any) -> Optional[Dict[str, Any]]:
+        """ADR-123: after the render, the transcript (and subtitles) of each approved transcript edit retimed by video-editing-skill `ripple`
+        to the cuts the plan actually made on that source (the trim's kept ranges, every cut, not only the selection). A programme that is not
+        that source's timeline after the cut is reported, not retimed. Never fails the job."""
+        decs = [d for d in ir.doc.get("decisions") or [] if d.get("subject") == transcript_edit_task.SUBJECT and d.get("type") == "TRANSFORM"
+                and d.get("status") != "REJECTED"]
+        if not decs:
+            return None
+        res: Dict[str, Any] = {"rule": transcript_edit_task.RIPPLE_RULE, "items": [], "warnings": []}
+        ve_ad = adapter.adapter_for(VIDEO_EDITING_PACKAGE.tools[0].tool_id) if hasattr(adapter, "adapter_for") else None
+        for d in decs:
+            p_ = d.get("params") or {}
+            trim, why = transcript_edit_task.retime_target(ir.doc, d)
+            if why is not None or ve_ad is None or not hasattr(ve_ad, "ripple"):
+                res["warnings"].append(f"{d['id']}: not retimed: {why or 'video-editing-skill is not available'}")
+                continue
+            assets = ir.doc.get("assets") or {}
+            asset = (assets.get(p_.get("asset_id")) if isinstance(assets, dict) else next((a for a in assets if a.get("id") == p_.get("asset_id")), None)) or {}
+            dur = float((asset.get("technical") or {}).get("duration") or 0.0)
+            pic = float((p_.get("summary") or {}).get("duration_before") or 0.0)   # the picture's own length (frames), which the sound can exceed
+            dur = min(dur, pic) if pic > 0 else dur
+            spans = transcript_edit_task.removed_ranges(trim.get("keep") or [], dur, p_.get("rate"))
+            if not spans:
+                res["warnings"].append(f"{d['id']}: the trim keeps the whole source; nothing to retime")
+                continue
+            rel = os.path.relpath(str(job.dir / "transcript_edit"), ve_ad.workspace) if getattr(ve_ad, "workspace", None) else None
+            if rel is None or rel.startswith(".."):
+                res["warnings"].append(f"{d['id']}: the job directory is outside video-editing-skill's workspace; not retimed")
+                continue
+            tr = p_["transcript"]["path"]
+            subs = [s_["path"] for s_ in p_.get("subtitles") or []]
+            outputs: Dict[str, Any] = {"edl": f"{rel}/{p_['asset_id']}.ripple-edl.json", "transcript": f"{rel}/{Path(tr).stem}.rippled.json"}
+            if subs:
+                outputs["subtitles"] = [f"{rel}/{Path(s_).stem}.rippled{Path(s_).suffix.lower()}" for s_ in subs]
+            try:
+                rip = ve_ad.ripple(p_["source"]["path"], spans=spans, transcript=tr, subtitles=subs, outputs=outputs, silence=False, overwrite=True)
+            except ToolError as e:
+                res["warnings"].append(f"{d['id']}: retiming failed: {str(e)[:300]}")
+                continue
+            res["items"].append({"decision": d["id"], "asset_id": p_["asset_id"], "edl": rip.get("edl"), "transcript": rip.get("transcript"),
+                                 "subtitles": rip.get("subtitles"), "removed": rip.get("removed"), "record": rip.get("record"),
+                                 "cuts": len(rip.get("cuts") or []), "selected_cuts": len(p_.get("cuts") or [])})
+        return res
 
     def skills(self) -> List[Dict[str, Any]]:
         return self.registry.availability(self.caps.resolve(), self.adapter([]).supports, default=default_providers(self.workspace))
@@ -1320,6 +1412,9 @@ class Service:
             if ((ir.doc.get("qa") or {}).get("transcript_verify") or {}).get("enabled"):
                 # ADR-110: re-transcribe the deliverables and list where to listen; never a QA status, a stage or an edit
                 out["qa"]["transcript_verification"] = self._verify_transcripts(ir, adapter, paths, qa_reqs)
+            te = self._retime_transcript_edits(ir, adapter, job)   # ADR-123: the transcript / subtitles on the cut timeline
+            if te is not None:
+                out["transcript_edit"] = te
             if (ir.doc.get("delivery") or {}).get("publish"):   # ADR-087: the offline plan + dry run of the approved upload; nothing is uploaded here
                 out["publish"] = self._publish_prepare(ir, adapter, job, job.artifacts)
             job.transition("COMPLETED" if qa.status != "FAIL" else "REVIEW", f"qa {qa.status}")
@@ -2078,7 +2173,7 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS | 
 # is a file path (overlay / joined still (ADR-070) / LUT / graphics image or clip / QC master: only the user names a file the agent may read) and (3) job.* and
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
 _PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
-                                    "edit.concat.stinger", "edit.condense", "edit.ai_generated", "motion.layer", "motion.themes",
+                                    "edit.concat.stinger", "edit.condense", "edit.transcript_edit", "edit.ai_generated", "motion.layer", "motion.themes",
                                     "subtitle.fonts_dir"})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 

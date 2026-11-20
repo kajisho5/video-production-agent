@@ -42,6 +42,8 @@ from .image_prepare import PACKAGE as IMAGE_PACKAGE, describe as describe_prepar
 from .voice import OPERATIONS as VOICE_OPERATIONS, decide_voice, parse_voice_requirements
 from .dubbing import decide_dub
 from .publish import decide_publish
+from .editing import TRANSCRIPT_EDIT_OP
+from .transcript_edit import decide_transcript_edit
 from .word_cut import AI_INTENT as WORD_CUT_AI_INTENT, SUBJECT as WORD_CUT_SUBJECT, decide_word_cut
 
 # production-skill intent → decision subjects that would already execute it (measured path)
@@ -429,6 +431,9 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- approved cut proposals (ADR-099): the spans of `edit.condense` the user approved by id, cut out of the one source they were measured on
     if CONDENSE_OP in edits:
         decide_condense(eng, edits[CONDENSE_OP], analysis, approval_for, probe_ids_of, cap_block)
+    # ---- editing by transcript (ADR-123): the user's selection, placed by transcription-skill select and video-editing-skill ripple
+    if TRANSCRIPT_EDIT_OP in edits:
+        decide_transcript_edit(eng, edits[TRANSCRIPT_EDIT_OP], analysis, approval_for, probe_ids_of, cap_block, CONDENSE_SKILL)
     # ---- AI-generated inputs (ADR-099): the user's declaration per input, carried to video-editing-skill as sources[].ai_generated
     if AI_OP in edits:
         decide_ai_generated(eng, edits[AI_OP], analysis)
