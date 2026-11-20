@@ -8,7 +8,7 @@
         `slide-sync match --json --overwrite --output=<…>.match.json --deck=<…>.deck --timeline=<…>.timeline.json --ffmpeg-skill=<dir>
          --timeout=T -- <video>`                                               (which page is on screen in each slide, or null with the reason)
 
-Protocol (slide-sync-skill's own contract, `slide-sync contract --json`, pinned from main in contract_0.1.2.json -- the repository has no
+Protocol (slide-sync-skill's own contract, `slide-sync contract --json`, pinned from main in contract_0.1.3.json -- the repository has no
 release tag): detect → `slide-sync/timeline@1` (slides {index, start, end, duration}, changes, the detector's threshold / min_dwell and
 engine version), import → `slide-sync/deck@1` (pages with their own text layer, the deck's sha256), match → `slide-sync/match@1`
 (segments with page / confidence / margin / view / reason, page null when no page is clearly best). doctor → engine (ffmpeg-skill) ok and
@@ -62,7 +62,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.2.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.3.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

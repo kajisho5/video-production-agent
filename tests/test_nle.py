@@ -80,7 +80,10 @@ class ContractTests(_Base):
     def test_pin_and_checks(self):
         c = pinned_contract()
         self.assertEqual((c["skill_id"], c["version"], check_contract(c)), ("nle-bridge", pinned_version("nle-bridge"), []))
-        self.assertEqual(c["dependencies"][0]["version_range"], ">=2.0.0 <4.0.0", "pinned at main c0ab78f (step 12)")
+        # the ffmpeg-skill range nle-bridge declares: ">=2.0.0 <4.0.0" up to 0.1.3, ">=2.0.0 <5.0.0" from 0.1.4 (ffmpeg-skill 4.x)
+        dep = c["dependencies"][0]
+        self.assertEqual(dep["skill_id"], "ffmpeg-skill")
+        self.assertEqual(dep["version_range"], ">=2.0.0 <4.0.0" if tuple(map(int, c["version"].split("."))) < (0, 1, 4) else ">=2.0.0 <5.0.0")
         self.assertEqual((formats(), default_formats()), (("edl", "fcp7", "otio", "srt"), ("otio", "fcp7", "edl", "srt")))
         for bad, msg in ((dict(c, inputs=["nle-bridge/timeline@1"]), "project IR"), (dict(c, execution=dict(c["execution"], network=True)), "network false")):
             self.assertTrue(any(msg in e for e in check_contract(bad)), check_contract(bad))
