@@ -90,4 +90,4 @@ A card or recorder folder is planned on its own: `video-agent --json plan /Volum
 
 ## MCP
 
-The same tools are served over MCP by `video-agent-mcp` (Claude Desktop / Claude Code: see README). With MCP, pass the answer object directly as `ai_recommendations` to the `revise` tool, and a brief answer as `brief_requirements` to `plan` (or the `brief` tool).
+The same tools are served over MCP by `video-agent-mcp` (Claude Desktop / Claude Code: see README). With MCP, pass the answer object directly as `ai_recommendations` to the `revise` tool, and a brief answer as `brief_requirements` to `plan` (or the `brief` tool). Calls have permission classes (ADR-125): read and write run by default; a destructive call (re-planning over an existing plan) or a publish call (writes outside the allowed roots, a paid AI provider) is refused unless the server enables it, and even then first returns a preview with a `confirm_token`. Show the user the preview and pass the token back only after they agree; never re-use a token or pass one the user did not see.

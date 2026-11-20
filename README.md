@@ -41,6 +41,18 @@ AI（Claude）: `pip install -e '.[ai]'` の上で `VIDEO_AGENT_AI_PROVIDER=anth
 ```
 
   tools: `doctor` `skills` `plan`（既定で ai_brief 付き）`revise`（`ai_recommendations` を直接渡す）`validate` `explain` `diff` `approve` `reject` `render` `check` `artifacts`。各 tool は `video-agent --json <command>` を子プロセスで実行するだけ。引数の値は option として読まれない（option は `--flag=value`、入力・project・出力・依頼文は `--` の後ろ。ADR-069）。AI と host brief に渡す計測結果の path は basename だけ。承認は `approve` を別に呼ぶ必要があり、`render` に一括承認は無い。
+- MCP の権限（ADR-125）: tool の呼び出しはそれぞれ権限クラスを持ち、有効なクラスだけが走る。既定は `read`（解析・説明・検証・dry run）と `write`（workspace の中に新しい plan を書く、自分の plan に版や承認を足す）。`destructive`（既存ファイルの上書き・削除。例: 同じ入力と profile で `plan` し直すと既存の plan を置き換える、既存の transcript-edit ファイルへの `transcript_edit`）と `publish`（外向き: upload・公開、許可された root の外への書き込み（例: カードの offload を workspace の外のドライブへ）、有料 API の消費（`VIDEO_AGENT_AI_PROVIDER=anthropic` のとき `ai_brief` 無しの `plan` や `ai_recommendations` 無しの `revise`））は明示しないと無効。無効な呼び出しは何もせず、有効にする設定（`--scopes ...`）を書いた構造化エラーを返す。`destructive` / `publish` は有効にしても2段階: 1回目は何を上書き・削除・コピー・消費するかの preview と `confirm_token` を返し、ユーザーが同意した後に同じ引数＋`confirm_token` で呼ぶと実行される。token は1回限り・既定 300 秒で失効・その preview（引数と対象ファイルの中身）に束縛され、別の呼び出しやその後に変わったファイルには使えない。書き込む path（project.json、新しい plan）は symlink と `..` を解決した上で workspace（と `--allow-root` で足した root）の中でなければ拒否する。
+  - 設定は CLI > 環境変数 > 設定ファイル > 既定 の順: `--scopes read,write,destructive`（`VIDEO_AGENT_MCP_SCOPES`、`all` で全部）、`--allow-root /abs/dir`（繰り返し可、`VIDEO_AGENT_MCP_ROOTS` は OS の path 区切り）、`--confirm-ttl 120`（`VIDEO_AGENT_MCP_CONFIRM_TTL`、1-3600 秒）、`--config mcp.json`（`VIDEO_AGENT_MCP_CONFIG`。中身は `{"scopes": ["read", "write", "destructive"], "allowed_roots": ["/abs/path/to/projects"], "confirm_ttl_s": 300}`）。
+  - Claude Code で上書きも許す: `claude mcp add video-agent -- video-agent-mcp --workspace ~/video-agent-work --scopes read,write,destructive`。読むだけの server: `--scopes read`。
+  - Claude Desktop でカードの offload 先（外付けドライブ）を root に足す場合と、publish を有効にする場合:
+
+```json
+{"mcpServers": {"video-agent": {"command": "/abs/path/to/video-agent-mcp",
+  "args": ["--workspace", "/abs/path/to/video-agent-work", "--allow-root", "/Volumes/Backup"],
+  "env": {"VIDEO_AGENT_FFMPEG_SKILL_DIR": "/abs/path/to/ffmpeg-skill", "VIDEO_AGENT_MCP_SCOPES": "read,write,destructive,publish"}}}}
+```
+
+  - `tools/list` は各 tool の権限クラスを説明文と `annotations`（`readOnlyHint` / `destructiveHint` / `openWorldHint`）に出し、この server で無効なクラスも書く。publish-skill への upload は従来どおり MCP の tool ではなく、人が打つ `video-agent publish --confirm` だけ（ADR-087）。
 - スマホ / Web の Claude アプリ: ローカルの MCP server（stdio）は動かせない。動画ファイルと ffmpeg があるマシンで Claude Code か Claude Desktop を使う。
 
 ## セットアップ

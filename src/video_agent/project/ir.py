@@ -165,6 +165,16 @@ def save_ir(ir: ProjectIR, path: str) -> str:
     return path
 
 
+def default_plan_path(workspace: str, inputs: List[str], profile: str = "generic") -> str:
+    """Where `plan` writes the Project IR when no --output / --allow-source-dir is given: `<workspace>/plans/<stem>.<profile>.project.json`,
+    or `<workspace>/plans/<folder>.offload.project.json` for a card folder (ADR-066). The MCP server reads the same path to see whether
+    a plan call would overwrite an existing plan (ADR-123)."""
+    from ..agent.offload import is_card_input
+    if any(is_card_input(i) for i in inputs):
+        return str(Path(workspace) / "plans" / f"{Path(inputs[0]).resolve().name}.offload.project.json")
+    return str(Path(workspace) / "plans" / f"{Path(inputs[0]).stem}.{profile}.project.json")
+
+
 def load_ir(path: str) -> ProjectIR:
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
     return ProjectIR(migrate(doc))
