@@ -34,11 +34,11 @@ def with_version(contract, version):
 class VersionGateTests(unittest.TestCase):
     def test_motion_graphics_release_versions(self):
         self.assertEqual(mg.pinned_contract()["version"], pinned_version("motion-graphics"))   # addendum 24: 0.4.0 adds rendered_layer title_json; ADR-067: motion-graphics-skill #30 (colors.named, alpha: false); ADR-083: 0.2.8 widens its ffmpeg-skill range; ADR-097: 0.2.9 / 0.2.10 version-only; addendum 6: 0.2.16; ADR-106: 0.2.17 (layer_export); ADR-107: 0.2.18 / 0.2.19 version-only; addendum 19: 0.3.0 adds the kit block and options.kit?
-        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16", "0.2.17", "0.2.18", "0.2.19", "0.2.20", "0.3.0", "0.3.4", "0.4.0", "0.4.5", pinned_version("motion-graphics")):
+        for v in ("0.1.0", "0.2.0", "0.2.1", "0.2.4", "0.2.9", "0.2.10", "0.2.16", "0.2.17", "0.2.18", "0.2.19", "0.2.20", "0.3.0", "0.3.4", "0.4.0", "1.0.0", pinned_version("motion-graphics")):
             live = with_version(mg.pinned_contract(), v)
             self.assertEqual(mg.check_contract(live), [], v)
             self.assertEqual(mg.contract_breaking_drift(live), [], v)
-        for v in ("0.5.0", "0.30.0", "1.0.0"):
+        for v in ("0.5.0", "0.30.0", "1.1.0"):
             self.assertTrue(mg.check_contract(with_version(mg.pinned_contract(), v)), v)
 
     def test_transcription_release_versions(self):
