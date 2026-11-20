@@ -19,7 +19,6 @@ commands, filters, executables or paths never exist in this vocabulary (the comp
 """
 from __future__ import annotations
 
-import math
 import os
 import re
 from fractions import Fraction
@@ -30,6 +29,7 @@ from ..tools.base import ToolError
 from ..tools.video_editing.adapter import check_proposals, proposal_seconds
 from ..tools.video_editing.lowering import ai_declaration
 from . import image_prepare as _prep
+from .timebase import RateError, frames_at, parse_rate, probed_rate, rate_str, transition_frames
 
 PROGRAMME = "programme"      # logical id of the concat (or switch / grid) output (the multi-source timeline)
 # operation order after the trims: the same for the plan, the IR and the compiler (deterministic, not configurable).
@@ -669,7 +669,25 @@ def kept_duration(doc_or_ops: Any, asset_id: str, source_duration: float) -> flo
 
 
 # ---- ADR-115: video-editing-skill's whole-frame CONCAT (contract.whole_frames, 0.7.2 / 0.7.3), planned the same way
-FPS_TOLERANCE = 0.02   # contract.whole_frames: an input within 0.02 fps of the edit's rate runs "at the rate"
+# ADR-120 (velisa/timebase@1): rates are exact fractions read by parse_rate (29.97 is 30000/1001), the same reading as
+# video-editing-skill (its ADR-040, issue #59); an input runs "at the rate" when both read back at the probe's 3 decimals are equal.
+
+
+def _rate(fps: Any) -> Optional[Fraction]:
+    """A requested or probed frame rate as an exact fraction, or None when there is none or it is not a rate."""
+    if fps is None or fps == 0:
+        return None
+    try:
+        return parse_rate(fps)
+    except RateError:
+        return None
+
+
+def same_probed_rate(a: Any, b: Any) -> bool:
+    """Whether two rates are one rate as the media probe (3 decimals) can tell them apart: both read back from their probe
+    text, the exact fractions compared. 29.97 and 30000/1001 are one rate; 29.97 and 29.98 are not (no float tolerance)."""
+    ra, rb = _rate(a), _rate(b)
+    return ra is not None and rb is not None and probed_rate(ra) == probed_rate(rb)
 
 
 def _exact(x: Any) -> Fraction:
@@ -679,26 +697,33 @@ def _exact(x: Any) -> Fraction:
 
 def concat_rate(params: Dict[str, Any], first_input_technical: Optional[Dict[str, Any]]) -> Optional[Fraction]:
     """contract.whole_frames.rate: the CONCAT's params.fps, else its first input's frame rate, as the Skill turns it into a
-    rational (Fraction(fps).limit_denominator(1001)). None when neither is known: the Skill then joins every input as it is."""
+    rational by velisa/timebase@1 (ADR-120: the probe's 29.97 is 30000/1001, an explicit "N/D" is taken as written). None when
+    neither is known: the Skill then joins every input as it is."""
     fps = params.get("fps") or ((first_input_technical or {}).get("video") or {}).get("fps")
-    try:
-        f = float(fps)
-    except (TypeError, ValueError):
-        return None
-    return Fraction(f).limit_denominator(1001) if f > 0 else None
+    return _rate(fps)
 
 
 def programme_rate(inputs: List[str], techn: Dict[str, Optional[Dict[str, Any]]], ai_sources: Any, params: Optional[Dict[str, Any]] = None) -> Optional[Fraction]:
     """The rate a CONCAT of `inputs` is joined at, the one rule for the planner's concat and the take alignment: params.fps when
     given; with an AI-generated input among them (ADR-099), the rate of the first input that is not declared AI-generated (the
-    planner names it on the CONCAT as params.fps, rounded to 3 decimals); else the first input's (concat_rate)."""
+    planner names it on the CONCAT as params.fps, its exact "N/D" text: concat_fps); else the first input's (concat_rate)."""
     params = dict(params or {})
     if not params.get("fps") and any(a in ai_sources for a in inputs):
         ref = next((a for a in inputs if a not in ai_sources), None)
         v_ = ((techn.get(ref) or {}).get("video") or {}) if ref else {}
         if v_.get("width") and v_.get("height") and v_.get("fps"):
-            params["fps"] = round(float(v_["fps"]), 3)
+            params["fps"] = concat_fps(v_["fps"])
     return concat_rate(params, techn.get(inputs[0]) if inputs else None)
+
+
+def concat_fps(fps: Any) -> Any:
+    """params.fps for a rate taken from a probe: its exact text ("30000/1001", or "25" as the integer 25), never the probe's
+    3-decimal float, so the Skill reads the same rate whatever its own reading of decimals (ADR-120). A value that is not a
+    rate is passed on as it is, for the Skill to refuse."""
+    r = _rate(fps)
+    if r is None:
+        return fps
+    return r.numerator if r.denominator == 1 else rate_str(r)
 
 
 def input_rate(technical: Optional[Dict[str, Any]]) -> Tuple[Optional[float], bool]:
@@ -717,16 +742,13 @@ def whole_frame_length(length: Fraction, rate: Fraction, fps: Optional[float], v
     input whose rate is not known is joined as it is."""
     if not fps:
         return length
-    if abs(fps - float(rate)) > FPS_TOLERANCE or vfr:
-        frames = math.floor(length * rate + Fraction(1, 2))
-    else:
-        frames = math.floor((length + Fraction(1, 1000)) * rate)
+    frames = frames_at(length, rate, "nearest" if vfr or not same_probed_rate(fps, rate) else "down")
     return Fraction(frames) / rate
 
 
 def joined_transition(duration: Any, rate: Fraction) -> Fraction:
     """contract.whole_frames.rule: an xfade transition's duration rounded to the nearest frame of the rate, a half up, at least one frame."""
-    return Fraction(max(1, math.floor(_exact(duration) * rate + Fraction(1, 2)))) / rate
+    return Fraction(transition_frames(_exact(duration), rate)) / rate
 
 
 def concat_segments(inputs: List[str], video_ops: List[Dict[str, Any]], durations: Dict[str, float], transition: Optional[Dict[str, Any]],

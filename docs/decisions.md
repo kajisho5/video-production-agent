@@ -1624,3 +1624,30 @@
   - Follow-up (2026-11-20, the first run with `verify`, on the open #166): two faults in the workflow, both fixed here.
     - `verify` reported 6 failures that were not the re-pin's: the job had not installed the package, so `jsonschema` (its one dependency) was missing and the schema-refusal tests failed. The job now runs `pip install -e .` as the unit job does; the same tree then passes `verify` with no failure. `verify` also writes each failing command's last 200 lines to the run's log, and prints the failing ids, not only their count.
     - The workflow refused to rebuild `bot/repin` ("has commits pushed by someone else") although only the workflow had pushed to it: the checkout was shallow (main's last commit only), so `origin/main..bot/repin` had no merge base and listed main's own history. The checkout now takes main's whole history (`fetch-depth: 0`). Until this run the check had never met an existing branch, so it had never been exercised.
+
+## ADR-120 Frame rates are read by the Velisa timebase spec: the concat rate of 29.97 is 30000/1001, params.fps is written exactly, rates compare as exact fractions (issue #167, 2026-11-20)
+- Background: Velisa ADR-026 (decision D40) made one timebase spec, `velisa/timebase@1`, with conformance vectors. ADR-115 had
+  `concat_rate` read the probe's 3-decimal fps with `Fraction(fps).limit_denominator(1001)` on purpose, because video-editing-skill
+  did the same: 29.97 became 2997/100 and 59.94 2997/50, while ffmpeg-skill's join counts 30000/1001, so plan and file parted by a
+  frame in about 9 hours (4.6 hours at 59.94). `programme_rate` and the planner wrote `params.fps` as the probe's float rounded to 3
+  decimals, and `whole_frame_length` called an input "at the rate" within 0.02 fps (`FPS_TOLERANCE`). An `"N/D"` params.fps
+  (`edit.concat.fps=30000/1001`) was not read at all: `float()` refused it and the plan had no rate.
+- Decision:
+  - `agent/timebase.py` holds the spec's rate functions (`parse_rate`, `rate_str`, `nominal`, `same_rate`, `round_half_up`,
+    `frames_at`, `seconds_of`, `transition_frames`, `format_seconds`, `probed_rate`), the same reading video-editing-skill
+    uses (its ADR-040). A decimal within 0.005 of an NTSC rate is that rate; an explicit `N/D` is taken as written.
+  - `concat_rate` reads params.fps or the first input's probed fps with `parse_rate`.
+  - params.fps the planner names for an AI-generated input (ADR-099) is the exact rate (`concat_fps`: `"30000/1001"`, or `25`),
+    which the IR schema and the Skill's contract (`number or N/D`) already accept.
+  - `whole_frame_length` compares rates with `same_probed_rate`: both read back at the probe's 3 decimals, then compared as exact
+    fractions. 29.97 and 30000/1001 are one rate; 29.97 and 29.98 are not. `FPS_TOLERANCE` is gone. Rounding goes through
+    `frames_at` (`nearest`, a half up; `down`, 1 ms) and `transition_frames`, as before.
+  - ffmpeg-skill is not changed; its probe keeps 3 decimals and the reading is the consumer's.
+  - The video-editing-skill pin is not edited here. Its release that reads rates the same way is re-pinned by the `repin` workflow
+    (ADR-117); its contract change is additive (`whole_frames.rate_reading`).
+- Verification: `tests/test_timebase.py` (added to the unit job) runs the spec's vectors, copied unchanged into
+  `tests/fixtures/velisa/timebase-vectors.json` with the Velisa commit and sha256 in `provenance.json`: the 74 vectors of the
+  functions the agent offers pass, the optional `p` / `i` suffix is refused, the timecode / seek / join / `parse_seconds` vectors
+  are counted and not run. It also checks `concat_rate`, `concat_fps`, `programme_rate` and the exact comparison.
+  `tests/test_concat_whole_frames.py` now expects 30000/1001 for 29.97 (two 4.004 s clips keep their 120 frames each; fifty random
+  clips still start on frames and do not accumulate).
