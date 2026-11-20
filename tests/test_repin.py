@@ -310,6 +310,35 @@ class RewriteTests(unittest.TestCase):
         self.assertIn('for v in ("0.4.0", "1.0.0"):   # motion-graphics', out)                          # accepted, no pinned_version
         self.assertEqual(n, 1)
 
+    def test_an_acceptance_without_a_message_or_across_lines_is_not_a_refusal_loop(self):
+        """Review of agent #183: `assertEqual(..., [])` with no message, and an `assertEqual(` split over lines, both say the
+        loop accepts the version, even when the loop also calls `assertTrue(`; the probe there stays."""
+        head = ('from video_agent.tools.motion_graphics import adapter as mg\n'
+                '    def test_motion_graphics_release_versions(self):\n')
+        no_message = ('        for v in ("0.4.0", "1.0.0"):   # motion-graphics\n'
+                      '            live = with_version(mg.pinned_contract(), v)\n'
+                      '            self.assertTrue(live)\n'
+                      '            self.assertEqual(mg.check_contract(live), [])\n')
+        split = ('        for v in ("0.4.0", "1.0.0"):   # motion-graphics\n'
+                 '            live = with_version(mg.pinned_contract(), v)\n'
+                 '            self.assertTrue(live)\n'
+                 '            self.assertEqual(\n'
+                 '                mg.check_contract(live),\n'
+                 '                [],\n'
+                 '                v,\n'
+                 '            )\n')
+        refused = ('        for v in ("0.5.0", "1.0.0"):   # motion-graphics\n'
+                   '            self.assertTrue(mg.check_contract(with_version(mg.pinned_contract(), v)), v)\n'
+                   '            self.assertEqual(mg.check_contract(mg.pinned_contract()), [1], "(, [])")\n')
+        for body in (no_message, split):
+            out, n = repin.move_refusal_probe(head + body + refused, sib("motion-graphics"), "1.0.")
+            self.assertIn(body, out)                                                    # accepted: kept
+            self.assertIn('for v in ("0.5.0", "1.1.0"):   # motion-graphics', out)    # refused: moved
+            self.assertEqual(n, 1)
+        lines = (head + split).splitlines(keepends=True)
+        self.assertFalse(repin._is_refusal_loop(lines, 2))
+        self.assertTrue(repin._is_refusal_loop((head + refused).splitlines(keepends=True), 2))
+
     def test_the_real_gate_tests_after_a_1_0_0_promotion(self):
         """On the real tests/test_version_gates.py, motion-graphics' accepted release list holding "1.0.0" keeps it."""
         path = Path(__file__).resolve().parent / "test_version_gates.py"
