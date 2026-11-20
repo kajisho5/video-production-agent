@@ -4381,7 +4381,7 @@ class VideoEditingAdapterTests(unittest.TestCase):
         for mode, cls in (("refuse:INVALID_INPUT:stinger_not_covering", "UNSUPPORTED_MEDIA"), ("refuse:INVALID_INPUT:stinger_cover_unmeasured", "UNSUPPORTED_MEDIA"),
                           ("refuse:INVALID_INPUT:stinger_no_alpha", "UNSUPPORTED_MEDIA"), ("refuse:INVALID_TIME_RANGE:shorter_than_a_frame", "UNSUPPORTED_MEDIA"),
                           ("refuse:INVALID_INPUT:overlay_video_layer", "UNSUPPORTED_MEDIA"),
-                          ("refuse:INVALID_INPUT:odd_frame", "INPUT_MISSING"), ("refuse:INVALID_REQUEST:stinger_no_cut_point", "INVALID_ARGS")):
+                          ("refuse:INVALID_INPUT:odd_frame", "UNSUPPORTED_MEDIA"), ("refuse:INVALID_REQUEST:stinger_no_cut_point", "INVALID_ARGS")):
             os.environ["FAKE_VE_MODE"] = mode
             r = ad.run(self._op(), paths)
             self.assertEqual((r.data["error"]["recovery_class"], classify_error(r), next_attempt(r, 1, 2, None)["action"]), (cls, cls, "BLOCK"), mode)

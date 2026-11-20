@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 from ...models import Observation, Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
-from ..skill_process import breaking_drift
+from ..skill_process import breaking_drift, cancelled_class
 from ..ffmpeg_skill.adapter import PathPolicy, run_process_group
 from .locate import VideoEditingSkill, locate_video_editing
 from .lowering import ARGS, OPERATION_ID, OUTPUT_ID, Lowering, op_type
@@ -59,9 +59,9 @@ SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "0.4.", "0.5.", "0.6.", "0.7
 ENGINE_ID = "ffmpeg-skill"
 # the Skill's error vocabulary (contract errors.codes) and the agent's reading of each: (retryable by default, recovery class)
 ERROR_CODES: Dict[str, str] = {
-    "INVALID_REQUEST": "INVALID_ARGS", "INVALID_INPUT": "INPUT_MISSING", "PATH_NOT_ALLOWED": "INPUT_MISSING", "UNSUPPORTED_OPERATION": "INVALID_ARGS",
-    "UNSUPPORTED_FORMAT": "INVALID_ARGS", "MISSING_INPUT": "INPUT_MISSING", "INVALID_TIME_RANGE": "INVALID_ARGS", "DEPENDENCY_ERROR": "INVALID_ARGS",
-    "TOOL_ERROR": "UNKNOWN", "OUTPUT_ERROR": "SKILL_ERROR", "VALIDATION_ERROR": "SKILL_ERROR", "CANCELLED": "TIMEOUT", "INTERNAL_ERROR": "SKILL_ERROR",
+    "INVALID_REQUEST": "INVALID_ARGS", "INVALID_INPUT": "UNSUPPORTED_MEDIA", "PATH_NOT_ALLOWED": "INPUT_MISSING", "UNSUPPORTED_OPERATION": "INVALID_ARGS",
+    "UNSUPPORTED_FORMAT": "INVALID_ARGS", "MISSING_INPUT": "INPUT_MISSING", "INVALID_TIME_RANGE": "INVALID_ARGS", "DEPENDENCY_ERROR": "TOOL_MISSING",
+    "TOOL_ERROR": "UNKNOWN", "OUTPUT_ERROR": "SKILL_ERROR", "VALIDATION_ERROR": "SKILL_ERROR", "CANCELLED": "INTERRUPTED", "INTERNAL_ERROR": "SKILL_ERROR",
 }
 # refusals of a source the Skill measured and will not take for the operation (details.reason; video-editing-skill 0.7.x): the file is there,
 # so it is not INPUT_MISSING ("input file disappeared") nor INVALID_ARGS ("compiler bug"); UNSUPPORTED_MEDIA names the reason instead
@@ -697,7 +697,7 @@ class VideoEditingAdapter(ToolAdapter):
         data: Dict[str, Any] = {"skill": {"id": SKILL_ID, "version": getattr(self, "version", "")}, "status": "failed",
                                 "error": {"code": errc, "message": message, "retryable": bool(retryable), "details": details or {}, "exit_code": code,
                                           "recovery_class": "UNSUPPORTED_MEDIA" if (errc, str((details or {}).get("reason") or "")) in SOURCE_REFUSAL_REASONS
-                                          else ERROR_CODES.get(errc, "SKILL_ERROR")}}
+                                          else cancelled_class(errc, details, ERROR_CODES.get(errc, "SKILL_ERROR"))}}
         if skill_execution is not None:
             data["execution"] = {k: skill_execution.get(k) for k in ("status", "started_at", "finished_at")}
             data["commands"] = [str(c) for r in skill_execution.get("operations") or [] if isinstance(r, dict) for c in (r.get("commands") or [])]

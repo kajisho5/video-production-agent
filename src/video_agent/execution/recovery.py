@@ -43,6 +43,10 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "UNKNOWN":        {"action": "RETRY_SAME", "hint": "retry once with identical arguments"},
     "SKILL_ERROR":    {"action": "BLOCK", "hint": "the Skill refused or could not validate its output (not retryable as reported by the Skill); see the error code"},
     "INTERRUPTED":    {"action": "BLOCK", "hint": "the Skill was cancelled (interrupt, not a timeout); re-run the job"},
+    # ADR-119 (Velisa error taxonomy, class ACTION_REQUIRED): a person must act first -- a confirmation, a licence or terms, signing in or
+    # credentials. The agent never makes, signs, guesses or stores it, and never retries
+    "ACTION_REQUIRED": {"action": "BLOCK", "hint": "a person must act first (see the error's code and message: a confirmation, a licence or terms to accept, "
+                                                   "credentials or signing in); the agent never makes, signs or guesses it and does not retry -- provide it, then re-run"},
     # ADR-085 (dubbing-skill CONSENT_REQUIRED): the voice owner's consent record is missing or does not check out. It comes from the user; the
     # agent never writes, edits or signs one, and never retries (the Skill's ADR-012: not retryable)
     "CONSENT_REQUIRED": {"action": "BLOCK", "hint": "the reference voice's consent record is missing or does not check out (see the error's reason / problems); "
@@ -57,8 +61,13 @@ def _skill_class(r: ToolResult) -> Optional[str]:
     if not isinstance(err, dict) or not err.get("recovery_class"):
         return None
     cls = str(err["recovery_class"])
-    if cls == "TIMEOUT" and (err.get("details") or {}).get("reason") not in (None, "timeout"):
+    reason = (err.get("details") or {}).get("reason")
+    if cls == "TIMEOUT" and reason not in (None, "timeout"):
         return "INTERRUPTED"   # a CANCELLED that was not a timeout (signal): a longer timeout would not help
+    if cls == "INTERRUPTED" and err.get("code") == "CANCELLED" and reason == "timeout":
+        # ADR-119: every table maps CANCELLED to INTERRUPTED (Velisa error taxonomy), but a Skill run stopped by its own or the agent's
+        # time limit is reported as CANCELLED with details.reason "timeout" (video-editing-skill, the skill_process family): a timeout
+        cls = "TIMEOUT"
     if cls not in RECOVERY_TABLE:
         return "SKILL_ERROR"
     if RECOVERY_TABLE[cls]["action"] != "BLOCK" and err.get("retryable") is False:

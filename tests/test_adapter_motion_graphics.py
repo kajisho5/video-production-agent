@@ -412,7 +412,7 @@ class ErrorTests(Base):
         self.check("tool_error", "TOOL_ERROR", True, "UNKNOWN", exit_code=12)
         self.check("tool_error_final", "TOOL_ERROR", False, "UNKNOWN", exit_code=12)
         self.check("validation_error", "VALIDATION_ERROR", False, "SKILL_ERROR", exit_code=14)
-        r = self.check("cancelled", "CANCELLED", True, "TIMEOUT", exit_code=15)
+        r = self.check("cancelled", "CANCELLED", True, "INTERRUPTED", exit_code=15)
         self.assertEqual(r.data["error"]["details"]["reason"], "signal")
         r = self.check("skill_timeout", "CANCELLED", True, "TIMEOUT", exit_code=15)
         self.assertEqual(r.data["error"]["details"]["reason"], "timeout")

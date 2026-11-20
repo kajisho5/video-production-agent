@@ -264,10 +264,19 @@ def error_table(contract: Dict[str, Any]) -> Tuple[Dict[str, bool], Dict[str, in
 # the agent's reading of the ecosystem's shared error vocabulary (recovery class); a Skill's own retryable verdict is kept beside it
 RECOVERY_CLASS: Dict[str, str] = {
     "INVALID_REQUEST": "INVALID_ARGS", "UNSUPPORTED_OPERATION": "INVALID_ARGS", "UNSUPPORTED_FORMAT": "INVALID_ARGS", "INVALID_TIME_RANGE": "INVALID_ARGS",
-    "DEPENDENCY_ERROR": "INVALID_ARGS", "INVALID_INPUT": "INPUT_MISSING", "PATH_NOT_ALLOWED": "INPUT_MISSING", "MISSING_INPUT": "INPUT_MISSING",
-    "TOOL_ERROR": "UNKNOWN", "CANCELLED": "TIMEOUT", "TIMEOUT": "TIMEOUT", "OUTPUT_ERROR": "SKILL_ERROR", "VALIDATION_ERROR": "SKILL_ERROR", "INTERNAL_ERROR": "SKILL_ERROR",
+    "DEPENDENCY_ERROR": "TOOL_MISSING", "INVALID_INPUT": "UNSUPPORTED_MEDIA", "PATH_NOT_ALLOWED": "INPUT_MISSING", "MISSING_INPUT": "INPUT_MISSING",
+    "TOOL_ERROR": "UNKNOWN", "CANCELLED": "INTERRUPTED", "TIMEOUT": "TIMEOUT", "OUTPUT_ERROR": "SKILL_ERROR", "VALIDATION_ERROR": "SKILL_ERROR", "INTERNAL_ERROR": "SKILL_ERROR",
     "INVALID_RESULT": "SKILL_ERROR",
 }
+# a code that means something else in one Skill of this family (ADR-119): motion-graphics-skill raises DEPENDENCY_ERROR for a duplicate element
+# id or a missing asset / font reference in the document the agent built (its errors.py), not for a missing tool
+RECOVERY_CLASS_OVERRIDES: Dict[str, Dict[str, str]] = {"motion-graphics": {"DEPENDENCY_ERROR": "INVALID_ARGS"}}
+
+
+def cancelled_class(code: str, details: Optional[Dict[str, Any]], cls: str) -> str:
+    """ADR-119: CANCELLED is INTERRUPTED in every table (Velisa error taxonomy), but a run stopped by its own or the agent's time limit is
+    reported as CANCELLED with details.reason "timeout": that one is a TIMEOUT (retried once with a doubled timeout)."""
+    return "TIMEOUT" if code == "CANCELLED" and (details or {}).get("reason") == "timeout" else cls
 
 
 def failed_result(op: Operation, skill_id: str, version: str, attempt: int, dry_run: bool, t0: float, code: int, errc: str, message: str, retryable: bool,
@@ -276,7 +285,8 @@ def failed_result(op: Operation, skill_id: str, version: str, attempt: int, dry_
     and the agent's recovery class (recovery.py prefers this structured error over stderr heuristics)."""
     data: Dict[str, Any] = {"skill": {"id": skill_id, "version": version}, "status": "failed",
                             "error": {"code": errc, "message": message, "retryable": bool(retryable), "details": details or {}, "exit_code": code,
-                                      "recovery_class": RECOVERY_CLASS.get(errc, "SKILL_ERROR")}}
+                                      "recovery_class": cancelled_class(errc, details, (RECOVERY_CLASS_OVERRIDES.get(skill_id) or {}).get(errc)
+                                                                        or RECOVERY_CLASS.get(errc, "SKILL_ERROR"))}}
     if extra:
         data.update(extra)
     return ToolResult(op.id, op.tool, False, code, None, data, list(data.get("commands") or []), f"{skill_id} [{errc}] {message}", round(time.time() - t0, 3), attempt, dry_run)

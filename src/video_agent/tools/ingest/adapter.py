@@ -57,8 +57,10 @@ DEFAULT_TIMEOUT = None          # a card is as big as it is: no default bound on
 MEASURE_TIMEOUT = 1800.0        # inventory (ffprobe per clip) / verify (re-reads a copy)
 # ingest-skill's error codes (its contract `errors`) → (the agent's failure kind, recovery class). The code itself is kept verbatim in
 # the result; the kind is the agent's word for it; the class decides recovery (execution/recovery.py: TOOL_MISSING / INPUT_MISSING /
-# INVALID_ARGS block, SKILL_ERROR blocks without a retry). Nothing an offload reports is retried automatically: re-running a copy to the
-# user's drives is the user's call (ingest-skill resumes it: identical files are skipped, nothing is overwritten).
+# INVALID_ARGS block, SKILL_ERROR blocks without a retry). The classes follow Velisa's error taxonomy (ADR-119): a fetch / copy that did not
+# complete or verify is TRANSIENT there, UNKNOWN (retry once, only when the Skill says retryable) here. Nothing an offload reports is retried
+# automatically all the same: the offload runs with max_attempts 1 (Service), and re-running a copy to the user's drives is the user's call
+# (ingest-skill resumes it: identical files are skipped, nothing is overwritten).
 ERROR_KINDS: Dict[str, Tuple[str, str]] = {
     "SOURCE_NOT_FOUND": ("SOURCE_MISSING", "INPUT_MISSING"),
     "NO_DESTINATION": ("INVALID_REQUEST", "INVALID_ARGS"),
@@ -69,13 +71,13 @@ ERROR_KINDS: Dict[str, Tuple[str, str]] = {
     "URL_INVALID": ("INVALID_REQUEST", "INVALID_ARGS"),
     "HASH_UNAVAILABLE": ("ENGINE_MISSING", "TOOL_MISSING"),
     "FETCH_UNAVAILABLE": ("ENGINE_MISSING", "TOOL_MISSING"),
-    "MANIFEST_NOT_FOUND": ("INCOMPLETE", "SKILL_ERROR"),
+    "MANIFEST_NOT_FOUND": ("INCOMPLETE", "INPUT_MISSING"),
     "MANIFEST_INVALID": ("INCOMPLETE", "SKILL_ERROR"),
-    "FETCH_FAILED": ("INCOMPLETE", "SKILL_ERROR"),
-    "INCOMPLETE": ("INCOMPLETE", "SKILL_ERROR"),
-    "SOURCE_CHANGED": ("SOURCE_CHANGED", "SKILL_ERROR"),
-    "VERIFY_MISMATCH": ("VERIFY_FAILED", "SKILL_ERROR"),
-    "FILE_MISSING": ("INCOMPLETE", "SKILL_ERROR"),
+    "FETCH_FAILED": ("INCOMPLETE", "UNKNOWN"),
+    "INCOMPLETE": ("INCOMPLETE", "UNKNOWN"),
+    "SOURCE_CHANGED": ("SOURCE_CHANGED", "UNKNOWN"),
+    "VERIFY_MISMATCH": ("VERIFY_FAILED", "UNKNOWN"),
+    "FILE_MISSING": ("INCOMPLETE", "UNKNOWN"),
     "MHL_INVALID": ("HISTORY_DAMAGED", "SKILL_ERROR"),
     # ingest-skill main (ADR-097 addendum 5): refusals of options the agent does not send (offload --follow / --proxy, inventory with several
     # folders). A missing ffmpeg-skill for --proxy is a missing component, as FETCH_UNAVAILABLE is.

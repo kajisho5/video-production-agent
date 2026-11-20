@@ -1624,3 +1624,43 @@
   - Follow-up (2026-11-20, the first run with `verify`, on the open #166): two faults in the workflow, both fixed here.
     - `verify` reported 6 failures that were not the re-pin's: the job had not installed the package, so `jsonschema` (its one dependency) was missing and the schema-refusal tests failed. The job now runs `pip install -e .` as the unit job does; the same tree then passes `verify` with no failure. `verify` also writes each failing command's last 200 lines to the run's log, and prints the failing ids, not only their count.
     - The workflow refused to rebuild `bot/repin` ("has commits pushed by someone else") although only the workflow had pushed to it: the checkout was shallow (main's last commit only), so `origin/main..bot/repin` had no merge base and listed main's own history. The checkout now takes main's whole history (`fetch-depth: 0`). Until this run the check had never met an existing branch, so it had never been exercised.
+
+## ADR-119 The recovery-class tables follow Velisa's error taxonomy: transient ingest / publish codes and sound-design's TOOL_ERROR retry like their class, CANCELLED is INTERRUPTED everywhere, a person's action is ACTION_REQUIRED; a test checks every table against the taxonomy (issue #168, 2026-11-20)
+- Background: Velisa ADR-027 (decision D41) put every Skill error code in one of 15 classes (`velisa/error-taxonomy@1`), each with a
+  retry policy and a way to tell a person. The spec's alignment table maps each class to the agent's recovery classes. Read against
+  `RECOVERY_CLASS` (tools/skill_process.py) and the adapters' `ERROR_CLASSES` / `ERROR_CODES` / `ERROR_KINDS`, the tables differed in
+  12 places (issue #168), and in one more found here (dubbing `TERMS_UNVERIFIED`, a licence a person accepts, was `SKILL_ERROR`).
+- Decision, the retry behaviour:
+  - ingest `FETCH_FAILED`, `INCOMPLETE`, `SOURCE_CHANGED`, `VERIFY_MISMATCH`, `FILE_MISSING` and publish `UPLOAD_INTERRUPTED` (class
+    `TRANSIENT`, retry once) are `UNKNOWN` (RETRY_SAME), not `SKILL_ERROR`. `_skill_class` still turns a code the Skill calls not
+    retryable into `SKILL_ERROR`. Nothing new is re-run by this: an offload runs with `max_attempts` 1 and an upload is sent once
+    (Service.publish), as before; the class now names what the failure is.
+  - sound_design `TOOL_ERROR` (class `ENGINE_FAILED`) is `UNKNOWN`, as in every other table: retried once when sound-design-skill says
+    it is retryable, which its contract does.
+- Decision, the labels:
+  - `INVALID_INPUT` is `UNSUPPORTED_MEDIA` (the file is there but cannot be used), not `INPUT_MISSING`, and `DEPENDENCY_ERROR` is
+    `TOOL_MISSING`, not `INVALID_ARGS`, in skill_process, video_editing and audio_production. `INVALID_INPUT` now fails the job
+    (FAILED) instead of blocking it, and `DEPENDENCY_ERROR` blocks it with the `doctor` hint. Not for motion-graphics-skill, which
+    raises `DEPENDENCY_ERROR` for a duplicate element id or a missing asset / font reference in the agent's document: it keeps
+    `INVALID_ARGS` through `skill_process.RECOVERY_CLASS_OVERRIDES` (Velisa's taxonomy has no override for it yet).
+  - `CANCELLED` is `INTERRUPTED` in every table (skill_process, video_editing, audio_production, dubbing, voice_enhance, as publish
+    and sound_design already had), and hyperframes kind `interrupted` too. A run stopped by a time limit is reported as `CANCELLED`
+    with `details.reason` `timeout` (video-editing-skill's engine calls, the agent's own process timeouts in the skill_process
+    family): `skill_process.cancelled_class` records it as `TIMEOUT`, and `recovery._skill_class` does the same for any table, so it
+    is still retried once with a doubled timeout. A signal is never retried.
+  - `NOT_IMPLEMENTED` (class `UNSUPPORTED`) is `INVALID_ARGS` in sound_design, voice_enhance, dubbing and publish: the agent asked for
+    an operation the Skill does not offer.
+  - A new recovery class `ACTION_REQUIRED` (BLOCK; the executor reports the job BLOCKED, like TOOL_MISSING): sound_design
+    `CONFIRMATION_REQUIRED` and `LICENCE_REQUIRED`, publish `CONFIRM_MISMATCH`, `CREDENTIALS_MISSING` and `AUTH_FAILED`, dubbing
+    `TERMS_UNVERIFIED`. Its hint says a person must act and the agent never makes, signs or guesses it. `CONSENT_REQUIRED` keeps its own class.
+  - ingest `MANIFEST_NOT_FOUND` is `INPUT_MISSING` (class `INPUT_NOT_FOUND`).
+- Kept on purpose (listed in the test with the reason, all BLOCK as their class): `PATH_NOT_ALLOWED` stays `INPUT_MISSING` (its hint
+  names "outside the allowed roots"); motion-graphics `DEPENDENCY_ERROR` stays `INVALID_ARGS` (above); ingest `MANIFEST_INVALID` / `MHL_INVALID` and nle_bridge `CONTENT_NOT_EXPORTED` stay
+  `SKILL_ERROR` (neither the agent's arguments nor a media source). imagemagick's `SKILL_FAILED`, `INVALID_OUTPUT`, `INPUT_CHANGED` and
+  artifacts' `ARTIFACT_TYPE_UNSUPPORTED` are names no Skill contract declares, so the taxonomy has no class for them.
+- Not done: the tables are not replaced by the classes; per-adapter tables stay, as Velisa ADR-027 leaves that to the agent.
+- Verification: `tests/test_error_taxonomy.py` (added to the unit job) reads Velisa's `error-taxonomy.json`, copied unchanged into
+  `tests/fixtures/velisa/` with the Velisa commit and sha256 in `provenance.json`. For every code and kind of 17 tables (with the motion-graphics override) it checks that
+  the code has a class, that the agent class is one the spec's alignment table gives for it (or a KEPT label), that the class's retry
+  policy is kept by the action, and that one code is recovered one way across tables; and the timeout / signal split of `CANCELLED`.
+  On the tables before this change it fails in each of the places above. Tests that asserted the old labels expect the new ones.
