@@ -157,6 +157,14 @@ class GateTests(unittest.TestCase):
         for mod, cap in ((voice, "voice.isolate"), (detection, "vision.detect_shots"), (diarization, "speech.diarize")):
             self.assertIn(f"provides lacks {cap}", mod.check_contract(_drop(mod.pinned_contract(), cap)), mod.SKILL_ID)
 
+    def test_detection_gate_covers_tracks(self):
+        # face_tracks runs detection/tracks after detection/faces: a contract without vision.track_boxes is refused (ADR-118 addendum 1)
+        self.assertEqual(sorted(detection.CAPABILITY_IDS.values()), sorted(caps.consumed_capabilities("detection") + ["vision.track_boxes"]))
+        errs = detection.check_contract(_drop(detection.pinned_contract(), "vision.track_boxes"))
+        self.assertIn("provides lacks vision.track_boxes", errs)
+        errs = detection.check_contract(_retool(detection.pinned_contract(), "vision.track_boxes", "detection/link"))
+        self.assertIn("provides vision.track_boxes names tool detection/link, the pin names detection/tracks", errs)
+
     def test_a_capability_moved_to_another_tool_is_refused(self):
         errs = detection.check_contract(_retool(detection.pinned_contract(), "vision.detect_text", "detection/ocr"))
         self.assertIn("provides vision.detect_text names tool detection/ocr, the pin names detection/text", errs)

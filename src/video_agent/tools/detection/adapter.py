@@ -67,6 +67,9 @@ SHOT_PARAMETERS = {"shot_threshold": "threshold", "shot_min_frames": "min_shot_f
 LANG_RE = re.compile(r"^[a-z]{3}(?:_[a-z]{3,4})?(?:\+[a-z]{3}(?:_[a-z]{3,4})?){0,7}$")   # Tesseract language codes joined by + (jpn+eng, jpn_vert)
 DETECTIONS_SCHEMA = "detection-skill/detections@1"
 TRACKS_SCHEMA = "detection-skill/tracks@1"
+# ADR-118 addendum 1: every capability this adapter runs, passed to the contract gate explicitly. face_tracks runs `detection/tracks` after
+# `detection/faces`, so vision.track_boxes is consumed although no SkillSpec names it (consumed_capabilities only sees CAPABILITY_SKILLS).
+CAPABILITY_IDS = {"FACES": "vision.detect_faces", "TRACKS": "vision.track_boxes", "TEXT": "vision.detect_text", "SHOTS": "vision.detect_shots"}
 # 0.2.0 (detection-skill #15, main 0ff0be3, no release tag; ADR-107 addendum 8): optional engines for text (`--engine ppocrv6`) and objects
 # (`--engine rfdetr`), with their dependencies, `engines.by_kind` / `engines.optional` and not_provided wording. faces / tracks (the only tools this
 # adapter runs), detections, tracks, execution and the errors are unchanged: the differences are non-fatal drift; re-pinned from main
@@ -140,7 +143,7 @@ def check_contract(contract: Any) -> List[str]:
             errs.append(f"contract lacks tool {tid} (declares {sorted(tools)})")
         elif t.get("role") != role or t.get("writes_media") is not False or t.get("mutates_input") is not False:
             errs.append(f"tool {tid} must declare role {role}, writes_media false, mutates_input false")
-    errs += contract_gate(contract, SKILL_ID)   # ADR-118: every capability the agent consumes from this Skill, by the tool the pin names
+    errs += contract_gate(contract, SKILL_ID, CAPABILITY_IDS.values())   # ADR-118: each capability this adapter runs, by the tool the pin names
     if as_dict(contract.get("detections")).get("schema") != DETECTIONS_SCHEMA:
         errs.append(f"detections.schema {as_dict(contract.get('detections')).get('schema')!r} != {DETECTIONS_SCHEMA}")
     if as_dict(contract.get("shots")).get("schema") != SHOTS_SCHEMA:
