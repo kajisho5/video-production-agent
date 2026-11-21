@@ -28,7 +28,7 @@ from video_agent.service import BRIEF_REQUIREMENT_KEYS, Service, _check_requirem
 from video_agent.tools import ToolRouter  # noqa: E402
 from video_agent.tools.imagemagick import (FATAL_DRIFT_KEYS, TOOL_PAD, TOOL_RESIZE, TOOL_STRIP, ContractError, ImageMagickAdapter, breaking_drift,  # noqa: E402
                                            check_contract, drift, locate_imagemagick, pinned_contract, recovery_class)
-from video_agent.tools.imagemagick.adapter import PINNED_CONTRACT_PATH  # noqa: E402
+from video_agent.tools.imagemagick.adapter import PINNED_CONTRACT_PATH, lifecycle  # noqa: E402
 from video_agent.tools.video_editing import VideoEditingAdapter, VideoEditingSkill  # noqa: E402
 
 MODES = ("FAKE_IM_MODE", "FAKE_IM_BACKEND", "FAKE_IM_CONTRACT", "FAKE_IM_CALLS", "VIDEO_AGENT_IMAGEMAGICK_DIR", "FAKE_VE_MODE", "FAKE_VE_CALLS")
@@ -218,7 +218,10 @@ class AdapterTests(_Base):
     def test_run_admit_and_record(self):
         r = self.run_op(TOOL_RESIZE, {"input": "img", "output": "out", "width": 320, "height": 320, "mode": "fit"})
         self.assertTrue(r.ok, r.data)
-        self.assertEqual((r.data["op"], r.data["capability"], r.data["lifecycle"], r.data["backend"]), ("resize", "image.resize", "EXPERIMENTAL", "magick"))
+        # the lifecycle is the pinned contract's (EXPERIMENTAL or, from imagemagick-skill 1.0, STABLE), not a value written here
+        self.assertEqual((r.data["op"], r.data["capability"], r.data["lifecycle"], r.data["backend"]),
+                         ("resize", "image.resize", lifecycle(pinned_contract())["image.resize"], "magick"))
+        self.assertIn(r.data["lifecycle"], ("EXPERIMENTAL", "STABLE"))
         self.assertEqual((r.data["output"]["width"], r.data["output"]["height"]), (320, 160), "fit: 1200x600 inside 320x320")
         import hashlib
         self.assertEqual(r.data["output"]["sha256"], hashlib.sha256(Path(r.output).read_bytes()).hexdigest())
