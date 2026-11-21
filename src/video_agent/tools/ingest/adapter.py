@@ -4,7 +4,7 @@
         ─(each file of the card read once, written to every destination, each copy read back)─→ <dest>/<project>/<card folder>/...
           + ingest-manifest.json + an ASC MHL generation (ascmhl/) per destination
 
-Protocol (ingest-skill's own contract, `ingest contract --json`, pinned in contract_0.1.3.json):
+Protocol (ingest-skill's own contract, `ingest contract --json`, pinned in contract_1.0.0.json):
     contract  → `ingest contract --json`
     doctor    → `ingest doctor --json`  (ingest/doctor@1: python / sha256 / c4 / xxhash / ffprobe / yt-dlp checks, hash_algorithms)
     offload   → `ingest offload <source> --dest D [--dest D ...] [--project P] --hash sha256|xxh64 --name-by folder|reel [--reel R] [--dry-run] --json`
@@ -42,7 +42,8 @@ TOOL_OFFLOAD = "ingest/offload"
 TOOL_INVENTORY = "ingest/inventory"
 TOOL_VERIFY = "ingest/verify"
 TOOLS = (TOOL_OFFLOAD, TOOL_INVENTORY, TOOL_VERIFY)
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 1.0.0 (https://github.com/kajisho5/ingest-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): si contract-diff none; the gate takes 1.0.
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "1.0.",)
 REPORT_SCHEMA = "ingest/offload-report@1"
 INVENTORY_SCHEMA = "ingest/inventory@2"
 VERIFY_SCHEMA = "ingest/verify-report@1"
@@ -99,7 +100,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "ne
 # an added error code or network tool does not turn the offload off; what is left changes the wire or the documents the adapter admits.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "manifest", "inventory")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.3.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
