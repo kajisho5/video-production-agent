@@ -3224,7 +3224,10 @@ class IntegratedPipelineRealTests(unittest.TestCase):
         logo = str(Path(self.tmp) / "src" / "logo6.png"); shutil.copy(self.png, logo)
         ir, p = self._plan(svc, [self.a], {"color.target": "bt709", "motion.image": logo, "qc": True}, name="s6")
         os.remove(logo)   # the graphics input disappears before execution: the Skill refuses, nothing after it runs
-        out = svc.render(load_ir(p), p, approve=["all"])
+        out = svc.render(load_ir(p), p, approve=["all"])   # ADR-126: the preflight finds the missing file before anything is encoded
+        self.assertEqual(out["status"], "BLOCKED")
+        self.assertIn("INPUT_MISSING", [x["code"] for x in out["preflight"]["problems"]])
+        out = svc.render(load_ir(p), p, skip_preflight=True)   # skipped, the failure happens midway, as this scenario needs
         self.assertIn(out["execution"]["status"], ("FAILED", "BLOCKED"))
         failed = next(r for r in out["execution"]["results"] if not r["ok"])
         self.assertEqual(failed["tool"], "motion-graphics/run"); self.assertEqual([r["tool"] for r in out["execution"]["results"] if r["ok"]], ["ffmpeg-skill/cut", "color-grading/run"])

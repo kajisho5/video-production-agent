@@ -21,6 +21,14 @@ from video_agent.mcp_permissions import READ, TOOL_CLASSES, classify  # noqa: E4
 from video_agent.project import load_ir, save_ir  # noqa: E402
 
 
+def unmounted(rest: str) -> str:
+    """A path on a volume that is not mounted here: /Volumes/<name> on POSIX, an unused drive letter on Windows."""
+    if os.name == "nt":
+        letter = next(c for c in "ZYXWVUTSRQPONMLKJIHGFE" if not os.path.exists(f"{c}:\\"))
+        return f"{letter}:\\{rest}"
+    return f"/Volumes/NO_SUCH_VOLUME_va_preflight/{rest}"
+
+
 def codes(res, severity=None):
     return sorted(p["code"] for p in res["problems"] if severity is None or p["severity"] == severity)
 
@@ -73,10 +81,10 @@ class PreflightTests(unittest.TestCase):
         path = self.plan()
         ir = load_ir(path)
         aid = next(iter(ir.doc["assets"]))
-        ir.doc["assets"][aid]["path"] = "/Volumes/NO_SUCH_CARD_va_preflight/CLIP0001.MP4"
+        ir.doc["assets"][aid]["path"] = unmounted("CLIP0001.MP4")
         res = self.svc.preflight(ir)
         p = next(p for p in res["problems"] if p["code"] == "INPUT_VOLUME_MISSING")
-        self.assertIn("/Volumes/NO_SUCH_CARD_va_preflight", p["message"])
+        self.assertIn(pf.missing_volume(unmounted("CLIP0001.MP4")), p["message"])
         if os.name != "nt":
             self.assertTrue(str(pf.missing_volume("/media/someone_va/NO_SUCH_CARD_va/x.mp4")).startswith("/media/someone_va"))
             self.assertIsNone(pf.missing_volume("/no_such_top_level_va/x.mp4"), "only a mount location counts as a volume")
@@ -242,7 +250,7 @@ class PreflightTests(unittest.TestCase):
         card.mkdir()
         dest = Path(self.tmp) / "dest"
         dest.mkdir()
-        step = {"params": {"source": str(card), "destinations": [str(dest), "/Volumes/NO_SUCH_DRIVE_va_preflight/backup"]}}
+        step = {"params": {"source": str(card), "destinations": [str(dest), unmounted("backup")]}}
         res = pf.run_offload({}, step, {"bytes_total": 1000}, [], free_fn=lambda p: 500)
         got = sorted((p["code"], p["field"]) for p in res["problems"])
         self.assertEqual(got, [("DISK_SPACE_LOW", "plan.steps.offload.params.destinations[0]"), ("OUTPUT_VOLUME_MISSING", "plan.steps.offload.params.destinations[1]")])
