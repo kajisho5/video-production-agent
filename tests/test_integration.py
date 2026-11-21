@@ -4483,3 +4483,90 @@ class SpeakerIdsRealTests(unittest.TestCase):
         srt = Path(out["paths"][gen["output"]]).read_text(encoding="utf-8")
         self.assertIn("SPEAKER_00: hello there", srt)
         self.assertIn("SPEAKER_01: and goodbye", srt)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class PreflightRealTests(unittest.TestCase):
+    """ADR-126: the export preflight on tiny real lavfi clips through the real ffmpeg-skill: a valid plan passes (and renders), a missing input,
+    a changed input, an unwritable output directory and a disk-space estimate over a fake limit are each reported and refuse the render."""
+
+    REQS = {"edit.trim_leading_silence": False, "edit.trim_trailing_silence": False}
+
+    def clip(self, name: str, seconds: int = 3, colour: str = "") -> str:
+        src = Path(self.tmp) / "src" / name
+        src.parent.mkdir(parents=True, exist_ok=True)
+        video = f"color=c={colour}:size=320x180:rate=25" if colour else "testsrc2=size=320x180:rate=25"
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", video, "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                        "-t", str(seconds), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(src)], check=True)
+        return str(src)
+
+    def plan(self, src: str, name: str):
+        svc = Service(workspace=str(Path(self.tmp) / f"ws_{name}"))
+        ir = svc.plan([src], "youtube", user_requirements=dict(self.REQS), hash_sources=False)
+        p = str(Path(svc.workspace) / f"{name}.json")
+        save_ir(ir, p)
+        return svc, p
+
+    def setUp(self):
+        self.tmp = tmp_dir(self, prefix="va_pf_")
+
+    @staticmethod
+    def codes(res, severity="error"):
+        return sorted(p["code"] for p in res["problems"] if p["severity"] == severity)
+
+    def test_valid_plan_passes_and_renders(self):
+        svc, p = self.plan(self.clip("ok.mp4"), "ok")
+        res = svc.preflight(load_ir(p))
+        self.assertTrue(res["ok"], res["problems"])
+        self.assertFalse([u for u in res["unverified"] if u["field"].endswith(".preset") or u["field"].endswith(".platform")],
+                         "the real checkout's contract publishes its presets and platforms")
+        d = res["estimates"]["deliverables"][0]
+        self.assertEqual(d["platform"], "youtube")
+        self.assertAlmostEqual(d["duration_s"], 3.0, delta=0.1)
+        self.assertGreater(d["bytes"], 0, "the source bitrate x the duration")
+        out = svc.render(load_ir(p), p, timeout=600)
+        self.assertEqual(out["status"], "COMPLETED", (out.get("preflight"), out.get("execution")))
+        self.assertTrue(load_ir(p).doc["provenance"]["runs"][-1]["preflight"]["ok"])
+
+    def test_missing_input(self):
+        src = self.clip("gone.mp4")
+        svc, p = self.plan(src, "gone")
+        os.remove(src)
+        res = svc.preflight(load_ir(p))
+        self.assertIn("INPUT_MISSING", self.codes(res))
+
+    def test_changed_input_refuses_the_render(self):
+        src = self.clip("take.mp4")
+        svc, p = self.plan(src, "changed")
+        self.clip("take.mp4", seconds=4, colour="blue")   # the same name, another take
+        res = svc.preflight(load_ir(p))
+        self.assertEqual(self.codes(res), ["INPUT_CHANGED"])
+        out = svc.render(load_ir(p), p, timeout=600)
+        self.assertEqual(out["status"], "BLOCKED")
+        self.assertEqual(self.codes(out["preflight"]), ["INPUT_CHANGED"])
+        jd = Path(svc.workspace) / "jobs" / out["job"]["id"]
+        self.assertEqual([f for f in jd.rglob("*") if f.is_file() and f.parent != jd], [], "nothing was encoded")
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "permission bits do not stop root / Windows ACLs")
+    def test_unwritable_output_dir(self):
+        svc, p = self.plan(self.clip("ro.mp4"), "ro")
+        jobs = Path(svc.workspace) / "jobs"
+        jobs.mkdir(exist_ok=True)
+        os.chmod(jobs, 0o555)
+        self.addCleanup(os.chmod, jobs, 0o755)
+        res = svc.preflight(load_ir(p))
+        self.assertIn("OUTPUT_DIR_UNWRITABLE", self.codes(res))
+
+    def test_disk_space_estimate_over_a_fake_limit(self):
+        from unittest import mock
+        from video_agent.execution import preflight as pf
+        src = self.clip("big.mp4")
+        svc, p = self.plan(src, "disk")
+        res = svc.preflight(load_ir(p))
+        need = res["estimates"]["required_bytes"]
+        self.assertGreater(need, os.path.getsize(src), "the job writes at least the deliverable and the loudness pass")
+        with mock.patch.object(pf, "disk_free", return_value=need - 1):
+            res = svc.preflight(load_ir(p))
+            self.assertEqual(self.codes(res), ["DISK_SPACE_LOW"])
+            out = svc.render(load_ir(p), p, timeout=600)
+        self.assertEqual((out["status"], self.codes(out["preflight"])), ("BLOCKED", ["DISK_SPACE_LOW"]))

@@ -421,6 +421,30 @@ def cmd_validate(args, svc: Service) -> int:
     return 0 if rep.ok else 2
 
 
+def _print_preflight(res: Dict[str, Any], indent: str = "") -> None:
+    print(f"{indent}preflight: {'ok' if res['ok'] else 'FAILED'} ({sum(1 for p in res['problems'] if p['severity'] == 'error')} error(s), "
+          f"{sum(1 for p in res['problems'] if p['severity'] == 'warning')} warning(s))")
+    for p in res["problems"]:
+        print(f"{indent}  {p['severity']:<7} {p['code']}  {p['field']}\n{indent}          {p['message']}")
+    est = res.get("estimates") or {}
+    if "output_bytes" in est:
+        print(f"{indent}  estimate: writes ~{est['output_bytes']} bytes, needs {est.get('required_bytes')} (x{est.get('margin')}), free {est.get('free_bytes')} on {est.get('volume')}")
+    for d in est.get("deliverables") or []:
+        print(f"{indent}  deliverable {d['id']}: ~{d['duration_s']} s, ~{d['bytes']} bytes, {d['platform']} limits {json.dumps(d['limits'])}")
+    for u in res.get("unverified") or []:
+        print(f"{indent}  unverified {u.get('artifact') or u.get('target') or ''} {u['field']}: {u['reason']}")
+
+
+def cmd_preflight(args, svc: Service) -> int:
+    """ADR-126: the export preflight of a plan -- every problem at once, nothing encoded."""
+    res = svc.preflight(load_ir(args.project))
+    if args.json:
+        _print(res, True)
+    else:
+        _print_preflight(res)
+    return 0 if res["ok"] else 2
+
+
 def cmd_render(args, svc: Service) -> int:
     ir = load_ir(args.project)
     approve = [x.strip() for x in args.approve.split(",")] if args.approve else None
@@ -443,7 +467,7 @@ def cmd_render(args, svc: Service) -> int:
                 print("Blocked decisions:", ", ".join(plan["blocked"]))
             print("Estimate:", json.dumps(plan["estimate"]))
         return 0 if not plan["blocked"] else 3
-    out = svc.render(ir, args.project, approve=approve, timeout=args.timeout, resume=args.resume)
+    out = svc.render(ir, args.project, approve=approve, timeout=args.timeout, resume=args.resume, skip_preflight=args.skip_preflight)
     if args.json:
         _print(out, True)
     else:
@@ -458,6 +482,8 @@ def cmd_render(args, svc: Service) -> int:
                 print("  " + out["hint"])
             elif "plan_status" in out:
                 print(f"  plan is {out['plan_status']}; re-run 'plan' or check for a BLOCK decision")
+        if (out.get("preflight") or {}).get("problems"):
+            _print_preflight(out["preflight"], "  ")
         if out["status"] == "BLOCKED":
             for d in out.get("blocked", []):
                 print(f"  BLOCKED {d['id']} {d['subject']}: {d['reason']}")
@@ -1089,7 +1115,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--approve", help="comma separated decision ids, or 'all'")
     p.add_argument("--timeout", type=float, help="per-operation timeout in seconds")
     p.add_argument("--resume", metavar="JOB_ID|last", help="reuse completed operations of a previous job (outputs are reused only when their chained key and file still match)")
+    p.add_argument("--skip-preflight", action="store_true", help="render even when the export preflight finds errors (the skip is recorded in the run, ADR-126)")
     p.set_defaults(fn=cmd_render)
+    p = sub.add_parser("preflight", help="check an approved plan's deliverables before rendering: output dir, disk space, formats and platform limits, inputs, fonts / sidecars, tools; nothing is encoded (ADR-126)")
+    p.add_argument("project"); p.set_defaults(fn=cmd_preflight)
     p = sub.add_parser("approve", help="approve CONFIRM decisions; approves the plan version when nothing is pending")
     p.add_argument("project"); p.add_argument("--decision", required=True, help="comma separated decision ids, or 'all'"); p.add_argument("--reason", help="optional note"); p.add_argument("--by", help="actor (default: OS user)")
     p.set_defaults(fn=cmd_approve)

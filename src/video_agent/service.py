@@ -812,7 +812,7 @@ class Service:
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"offload {err.get('code')}/{err.get('kind')}: {str(err.get('message') or '')[:300]}")
         ir.doc["execution"]["offload"] = rec
         ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash, "plan_version": ir.version,
-                                             "resumed_from": None, "skipped": []})
+                                             "resumed_from": None, "skipped": [], "preflight": dict(ir.doc["execution"].get("preflight") or {})})
         save_ir(ir, ir_path)
         save_ir(ir, str(job.dir / "ir.json"))
         write_audit(str(job.dir / "provenance.json"), {"kind": "offload", "who": who, "at": now_iso(), "plan_hash": job.plan_hash, "plan_version": ir.version,
@@ -1343,8 +1343,69 @@ class Service:
                 "blocked": [d["id"] for d in ir.blocked()],
                 "estimate": {"files": plan_obs.get("files"), "bytes": plan_obs.get("bytes_total"), "note": "the card is read once per file; each destination is written and read back"}}
 
+    def _preflight_tooling(self, ir: ProjectIR, router: ToolRouter) -> List[Dict[str, Any]]:
+        """ADR-126: the tooling part of the preflight -- the validator's capability check (the capability resolver), every step's tool
+        executable here, and the tool versions the plan recorded against the installed ones."""
+        out: List[Dict[str, Any]] = []
+        rep = validate_ir(ir, self.caps.resolve(), check_paths=False, registry=self.registry, supports=router.supports)
+        for e in rep.errors:
+            if e.startswith("required capability MISSING: "):
+                out.append({"code": "CAPABILITY_MISSING", "severity": "error", "message": e, "field": "capabilities." + e.split(": ", 1)[1]})
+            else:
+                out.append({"code": "PLAN_INVALID", "severity": "error", "message": e, "field": "plan"})
+        for w in rep.warnings:
+            if w.startswith("capability "):
+                out.append({"code": "CAPABILITY_DEGRADED", "severity": "warning", "message": w, "field": "capabilities." + w.split(" ")[1]})
+        for n, st in enumerate(ir.doc["plan"]["steps"]):
+            tool = st.get("tool")
+            if tool and not router.supports(tool):
+                out.append({"code": "TOOL_UNAVAILABLE", "severity": "error", "message": f"step {st.get('id') or n} ({st['skill']}): its tool {tool} is not executable here; "
+                            "run `video-agent doctor` / `video-agent skills`", "field": f"plan.steps[{n}].tool"})
+        recorded = (ir.doc.get("source") or {}).get("tool_versions") or {}
+        try:
+            now = self.tool_versions()
+        except Exception:  # noqa: BLE001 -- a version that cannot be read is not a reason to refuse; the capability check above covers absence
+            now = {}
+        for name, v in sorted(recorded.items()):
+            if name in now and str(now[name]) != str(v):
+                out.append({"code": "TOOL_VERSION_CHANGED", "severity": "warning", "message": f"{name} was {v} when the plan was made and is {now[name]} now "
+                            "(completed operations of an earlier job are not reused across the change)", "field": f"source.tool_versions.{name}"})
+        return out
+
+    def preflight(self, ir: ProjectIR, free_fn: Optional[Any] = None) -> Dict[str, Any]:
+        """ADR-126: a fast check of the plan's deliverables before any encode; every problem at once. Nothing is encoded or run."""
+        from .execution import preflight as pf
+        from .tools.publish.adapter import pinned_contract as publish_contract
+        free_fn = free_fn or pf.disk_free
+        router = self.adapter(ir.doc["execution"].get("allowed_inputs") or [])
+        tooling = self._preflight_tooling(ir, router)
+        if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:
+            step = next((st for st in ir.doc["plan"]["steps"] if st["skill"] == offload_task.SKILL), {})
+            plan_obs = next((o["data"] for o in ir.doc["analysis"]["observations"] if o["kind"] == offload_task.PLAN_OBS_KIND), {})
+            return pf.run_offload(ir.doc, step, plan_obs, tooling, free_fn=free_fn)
+        job_dir = str(Path(self.workspace) / "jobs" / "<job_id>")
+        try:
+            ops, paths, err = (*compile_ir(ir, job_dir), None)
+        except (CompileError, KeyError, ValueError) as exc:
+            ops, paths, err = [], {}, str(exc)
+        try:
+            rules = load_profile(((ir.doc["project"].get("profile") or {}).get("name")) or "generic").rules
+        except (FileNotFoundError, ValueError):
+            rules = []
+        presets = platforms = None
+        export_tool = next((st.get("tool") for st in ir.doc["plan"]["steps"] if st["skill"] == "delivery_export" and st.get("tool")), None)
+        skill = getattr(router.adapter_for(export_tool), "skill", None) if export_tool else None   # the engine whose contract names the presets
+        if skill is not None and hasattr(skill, "catalog_check"):
+            try:
+                chk = skill.catalog_check()
+                presets, platforms = chk.presets, chk.platforms
+            except Exception:  # noqa: BLE001 -- an unreadable contract leaves the preset / platform unverified, never refused
+                pass
+        return pf.run(ir.doc, ops=ops, paths=paths, job_dir=job_dir, subjects=delivery_subjects(ir.doc), profile_rules=rules, presets=presets, platforms=platforms,
+                      upload_limits=publish_contract().get("upload_limits") or {}, tooling=tooling, free_fn=free_fn, compile_error=err)
+
     def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None,
-               resume: Optional[str] = None) -> Dict[str, Any]:
+               resume: Optional[str] = None, skip_preflight: bool = False) -> Dict[str, Any]:
         """resume: a previous job id (or "last") whose completed operations may be reused. The new job stays a new job;
         reuse is decided per operation by the chained idempotency key and by the recorded output still being intact."""
         who = who or _default_who()
@@ -1404,6 +1465,20 @@ class Service:
             job.transition("BLOCKED" if st in ("REJECTED", "BLOCKED") else "WAITING_FOR_APPROVAL", f"production plan is {st}")
             store.save(job)
             return {"job": job.to_dict(), "status": "BLOCKED" if st in ("REJECTED", "BLOCKED") else "WAITING_FOR_APPROVAL", "plan_status": st, "approved": approved}
+        # ADR-126: the export preflight, after the approval and before any encode; its errors refuse the render unless skipped, and a skip is recorded
+        preflight = {"skipped": True} if skip_preflight else self.preflight(ir)
+        job.dir.mkdir(parents=True, exist_ok=True)
+        (job.dir / "preflight.json").write_text(json.dumps(preflight, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        ir.doc["execution"]["preflight"] = {"job_id": job.id, "at": now_iso(), "skipped": bool(skip_preflight), "who": who,
+                                            **({} if skip_preflight else {"ok": preflight["ok"], "errors": [p["code"] for p in preflight["problems"] if p["severity"] == "error"],
+                                                                          "warnings": [p["code"] for p in preflight["problems"] if p["severity"] == "warning"]})}
+        if not skip_preflight and not preflight["ok"]:
+            errs = [p for p in preflight["problems"] if p["severity"] == "error"]
+            job.transition("BLOCKED", "preflight: " + "; ".join(f"{p['code']} {p['field']}" for p in errs))
+            store.save(job)
+            save_ir(ir, ir_path)
+            return {"job": job.to_dict(), "status": "BLOCKED", "preflight": preflight, "approved": approved,
+                    "hint": "fix the preflight errors (video-agent preflight <project>), or render with --skip-preflight to run anyway (recorded in the run)"}
         if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:   # ADR-066: the approved card offload, not a compiled media pipeline
             return self._execute_offload(ir, ir_path, job, store, approved, who, timeout)
         job.transition("EXECUTING")
@@ -1418,7 +1493,7 @@ class Service:
         finally:
             job.completed_ops = ex.completed
             store.save(job)  # whatever happens next, the job file reflects the operations that completed
-        out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths, "resume": resume_note}
+        out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths, "resume": resume_note, "preflight": preflight}
         if result.status != "COMPLETED":
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"op {result.failed_op}")
         else:
@@ -1462,10 +1537,11 @@ class Service:
         if tvr is not None:   # ADR-110: every re-transcription (or why there was none) is a provenance row
             prov["transcript_verification"] = {k: tvr.get(k) for k in ("rule", "status", "measurements", "warnings")}
         prov["reused"] = result.reused
+        prov["preflight"] = dict(ir.doc["execution"].get("preflight") or {})   # ADR-126: what the preflight found, or that it was skipped
         prov["plan_version"] = ir.version
         prov["reviews"] = ir.doc["execution"].get("reviews", {})
         ir.doc["provenance"]["runs"].append({"job_id": job.id, "at": now_iso(), "status": out["status"], "who": who, "plan_hash": job.plan_hash, "plan_version": ir.version,
-                                             "resumed_from": job.resumed_from, "skipped": result.skipped,
+                                             "resumed_from": job.resumed_from, "skipped": result.skipped, "preflight": dict(ir.doc["execution"].get("preflight") or {}),
                                              **({"transcript_verification": {"status": tvr.get("status"), "counts": tvr.get("counts"), "warnings": tvr.get("warnings")}} if tvr is not None else {})})
         ir.doc["provenance"]["recovery"] = result.recovery
         save_ir(ir, ir_path)

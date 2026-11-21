@@ -90,6 +90,7 @@ video-agent validate <workspace>/plans/input.youtube.project.json
 video-agent render <workspace>/plans/input.youtube.project.json --dry-run
 video-agent render <workspace>/plans/input.youtube.project.json            # CONFIRM が残れば WAITING_FOR_APPROVAL (exit 4)
 video-agent render <workspace>/plans/input.youtube.project.json --approve all
+video-agent preflight <workspace>/plans/input.youtube.project.json   # 書き出し前の点検 (出力先・空き容量・形式と platform の上限・入力の変化・フォント・tool)。何も encode しない。render も自動で実行し、error があれば止まる (--skip-preflight で続行、run に記録)
 video-agent render <workspace>/plans/input.youtube.project.json --resume last   # 途中失敗後: 完了済み操作を再利用
 video-agent reject  <project> --decision <id> --reason "..."       # 却下（理由必須）→ render は BLOCKED
 video-agent revise  <project> [--set audio.loudness.target_lufs=-16]  # Plan v2 を生成（v1 は .v1.json に保存）、PlanDiff を表示

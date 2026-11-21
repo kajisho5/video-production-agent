@@ -12,7 +12,7 @@ Every path a writing call writes (the project file, the new plan) must resolve, 
 workspace, plus any --allow-root).
 
 Classes:
-  read         reads only: probe, analyse, explain, validate, dry runs, reports
+  read         reads only: probe, analyse, explain, validate, preflight, dry runs, reports
   write        writes new files (or appends a version to the agent's own plan / preference store) inside the allowed roots
   destructive  replaces or deletes an existing file
   publish      outward-facing: uploads or publishes, writes outside the allowed roots, or spends money / API quota (a paid AI provider)
@@ -46,7 +46,7 @@ FREE_AI_PROVIDERS = ("", "null", "none", "host")
 # fails when a listed tool has no class. ESCALATES names the higher classes a call of the tool can reach (see classify).
 TOOL_CLASSES: Dict[str, str] = {
     "doctor": READ, "skills": READ, "brief": READ, "corrections": READ, "validate": READ, "explain": READ, "diff": READ,
-    "check": READ, "artifacts": READ,
+    "check": READ, "artifacts": READ, "preflight": READ,
     "plan": WRITE, "revise": WRITE, "approve": WRITE, "reject": WRITE, "preferences": WRITE, "render": WRITE, "transcript_edit": WRITE,
     "selects": WRITE,
 }
