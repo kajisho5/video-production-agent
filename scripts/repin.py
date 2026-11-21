@@ -255,11 +255,19 @@ def _is_refusal_loop(lines: Sequence[str], i: int) -> bool:
 
 
 def move_refusal_probe(text: str, sib: Sibling, prefix: str) -> Tuple[str, int]:
-    """After the gate takes `X.Y.`, the gate tests' probe `"X.Y.0"` (a version they expect refused) moves to the next minor, `"X.(Y+1).0"`:
+    """After the gate takes `X.Y.`, the gate tests' probe `"X.Y.0"` (a version they expect refused) moves to the next minor, `"X.(Y+1).0"` (or the next one the line does not list yet, addendum 5):
     on a `for v in (...)` line about this Skill (named on the line or on one of the lines above it) whose loop is a refusal loop
     (`_is_refusal_loop`, addendum 4), and in a `("<repo>", "X.Y.0")` pair."""
     major, minor = (int(x) for x in prefix.rstrip(".").split("."))
-    probe, moved = f'"{major}.{minor}.0"', f'"{major}.{minor + 1}.0"'
+    probe = f'"{major}.{minor}.0"'
+
+    def moved_on(line: str) -> str:
+        # addendum 5: the next minor the line does not list already, so the probe list gains no duplicate
+        # (subtitle's ("0.12.0", "0.100.0", "1.1.0") -> "1.2.0"; with "1.2.0" listed too -> "1.3.0")
+        m = minor + 1
+        while f'"{major}.{m}.0"' in line:
+            m += 1
+        return f'"{major}.{m}.0"'
     aliases = adapter_aliases(text)
     mine = sib.identifiers + (tuple(aliases.get(Path(sib.gate_file).parent.name, ())) if sib.gate_file else ())
     pair = re.compile(r'(\(\s*"' + re.escape(sib.repo) + r'",\s*)' + re.escape(probe) + r"(\s*\))")
@@ -268,10 +276,11 @@ def move_refusal_probe(text: str, sib: Sibling, prefix: str) -> Tuple[str, int]:
     for i, line in enumerate(lines):
         if probe not in line:
             continue
+        moved = moved_on(line)
         out = pair.sub(lambda m: m.group(1) + moved + m.group(2), line)
         if (line.lstrip().startswith("for v in (") and any(_mentions(l, mine) for l in lines[max(0, i - CONTEXT_LINES):i + 1])
                 and _is_refusal_loop(lines, i)):
-            out = out.replace(probe, moved)
+            out = out.replace(probe, moved, 1).replace(", " + probe, "").replace(probe + ", ", "")
         if out != line:
             lines[i] = out
             count += 1
@@ -318,6 +327,20 @@ def _version_patterns(old: str) -> List[re.Pattern]:
 
 SOURCE_TAG_RE = r"\b(v){old} tag [0-9a-f]{{7,40}}\b"
 
+# addendum 5 (subtitle-skill 1.0.0 -> 1.1.0, agent #204): a Skill's `contract_version` is its own axis, apart from the release version.
+# A line about the contract version (an adapter's `CONTRACT_VERSION = "1.0.0"`, a test's `a.contract_version, "1.0.0"`, a discovery
+# `d["contract"]`, a provenance `"contract_version": "1.0.0"`) is never rewritten; the pin moving does not move it.
+CONTRACT_VERSION_RE = re.compile(r"contract_version|CONTRACT_VERSION|\[\s*[\"']contract[\"']\s*\]|[\"']contract[\"']\s*:")
+# When the old release equals the contract_version (of the old pin or the new one), a bare "1.0.0" could be either. It is then
+# rewritten only on a line that names the release: the gate's line and its notes, `skill_version`, a `"version":` / `pinned_version`
+# key or assignment, a release / tag. The pin file name, `@1.0.0` and `v1.0.0 tag <sha>` are release references anywhere.
+RELEASE_SITE_RE = re.compile(r"SUPPORTED_SKILL_VERSIONS|skill_version|[\"'](?:version|pinned_version)[\"']\s*:|\bpinned_version\s*=|"
+                             r"\brelease|\btag\b|\bpinned\b")
+
+
+def is_contract_version_line(line: str) -> bool:
+    return bool(CONTRACT_VERSION_RE.search(line))
+
 
 # a Skill's name counts where it is not part of a longer name: `ingest_version` names ingest, `fake-ingest-x` does not
 def _mentions(line: str, words: Iterable[str]) -> bool:
@@ -358,10 +381,13 @@ class Rewrite:
 
 
 def rewrite_text(text: str, rel: str, sib: Sibling, others: Sequence[Sibling], old: str, new: str, new_sha: str,
-                 same_version: Sequence[Sibling] = ()) -> Tuple[str, int, List[str]]:
+                 same_version: Sequence[Sibling] = (), contract_versions: Sequence[str] = ()) -> Tuple[str, int, List[str]]:
     """Move one file's references from the old pin to the new one. Returns (text, lines changed, leftovers).
     `same_version`: the other siblings pinned at `old` too. A line that names one of them as well as this Skill is ambiguous (whose
-    "0.2.3" is it?): it is left as it is and listed."""
+    "0.2.3" is it?): it is left as it is and listed.
+    `contract_versions`: the old and new pins' `contract_version` (addendum 5). A contract-version line is never rewritten; when `old`
+    is one of them, a bare quoted `old` moves only on a line that names the release (`RELEASE_SITE_RE`)."""
+    shared_axis = old in contract_versions
     old_file, new_file = f"{sib.pin_prefix}{old}.json", f"{sib.pin_prefix}{new}.json"
     owned = rel in sib.owned_files() or rel.startswith(sib.pin_dir + "/") and sib.pin_dir != PINS.as_posix()
     aliases = adapter_aliases(text)        # `from video_agent.tools.qc import adapter as qc_adapter`: `qc_adapter.` names qc here
@@ -394,15 +420,19 @@ def rewrite_text(text: str, rel: str, sib: Sibling, others: Sequence[Sibling], o
         out = line
         if old_file in out and (unique_file or applies):
             out = out.replace(old_file, new_file)
+        contract_line = is_contract_version_line(line)
         if applies:
             out = src_tag.sub(lambda m: f"v{new} tag {new_sha[:7]}", out)
-            for p in vpats:
-                out = p.sub(lambda m: m.group(0).replace(old, new), out)
+            if not contract_line:
+                for p in vpats:
+                    if p.pattern.startswith("@") or not shared_axis or RELEASE_SITE_RE.search(line):
+                        out = p.sub(lambda m: m.group(0).replace(old, new), out)
         if out != line:
             lines[i] = out
             count += 1
         # what is left of the old pin on a line that is not another Skill's, in a file that names this Skill: listed in the pull request
-        if not about_other and file_mine and (any(p.search(out) for p in vpats) or old_file in out):
+        # (a contract-version line is not the pin: addendum 5)
+        if not about_other and not contract_line and file_mine and (any(p.search(out) for p in vpats) or old_file in out):
             leftovers.append(f"{rel}:{i + 1}: {out.strip()[:160]}")
     return "".join(lines), count, leftovers
 
@@ -420,7 +450,7 @@ def scan_files(root: Path) -> List[Path]:
     return files
 
 
-def rewrite_readers(root: Path, sib: Sibling, old: str, new: str, new_sha: str) -> Rewrite:
+def rewrite_readers(root: Path, sib: Sibling, old: str, new: str, new_sha: str, contract_versions: Sequence[str] = ()) -> Rewrite:
     result = Rewrite()
     others = [s for s in SIBLINGS if s is not sib]
     same_version = [s for s in others if current_pin(root, s)[1] == old] if all((root / s.pin_dir).is_dir() for s in others) else []
@@ -433,7 +463,7 @@ def rewrite_readers(root: Path, sib: Sibling, old: str, new: str, new_sha: str) 
         if old not in text:
             continue
         rel = p.relative_to(root).as_posix()
-        out, n, left = rewrite_text(text, rel, sib, others, old, new, new_sha, same_version)
+        out, n, left = rewrite_text(text, rel, sib, others, old, new, new_sha, same_version, contract_versions)
         if n:
             p.write_bytes(out.encode("utf-8"))
             result.changed[rel] = n
@@ -676,9 +706,10 @@ def apply_update(root: Path, sib: Sibling, tag: str, sha: str, data: bytes, diff
     gate = read_gate((root / sib.gate_file).read_text(encoding="utf-8")) if sib.gate_file else None
     decision = decide(old, new, classification, gate)
     new_path = old_path.with_name(f"{sib.pin_prefix}{new}.json")
+    contract_versions = contract_versions_of(old_path.read_bytes(), data)
     old_path.unlink()
     new_path.write_bytes(data)
-    rw = rewrite_readers(root, sib, old, new, sha)
+    rw = rewrite_readers(root, sib, old, new, sha, contract_versions)
     if decision.kind == "widen" and sib.gate_file:
         gp = root / sib.gate_file
         note = (f"{new} ({repo_url(sib.repo)} {tag}, automatic re-pin {today}, ADR-117): si contract-diff {classification}; "
@@ -694,6 +725,20 @@ def apply_update(root: Path, sib: Sibling, tag: str, sha: str, data: bytes, diff
                     rw.changed[rel] = rw.changed.get(rel, 0) + n
     changes = [c for c in diff.get("changes", []) if c.get("effect") != "info"]
     return Update(sib.name, old, new, tag, sha, classification, decision, changes, rw.changed, rw.leftovers)
+
+
+def contract_versions_of(*docs: bytes) -> Tuple[str, ...]:
+    """The `contract_version` each contract declares (addendum 5); one that is not JSON or declares none adds nothing."""
+    found: List[str] = []
+    for raw in docs:
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            continue
+        cv = doc.get("contract_version") if isinstance(doc, dict) else None
+        if isinstance(cv, str) and cv not in found:
+            found.append(cv)
+    return tuple(found)
 
 
 def is_test_line(leftover: str) -> bool:

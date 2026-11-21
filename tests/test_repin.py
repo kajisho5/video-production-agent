@@ -282,7 +282,7 @@ class RewriteTests(unittest.TestCase):
         text = 'from video_agent.tools.qc import adapter as qc\n' + text
         out, n = repin.move_refusal_probe(text, sib("qc"), "1.5.")
         self.assertIn('for v in ("0.3.0", "1.6.0", "2.0.0"):', out)
-        self.assertIn('for v in ("1.6.0", "1.6.0"):', out)      # still a tuple of two, never a bare string
+        self.assertIn('for v in ("1.7.0", "1.6.0"):', out)      # still a tuple of two, never a duplicate (addendum 5)
         self.assertIn('for v in ("1.5.0",):', out)     # nothing names qc on it or the 3 lines above
         self.assertEqual(n, 2)
         pairs = ('        for skill, new in (("qc-skill", "1.5.0"), ("thumbnail-skill", "1.5.0"),\n'
@@ -349,6 +349,71 @@ class RewriteTests(unittest.TestCase):
         lines[j] = lines[j].replace("pinned_version(", '"1.0.0", pinned_version(', 1)
         out, _ = repin.move_refusal_probe("".join(lines), sib("motion-graphics"), "1.0.")
         self.assertIn('"1.0.0", pinned_version("motion-graphics")', out.splitlines()[j])
+
+    def test_the_contract_version_is_not_the_release(self):
+        """Addendum 5 (agent #204): subtitle-skill 1.0.0 -> 1.1.0 keeps contract_version 1.0.0. The reader rewrite moved every "1.0.0"
+        about subtitle, CONTRACT_VERSION included, and every test failed with `contract_version '1.0.0' != 1.1.0`."""
+        adapter = ('CONTRACT_SKILL_ID = "subtitle-skill"\n'
+                   'CONTRACT_VERSION = "1.0.0"\n'
+                   '# 1.0.0 (https://github.com/kajisho5/subtitle-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): the gate takes 1.0.\n'
+                   'SUPPORTED_SKILL_VERSIONS = ("0.11.", "1.0.")  # 1.0.0 is version-only\n'
+                   'PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")\n'
+                   'SOURCE = "kajisho5/subtitle-skill v1.0.0 tag e1aa8a5"\n')
+        s = sib("subtitle")
+        others = [o for o in repin.SIBLINGS if o is not s]
+        out, n, left = repin.rewrite_text(adapter, s.gate_file, s, others, "1.0.0", "1.1.0", "3d7cee5" + "0" * 33, (), ("1.0.0",))
+        self.assertEqual(out.splitlines(), [
+            'CONTRACT_SKILL_ID = "subtitle-skill"',
+            'CONTRACT_VERSION = "1.0.0"',                                                  # the contract's own axis: kept
+            '# 1.0.0 (https://github.com/kajisho5/subtitle-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): the gate takes 1.0.',
+            'SUPPORTED_SKILL_VERSIONS = ("0.11.", "1.0.")  # 1.0.0 is version-only',
+            'PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.0.json")',       # the pin file: moved
+            'SOURCE = "kajisho5/subtitle-skill v1.1.0 tag 3d7cee5"'])                     # the release tag: moved
+        self.assertEqual(n, 2)
+        self.assertFalse(any("CONTRACT_VERSION" in l for l in left))
+        tests = ('from video_agent.tools.subtitle import adapter as st\n'
+                 '        self.assertEqual(a.contract_version, "1.0.0")\n'
+                 '        self.assertEqual(d["contract"], "1.0.0")   # subtitle\n'
+                 '        self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": pinned_version("subtitle"), '
+                 '"contract_version": "1.0.0"})\n'
+                 '        self.assertEqual(st.pinned_contract()["version"], "1.0.0")   # pinned release\n'
+                 '        self.assertEqual(obs.source, "subtitle/render@1.0.0")\n'
+                 '        self.assertEqual(rec["skill_version"], "1.0.0")   # subtitle\n')
+        out, n, _ = repin.rewrite_text(tests, "tests/test_adapter_subtitle.py", s, others, "1.0.0", "1.1.0", "f" * 40, (), ("1.0.0",))
+        self.assertEqual(out.splitlines(), [
+            'from video_agent.tools.subtitle import adapter as st',
+            '        self.assertEqual(a.contract_version, "1.0.0")',
+            '        self.assertEqual(d["contract"], "1.0.0")   # subtitle',
+            '        self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": pinned_version("subtitle"), '
+            '"contract_version": "1.0.0"})',
+            '        self.assertEqual(st.pinned_contract()["version"], "1.1.0")   # pinned release',
+            '        self.assertEqual(obs.source, "subtitle/render@1.1.0")',
+            '        self.assertEqual(rec["skill_version"], "1.1.0")   # subtitle'])
+        self.assertEqual(n, 3)
+        # a contract-version line is kept even when the release and the contract differ; a bare release literal moves as before
+        out, _, _ = repin.rewrite_text(tests, "tests/test_adapter_subtitle.py", s, others, "1.0.0", "1.1.0", "f" * 40, (), ("2.0.0",))
+        self.assertIn('a.contract_version, "1.0.0")', out); self.assertIn('d["contract"], "1.0.0")', out)
+        self.assertIn('"contract_version": "1.0.0"})', out); self.assertIn('st.pinned_contract()["version"], "1.1.0")', out)
+
+    def test_the_moved_probe_is_never_a_duplicate(self):
+        """Addendum 5: the probe moves to the next minor the refusal list does not hold yet."""
+        text = ('from video_agent.tools.subtitle import adapter as st\n'
+                '        for v in ("0.12.0", "0.100.0", "1.1.0"):\n'
+                '            self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)\n'
+                '        for v in ("1.1.0", "1.2.0", "2.0.0"):   # subtitle\n'
+                '            self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)\n'
+                '        for v in ("1.1.0", "1.2.0", "1.1.0"):   # subtitle\n'
+                '            self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)\n')
+        out, n = repin.move_refusal_probe(text, sib("subtitle"), "1.1.")
+        lines = out.splitlines()
+        self.assertEqual(lines[1], '        for v in ("0.12.0", "0.100.0", "1.2.0"):')
+        self.assertEqual(lines[3], '        for v in ("1.3.0", "1.2.0", "2.0.0"):   # subtitle')
+        self.assertEqual(lines[5], '        for v in ("1.3.0", "1.2.0"):   # subtitle')
+        self.assertEqual(n, 3)
+        for line in (lines[1], lines[3], lines[5]):
+            vs = ast.literal_eval(line.split(" in ", 1)[1].split(":")[0])
+            self.assertEqual(len(vs), len(set(vs)), line)
+            self.assertFalse(any(v.startswith(("1.0.", "1.1.")) for v in vs), line)    # all still outside the widened gate
 
     def test_a_line_naming_two_skills_on_one_version_is_left(self):
         text = 'self.assertEqual((det["version"], dub["version"]), ("0.2.3", "0.2.3"))   # detection, dubbing\n'
@@ -435,6 +500,56 @@ class ApplyTests(unittest.TestCase):
         self.assertIn(f"contract_{new}.json", (self.tmp / sib("qc").gate_file).read_text(encoding="utf-8"))
         self.assertEqual(repin.read_gate((self.tmp / sib("qc").gate_file).read_text(encoding="utf-8")), repin.read_gate(gate_before))
         self.assertIn("must review", repin.pr_body([u], True))
+
+
+class SubtitleContractVersionTests(unittest.TestCase):
+    """Addendum 5 (agent #204): apply_update for a release 1.0.0 -> 1.1.0 whose contract_version stays 1.0.0, on files shaped like the
+    subtitle adapter, its tests and the gate tests at the time."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="repin-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        s = sib("subtitle")
+        (self.tmp / s.pin_dir).mkdir(parents=True)
+        self.contract = {"skill_id": "subtitle-skill", "version": "1.0.0", "contract_version": "1.0.0", "operations": []}
+        (self.tmp / s.pin_dir / "contract_1.0.0.json").write_text(json.dumps(self.contract) + "\n", encoding="utf-8")
+        (self.tmp / s.gate_file).write_text(
+            'CONTRACT_SKILL_ID = "subtitle-skill"\n'
+            'CONTRACT_VERSION = "1.0.0"\n'
+            '# 1.0.0 (https://github.com/kajisho5/subtitle-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): the gate takes 1.0.\n'
+            'SUPPORTED_SKILL_VERSIONS = ("0.11.", "1.0.")\n'
+            'PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")\n', encoding="utf-8")
+        (self.tmp / "tests").mkdir()
+        (self.tmp / "tests" / "test_adapter_subtitle.py").write_text(
+            'from video_agent.tools.subtitle import adapter as st\n'
+            '        self.assertEqual(a.contract_version, "1.0.0")\n'
+            '        self.assertEqual(d["contract"], "1.0.0")\n', encoding="utf-8")
+        (self.tmp / repin.GATE_TESTS[0]).write_text(
+            'from video_agent.tools.subtitle import adapter as st\n'
+            '    def test_subtitle_release_versions(self):\n'
+            '        for v in ("0.11.0", "1.0.0", pinned_version("subtitle")):\n'
+            '            self.assertEqual(st.check_contract(with_version(st.pinned_contract(), v)), [], v)\n'
+            '        for v in ("0.12.0", "0.100.0", "1.1.0"):\n'
+            '            self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)\n', encoding="utf-8")
+
+    def test_release_moves_the_contract_version_stays(self):
+        data = (json.dumps(dict(self.contract, version="1.1.0")) + "\n").encode("utf-8")
+        u = repin.apply_update(self.tmp, sib("subtitle"), "v1.1.0", "3d7cee55" + "0" * 32, data, {"classification": "additive", "changes": []},
+                               "2026-11-21")
+        self.assertEqual((u.old, u.new, u.decision.kind), ("1.0.0", "1.1.0", "widen"))
+        adapter = (self.tmp / sib("subtitle").gate_file).read_text(encoding="utf-8")
+        self.assertIn('CONTRACT_VERSION = "1.0.0"\n', adapter)
+        self.assertIn('with_name("contract_1.1.0.json")', adapter)
+        self.assertEqual(repin.read_gate(adapter), ("0.11.", "1.0.", "1.1."))
+        tests = (self.tmp / "tests" / "test_adapter_subtitle.py").read_text(encoding="utf-8")
+        self.assertIn('a.contract_version, "1.0.0")', tests); self.assertIn('d["contract"], "1.0.0")', tests)
+        self.assertNotIn("tests/test_adapter_subtitle.py", u.readers)
+        gates = (self.tmp / repin.GATE_TESTS[0]).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(gates[2], '        for v in ("0.11.0", "1.0.0", pinned_version("subtitle")):')   # accepted: still inside the gate
+        self.assertEqual(gates[4], '        for v in ("0.12.0", "0.100.0", "1.2.0"):')                      # refused: still outside it
+        gate = repin.read_gate(adapter)
+        for v in ast.literal_eval(gates[4].split(" in ", 1)[1].rstrip(":")):
+            self.assertFalse(repin.in_gate(v, gate), v)
 
 
 class VerifyTests(unittest.TestCase):
