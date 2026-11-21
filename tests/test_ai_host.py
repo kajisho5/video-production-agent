@@ -505,11 +505,20 @@ class CwdIndependentAgentLaunchTests(unittest.TestCase):
 
     def test_server_launch_shape(self):
         from unittest import mock
+        # ADR-127: the interpreter is launched by an absolute path; a bare name is looked up on PATH's absolute entries only
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir, exist_ok=True)
+        py = os.path.join(bindir, "py.exe" if os.name == "nt" else "py")
+        with open(py, "w", encoding="utf-8") as f:
+            f.write("")
+        os.chmod(py, 0o755)
         server = Server(workspace=self.ws, python="py")
-        with mock.patch("video_agent.mcp_server.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(["", ".", bindir])}), \
+                mock.patch("video_agent.mcp_server.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
             server.call_tool("artifacts", {})
         cmd = run.call_args[0][0]
-        self.assertEqual(cmd, ["py", "-c", MODULE_BOOTSTRAP, "video_agent.cli", "--json", "--workspace", self.ws, "artifacts", "--"])
+        self.assertEqual(os.path.normcase(cmd[0]), os.path.normcase(py))
+        self.assertEqual(cmd[1:], ["-c", MODULE_BOOTSTRAP, "video_agent.cli", "--json", "--workspace", self.ws, "artifacts", "--"])
         self.assertNotIn("-m", cmd)
         self.assertIsNone(run.call_args[1].get("cwd"), "the working directory is inherited as before (relative paths resolve the same way)")
 

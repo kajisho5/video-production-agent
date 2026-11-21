@@ -4,12 +4,11 @@ installed console script `transcription` on PATH. The agent never imports the pa
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..discovery import default_skill_dirs, python_module_command
+from ..discovery import default_skill_dirs, python_module_command, safe_which
 
 ENV_DIR = "VIDEO_AGENT_TRANSCRIPTION_DIR"
 
@@ -27,7 +26,7 @@ class TranscriptionSkill:
 def _from_checkout(root: Path) -> Optional[TranscriptionSkill]:
     cli = root / "src" / "transcription_skill" / "cli.py"
     if cli.is_file():
-        return TranscriptionSkill(python_module_command("transcription_skill.cli"), root, {"PYTHONPATH": str(root / "src")})
+        return TranscriptionSkill(python_module_command("transcription_skill.cli"), root, {"PYTHONPATH": os.path.abspath(root / "src")})
     return None
 
 
@@ -45,7 +44,7 @@ def locate_transcription(explicit: Optional[str] = None, env: Optional[Dict[str,
         found = _from_checkout(c)
         if found:
             return found
-    exe = shutil.which("transcription", path=env.get("PATH"))
+    exe = safe_which("transcription", path=env.get("PATH"))
     if exe:
         return TranscriptionSkill([exe], None, {})
     return None

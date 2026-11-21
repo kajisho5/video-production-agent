@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +18,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ..models import Operation, ToolResult
 from .base import ToolError
-from .discovery import default_skill_dirs, python_module_command
+from .discovery import default_skill_dirs, python_module_command, safe_which
 from .ffmpeg_skill.adapter import run_process_group
 
 
@@ -63,8 +62,8 @@ def locate_cli_skill(skill_id: str, module: str, package_dir: str, console: str,
     for c in cands:
         pkg = c / "src" / package_dir
         if (pkg / "cli.py").is_file() or (pkg / "__init__.py").is_file():
-            return CliSkill(skill_id, python_module_command(module), c, {"PYTHONPATH": str(c / "src")})
-    exe = shutil.which(console, path=env_map.get("PATH"))
+            return CliSkill(skill_id, python_module_command(module), c, {"PYTHONPATH": os.path.abspath(c / "src")})
+    exe = safe_which(console, path=env_map.get("PATH"))
     if exe:
         return CliSkill(skill_id, [exe], None, {})
     return None

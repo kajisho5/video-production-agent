@@ -12,13 +12,25 @@ A Skill child process gets the agent's environment minus the AI provider credent
 A Skill checkout is run as a module without the current directory on its import path (ADR-074): `python -m` puts the
 current directory first on `sys.path`, so a `json.py`, `numpy/` or `<package>/` in the folder the agent was started in
 would be imported by the Skill instead of the real one. `python_module_command` keeps `PYTHONPATH` (the checkout's
-`src`) and the child's working directory (relative paths resolve as before), and drops only that entry."""
+`src`) and the child's working directory (relative paths resolve as before), and drops only that entry.
+
+The rest of what a child could pick up from the folder the agent was started in is closed here too (ADR-127): the program
+a child runs is an absolute path found on the absolute entries of PATH only (`safe_which`, `resolve_executable`: never the
+current directory, which Windows searches first and an empty or `.` PATH entry names on POSIX); `PYTHONPATH` keeps only
+absolute entries (an empty or relative entry is the current directory again, made absolute by `site` before any bootstrap
+runs); and while a job runs, every child gets that job's own private temporary directory as TMPDIR / TEMP / TMP
+(`job_temp_dir`), removed when the job ends."""
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import errno
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, Iterator, List, Mapping, Optional
 
 # environment variables of the AI providers the agent talks to (providers/claude.py, capabilities/resolver.py AI_ENV)
 SECRET_ENV_PREFIXES = ("ANTHROPIC_", "OPENAI_")
@@ -52,11 +64,97 @@ def is_secret_env(key: str) -> bool:
     return key.upper().startswith(SECRET_ENV_PREFIXES)
 
 
+TEMP_ENV = ("TMPDIR", "TEMP", "TMP")   # where tempfile (and most programs) put their files, on POSIX and on Windows
+_JOB_TEMP: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar("video_agent_job_temp", default=None)
+
+
+def safe_pythonpath(value: str) -> str:
+    """PYTHONPATH with only its absolute entries: an empty entry is the current directory and a relative one resolves
+    against it, so either would let a module in the folder the agent was started in shadow the real one (ADR-127)."""
+    return os.pathsep.join(p for p in value.split(os.pathsep) if p and os.path.isabs(p))
+
+
 def child_env(extra: Optional[Mapping[str, str]] = None, base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """The environment for a Skill (or engine) child process: `base` (default os.environ) without provider credentials, plus `extra`."""
+    """The environment for a Skill (or engine) child process: `base` (default os.environ) without provider credentials, plus `extra`.
+    PYTHONPATH keeps only its absolute entries, and inside `job_temp_dir` the temporary directory is the job's own (ADR-127)."""
     env = {k: v for k, v in (os.environ if base is None else base).items() if not is_secret_env(k)}
     env.update(extra or {})
+    if "PYTHONPATH" in env:
+        kept = safe_pythonpath(env["PYTHONPATH"])
+        if kept:
+            env["PYTHONPATH"] = kept
+        else:
+            del env["PYTHONPATH"]
+    job_tmp = _JOB_TEMP.get()
+    if job_tmp:
+        env.update({k: job_tmp for k in TEMP_ENV})
     return env
+
+
+def current_job_temp_dir() -> Optional[str]:
+    """The temporary directory children get while a job runs (`job_temp_dir`), else None (they inherit the agent's)."""
+    return _JOB_TEMP.get()
+
+
+@contextlib.contextmanager
+def job_temp_dir(job_id: str = "") -> Iterator[str]:
+    """One private temporary directory (mkdtemp: 0700, an unguessable name under the system's temporary directory) for every
+    child process a job starts; removed, with whatever a child left in it, when the job ends however it ends (ADR-127)."""
+    path = tempfile.mkdtemp(prefix=f"video-agent-{job_id or 'job'}-")
+    token = _JOB_TEMP.set(path)
+    try:
+        yield path
+    finally:
+        _JOB_TEMP.reset(token)
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _exe_names(name: str) -> List[str]:
+    if os.name != "nt":
+        return [name]
+    exts = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
+    if any(name.lower().endswith(e.lower()) for e in exts):
+        return [name]
+    return [name + e for e in exts]
+
+
+def safe_which(name: str, path: Optional[str] = None) -> Optional[str]:
+    """`shutil.which` without the current directory: the absolute path of `name` on the absolute entries of `path` (default
+    PATH) only. shutil.which looks in the current directory first on Windows, and an empty or `.` PATH entry is the current
+    directory on POSIX, so a `ffmpeg.exe` or `node` planted in the folder the agent was started in would be what runs (ADR-127).
+    A name with a directory part is returned made absolute when it is an executable file there."""
+    if os.sep in name or (os.altsep and os.altsep in name):
+        p = os.path.abspath(name)
+        return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
+    dirs = (os.environ.get("PATH", os.defpath) if path is None else path).split(os.pathsep)
+    for d in dirs:
+        if not d or not os.path.isabs(d):
+            continue
+        for n in _exe_names(name):
+            p = os.path.join(d, n)
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+    return None
+
+
+def resolve_executable(program: str, path: Optional[str] = None) -> str:
+    """The absolute path a child's argv[0] is launched by (ADR-127): a path is made absolute against the agent's working
+    directory, a bare name is looked up by `safe_which`. A name found nowhere raises FileNotFoundError, as Popen would --
+    never a lookup that falls back to the current directory."""
+    if os.path.isabs(program):
+        return program
+    if os.sep in program or (os.altsep and os.altsep in program):
+        return os.path.abspath(program)
+    found = safe_which(program, path)
+    if found is None:
+        raise FileNotFoundError(errno.ENOENT, f"executable not found on PATH (the current directory is never searched): {program}", program)
+    return found
+
+
+def safe_command(cmd: List[str]) -> List[str]:
+    """`cmd` with argv[0] resolved by `resolve_executable`; the arguments are unchanged (relative paths in them keep resolving
+    against the working directory the child inherits, ADR-074)."""
+    return [resolve_executable(cmd[0]), *cmd[1:]] if cmd else list(cmd)
 
 
 # What `python -m <module>` does, minus the current directory on sys.path. `-c` inserts '' (the current directory) at

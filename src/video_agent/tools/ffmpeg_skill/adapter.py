@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from ...models import Operation, ToolResult
 from ..base import ToolAdapter, ToolError
-from ..discovery import child_env
+from ..discovery import child_env, safe_command, safe_which
 from .catalog import CATALOG, FLAG_ALIASES, QUALITY_FLAG
 from .package import package
 from ...skills.contract import SkillPackage
@@ -264,7 +264,7 @@ def run_process_group(cmd: List[str], timeout: Optional[float], stdin: Optional[
         kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         kw["start_new_session"] = True
-    proc = subprocess.Popen(cmd, **kw)
+    proc = subprocess.Popen(safe_command(cmd), **kw)   # argv[0] absolute, never looked up in the current directory (ADR-127)
     try:
         out_b, err_b = proc.communicate(input=stdin.encode("utf-8") if stdin is not None else None, timeout=timeout)
         return proc.returncode, _dec(out_b), _dec(err_b)
@@ -278,10 +278,16 @@ def run_process_group(cmd: List[str], timeout: Optional[float], stdin: Optional[
         raise
 
 
+def _taskkill() -> str:
+    """Windows' taskkill by its absolute path: a bare name is searched in the current directory first (ADR-127)."""
+    system = os.path.join(os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows", "System32", "taskkill.exe")
+    return system if os.path.isfile(system) else (safe_which("taskkill") or system)
+
+
 def kill_tree(proc: "subprocess.Popen[bytes]") -> None:
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([_taskkill(), "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             os.killpg(proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):

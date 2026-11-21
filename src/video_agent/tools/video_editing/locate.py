@@ -4,12 +4,11 @@ installed console script `video-editing` on PATH. The agent never imports the pa
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..discovery import default_skill_dirs, python_module_command
+from ..discovery import default_skill_dirs, python_module_command, safe_which
 
 ENV_DIR = "VIDEO_AGENT_VIDEO_EDITING_DIR"
 
@@ -27,7 +26,7 @@ class VideoEditingSkill:
 def _from_checkout(root: Path) -> Optional[VideoEditingSkill]:
     cli = root / "src" / "video_editing_skill" / "cli.py"
     if cli.is_file():
-        return VideoEditingSkill(python_module_command("video_editing_skill.cli"), root, {"PYTHONPATH": str(root / "src")})
+        return VideoEditingSkill(python_module_command("video_editing_skill.cli"), root, {"PYTHONPATH": os.path.abspath(root / "src")})
     return None
 
 
@@ -45,7 +44,7 @@ def locate_video_editing(explicit: Optional[str] = None, env: Optional[Dict[str,
         found = _from_checkout(c)
         if found:
             return found
-    exe = shutil.which("video-editing", path=env.get("PATH"))
+    exe = safe_which("video-editing", path=env.get("PATH"))
     if exe:
         return VideoEditingSkill([exe], None, {})
     return None
