@@ -60,10 +60,10 @@
     },
     "imagemagick": {
       "repo": "kajisho5/imagemagick-skill",
-      "tag": "v0.10.1",
-      "sha": "ab5bf175147f7755cd7cb214b8ecb88bb9c2c451",
-      "version": "0.10.1",
-      "pin": "src/video_agent/tools/imagemagick/contract_0.10.1.json"
+      "tag": "v1.0.0",
+      "sha": "5a8eb0048571cfa225edfcbc7096d4e3773914dd",
+      "version": "1.0.0",
+      "pin": "src/video_agent/tools/imagemagick/contract_1.0.0.json"
     },
     "ingest": {
       "repo": "kajisho5/ingest-skill",
