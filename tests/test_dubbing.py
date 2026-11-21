@@ -142,7 +142,7 @@ class ContractTests(_Base):
         self.assertEqual(RECOVERY_TABLE["CONSENT_REQUIRED"]["action"], "BLOCK")
         self.assertEqual(recovery_class("SOMETHING_NEW"), "SKILL_ERROR")
         self.assertEqual(parameters(c), {"duck": (0.0, 40.0), "voice_gain": (-20.0, 20.0), "max_overrun": (0.0, 5.0)}, "ranges read from the contract's limits")
-        for bad, msg in ((dict(c, version="0.3.0"), "supported range"), (dict(c, version="1.0.0"), "supported range"), (dict(c, skill_id="x"), "skill_id"),
+        for bad, msg in ((dict(c, version="0.3.0"), "supported range"), (dict(c, version="1.1.0"), "supported range"), (dict(c, version="2.0.0"), "supported range"), (dict(c, skill_id="x"), "skill_id"),
                          (dict(c, execution=dict(c["execution"], shell=True)), "shell false"),
                          (dict(c, tools=[t for t in c["tools"] if t["tool_id"] != "dubbing/dub"]), "lacks tool dubbing/dub"),
                          (dict(c, policy=dict(c["policy"], consent_record=dict(c["policy"]["consent_record"], bypass="--force"))), "bypass null"),
