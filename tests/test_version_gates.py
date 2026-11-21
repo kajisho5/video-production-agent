@@ -71,11 +71,11 @@ class VersionGateTests(unittest.TestCase):
         # ADR-097 addendum 6: 0.5.0 .. 0.8.0 add opt-in render / generate inputs and formats; the request the adapter builds is unchanged, so the gate takes 0.5.x .. 0.8.x
         # ADR-107: 0.9.0 adds render's optional fonts_dir (burn only), 0.9.1 is version-only; re-pinned from the v0.9.1 tag and the gate takes 0.9.x
         self.assertEqual(st.pinned_contract()["version"], pinned_version("subtitle"))   # addendum 20: 0.10.0 adds opt-in animated captions; ADR-078: subtitle-skill 0.3.0 adds translate / mux, 0.4.0 two translate engines; ADR-083: 0.4.1 version-only; ADR-097: 0.4.2 / 0.4.3 version-only
-        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3", "0.9.0", "0.9.1", "0.9.2", "0.10.0", "1.0.0", pinned_version("subtitle")):
+        for v in ("0.1.5", "0.2.0", "0.2.1", "0.2.4", "0.3.0", "0.4.0", "0.4.3", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.8.3", "0.9.0", "0.9.1", "0.9.2", "0.10.0", "1.1.0", pinned_version("subtitle")):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)
-        for v in ("0.12.0", "0.100.0", "1.1.0"):
+        for v in ("0.12.0", "0.100.0", "1.2.0"):
             self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)
         # a real 0.8.x contract has no fonts_dir: inside the version range, but its capabilities / operations / parameters differ from the pin (fatal drift)
         old = with_version(st.pinned_contract(), "0.8.0")

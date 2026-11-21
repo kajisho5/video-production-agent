@@ -100,7 +100,7 @@ class ContractTests(Base):
     def test_discovery(self):
         a = self.adapter()
         self.assertEqual(a.version, pinned_version("subtitle"))
-        self.assertEqual(a.contract_version, "1.0.0")
+        self.assertEqual(a.contract_version, "1.1.0")
         self.assertEqual(a.tools, {TOOL_GENERATE, TOOL_RENDER})
         self.assertTrue(a.supports(TOOL_RENDER) and not a.supports("subtitle/transcribe"))
         self.assertEqual(a.drift(), [])
@@ -113,7 +113,7 @@ class ContractTests(Base):
         self.assertTrue(a.retryable["TOOL_ERROR"])
         d = a.describe()
         self.assertEqual(d["name"], SKILL_ID)
-        self.assertEqual(d["contract"], "1.0.0")
+        self.assertEqual(d["contract"], "1.1.0")
 
     def test_pinned_contract_and_package(self):
         self.assertEqual(check_contract(pinned_contract()), [])
@@ -356,7 +356,7 @@ class RunTests(Base):
             self.assertEqual(d["warnings"], [])
             self.assertEqual(d["commands"], [])
             self.assertEqual(r.commands, [])
-            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": pinned_version("subtitle"), "contract_version": "1.0.0", "output_hash": d["artifact"]["sha256"]})
+            self.assertEqual(d["provenance"], {"skill": "subtitle-skill", "skill_version": pinned_version("subtitle"), "contract_version": "1.1.0", "output_hash": d["artifact"]["sha256"]})
             self.assertNotIn("engine", d)
             self.assertNotIn("observation", d)
             text = Path(r.output).read_text(encoding="utf-8")
@@ -646,7 +646,7 @@ class RealSkillTests(unittest.TestCase):
 
     def test_contract_doctor_generate(self):
         a = self.adapter()
-        self.assertEqual(a.contract_version, "1.0.0")
+        self.assertEqual(a.contract_version, "1.1.0")
         self.assertEqual(a.drift(), [])
         doc = a.doctor()
         self.assertEqual(doc["skill"], CONTRACT_SKILL_ID)
