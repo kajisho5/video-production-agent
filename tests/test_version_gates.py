@@ -75,7 +75,7 @@ class VersionGateTests(unittest.TestCase):
             live = with_version(st.pinned_contract(), v)
             self.assertEqual(st.check_contract(live), [], v)
             self.assertEqual(st.contract_breaking_drift(live), [], v)
-        for v in ("0.12.0", "0.100.0", "1.1.0"):
+        for v in ("0.12.0", "0.100.0", "1.2.0"):
             self.assertTrue(st.check_contract(with_version(st.pinned_contract(), v)), v)
         # a real 0.8.x contract has no fonts_dir: inside the version range, but its capabilities / operations / parameters differ from the pin (fatal drift)
         old = with_version(st.pinned_contract(), "0.8.0")
