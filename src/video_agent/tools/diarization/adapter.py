@@ -5,7 +5,7 @@
          --min-speakers=N --max-speakers=N] [--audio-stream=N] --timeout=T -- <media>`
           ─(its own worker: pyannote.audio 4.x + speaker-diarization-community-1 from a local directory, offline)─→ turns JSON
 
-Protocol (diarization-skill's own contract, `diarization contract --json`, pinned from main in contract_0.3.5.json -- the repository
+Protocol (diarization-skill's own contract, `diarization contract --json`, pinned from main in contract_1.0.0.json -- the repository
 has no release tag, so the pin follows main as ingest-skill's and voice-enhance-skill's do):
     contract → `diarization contract --json`
     doctor   → `diarization doctor --json` (ok, ready.{diarize, assign, check}, checks, problems; exit 3 while not ok, never downloads)
@@ -43,7 +43,8 @@ SKILL_ID = PACKAGE_ID
 PREFIX = SKILL_ID + "/"
 TOOL_DIARIZE = "diarization/diarize"
 TURNS_SCHEMA = "diarization-skill/turns@1"
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.")
+# 1.0.0 (https://github.com/kajisho5/diarization-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): si contract-diff none; the gate takes 1.0.
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "0.3.", "1.0.")
 KIND = "speaker_turns"                          # the analysis kind (media/analysis.py) this adapter measures
 SPEAKER_RE = re.compile(r"^SPEAKER_\d{2,}$")
 ORDER_TOLERANCE = 0.01                          # diarization-skill's OVERLAP_TOLERANCE between consecutive exclusive turns (its turns.py)
@@ -72,7 +73,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "turns", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.3.5.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
