@@ -6,8 +6,8 @@
         `python <checkout>/scripts/strip.py --output=<out.png> --overwrite --json --timeout=T -- <image>`
           ─(ImageMagick 7 `magick` / ImageMagick 6 `convert`, or macOS `sips` for resize / pad)─→ a new image file
 
-Protocol (imagemagick-skill's own contract, `python scripts/_contract.py contract --json`, pinned in contract_1.0.0.json = the v0.10.0
-release, = main ab89bf9; 0.9.0 added the `alpha` tool and 0.10.0 the `brandkit` tool, neither of which this adapter runs):
+Protocol (imagemagick-skill's own contract, `python scripts/_contract.py contract --json`, pinned in contract_1.0.0.json = the v1.0.0
+release, = main 5a8eb00; 0.9.0 added the `alpha` tool and 0.10.0 the `brandkit` tool, neither of which this adapter runs):
     contract → `_contract.py contract --json` (contract_version 1.0; each tool's input_schema is derived from its own argparse parser)
     doctor   → `_contract.py doctor --json` (backends found, `tools.<name>.usable` per tool; never downloads anything)
     a tool   → exactly one JSON object: `{"ok": true, ...output_schema}`, or `{"ok": false, "reason": ...}` (exit 1), or the timeout shape
@@ -158,7 +158,7 @@ def check_contract(contract: Any) -> List[str]:
 
 
 def lifecycle(contract: Dict[str, Any]) -> Dict[str, str]:
-    """capability id → lifecycle (EXPERIMENTAL in 0.10.0) from the contract's `provides`."""
+    """capability id → lifecycle (from 1.0.0 STABLE for resize / pad / strip; EXPERIMENTAL before) from the contract's `provides`."""
     return {str(p.get("id")): str(p.get("lifecycle")) for p in contract.get("provides") or [] if isinstance(p, dict)}
 
 
