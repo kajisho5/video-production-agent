@@ -79,7 +79,8 @@ class MigrationTests(unittest.TestCase):
                 default_registry()
         msg = str(e.exception)
         self.assertIn("no pinned skill provides capability 'voice.denoise'", msg)
-        self.assertIn("voice-enhance 0.1.", msg)                                   # the pins it read
+        # the pins it read: the pinned release, inside the adapter's gate (not a literal 0.1.: voice-enhance-skill 1.0 widens it to 1.0.)
+        self.assertTrue(any(f"voice-enhance {v}" in msg for v in voice.SUPPORTED_SKILL_VERSIONS), msg)
         self.assertIn("voice.bleed_reduce, voice.dereverb, voice.isolate", msg)  # what is pinned under the same prefix
 
 
