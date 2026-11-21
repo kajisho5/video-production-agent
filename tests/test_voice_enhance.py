@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,6 +35,11 @@ import fake_voice_enhance  # noqa: E402
 FAKE = str(Path(__file__).resolve().parent / "fake_voice_enhance.py")
 MODES = ("FAKE_VOICE_MODE", "FAKE_VOICE_ENGINES", "FAKE_VOICE_RESAMPLE", "FAKE_VOICE_CONTRACT", "FAKE_VOICE_CALLS", "VIDEO_AGENT_VOICE_ENHANCE_DIR")
 AP_OPS = ("CUT", "MIX", "NOISE_REDUCTION", "NORMALIZE", "GAIN", "CONCAT")
+
+
+def pinned_lifecycle() -> dict:
+    """capability id → lifecycle in the pinned contract (voice-enhance-skill 1.0.0: bleed_reduce STABLE, isolate / dereverb EXPERIMENTAL)."""
+    return {p["id"]: p["lifecycle"] for p in json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))["provides"]}
 
 
 def fake_skill() -> CliSkill:
@@ -338,6 +344,18 @@ class RequirementTests(unittest.TestCase):
         self.assertIn("opt-in on the request", str(cm.exception))
         self.assertFalse([k for k in BRIEF_REQUIREMENT_KEYS if k.startswith("voice.")], "a brief never turns an EXPERIMENTAL op on")
 
+    def test_lifecycle_is_the_pins_and_the_approval_floor_stays_confirm(self):
+        # ADR-073 addendum 1: params.lifecycle and the reason's clause are read from the pinned provides[], never a literal; STABLE keeps CONFIRM
+        from video_agent.agent import voice
+        self.assertEqual(voice.LIFECYCLE, {op: pinned_lifecycle()[op] for op in OPERATIONS})
+        self.assertEqual(APPROVAL_KEYS, {op: (f"{op}.approval", "CONFIRM") for op in OPERATIONS})
+        for life in ("STABLE", "EXPERIMENTAL"):
+            with unittest.mock.patch.dict(voice.LIFECYCLE, {"voice.bleed_reduce": life}):
+                note = voice.lifecycle_note("voice.bleed_reduce")
+            self.assertIn(f"marks it {life}", note)
+            self.assertIn("always needs confirmation", note)
+            self.assertEqual("EXPERIMENTAL" in note, life == "EXPERIMENTAL")
+
     def test_registry_and_compiler(self):
         from video_agent.skills import default_registry
         r = default_registry()
@@ -370,9 +388,9 @@ class PipelineTests(_Base):
         self.assertEqual((iso["input"], iso["output"], iso["atten_lim_db"]), (f"{list(d['assets'])[0]}_dereverb", f"{list(d['assets'])[0]}_isolate", 20.0))
         for subj in ("voice.dereverb", "voice.isolate"):
             dec = next(x for x in d["decisions"] if x["subject"] == subj)
-            self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["params"]["lifecycle"]), ("TRANSFORM", "CONFIRM", "USER", "EXPERIMENTAL"),
-                             "an explicit request still needs confirmation: EXPERIMENTAL")
-            self.assertIn("EXPERIMENTAL", dec["reason"])
+            self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["params"]["lifecycle"]), ("TRANSFORM", "CONFIRM", "USER", pinned_lifecycle()[subj]),
+                             "an explicit request still needs confirmation")
+            self.assertIn(f"marks it {pinned_lifecycle()[subj]}", dec["reason"])
         self.assertEqual(r["out"]["status"], "WAITING_FOR_APPROVAL")
         self.assertEqual(self.op_calls(), [], "nothing runs before the confirmation")
         out = svc.render(r["ir"], r["path"], approve=["all"])
@@ -463,6 +481,15 @@ class PipelineTests(_Base):
         self.assertEqual([c[0] for c in self.op_calls()], ["bleed-reduce", "isolate", "isolate"])
         dec = next(x for x in d["decisions"] if x["subject"] == "voice.bleed_reduce")
         self.assertEqual((dec["type"], dec["approval"]), ("TRANSFORM", "CONFIRM"))
+        # ADR-073 addendum 1: the lifecycle and its explanation come from the pin (STABLE from voice-enhance-skill 1.0.0); the approval stays CONFIRM
+        self.assertEqual(dec["params"]["lifecycle"], pinned_lifecycle()["voice.bleed_reduce"])
+        self.assertIn(f"marks it {dec['params']['lifecycle']}", dec["reason"])
+        self.assertIn("always needs confirmation", dec["reason"])
+        if dec["params"]["lifecycle"] == "STABLE":
+            self.assertNotIn("EXPERIMENTAL", dec["reason"])
+        self.assertIn(f"{dec['decision']} -- {dec['params']['lifecycle']}, needs confirmation", d["plan"]["summary"])
+        iso = next(x for x in d["decisions"] if x["subject"] == "voice.isolate")
+        self.assertEqual((iso["approval"], iso["params"]["lifecycle"]), ("CONFIRM", pinned_lifecycle()["voice.isolate"]))
         from video_agent.agent.audio import audio_subjects
         self.assertEqual(audio_subjects(d)["programme_audio"]["channels"], 1)
         self.assertEqual(out["execution"]["skipped"], [])

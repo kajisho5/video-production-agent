@@ -555,7 +555,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                 evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
             steps.append(st)
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
-            summary.append(d.decision + " -- EXPERIMENTAL, needs confirmation")
+            summary.append(f"{d.decision} -- {d.params.get('lifecycle')}, needs confirmation")
 
     def image_insert_steps(subject: str, sources: List[str]) -> None:
         """ADR-070: the still of a `video.image_insert` decision → a silent clip at the picture's own frame / rate (video_image_insert),
@@ -642,7 +642,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     outputs=outs, depends_on=[], evidence=evidence_of(ids), decision_ids=ids, decision_id=bleed_dec.id)
                 steps.append(st)
                 bleed_step.append(st.id)
-                summary.append(bleed_dec.decision + " -- EXPERIMENTAL, needs confirmation")
+                summary.append(f"{bleed_dec.decision} -- {bleed_dec.params.get('lifecycle')}, needs confirmation")
             current, last_step = f"{asset_id}_bleed_reduce", bleed_step[0]
         for op in VOICE_PER_INPUT:
             d = next((x for x in voice_decs.get(op) or [] if x.params.get("asset_id") == asset_id), None)
@@ -662,7 +662,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             steps.append(st)
             current, last_step = out_id, st.id
             scope_of[asset_id] = scope
-            summary.append(d.decision + " -- EXPERIMENTAL, needs confirmation")
+            summary.append(f"{d.decision} -- {d.params.get('lifecycle')}, needs confirmation")
         return current, last_step
 
     def audio_steps(subject: str) -> None:

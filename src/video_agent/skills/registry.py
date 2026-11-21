@@ -516,13 +516,13 @@ def default_registry() -> SkillRegistry:
                          {"assets": "media", "observation": "ingest_clip"}, ["ingest"], "MEDIUM", True, "CONFIRM", ["ingest/offload"]))
     # ADR-073 (roadmap step 9, voice-enhance-skill's roadmap step 8; replacing ADR-057's phase-2 `voice_enhancement`): one skill per operation,
     # each needing ffmpeg-skill (the Skill's media engine), the package and the Skill's own per-operation readiness (`voice-enhance:<TYPE>`,
-    # from its doctor: the engine installed). CONFIRM always: every operation is EXPERIMENTAL in voice-enhance-skill 0.1.0.
+    # from its doctor: the engine installed). CONFIRM always (ADR-073 addendum 1): BLEED_REDUCE is STABLE from voice-enhance-skill 1.0.0, ISOLATE / DEREVERB EXPERIMENTAL.
     for name, typ, desc, inputs in (
         ("voice_isolate", "ISOLATE", "AI voice isolation (DeepFilterNet3): noise and background removed, a 48 kHz mono stem; EXPERIMENTAL",
          {"asset": "audio", "atten_lim_db": "float"}),
         ("voice_dereverb", "DEREVERB", "Dereverberation (WPE, nara_wpe): late room reverberation removed at the stream's own rate and channels; EXPERIMENTAL",
          {"asset": "audio", "taps": "int", "delay": "int", "iterations": "int"}),
-        ("voice_bleed_reduce", "BLEED_REDUCE", "Mic-bleed reduction between time-aligned microphone tracks (crosstalk, no weights): one mono track per mic; EXPERIMENTAL",
+        ("voice_bleed_reduce", "BLEED_REDUCE", "Mic-bleed reduction between time-aligned microphone tracks (crosstalk, no weights): one mono track per mic; STABLE",
          {"assets": "audio[]", "dominance_db": "float"}),
     ):
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "voice-enhance", f"voice-enhance:{typ}"], "MEDIUM", True, "CONFIRM", _pinned(name)))
@@ -541,9 +541,9 @@ def default_registry() -> SkillRegistry:
         r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "image"}, ["imagemagick-skill", f"imagemagick-skill:{typ}"], "LOW", True, "CONFIRM", [tool]))
     # ADR-085 (roadmap step 9 dubbing; dubbing-skill's roadmap step 9, agent side, as its ADR-012 hands it over): the programme's dialogue replaced by the
     # user's translated cues, spoken by a local engine over the programme's own sound. Needs ffmpeg-skill (the Skill's media engine), the package and its
-    # own readiness of DUB (`dubbing:DUB`, from its doctor: the engine installed). CONFIRM always: EXPERIMENTAL, and a synthetic voice replaces someone's words.
+    # own readiness of DUB (`dubbing:DUB`, from its doctor: the engine installed). CONFIRM always: a synthetic voice replaces someone's words (DUB is STABLE from dubbing-skill 1.0.0, ADR-085 addendum 1).
     r.register(SkillSpec("speech_dub", "1.0", "Dub the programme's dialogue: the user's translated cues spoken by a local TTS engine, fitted to each source segment, over the "
-                         "programme's own sound (ducked), picture stream-copied; a reference voice only with its owner's consent record; EXPERIMENTAL",
+                         "programme's own sound (ducked), picture stream-copied; a reference voice only with its owner's consent record; STABLE",
                          {"asset": "video", "cues": "srt|vtt|json", "lang": "bcp47"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg-skill", "dubbing", "dubbing:DUB"], "HIGH", False, "CONFIRM",
                          ["dubbing/dub"]))
     # ADR-087 (publish-skill's roadmap step 6, agent side; replacing ADR-057's phase-2 `platform_publish`): a QC-passed deliverable uploaded with its

@@ -80,11 +80,11 @@ _COMPONENTS: Tuple[Component, ...] = (
                    "needs the fetch extra (yt-dlp), and the agent hands URL inputs to it (ADR-059)"),
     Component("voice-enhance", "voice-enhance-skill", "audio", "pip", "active", owns=("声の分離(AI)", "残響除去", "マイク被り低減"),
               package_install=_clone_pip("voice-enhance-skill"),
-              note="isolate / dereverb / bleed-reduce ship (README, all EXPERIMENTAL); the core is stdlib-only and "
+              note="isolate / dereverb / bleed-reduce ship (README: bleed-reduce STABLE, isolate / dereverb EXPERIMENTAL); the core is stdlib-only and "
                    "each engine is its own install (deep-filter + the DeepFilterNet3 model, `[wpe]`, `[bleed]`) that `voice-enhance doctor` names (ADR-073)"),
     Component("dubbing", "dubbing-skill", "audio", "pip", "active", owns=("AIナレーション(TTS)", "吹替・声の置換", "音声解説"),
               package_install=_clone_pip("dubbing-skill"),
-              note="narrate / dub / describe ship (README, all EXPERIMENTAL); the core is stdlib-only and each "
+              note="narrate / dub / describe ship (README: dub STABLE, narrate / describe EXPERIMENTAL); the core is stdlib-only and each "
                    "engine is its own install (Chatterbox in its own venv, the VOICEVOX / Style-Bert-VITS2 apps, Kokoro) that `dubbing doctor` names; the agent runs DUB (ADR-085)"),
     Component("sound-design", "sound-design-skill", "audio", "pip", "active", owns=("BGM生成", "効果音"), package_install=_clone_pip("sound-design-skill"),
               note="library-pick / generate-bgm ship (README, EXPERIMENTAL); the music bed of the mix "
