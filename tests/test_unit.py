@@ -7108,6 +7108,24 @@ class ChildLaunchHardeningTests(unittest.TestCase):
         self.assertEqual(cmd, [os.path.abspath(os.path.join("tools", "x")), "rel.txt", "--flag=v"], "argv[0] absolute, the arguments unchanged")
         self.assertEqual(safe_command([sys.executable, "a"]), [sys.executable, "a"])
 
+    def test_only_fully_qualified_entries_count_as_absolute(self):
+        """A Windows path that depends on the current drive (`\\x`) or its current directory (`C:x`) is not absolute here,
+        although os.path.isabs accepts `\\x` before Python 3.13; drive-qualified and UNC paths are."""
+        from video_agent.tools.discovery import is_fully_qualified, resolve_executable, safe_pythonpath
+        self.assertFalse(is_fully_qualified(""))
+        self.assertFalse(is_fully_qualified("rel"))
+        if os.name == "nt":
+            for p in ("\\x", "/x", "C:x"):
+                self.assertFalse(is_fully_qualified(p), p)
+            for p in ("C:\\x", "c:/x", "\\\\host\\share\\x"):
+                self.assertTrue(is_fully_qualified(p), p)
+            self.assertEqual(safe_pythonpath(os.pathsep.join(["\\mods", "C:mods", "C:\\ok"])), "C:\\ok")
+            self.assertEqual(resolve_executable("\\tools\\x.exe"), os.path.abspath("\\tools\\x.exe"))
+            self.assertTrue(is_fully_qualified(resolve_executable("\\tools\\x.exe")))
+        else:
+            self.assertTrue(is_fully_qualified("/x"))
+            self.assertEqual(safe_pythonpath(os.pathsep.join(["/ok", "rel", ""])), "/ok")
+
     def test_contract_and_help_reads_run_in_the_checkout(self):
         from video_agent.tools.ffmpeg_skill import contract_check
         from video_agent.tools.ffmpeg_skill.locate import FfmpegSkill

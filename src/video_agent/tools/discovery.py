@@ -68,10 +68,22 @@ TEMP_ENV = ("TMPDIR", "TEMP", "TMP")   # where tempfile (and most programs) put 
 _JOB_TEMP: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar("video_agent_job_temp", default=None)
 
 
+def is_fully_qualified(path: str) -> bool:
+    """An absolute path that does not depend on the current directory or drive: on Windows a drive with a root (`C:\\x`)
+    or a UNC path (`\\\\host\\share\\x`), never `\\x` (the current drive's root) or `C:x` (relative to C:'s current
+    directory), which `os.path.isabs` accepts before Python 3.13 (ADR-127)."""
+    if not path or not os.path.isabs(path):
+        return False
+    if os.name == "nt":
+        drive, rest = os.path.splitdrive(path)
+        return bool(drive) and rest[:1] in ("\\", "/")
+    return True
+
+
 def safe_pythonpath(value: str) -> str:
     """PYTHONPATH with only its absolute entries: an empty entry is the current directory and a relative one resolves
     against it, so either would let a module in the folder the agent was started in shadow the real one (ADR-127)."""
-    return os.pathsep.join(p for p in value.split(os.pathsep) if p and os.path.isabs(p))
+    return os.pathsep.join(p for p in value.split(os.pathsep) if is_fully_qualified(p))
 
 
 def child_env(extra: Optional[Mapping[str, str]] = None, base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -128,7 +140,7 @@ def safe_which(name: str, path: Optional[str] = None) -> Optional[str]:
         return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
     dirs = (os.environ.get("PATH", os.defpath) if path is None else path).split(os.pathsep)
     for d in dirs:
-        if not d or not os.path.isabs(d):
+        if not is_fully_qualified(d):
             continue
         for n in _exe_names(name):
             p = os.path.join(d, n)
@@ -141,10 +153,10 @@ def resolve_executable(program: str, path: Optional[str] = None) -> str:
     """The absolute path a child's argv[0] is launched by (ADR-127): a path is made absolute against the agent's working
     directory, a bare name is looked up by `safe_which`. A name found nowhere raises FileNotFoundError, as Popen would --
     never a lookup that falls back to the current directory."""
-    if os.path.isabs(program):
+    if is_fully_qualified(program):
         return program
-    if os.sep in program or (os.altsep and os.altsep in program):
-        return os.path.abspath(program)
+    if os.path.isabs(program) or os.sep in program or (os.altsep and os.altsep in program):
+        return os.path.abspath(program)   # a path, made absolute against the agent's working directory (and drive)
     found = safe_which(program, path)
     if found is None:
         raise FileNotFoundError(errno.ENOENT, f"executable not found on PATH (the current directory is never searched): {program}", program)
