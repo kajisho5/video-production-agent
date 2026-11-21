@@ -95,10 +95,10 @@
     },
     "publish": {
       "repo": "kajisho5/publish-skill",
-      "tag": "v0.2.5",
-      "sha": "8c068f894a0ba18c0440a778177f864428e8e6e6",
-      "version": "0.2.5",
-      "pin": "src/video_agent/tools/publish/contract_0.2.5.json"
+      "tag": "v1.0.0",
+      "sha": "ec82a9634e638279d0eba7e4fc370c5650b9b944",
+      "version": "1.0.0",
+      "pin": "src/video_agent/tools/publish/contract_1.0.0.json"
     },
     "qc": {
       "repo": "kajisho5/qc-skill",
