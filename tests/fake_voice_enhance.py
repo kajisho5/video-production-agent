@@ -64,6 +64,8 @@ def _error(code: str, message: str, details=None) -> int:
 def _engines() -> dict:
     reg = _contract()["engines"]["registered"]
     missing = set() if ENGINES in ("all", "model") else set(reg) if ENGINES == "none" else {e.strip() for e in ENGINES.split(",")}
+    # voice-enhance 1.1.0 (ADR-015): opt-in engines (dpdfnet) are not installed by default, as on a real install
+    missing |= set(_contract()["engines"].get("opt_in") or [])
     out = {}
     for eid, e in reg.items():
         row = dict(e)
@@ -73,7 +75,7 @@ def _engines() -> dict:
         elif eid == "deepfilternet" and ENGINES == "model":
             row.update(status="MISSING", version="0.5.6", missing="model", detail="VOICE_ENHANCE_DFN_MODEL is not set", install=e.get("install"))
         else:
-            row.update(status="OK", version={"deepfilternet": "0.5.6", "nara_wpe": "0.0.11", "crosstalk": "0.1.0"}[eid], install=None, detail="fake")
+            row.update(status="OK", version={"deepfilternet": "0.5.6", "nara_wpe": "0.0.11", "crosstalk": "0.1.0"}.get(eid, "0.0.0"), install=None, detail="fake")
         out[eid] = row
     return out
 
@@ -84,11 +86,13 @@ def doctor(argv) -> int:
     resample = os.environ.get("FAKE_VOICE_RESAMPLE") == "1"
     fs = {"directory": next((a.split("=", 1)[1] for a in argv if a.startswith("--ffmpeg-skill=")), None), "version": "2.22.5-fake", "contract_version": "1.0",
           "problems": [], "warnings": [], "optional_flags": {"audio": {"sample_rate": resample}}, "status": "OK"}
-    unavailable = [e for e, r in engines.items() if r["status"] != "OK"]
+    opt_in = set(_contract()["engines"].get("opt_in") or [])
+    unavailable = [e for e, r in engines.items() if r["status"] != "OK" and e not in opt_in]
+    unavailable_opt_in = [e for e, r in engines.items() if r["status"] != "OK" and e in opt_in]   # listed, never degrades the status (skill ADR-015)
     _emit({"schema": "voice-enhance/doctor@1", "ok": True, "status": "degraded" if unavailable else "ok", "skill": {"id": "voice-enhance", "version": _contract()["version"]},
            "offline": "--offline" in argv, "checks": {"python": {"status": "OK"}, "ffmpeg_skill": fs, "engines": engines, "operations": ops,
                                                        "helpers": {"remux": {"implemented": True, "ready": True}}},
-           "unavailable_engines": unavailable, "problems": [f"engine {e}: MISSING" for e in unavailable], "warnings": []})
+           "unavailable_engines": unavailable, **({"unavailable_opt_in_engines": unavailable_opt_in} if opt_in else {}), "problems": [f"engine {e}: MISSING" for e in unavailable], "warnings": []})
     return 0
 
 
