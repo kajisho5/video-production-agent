@@ -5,7 +5,7 @@
         `publish upload --json --platform=P [metadata] -- <file>`                      (dry run: no network, prints the confirm_token)
         `publish upload --json --platform=P [metadata] --confirm=<token> -- <file>`    (the upload: only with the token a human typed)
 
-Protocol (publish-skill's own contract, `publish contract --json`, pinned from the v0.2.0 tag in contract_1.0.0.json, one sorted compact
+Protocol (publish-skill's own contract, `publish contract --json`, pinned from the v1.0.0 tag in contract_1.0.0.json, one sorted compact
 line; before v0.1.0 the repository had no release tag and the pin followed main as dubbing-skill's does, ADR-085):
     platforms  → `platforms.registered.<id>` (implemented, metadata_fields) and `tools[publish/upload].uploaders.<id>`: only a platform whose
                  uploader exists on the pinned main is offered; a platform added later is refused until the pin is renewed
