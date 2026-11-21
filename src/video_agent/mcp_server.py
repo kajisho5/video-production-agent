@@ -110,9 +110,17 @@ TOOLS: List[Dict[str, Any]] = [
     {"name": "reject", "description": "Reject decisions with the user's reason; then call revise.",
      "inputSchema": {"type": "object", "required": ["project", "decision", "reason"], "properties": {
          "project": _PROJECT, "decision": _STR, "reason": _STR, "by": _STR}}},
-    {"name": "render", "description": "Execute an approved plan through the skills, then QA. dry_run shows the commands without running them. Pending CONFIRM decisions block it: approve them first.",
+    {"name": "preflight", "description": (
+        "Check an approved plan's deliverables before rendering, without encoding anything: the output directory and free disk space, the "
+        "preset / platform and the platform limits the contracts document, every input still there and unchanged, fonts and sidecars, the "
+        "loudness target, the tools. Returns {ok, problems: [{code, severity, message, field}], estimates, unverified}. render runs it too."),
+     "inputSchema": {"type": "object", "required": ["project"], "properties": {"project": _PROJECT}}},
+    {"name": "render", "description": ("Execute an approved plan through the skills, then QA. dry_run shows the commands without running them. Pending CONFIRM "
+                                       "decisions block it: approve them first. The preflight runs first and its errors refuse the render; skip_preflight "
+                                       "(recorded in the run) only after the user agreed to render despite them."),
      "inputSchema": {"type": "object", "required": ["project"], "properties": {
-         "project": _PROJECT, "dry_run": {"type": "boolean"}, "resume": {"type": "string", "description": "job id or last"}}}},
+         "project": _PROJECT, "dry_run": {"type": "boolean"}, "resume": {"type": "string", "description": "job id or last"},
+         "skip_preflight": {"type": "boolean", "description": "render even when the preflight reports errors (recorded in the run)"}}}},
     {"name": "check", "description": "Probe an output file and check platform compliance (loudness, codec, resolution).",
      "inputSchema": {"type": "object", "required": ["output"], "properties": {
          "output": _STR, "platform": {"type": "string", "description": "e.g. youtube (default custom)"}, "qc": {"type": "boolean"}}}},
@@ -261,7 +269,10 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
     if name == "reject":
         return cmd("reject", [f"--decision={need('decision')}", f"--reason={need('reason')}", *opt("--by", "by")], [need("project")])
     if name == "render":
-        return cmd("render", [*(["--dry-run"] if a.get("dry_run") else []), *opt("--resume", "resume")], [need("project")])
+        return cmd("render", [*(["--dry-run"] if a.get("dry_run") else []), *opt("--resume", "resume"), *(["--skip-preflight"] if a.get("skip_preflight") else [])],
+                   [need("project")])
+    if name == "preflight":
+        return cmd("preflight", [], [need("project")])
     if name == "check":
         return cmd("check", [*opt("--platform", "platform"), *(["--qc"] if a.get("qc") else [])], [need("output")])
     if name == "artifacts":
