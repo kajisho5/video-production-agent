@@ -34,7 +34,7 @@ MOVED_JOBS = {"media_ingest": "the card offload is implemented (skill media_offl
                               "with --set ingest.dest=<dir> (once per drive); the plan asks you to confirm before anything is copied",
              # ADR-073: voice-enhance-skill's adapter (roadmap step 9)
              "voice_enhancement": "voice enhancement is implemented (skills voice_isolate / voice_dereverb / voice_bleed_reduce, ADR-073): with --set audio.production=true, "
-                                  "ask for --set voice.isolate=true, voice.dereverb=true and / or voice.bleed_reduce=true (with audio.mix=true); every op needs confirmation (EXPERIMENTAL)",
+                                  "ask for --set voice.isolate=true, voice.dereverb=true and / or voice.bleed_reduce=true (with audio.mix=true); every op needs confirmation",
              # ADR-086: diarization-skill's adapter (roadmap step 9; diarization-skill roadmap step 5)
              "speaker_diarization": "speaker diarization is implemented (analysis kind speaker_turns, ADR-086): ask for --set speakers.diarize=true "
                                     "(+ speakers.num_speakers, or speakers.min_speakers / speakers.max_speakers); without diarization-skill the plan hands it off",

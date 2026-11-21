@@ -1,7 +1,7 @@
 """Voice enhancement on the audio production path (ADR-073): what the agent plans through voice-enhance-skill, and where in the
 audio chain it runs.
 
-    Requirement (`--set voice.<op>=true`, explicit only) → Decision (always CONFIRM: every op is EXPERIMENTAL) → step → IR
+    Requirement (`--set voice.<op>=true`, explicit only) → Decision (always CONFIRM, whatever the op's lifecycle) → step → IR
     audio operation `voice.<op>` → compiler → voice-enhance-skill (its own engine worker; every media step through the media engine Skill)
 
 Vocabulary, decisions and arithmetic only, no execution:
@@ -26,14 +26,19 @@ Vocabulary, decisions and arithmetic only, no execution:
   Without voice-enhance-skill the step has no tool and the plan's handoff names the package (ADR-051).
 - **Shape of the result**: ISOLATE and BLEED_REDUCE write mono (QA expects one channel downstream unless a later channel operation says
   otherwise); ISOLATE at 48 kHz. Every op keeps the timeline (sample-aligned), ISOLATE ending up to 40 ms early, which the audio QA's
-  duration tolerance absorbs."""
+  duration tolerance absorbs.
+- **Lifecycle** (ADR-073 addendum 1): each decision's `params.lifecycle` and its reason are read from the pinned contract's `provides[]`
+  (voice-enhance-skill 1.0.0: `voice.bleed_reduce` STABLE, `voice.isolate` and `voice.dereverb` EXPERIMENTAL), never written here. The
+  approval floor stays CONFIRM for every op: STABLE covers the Skill's interface, not the sound (every op is measured on synthetic
+  fixtures only), and each op rewrites the recorded speech that becomes the deliverable."""
 from __future__ import annotations
 
 import os
 from typing import Any, Callable, Dict, List, Optional
 
 from ..models import Requirement
-from ..tools.voice_enhance.adapter import DOCTOR_CODES, ISOLATE_RATE, MAX_TRACKS, PARAMETERS, RATE_REFUSAL, TOOL_BLEED_REDUCE, TOOL_DEREVERB, TOOL_ISOLATE
+from ..tools.voice_enhance.adapter import (DOCTOR_CODES, ISOLATE_RATE, MAX_TRACKS, PARAMETERS, RATE_REFUSAL, TOOL_BLEED_REDUCE, TOOL_DEREVERB, TOOL_ISOLATE,
+                                           lifecycle as contract_lifecycle, pinned_contract)
 from .audio import PROGRAMME_AUDIO, SWITCH as AUDIO_SWITCH
 from .editing import EditRequirementError, _bool
 
@@ -51,7 +56,9 @@ SKILL_OF = {k: v["skill"] for k, v in OPERATIONS.items()}
 MONO_OUTPUT = ("voice.bleed_reduce", "voice.isolate")
 REFINEMENTS: Dict[str, Any] = {f"{op}.{name}": (op, name, spec) for op, o in OPERATIONS.items() for name, spec in PARAMETERS[o["tool"]].items()}
 REQUIREMENT_KEYS = tuple(OPERATIONS) + tuple(REFINEMENTS)
-# always CONFIRM (floor CONFIRM: the explicit requirement does not waive it -- every op is EXPERIMENTAL in voice-enhance-skill 0.1.0)
+# each op's lifecycle as the pinned contract's provides[] states it (the IR op type is the capability id), never a literal here
+LIFECYCLE: Dict[str, str] = {op: contract_lifecycle(pinned_contract()).get(op) or "UNKNOWN" for op in OPERATIONS}
+# always CONFIRM (floor CONFIRM: the explicit requirement does not waive it, and neither does a STABLE lifecycle -- ADR-073 addendum 1)
 APPROVAL_KEYS = {op: (f"{op}.approval", "CONFIRM") for op in OPERATIONS}
 ISOLATE_SHORTFALL_S = 0.04   # voice-enhance ADR-007: the isolate stem ends 1440..1920 samples (30..40 ms) before its input
 
@@ -140,6 +147,17 @@ def _words(params: Dict[str, Any]) -> str:
     return ", ".join(f"{k} {v:g}" for k, v in params.items()) if params else "the engine's defaults"
 
 
+def lifecycle_note(op: str) -> str:
+    """The reason's closing clause: the op's pinned lifecycle and why it still needs confirmation."""
+    life = LIFECYCLE[op]
+    if life == "STABLE":
+        return ("voice-enhance-skill marks it STABLE (its interface is covered by the Skill's 1.0 compatibility promise; the sound is measured on "
+                "synthetic fixtures only, not yet on real recordings), and it rewrites the recorded speech, so it still always needs confirmation "
+                "and the result should be listened to")
+    return (f"voice-enhance-skill marks it {life} (measured on synthetic fixtures only, not yet on real recordings), so it always needs "
+            "confirmation and the result should be listened to")
+
+
 def decide_voice(eng: Any, vreq: Dict[str, Any], analysis: Any, audio_assets: List[Any], mix_ok: bool, mixed_inputs: List[str], caps: Dict[str, Any],
                  evidence_of_asset: Callable[[str], List[str]], approval_for: Callable[..., Dict[str, Any]], cap_block: Callable[[str, str], Any]) -> None:
     """One decision per requested op and input (BLEED_REDUCE: one for all mixed inputs). TRANSFORM with a CONFIRM floor, or BLOCK with the
@@ -184,11 +202,10 @@ def decide_voice(eng: Any, vreq: Dict[str, Any], analysis: Any, audio_assets: Li
         ev = [r.id for r in reqs_of(op)] + [e for a in inputs for e in evidence_of_asset(a)]
         eng.decide(subject=op, type="TRANSFORM", decision=what, reason=reason, confidence=1.0, evidence=sorted(set(ev), key=ev.index), risk=OPERATIONS[op]["risk"],
                    approval=approval_for(op, floor="CONFIRM", keys=APPROVAL_KEYS), provenance="USER",
-                   params={"asset_id": subject, **({"inputs": inputs} if op == "voice.bleed_reduce" else {}), **params, "lifecycle": "EXPERIMENTAL"},
+                   params={"asset_id": subject, **({"inputs": inputs} if op == "voice.bleed_reduce" else {}), **params, "lifecycle": LIFECYCLE[op]},
                    requirements=reqs_of(op), serves_intent=None)
         cap_block(OPERATIONS[op]["skill"], f"capability.{OPERATIONS[op]['skill']}")
 
-    experimental = "voice-enhance-skill marks it EXPERIMENTAL (measured on synthetic fixtures only, not yet on real Japanese speech), so it always needs confirmation and the result should be listened to"
     if "voice.bleed_reduce" in ops:
         op = "voice.bleed_reduce"
         by_id = {a.id: a for a in audio_assets}
@@ -213,7 +230,7 @@ def decide_voice(eng: Any, vreq: Dict[str, Any], analysis: Any, audio_assets: Li
             transform(op, PROGRAMME_AUDIO, ids, f"reduce the cross-talk between {' + '.join(ids)} ({_words(ops[op])})",
                       f"user asked for bleed reduction ({reqs_of(op)[0].source}); voice-enhance-skill's crosstalk engine (signal processing, no weights) estimates how much "
                       f"of each talker every other microphone hears and removes it linearly, on the mixed inputs as recorded (time-aligned, uncut), before the mix; "
-                      f"one mono track per input; {experimental}")
+                      f"one mono track per input; {lifecycle_note(op)}")
     for op in PER_INPUT:
         if op not in ops:
             continue
@@ -230,9 +247,9 @@ def decide_voice(eng: Any, vreq: Dict[str, Any], analysis: Any, audio_assets: Li
             elif op == "voice.dereverb":
                 transform(op, a.id, [a.id], f"remove room reverberation from {a.id} ({_words(ops[op])})",
                           f"user asked for dereverberation ({reqs_of(op)[0].source}); voice-enhance-skill runs WPE (nara_wpe, signal processing, no weights) at the "
-                          "stream's own rate and channels, after the cut and before every level / spectrum operation; the length is kept; " + experimental)
+                          "stream's own rate and channels, after the cut and before every level / spectrum operation; the length is kept; " + lifecycle_note(op))
             else:
                 transform(op, a.id, [a.id], f"isolate the voice of {a.id} ({_words(ops[op])})",
                           f"user asked for voice isolation ({reqs_of(op)[0].source}); voice-enhance-skill runs DeepFilterNet3 (local, offline) and writes a 48 kHz mono "
                           "stem that removes everything that is not speech, music under the voice included; after the cut and the dereverberation, before every "
-                          "level / spectrum operation; the stem ends up to 40 ms early; " + experimental)
+                          "level / spectrum operation; the stem ends up to 40 ms early; " + lifecycle_note(op))

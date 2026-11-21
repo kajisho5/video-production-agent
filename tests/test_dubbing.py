@@ -288,7 +288,9 @@ class RequirementTests(_Base):
         with self.assertRaises(EditRequirementError) as cm:
             parse_dub_requirements(m)
         self.assertIn("opt-in on the request", str(cm.exception))
-        self.assertEqual(APPROVAL_KEYS[OP][1], "CONFIRM")
+        self.assertEqual(APPROVAL_KEYS[OP][1], "CONFIRM")   # STABLE from dubbing-skill 1.0.0 does not lower the floor (ADR-085 addendum 1)
+        from video_agent.agent import dubbing
+        self.assertEqual(dubbing.LIFECYCLE, pinned_dub_lifecycle(), "read from the pinned provides[], never a literal")
 
     def test_compiler_lowering(self):
         op = {"type": OP, "asset": "a", "input": "a_trim", "output": "a_dub", "cues": self.cues, "lang": "en", "duck": 6.0, "decision_ids": ["d"]}
@@ -322,8 +324,11 @@ class PipelineTests(_Base):
         self.assertEqual((op["input"], op["output"], op["cues"], op["lang"], op["engine"], op["duck"]), (f"{aid}_trim", f"{aid}_dub", self.cues, "en", "style_bert_vits2", 9.0))
         self.assertIn(str(Path(self.cues).parent), d["execution"]["allowed_inputs"])
         dec = next(x for x in d["decisions"] if x["subject"] == OP)
-        self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["params"]["lifecycle"]), ("TRANSFORM", "CONFIRM", "USER", "EXPERIMENTAL"),
-                         "an explicit request still needs confirmation")
+        self.assertEqual((dec["type"], dec["approval"], dec["provenance"], dec["params"]["lifecycle"]), ("TRANSFORM", "CONFIRM", "USER", pinned_dub_lifecycle()),
+                         "an explicit request still needs confirmation, STABLE or not (ADR-085 addendum 1)")
+        self.assertIn(f"marks DUB {pinned_dub_lifecycle()}", dec["reason"])
+        self.assertIn("always needs confirmation", dec["reason"])
+        self.assertIn(f"{dec['decision']} -- {pinned_dub_lifecycle()}, needs confirmation", d["plan"]["summary"])
         self.assertIn("never translates", dec["reason"])
         self.assertEqual(r["out"]["status"], "WAITING_FOR_APPROVAL")
         self.assertEqual(self.dub_calls(), [], "nothing runs before the confirmation")

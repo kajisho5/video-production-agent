@@ -1,7 +1,7 @@
 """Dubbing the programme's dialogue (ADR-085; dubbing-skill roadmap step 9, agent side): dubbing-skill's DUB, called as its ADR-012 hands it over.
 
-    Requirement (`--set dub.cues=<translated cues> dub.lang=<L>`, explicit only) → Decision `speech.dub` (always CONFIRM: EXPERIMENTAL, a
-    synthetic voice replaces a person's words) → step `speech_dub` → IR audio operation `speech.dub` → compiler → dubbing-skill `dub`
+    Requirement (`--set dub.cues=<translated cues> dub.lang=<L>`, explicit only) → Decision `speech.dub` (always CONFIRM: a
+    synthetic voice replaces a person's words, whatever DUB's lifecycle) → step `speech_dub` → IR audio operation `speech.dub` → compiler → dubbing-skill `dub`
     (its own engine worker; every media step through the media engine Skill)
 
 Vocabulary, decisions and checks only, no execution:
@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models import Requirement
 from ..tools.dubbing.adapter import (CONSENT_EXTENSIONS, CUES_EXTENSIONS, DOCTOR_CODES, LANG_RE, REFERENCE_EXTENSIONS, VOICE_RE, readiness_code, engines as contract_engines,
-                                     parameters as contract_parameters, unfit_policies)
+                                     lifecycle as contract_lifecycle, parameters as contract_parameters, pinned_contract, unfit_policies)
 from .audio import SWITCH as AUDIO_SWITCH
 from .editing import EditRequirementError, _bool
 
@@ -46,7 +46,9 @@ NUMBERS = {f"dub.{k}": k for k in contract_parameters()}   # dub.duck / dub.voic
 REQUIREMENT_KEYS = ("dub.cues", "dub.lang", "dub.source_cues", "dub.engine", "dub.voice", "dub.on_unfit", "dub.reference", "dub.consent") + tuple(NUMBERS)
 # the IR operation's parameters (beside type / asset / input / output / temporal_scope / decision_ids): what the compiler copies by name
 PARAMS = ("cues", "lang", "source_cues", "engine", "voice", "on_unfit", "reference", "consent") + tuple(NUMBERS.values())
-# always CONFIRM (floor CONFIRM: the explicit requirement does not waive it -- DUB is EXPERIMENTAL and a synthetic voice replaces someone's words)
+# DUB's lifecycle as the pinned contract's provides[] states it (STABLE from dubbing-skill 1.0.0), never a literal here (ADR-085 addendum 1)
+LIFECYCLE = contract_lifecycle(pinned_contract()).get(OP) or "UNKNOWN"
+# always CONFIRM (floor CONFIRM: the explicit requirement does not waive it, and neither does a STABLE lifecycle -- a synthetic voice replaces someone's words)
 APPROVAL_KEYS = {OP: (f"{OP}.approval", "CONFIRM")}
 
 
@@ -217,7 +219,9 @@ def decide_dub(eng: Any, m: Dict[str, Requirement], analysis: Any, subjects: Lis
                       "subtitles and loudness; the engine's credit and watermark obligations go into the ProductionReceipt; "
                       + ("the reference voice is used only with the consent record the user named, checked by the Skill before any engine work (no bypass); "
                          if p.get("reference") else "")
-                      + "dubbing-skill marks DUB EXPERIMENTAL, so it always needs confirmation and the result should be listened to",
+                      + (f"dubbing-skill marks DUB {LIFECYCLE} (its interface is covered by the Skill's 1.0 compatibility promise), and a synthetic voice "
+                         "replaces someone's words, so it still always needs confirmation and the result should be listened to" if LIFECYCLE == "STABLE" else
+                         f"dubbing-skill marks DUB {LIFECYCLE}, so it always needs confirmation and the result should be listened to"),
                confidence=1.0, evidence=ev, risk="HIGH", approval=approval_for(OP, floor="CONFIRM", keys=APPROVAL_KEYS), provenance="USER",
-               params={"asset_id": subject, **p, "lifecycle": "EXPERIMENTAL"}, requirements=req, serves_intent=None)
+               params={"asset_id": subject, **p, "lifecycle": LIFECYCLE}, requirements=req, serves_intent=None)
     cap_block(SKILL, f"capability.{SKILL}")
