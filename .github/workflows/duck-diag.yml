@@ -1,0 +1,15 @@
+name: duck diag
+on:
+  push:
+    branches: [diag/duck-ffmpeg8]
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version | head -1
+      - run: bash .github/duck_diag.sh 150
