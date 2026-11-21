@@ -130,10 +130,10 @@
     },
     "subtitle": {
       "repo": "kajisho5/subtitle-skill",
-      "tag": "v0.11.0",
-      "sha": "3a4874501853a2b11a4988d42eafc8860717eee7",
-      "version": "0.11.0",
-      "pin": "src/video_agent/tools/subtitle/contract_0.11.0.json"
+      "tag": "v1.0.0",
+      "sha": "e1aa8a507e9eec07a19626ed6341ce46818039d1",
+      "version": "1.0.0",
+      "pin": "src/video_agent/tools/subtitle/contract_1.0.0.json"
     },
     "thumbnail": {
       "repo": "kajisho5/thumbnail-skill",
