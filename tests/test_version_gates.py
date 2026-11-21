@@ -94,7 +94,7 @@ class VersionGateTests(unittest.TestCase):
             live = with_version(dia.pinned_contract(), v)
             self.assertEqual(dia.check_contract(live), [], v)
             self.assertEqual(dia.breaking_drift(live), [], v)
-        for v in ("0.4.0", "1.0.0"):
+        for v in ("0.4.0", "1.1.0"):
             self.assertTrue(dia.check_contract(with_version(dia.pinned_contract(), v)), v)
 
     def test_video_editing_versions(self):

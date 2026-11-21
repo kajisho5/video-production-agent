@@ -5,7 +5,7 @@
         `voice-enhance bleed-reduce --json --offline --overwrite --ffmpeg-skill=<dir> --output=<dir> [--dominance-db=N] -- <track> <track> ...`
           ─(its own engine worker: deep-filter / nara_wpe / crosstalk; every media step through ffmpeg-skill)─→ WAV stem(s)
 
-Protocol (voice-enhance-skill's own contract, `voice-enhance contract --json`, pinned from main in contract_0.1.3.json -- the
+Protocol (voice-enhance-skill's own contract, `voice-enhance contract --json`, pinned from main in contract_1.0.0.json -- the
 repository has no release tag, so the pin follows main as ingest-skill's does, ADR-066):
     contract     → `voice-enhance contract --json`
     doctor       → `voice-enhance doctor --json --offline --ffmpeg-skill=<dir>` (voice-enhance/doctor@1: python / ffmpeg_skill / ffmpeg / engines /
@@ -54,7 +54,8 @@ OPERATION_TYPES = {"isolate": "ISOLATE", "dereverb": "DEREVERB", "bleed_reduce":
 CAPABILITY_IDS = {"ISOLATE": "voice.isolate", "DEREVERB": "voice.dereverb", "BLEED_REDUCE": "voice.bleed_reduce"}
 # ADR-118: capability → tool from the pinned contract's provides[] (the wire constants above must agree; tests/test_capabilities.py)
 TOOL_OF_TYPE = {typ: resolve_capability(cap, PACKAGE_ID).tool_id for typ, cap in CAPABILITY_IDS.items()}
-SUPPORTED_SKILL_VERSIONS = ("0.1.",)
+# 1.0.0 (https://github.com/kajisho5/voice-enhance-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): si contract-diff none; the gate takes 1.0.
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "1.0.",)
 DOCTOR_SCHEMA = "voice-enhance/doctor@1"
 ISOLATE_RATE = 48000            # ADR-003: DeepFilterNet3 works at 48 kHz; the stem is always 48 kHz mono
 MAX_TRACKS = 8                  # ADR-005: 2..8 time-aligned microphone tracks
@@ -95,7 +96,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "im
 # code that vanished or changed its exit / retryable is fatal, a new code is not). What is left changes the wire or the files the adapter admits.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "error_shape")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv", "schema", "output")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.1.3.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
