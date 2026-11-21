@@ -56,6 +56,12 @@ def dub_capabilities(adapter_factory) -> dict:
     return caps
 
 
+def pinned_dub_lifecycle() -> str:
+    """speech.dub's lifecycle in the pinned contract (EXPERIMENTAL on 0.x, STABLE from dubbing-skill 1.0.0): the adapter
+    reports the pin's value, so the tests follow the pin instead of a literal."""
+    from video_agent.tools.dubbing.adapter import pinned_contract
+    return {p["id"]: p["lifecycle"] for p in pinned_contract()["provides"]}["speech.dub"]
+
 class DubCaps(PipelineCaps):
     def __init__(self, dub: dict, **kw):
         super().__init__(**kw)
@@ -130,7 +136,7 @@ class ContractTests(_Base):
         old = json.loads(json.dumps(c)); old["version"] = "0.2.0"
         old_terms = next(t for t in old["tools"] if t["tool_id"] == "dubbing/terms"); old_terms["argv"].remove("[--transcript <transcript.json>]")
         self.assertEqual((check_contract(old), breaking_drift(old)), ([], []))
-        self.assertEqual({p["id"]: p["lifecycle"] for p in c["provides"]}["speech.dub"], "EXPERIMENTAL")
+        self.assertIn({p["id"]: p["lifecycle"] for p in c["provides"]}["speech.dub"], ("EXPERIMENTAL", "STABLE"))   # STABLE from dubbing-skill 1.0.0
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every dubbing error code has a recovery class")
         self.assertEqual(recovery_class("CONSENT_REQUIRED"), "CONSENT_REQUIRED")
         self.assertEqual(RECOVERY_TABLE["CONSENT_REQUIRED"]["action"], "BLOCK")
@@ -175,7 +181,7 @@ class CapabilityTests(_Base):
     def test_doctor_verdicts_carry_the_skills_codes(self):
         caps = dub_capabilities(lambda: dub_adapter(self.tmp))
         self.assertEqual((caps["dubbing"].status, caps["dubbing:DUB"].status), ("AVAILABLE", "AVAILABLE"))
-        self.assertEqual(caps["dubbing:DUB"].evidence["lifecycle"], "EXPERIMENTAL")
+        self.assertEqual(caps["dubbing:DUB"].evidence["lifecycle"], pinned_dub_lifecycle())
         self.assertEqual(set(caps["dubbing:DUB"].evidence["engines"]), {"chatterbox", "style_bert_vits2"}, "the engines DUB takes, from the contract")
         from video_agent.tools.dubbing.adapter import dub_tool, engines, pinned_contract
         self.assertIn("qwen3_tts", dub_tool(pinned_contract())["engines"], "0.2.0+ lists the experimental engine for DUB")
@@ -238,7 +244,7 @@ class AdapterTests(_Base):
         self.assertTrue(r.ok, r.data)
         self.assertEqual(r.output, self.out)
         self.assertEqual(r.data["obligations"]["credit"], ["JVNV corpus voice jvnv-F1-jp (CC BY-SA 4.0)"])
-        self.assertEqual((r.data["lifecycle"], r.data["consent"], r.data["translation"]["provided_by"]), ("EXPERIMENTAL", None, "user"))
+        self.assertEqual((r.data["lifecycle"], r.data["consent"], r.data["translation"]["provided_by"]), (pinned_dub_lifecycle(), None, "user"))
         for mode, msg in (("bad_hash", "sha256"), ("wrong_path", "is not the planned"), ("no_obligations", "obligations.credit"), ("bad_json", "INVALID_OUTPUT")):
             os.environ["FAKE_DUB_MODE"] = mode
             r = self.ad.run(self.op(), self.paths)
@@ -331,7 +337,7 @@ class PipelineTests(_Base):
         self.assertIn("credit: JVNV corpus voice jvnv-F1-jp", Path(out["report"]).read_text(encoding="utf-8"))
         prov = json.loads((Path(svc.workspace) / "jobs" / out["job"]["id"] / "provenance.json").read_text(encoding="utf-8"))
         obs = next(o for o in prov["skill_observations"] if o["kind"] == "speech.dub")
-        self.assertEqual((obs["data"]["lifecycle"], obs["data"]["translation"]["provided_by"]), ("EXPERIMENTAL", "user"))
+        self.assertEqual((obs["data"]["lifecycle"], obs["data"]["translation"]["provided_by"]), (pinned_dub_lifecycle(), "user"))
 
     def test_plan_without_dub_keeps_its_hash_shape(self):
         src = fake_media(self.tmp, "talk.mp4")
