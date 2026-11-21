@@ -119,7 +119,10 @@ class ContractTests(_Base):
         self.assertEqual(raw, json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n", "one sorted line, like ingest's pin (no release tag: pinned from main)")
         self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("voice-enhance", pinned_version("voice-enhance"), "1.0"))
         self.assertEqual(check_contract(c), [])
-        self.assertEqual({p["id"]: p["lifecycle"] for p in c["provides"]}, {"voice.isolate": "EXPERIMENTAL", "voice.dereverb": "EXPERIMENTAL", "voice.bleed_reduce": "EXPERIMENTAL"})
+        life = {p["id"]: p["lifecycle"] for p in c["provides"]}
+        self.assertEqual(set(life), {"voice.isolate", "voice.dereverb", "voice.bleed_reduce"})
+        self.assertEqual((life["voice.isolate"], life["voice.dereverb"]), ("EXPERIMENTAL", "EXPERIMENTAL"))
+        self.assertIn(life["voice.bleed_reduce"], ("EXPERIMENTAL", "STABLE"))   # STABLE from voice-enhance-skill 1.0.0 (its ADR-014)
         self.assertEqual(set(ERROR_CLASSES), set(c["errors"]), "every voice-enhance error code has a recovery class")
         self.assertEqual(recovery_class("ENGINE_UNAVAILABLE"), "TOOL_MISSING")
         self.assertEqual(recovery_class("SOMETHING_NEW"), "SKILL_ERROR")
