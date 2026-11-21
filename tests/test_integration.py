@@ -615,6 +615,7 @@ class IngestOffloadRealTests(unittest.TestCase):
     def test_card_offload_then_inventory_assets(self):
         from video_agent.tools import ToolRouter  # noqa: F401
         from video_agent.tools.ingest import IngestAdapter, locate_ingest
+        from video_agent.tools.ingest.adapter import SUPPORTED_SKILL_VERSIONS
         ir, path = self._plan()
         self.assertTrue(self.svc.validate(ir).ok, self.svc.validate(ir).errors)
         self.assertEqual((list(self.a.iterdir()), list(self.b.iterdir())), ([], []), "the plan wrote nothing")
@@ -644,7 +645,8 @@ class IngestOffloadRealTests(unittest.TestCase):
         for o in clip_obs:
             a = d["assets"][o["asset_id"]]
             self.assertEqual((o["provenance"], a["status"], a["hash"]), ("OBSERVED", "ingested", sha[o["data"]["path"]]))
-            self.assertTrue(o["source"].startswith("ingest/inventory@0.1."))
+            # the installed release, inside the adapter's gate (not a literal 0.1.: ingest-skill 1.0 widens it to 1.0.)
+            self.assertTrue(o["source"].startswith(tuple("ingest/inventory@" + v for v in SUPPORTED_SKILL_VERSIONS)), o["source"])
             self.assertTrue(all(Path(c["mhl"]).is_file() and Path(c["manifest"]).is_file() for c in o["data"]["copies"]))
         probes = {o["asset_id"]: o for o in d["analysis"]["observations"] if o["kind"] == "media_probe"}
         self.assertEqual(set(probes), set(off["asset_ids"]), "the agent's own analysis of the verified copies")
