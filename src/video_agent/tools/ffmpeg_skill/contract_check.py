@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..discovery import child_env
+from ..discovery import child_env, safe_command
 from .catalog import CATALOG, FLAG_ALIASES, QUALITY_FLAG
 
 SKILL_ID = "ffmpeg-skill"
@@ -208,9 +208,11 @@ def _apply_doctor(chk: CatalogCheck, doctor: Dict[str, Any], scripts: Optional[L
     chk.doctor = summary
 
 
-def _run_json(cmd: List[str], timeout: float) -> Tuple[Optional[Any], str]:
+def _run_json(cmd: List[str], timeout: float, cwd: Optional[str] = None) -> Tuple[Optional[Any], str]:
+    """`cwd`: the checkout the contract / doctor is read from -- a read that takes no path from the user never runs in the
+    folder the agent was started in (ADR-127)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace", env=child_env())
+        p = subprocess.run(safe_command(cmd), capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace", env=child_env(), cwd=cwd)
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"{type(e).__name__}: {e}"
     try:
@@ -221,13 +223,13 @@ def _run_json(cmd: List[str], timeout: float) -> Tuple[Optional[Any], str]:
 
 def read_contract(root: Path, python: Optional[str] = None) -> Tuple[Optional[Any], str]:
     """(`_contract.py --json --static` document, error). No environment detection: the contract alone."""
-    return _run_json([python or sys.executable, str(Path(root) / "scripts" / CONTRACT_SCRIPT)] + CONTRACT_ARGS, timeout=120.0)
+    return _run_json([python or sys.executable, str(Path(root).resolve() / "scripts" / CONTRACT_SCRIPT)] + CONTRACT_ARGS, timeout=120.0, cwd=str(Path(root).resolve()))
 
 
 def read_doctor(root: Path, python: Optional[str] = None) -> Tuple[Optional[Any], str]:
     """(`_contract.py doctor --json` document, error). doctor exits 1 (a required capability missing) or 2 (unknown) and
     still prints its document, so the exit code is not read."""
-    return _run_json([python or sys.executable, str(Path(root) / "scripts" / CONTRACT_SCRIPT)] + DOCTOR_ARGS, timeout=180.0)
+    return _run_json([python or sys.executable, str(Path(root).resolve() / "scripts" / CONTRACT_SCRIPT)] + DOCTOR_ARGS, timeout=180.0, cwd=str(Path(root).resolve()))
 
 
 def read_catalog_check(root: Path, scripts: Optional[List[str]] = None, python: Optional[str] = None) -> CatalogCheck:

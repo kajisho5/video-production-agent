@@ -6823,8 +6823,9 @@ class CwdIndependentDiscoveryTests(unittest.TestCase):
     def test_child_env_drops_provider_credentials(self):
         from video_agent.tools.discovery import child_env
         from video_agent.tools.ffmpeg_skill.adapter import run_process_group
-        env = child_env({"PYTHONPATH": "x"}, base={"PATH": "/bin", "ANTHROPIC_API_KEY": "sk-1", "anthropic_auth_token": "t", "ANTHROPIC_PROFILE": "p", "OPENAI_API_KEY": "sk-2", "HOME": "/h"})
-        self.assertEqual(env, {"PATH": "/bin", "HOME": "/h", "PYTHONPATH": "x"})
+        src = os.path.abspath("x")   # ADR-127: only absolute PYTHONPATH entries reach a child
+        env = child_env({"PYTHONPATH": src}, base={"PATH": "/bin", "ANTHROPIC_API_KEY": "sk-1", "anthropic_auth_token": "t", "ANTHROPIC_PROFILE": "p", "OPENAI_API_KEY": "sk-2", "HOME": "/h"})
+        self.assertEqual(env, {"PATH": "/bin", "HOME": "/h", "PYTHONPATH": src})
         keys = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
         old = {k: os.environ.get(k) for k in keys}
         try:
@@ -6994,6 +6995,186 @@ class CwdIndependentSkillImportTests(unittest.TestCase):
         self.assertEqual(rep["argv0"], "probe.py")
         rep["argv0"] = "cli.py"
         self.assertClean(rep, argv)
+
+
+class ChildLaunchHardeningTests(unittest.TestCase):
+    """ADR-127: what a Skill / engine child could still pick up from the folder the agent was started in, after ADR-069 / 074.
+    A planted `json.py` is not imported through an empty or relative PYTHONPATH entry (script and module launches); a planted
+    executable is never what a bare program name runs (an empty or `.` PATH entry, Windows' current-directory-first search);
+    relative input paths still resolve against the inherited working directory; reads that take no user path run in the
+    checkout; and a job's children share one private temporary directory that is removed when the job ends."""
+
+    PROBE = (
+        "import json, os, sys, tempfile\n"
+        "rel = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+        "print(repr({'json_planted': bool(getattr(json, 'PLANTED', False)), 'cwd': os.getcwd(),\n"
+        "            'rel': open(rel, encoding='utf-8').read().strip() if rel else None, 'tmp': tempfile.gettempdir(),\n"
+        "            'pythonpath': os.environ.get('PYTHONPATH')}))\n"
+    )
+
+    def setUp(self):
+        import shutil
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.untrusted = self.tmp / "untrusted"   # the folder the agent is started in (a media card, an unpacked project)
+        self.untrusted.mkdir()
+        (self.untrusted / "json.py").write_text("PLANTED = True\n", encoding="utf-8")
+        (self.untrusted / "rel.txt").write_text("relative input\n", encoding="utf-8")
+        self.scripts = self.tmp / "skill" / "scripts"   # an ffmpeg-skill-shaped checkout: python <checkout>/scripts/<tool>.py
+        self.scripts.mkdir(parents=True)
+        (self.scripts / "probe.py").write_text(self.PROBE, encoding="utf-8")
+        old_cwd = os.getcwd()
+        os.chdir(self.untrusted)
+        self.addCleanup(os.chdir, old_cwd)
+        old_pp = os.environ.get("PYTHONPATH")
+        self.addCleanup(lambda: os.environ.pop("PYTHONPATH", None) if old_pp is None else os.environ.__setitem__("PYTHONPATH", old_pp))
+
+    def report(self, code: int, out: str, err: str) -> dict:
+        import ast
+        self.assertEqual(code, 0, err)
+        return ast.literal_eval(out.strip().splitlines()[-1])
+
+    def test_relative_pythonpath_does_not_import_planted_module_in_script_child(self):
+        import subprocess
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        os.environ["PYTHONPATH"] = os.pathsep.join([".", "", "src"])
+        # control: handed to the child as it was, the `.` entry imports the planted json.py
+        raw = subprocess.run([sys.executable, str(self.scripts / "probe.py"), "rel.txt"], capture_output=True, text=True)
+        self.assertTrue(self.report(raw.returncode, raw.stdout, raw.stderr)["json_planted"], "the control must import ./json.py")
+        rep = self.report(*run_process_group([sys.executable, str(self.scripts / "probe.py"), "rel.txt"], timeout=60))
+        self.assertFalse(rep["json_planted"], "the stdlib json, not ./json.py")
+        self.assertIsNone(rep["pythonpath"], "no relative or empty entry reaches the child")
+        self.assertEqual(rep["rel"], "relative input", "a relative input path still resolves against the inherited working directory")
+        self.assertTrue(os.path.samefile(rep["cwd"], self.untrusted))
+
+    def test_relative_pythonpath_does_not_import_planted_module_in_module_child(self):
+        from video_agent.tools.discovery import python_module_command
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        src = self.tmp / "checkout" / "src" / "probe_skill"
+        src.mkdir(parents=True)
+        (src / "__init__.py").write_text("", encoding="utf-8")
+        (src / "cli.py").write_text(self.PROBE, encoding="utf-8")
+        # the media-analysis / transcription / video-editing adapters append the inherited PYTHONPATH to the checkout's
+        os.environ["PYTHONPATH"] = os.pathsep.join([os.path.abspath(src.parent), ".", ""])
+        rep = self.report(*run_process_group(python_module_command("probe_skill.cli") + ["rel.txt"], timeout=60))
+        self.assertFalse(rep["json_planted"])
+        self.assertEqual(rep["pythonpath"], os.path.abspath(src.parent), "the checkout's absolute src stays; `.` and the empty entry go")
+        self.assertEqual(rep["rel"], "relative input")
+
+    def test_checkout_found_by_relative_dir_gets_absolute_pythonpath(self):
+        from video_agent.tools.skill_process import invoke, locate_cli_skill
+        root = self.untrusted / "skills" / "probe-skill"
+        (root / "src" / "probe_skill").mkdir(parents=True)
+        (root / "src" / "probe_skill" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "src" / "probe_skill" / "cli.py").write_text(self.PROBE, encoding="utf-8")
+        skill = locate_cli_skill("probe", "probe_skill.cli", "probe_skill", "probe", "VA_TEST_PROBE_DIR", explicit=os.path.join("skills", "probe-skill"), env={"PATH": ""})
+        self.assertTrue(os.path.isabs(skill.env["PYTHONPATH"]))
+        rep = self.report(*invoke(skill, ["rel.txt"], timeout=60))
+        self.assertFalse(rep["json_planted"])
+        self.assertEqual(rep["rel"], "relative input")
+
+    def _planted_program(self, directory: Path, name: str, says: str) -> None:
+        if os.name == "nt":
+            (directory / f"{name}.cmd").write_text(f"@echo {says}\r\n", encoding="utf-8")
+        else:
+            p = directory / name
+            p.write_text(f"#!/bin/sh\necho {says}\n", encoding="utf-8")
+            p.chmod(0o755)
+
+    def test_bare_program_name_never_runs_from_current_directory(self):
+        from video_agent.tools.discovery import resolve_executable, safe_which
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        trusted = self.tmp / "bin"
+        trusted.mkdir()
+        self._planted_program(self.untrusted, "va-probe-tool", "planted")
+        self._planted_program(trusted, "va-probe-tool", "trusted")
+        old_path = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+        os.environ["PATH"] = os.pathsep.join(["", ".", str(trusted), old_path])
+        found = safe_which("va-probe-tool")
+        self.assertTrue(found and os.path.isabs(found) and os.path.samefile(os.path.dirname(found), trusted), found)
+        code, out, err = run_process_group(["va-probe-tool"], timeout=60)
+        self.assertEqual((code, out.strip()), (0, "trusted"), err)
+        os.environ["PATH"] = os.pathsep.join(["", "."])
+        self.assertIsNone(safe_which("va-probe-tool"), "only the current directory has it: not found")
+        with self.assertRaises(FileNotFoundError):
+            resolve_executable("va-probe-tool")
+        with self.assertRaises(FileNotFoundError):
+            run_process_group(["va-probe-tool"], timeout=60)
+
+    def test_relative_program_path_is_made_absolute_before_launch(self):
+        from video_agent.tools.discovery import safe_command
+        cmd = safe_command([os.path.join(".", "tools", "x"), "rel.txt", "--flag=v"])
+        self.assertEqual(cmd, [os.path.abspath(os.path.join("tools", "x")), "rel.txt", "--flag=v"], "argv[0] absolute, the arguments unchanged")
+        self.assertEqual(safe_command([sys.executable, "a"]), [sys.executable, "a"])
+
+    def test_only_fully_qualified_entries_count_as_absolute(self):
+        """A Windows path that depends on the current drive (`\\x`) or its current directory (`C:x`) is not absolute here,
+        although os.path.isabs accepts `\\x` before Python 3.13; drive-qualified and UNC paths are."""
+        from video_agent.tools.discovery import is_fully_qualified, resolve_executable, safe_pythonpath
+        self.assertFalse(is_fully_qualified(""))
+        self.assertFalse(is_fully_qualified("rel"))
+        if os.name == "nt":
+            for p in ("\\x", "/x", "C:x"):
+                self.assertFalse(is_fully_qualified(p), p)
+            for p in ("C:\\x", "c:/x", "\\\\host\\share\\x"):
+                self.assertTrue(is_fully_qualified(p), p)
+            self.assertEqual(safe_pythonpath(os.pathsep.join(["\\mods", "C:mods", "C:\\ok"])), "C:\\ok")
+            self.assertEqual(resolve_executable("\\tools\\x.exe"), os.path.abspath("\\tools\\x.exe"))
+            self.assertTrue(is_fully_qualified(resolve_executable("\\tools\\x.exe")))
+        else:
+            self.assertTrue(is_fully_qualified("/x"))
+            self.assertEqual(safe_pythonpath(os.pathsep.join(["/ok", "rel", ""])), "/ok")
+
+    def test_contract_and_help_reads_run_in_the_checkout(self):
+        from video_agent.tools.ffmpeg_skill import contract_check
+        from video_agent.tools.ffmpeg_skill.locate import FfmpegSkill
+        script = self.scripts / contract_check.CONTRACT_SCRIPT
+        script.write_text("import json, os, sys\nprint(json.dumps({'cwd': os.getcwd(), 'planted': bool(getattr(json, 'PLANTED', False))}))\n", encoding="utf-8")
+        doc, why = contract_check.read_contract(Path(os.path.relpath(self.scripts.parent)))
+        self.assertEqual(why, "")
+        self.assertTrue(os.path.samefile(doc["cwd"], self.scripts.parent), "a read that takes no user path runs in the checkout")
+        self.assertFalse(doc["planted"])
+        (self.scripts / "cut.py").write_text("import os\nprint('--cwd ' + os.getcwd())\n", encoding="utf-8")
+        skill = FfmpegSkill(root=self.scripts.parent, version="9.9.9", scripts=["cut"])
+        self.assertTrue(skill.offers_flag("cut", "--cwd"))
+
+    def test_job_children_share_one_private_temp_dir_removed_at_the_end(self):
+        from video_agent.tools.discovery import current_job_temp_dir, job_temp_dir
+        from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+        outside = self.report(*run_process_group([sys.executable, str(self.scripts / "probe.py")], timeout=60))["tmp"]
+        with job_temp_dir("job_x") as d:
+            self.assertEqual(current_job_temp_dir(), d)
+            self.assertTrue(os.path.basename(d).startswith("video-agent-job_x-"))
+            if os.name != "nt":
+                self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, "private to the user")
+            first = self.report(*run_process_group([sys.executable, str(self.scripts / "probe.py")], timeout=60))["tmp"]
+            second = self.report(*run_process_group([sys.executable, str(self.scripts / "probe.py")], timeout=60))["tmp"]
+            self.assertTrue(os.path.samefile(first, d) and os.path.samefile(second, d))
+            (Path(d) / "left-behind.tmp").write_text("x", encoding="utf-8")   # a child that does not clean up
+        self.assertFalse(os.path.exists(d), "removed with what a child left in it")
+        self.assertIsNone(current_job_temp_dir())
+        self.assertNotEqual(os.path.normcase(outside), os.path.normcase(d))
+        with self.assertRaises(RuntimeError):
+            with job_temp_dir() as d2:
+                raise RuntimeError("the job failed")
+        self.assertFalse(os.path.exists(d2), "removed however the job ends")
+
+    def test_render_is_one_job_temp_dir(self):
+        from unittest import mock
+        from video_agent.tools.discovery import current_job_temp_dir
+        seen = {}
+
+        def fake_render_job(self_, ir, ir_path, **kw):
+            seen["dir"] = current_job_temp_dir()
+            seen["existed"] = bool(seen["dir"]) and os.path.isdir(seen["dir"])
+            return {"status": "COMPLETED"}
+
+        with mock.patch.object(Service, "_render_job", fake_render_job):
+            out = Service(workspace=str(self.tmp / "ws")).render(None, "p.json")
+        self.assertEqual(out, {"status": "COMPLETED"})
+        self.assertTrue(seen["existed"])
+        self.assertFalse(os.path.exists(seen["dir"]))
 
 
 class UnrecognizedFinishingKeyTests(unittest.TestCase):

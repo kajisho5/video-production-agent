@@ -4,12 +4,11 @@ contract's `skill.entrypoints.cli`) and its npm dependencies installed (`npm ci`
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional
 
-from ..discovery import default_skill_dirs
+from ..discovery import default_skill_dirs, safe_which
 
 ENV_DIR = "VIDEO_AGENT_HYPERFRAMES_DIR"   # a hyperframes-skill checkout (<dir>/bin/hyperframes-skill.mjs); the same variable ADR-080's live pin check reads
 ENV_NODE = "VIDEO_AGENT_NODE"             # the node executable, when it is not the one on PATH
@@ -38,7 +37,7 @@ def locate_hyperframes(explicit: Optional[str] = None, env: Optional[Mapping[str
     own source checkout. Never the current directory. None without a checkout. A checkout found without Node keeps `node` empty: the adapter then
     refuses it by name ("Node.js is not on PATH"), so doctor says what is missing instead of "not installed"."""
     env_map: Mapping[str, str] = os.environ if env is None else env
-    exe = node or env_map.get(ENV_NODE) or shutil.which("node") or ""
+    exe = node or env_map.get(ENV_NODE) or safe_which("node") or ""
     named = [Path(p) for p in (explicit, env_map.get(ENV_DIR)) if p]
     for c in named or default_skill_dirs(REPO_NAME):
         if _is_checkout(c):

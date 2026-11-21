@@ -4,12 +4,11 @@ console script `audio-production` on PATH. The agent never imports the package: 
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
 
-from ..discovery import default_skill_dirs, python_module_command
+from ..discovery import default_skill_dirs, python_module_command, safe_which
 
 ENV_DIR = "VIDEO_AGENT_AUDIO_PRODUCTION_DIR"
 
@@ -27,7 +26,7 @@ class AudioProductionSkill:
 def _from_checkout(root: Path) -> Optional[AudioProductionSkill]:
     cli = root / "src" / "audio_production" / "cli.py"
     if cli.is_file():
-        return AudioProductionSkill(python_module_command("audio_production.cli"), root, {"PYTHONPATH": str(root / "src")})
+        return AudioProductionSkill(python_module_command("audio_production.cli"), root, {"PYTHONPATH": os.path.abspath(root / "src")})
     return None
 
 
@@ -45,7 +44,7 @@ def locate_audio_production(explicit: Optional[str] = None, env: Optional[Dict[s
         found = _from_checkout(c)
         if found:
             return found
-    exe = shutil.which("audio-production", path=env_map.get("PATH"))
+    exe = safe_which("audio-production", path=env_map.get("PATH"))
     if exe:
         return AudioProductionSkill([exe], None, {})
     return None

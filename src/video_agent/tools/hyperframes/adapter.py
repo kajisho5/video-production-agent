@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ...models import Operation, ToolResult
 from ...skills.contract import SkillPackage, ToolSpec
 from ..base import ToolAdapter, ToolError
+from ..discovery import safe_which
 from ..ffmpeg_skill.adapter import run_process_group
 from ..skill_process import ContractError, as_dict, breaking_drift as _breaking_drift, drift_report, one_json_document, same_file, sha256_file
 from .locate import PACKAGE_ID, HyperframesSkill, locate_hyperframes  # noqa: F401  (re-exported)

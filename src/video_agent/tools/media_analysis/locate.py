@@ -4,12 +4,11 @@ console script `media-analysis` on PATH. The agent never imports the package."""
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ..discovery import default_skill_dirs, python_module_command
+from ..discovery import default_skill_dirs, python_module_command, safe_which
 
 ENV_DIR = "VIDEO_AGENT_MEDIA_ANALYSIS_DIR"
 
@@ -27,7 +26,7 @@ class MediaAnalysisSkill:
 def _from_checkout(root: Path) -> Optional[MediaAnalysisSkill]:
     cli = root / "src" / "media_analysis" / "cli.py"
     if cli.is_file():
-        return MediaAnalysisSkill(python_module_command("media_analysis.cli"), root, {"PYTHONPATH": str(root / "src")})
+        return MediaAnalysisSkill(python_module_command("media_analysis.cli"), root, {"PYTHONPATH": os.path.abspath(root / "src")})
     return None
 
 
@@ -45,7 +44,7 @@ def locate_media_analysis(explicit: Optional[str] = None, env: Optional[Dict[str
         found = _from_checkout(c)
         if found:
             return found
-    exe = shutil.which("media-analysis", path=env.get("PATH"))
+    exe = safe_which("media-analysis", path=env.get("PATH"))
     if exe:
         return MediaAnalysisSkill([exe], None, {})
     return None

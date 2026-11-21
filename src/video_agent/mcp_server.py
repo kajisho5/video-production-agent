@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import __version__
 from .mcp_permissions import (CONFIRMED_CLASSES, DESTRUCTIVE, ENV_AI_PROVIDER, ESCALATES, PUBLISH, READ, TOOL_CLASSES, ConfirmationTokens, Permissions,
                               PermissionConfigError, call_digest, classify, enable_hint, load_permissions)
-from .tools.discovery import python_module_command
+from .tools.discovery import python_module_command, safe_command
 
 PROTOCOL_VERSION = "2024-11-05"
 TOOL_TIMEOUT_S = 6 * 3600   # a render of a long recording can take hours; the client may cancel sooner
@@ -358,7 +358,7 @@ class Server:
             except ValueError as exc:
                 return _text(str(exc), error=True)
             try:
-                p = subprocess.run([*python_module_command("video_agent.cli", self.python), *self.global_args, *argv], capture_output=True, text=True,
+                p = subprocess.run(safe_command([*python_module_command("video_agent.cli", self.python), *self.global_args, *argv]), capture_output=True, text=True,
                                    encoding="utf-8", errors="replace", timeout=TOOL_TIMEOUT_S, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
             except subprocess.TimeoutExpired:
                 return _text(f"{name}: timed out after {TOOL_TIMEOUT_S} s", error=True)

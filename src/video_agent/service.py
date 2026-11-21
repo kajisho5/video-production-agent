@@ -59,6 +59,7 @@ from .skills import ProvidesFinding, check_all, default_registry
 from .skills.ecosystem import component, install_commands, repository
 from .skills.providers import default_providers, explicit_providers
 from .tools import ToolRouter
+from .tools.discovery import job_temp_dir
 from .tools.ffmpeg_skill import FfmpegSkillAdapter
 from .tools.ffmpeg_skill import PACKAGE as FFMPEG_SKILL_PACKAGE
 from .tools.ffmpeg_skill.adapter import PathPolicy
@@ -1406,6 +1407,13 @@ class Service:
 
     def render(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None,
                resume: Optional[str] = None, skip_preflight: bool = False) -> Dict[str, Any]:
+        """One job (`_render_job`). Every child process the job starts -- each Skill and engine, QA and the checks after it -- gets the
+        job's own private temporary directory as TMPDIR / TEMP / TMP, removed when the job ends however it ends (ADR-127)."""
+        with job_temp_dir():
+            return self._render_job(ir, ir_path, approve=approve, timeout=timeout, who=who, resume=resume, skip_preflight=skip_preflight)
+
+    def _render_job(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None,
+                    resume: Optional[str] = None, skip_preflight: bool = False) -> Dict[str, Any]:
         """resume: a previous job id (or "last") whose completed operations may be reused. The new job stays a new job;
         reuse is decided per operation by the chained idempotency key and by the recorded output still being intact."""
         who = who or _default_who()

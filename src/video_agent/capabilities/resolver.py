@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..tools.discovery import child_env
+from ..tools.discovery import child_env, safe_command, safe_which
 from ..tools.ffmpeg_skill.catalog import CATALOG
 from ..tools.ffmpeg_skill.locate import locate_ffmpeg_skill
 from ..tools.ffmpeg_skill.package import PREFIX as FFMPEG_SKILL_PREFIX
@@ -133,7 +133,8 @@ def ffmpeg_skill_capabilities(skill: Any) -> Dict[str, Capability]:
 
 def _run(cmd: List[str], timeout: float = 20.0) -> Optional[str]:
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, env=child_env())
+        # a version / listing probe takes no path from the user: it runs in the system's temporary directory (ADR-127)
+        p = subprocess.run(safe_command(cmd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, env=child_env(), cwd=tempfile.gettempdir())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.stdout if p.returncode == 0 else None
@@ -160,8 +161,8 @@ class CapabilityResolver:
         caps: Dict[str, Capability] = {}
         caps["python"] = Capability("python", "AVAILABLE" if sys.version_info >= (3, 9) else "DEGRADED", platform.python_version())
         caps["os"] = Capability("os", "AVAILABLE", platform.system())
-        ffmpeg = shutil.which("ffmpeg")
-        ffprobe = shutil.which("ffprobe")
+        ffmpeg = safe_which("ffmpeg")
+        ffprobe = safe_which("ffprobe")
         ver = _run([ffmpeg, "-version"]) if ffmpeg else None
         caps["ffmpeg"] = Capability("ffmpeg", "AVAILABLE" if ver else "MISSING", (ver or "").splitlines()[0] if ver else "not on PATH", {"path": ffmpeg})
         pver = _run([ffprobe, "-version"]) if ffprobe else None
@@ -188,7 +189,7 @@ class CapabilityResolver:
         caps["prores"] = Capability("prores", caps["encoder:prores_ks"].status, "prores_ks")
         caps["av1"] = Capability("av1", "AVAILABLE" if any(caps[f"encoder:{n}"].status == "AVAILABLE" for n in ("libaom-av1", "libsvtav1")) else caps["encoder:libaom-av1"].status)
         # fonts
-        fc = shutil.which("fc-list")
+        fc = safe_which("fc-list")
         if fc:
             all_fonts = _run([fc]) or ""
             ja = _run([fc, ":lang=ja", "family"]) or ""
@@ -379,7 +380,7 @@ class CapabilityResolver:
         self._finishing_skill(caps, "artifacts-skill", locate_artifacts(env=self.env), lambda sk: ArtifactsAdapter(sk), "VIDEO_AGENT_ARTIFACTS_DIR", "artifacts-skill",
                               "artifacts-skill", per_item=lambda ad, doc: (ad.operation_status(doc), {}), item_evidence=lambda ad, doc: ad.operation_evidence(doc))
         # optional AI / ASR
-        asr = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
+        asr = safe_which("whisper-cli") or safe_which("whisper-cpp") or safe_which("whisper")
         try:
             import faster_whisper  # type: ignore  # noqa: F401
             asr = asr or "faster-whisper"

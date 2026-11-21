@@ -65,7 +65,8 @@ class FfmpegSkill:
         key = (str(self.root), name)
         if key not in _HELP_CACHE:
             try:
-                out = subprocess.run([sys.executable, str(self.script(name)), "--help"], capture_output=True, text=True, timeout=60, env=child_env()).stdout
+                root = Path(self.root).resolve()   # a --help read takes no path from the user: it runs in the checkout (ADR-127)
+                out = subprocess.run([sys.executable, str(root / "scripts" / f"{name}.py"), "--help"], capture_output=True, text=True, timeout=60, env=child_env(), cwd=str(root)).stdout
             except (OSError, subprocess.SubprocessError):
                 out = ""
             _HELP_CACHE[key] = out
