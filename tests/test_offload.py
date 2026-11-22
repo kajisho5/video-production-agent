@@ -27,7 +27,7 @@ from video_agent.project import load_ir, save_ir  # noqa: E402
 from video_agent.service import Service  # noqa: E402
 from video_agent.tools import ToolRouter  # noqa: E402
 from video_agent.tools.base import ToolError  # noqa: E402
-from video_agent.tools.ingest import (ERROR_KINDS, FATAL_DRIFT_KEYS, ContractError, IngestAdapter, check_contract, kind_of, locate_ingest,  # noqa: E402
+from video_agent.tools.ingest import (ERROR_KINDS, OPTIONAL_ERROR_KINDS, FATAL_DRIFT_KEYS, ContractError, IngestAdapter, check_contract, kind_of, locate_ingest,  # noqa: E402
                                       pinned_contract)
 from video_agent.tools.ingest.adapter import PINNED_CONTRACT_PATH, offload_argv  # noqa: E402
 from video_agent.tools.skill_process import CliSkill  # noqa: E402
@@ -350,10 +350,21 @@ class IngestAdapterContractTests(_Base):
         self.assertEqual((c["skill_id"], c["version"], c["contract_version"]), ("ingest", pinned_version("ingest"), "1.0"))
         self.assertEqual(check_contract(c), [])
         self.assertEqual(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"), json.dumps(c, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.assertEqual(set(ERROR_KINDS), set(c["errors"]), "every ingest-skill error code has a kind")
+        # read from the pin (ADR-117 addendum 1): the codes the adapter requires are all there, and every code the pin has has a kind
+        # (ingest-skill 1.1.0 added the rename refusals, OPTIONAL_ERROR_KINDS: a 1.0.x contract without them is still taken)
+        self.assertLessEqual(set(ERROR_KINDS), set(c["errors"]), "the pin has every code the adapter requires")
+        self.assertEqual(set(c["errors"]) - set(ERROR_KINDS) - set(OPTIONAL_ERROR_KINDS), set(), "every ingest-skill error code has a kind")
+        self.assertEqual(set(ERROR_KINDS) & set(OPTIONAL_ERROR_KINDS), set())
         ad = IngestAdapter(fake_skill())
         self.assertEqual((ad.drift(), ad.breaking_drift(), ad.version), ([], [], pinned_version("ingest")))
         self.assertEqual(FATAL_DRIFT_KEYS, ("skill_id", "contract_version", "manifest", "inventory"))
+
+    def test_rename_refusals_have_a_kind_and_are_not_required(self):
+        for code in ("TEMPLATE_INVALID", "FIELDS_INVALID", "PLAN_CHANGED", "RENAME_REFUSED", "UNDO_INVALID"):
+            self.assertEqual(kind_of(code), ("INVALID_REQUEST", "INVALID_ARGS"))
+        c = pinned_contract()
+        older = dict(c, errors={k: v for k, v in c["errors"].items() if k not in OPTIONAL_ERROR_KINDS})
+        self.assertEqual(check_contract(older), [], "a contract without the rename codes (ingest-skill 1.0.x) is still taken")
 
     def test_drift_classification(self):
         for mode, fatal in (("drift_version", False), ("new_error", False), ("drift_fatal", True), ("drift_error", True)):
