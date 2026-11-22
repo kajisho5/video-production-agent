@@ -1296,6 +1296,8 @@ def build_parser() -> argparse.ArgumentParser:
     q = esub.add_parser("suggest", help="candidate entities from a plan's transcripts (nothing is added: confirm each with `add`)")
     q.add_argument("project_file", metavar="project"); _ent_common(q, False); q.add_argument("--min-count", type=int, default=2)
     p.set_defaults(fn=cmd_entities)
+    from .agent import rename as rename_task   # ADR-129: smart rename (its own module; registered here)
+    rename_task.add_parser(sub, rename_task.cmd_rename)
     p = sub.add_parser("corrections", help="corrections per minute of a project: feedback per delivered minute per plan version, vs. the previous and the channel's recent average (report only)")
     p.add_argument("project"); p.set_defaults(fn=cmd_corrections)
     p = sub.add_parser("diff", help="show the PlanDiff between two plan versions (default: previous → current)")

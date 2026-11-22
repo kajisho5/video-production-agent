@@ -97,6 +97,9 @@ video-agent revise  <project> [--set audio.loudness.target_lufs=-16]  # Plan v2 
 video-agent approve <project> --decision all                       # v2 を承認して render 可能に
 video-agent diff    <project>                                      # 前版との PlanDiff
 video-agent explain <workspace>/plans/input.youtube.project.json [--decision <id>]
+video-agent rename preview /Volumes/SSD1/ev/CAM_B --event ConfName --room "Room A" --camera CamB --evidence ./diarization   # 取り込んだ素材の新しい名前と各項目の根拠（何も変えない、ADR-129）
+video-agent rename apply   /Volumes/SSD1/ev/CAM_B --event ConfName --room "Room A" --camera CamB --evidence ./diarization --plan-id <id> --yes   # 確認した計画だけを実行（ingest-skill rename、manifest と ASC MHL も追従）
+video-agent rename undo    /Volumes/SSD1/ev/CAM_B --yes   # 元の名前に戻す
 video-agent check output.mp4 --platform youtube
 video-agent plan /Volumes/CARD_A --set ingest.dest=/Volumes/SSD1/Footage --set ingest.dest=/Volumes/SSD2/Footage --set ingest.project=2026-10-30_event   # カードの offload の plan（何も書かない、ADR-066）
 video-agent approve <workspace>/plans/CARD_A.offload.project.json --decision <id>   # 常に CONFIRM。承認するまでコピーしない
