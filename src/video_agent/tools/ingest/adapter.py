@@ -86,6 +86,15 @@ ERROR_KINDS: Dict[str, Tuple[str, str]] = {
     "DUPLICATE_SOURCE": ("INVALID_REQUEST", "INVALID_ARGS"),
     "PROXY_UNAVAILABLE": ("ENGINE_MISSING", "TOOL_MISSING"),
 }
+# ingest-skill 1.1.0 `ingest rename` (its ADR-015, EXPERIMENTAL; the agent's smart rename, ADR-129): refusals before anything is renamed. Kinds
+# for codes a newer contract adds; unlike ERROR_KINDS they are not required of the live contract, so the adapter still takes 1.0.x.
+OPTIONAL_ERROR_KINDS: Dict[str, Tuple[str, str]] = {
+    "TEMPLATE_INVALID": ("INVALID_REQUEST", "INVALID_ARGS"),
+    "FIELDS_INVALID": ("INVALID_REQUEST", "INVALID_ARGS"),
+    "PLAN_CHANGED": ("INVALID_REQUEST", "INVALID_ARGS"),
+    "RENAME_REFUSED": ("INVALID_REQUEST", "INVALID_ARGS"),
+    "UNDO_INVALID": ("INVALID_REQUEST", "INVALID_ARGS"),
+}
 # the agent's own refusals / admission failures (not ingest-skill codes)
 AGENT_ERRORS: Dict[str, Tuple[str, str]] = {"INVALID_REQUEST": ("INVALID_REQUEST", "INVALID_ARGS"), "INVALID_RESULT": ("INVALID_OUTPUT", "SKILL_ERROR"),
                                             "TIMEOUT": ("TIMEOUT", "TIMEOUT")}
@@ -109,7 +118,7 @@ def pinned_contract() -> Dict[str, Any]:
 
 def kind_of(code: str) -> Tuple[str, str]:
     """(failure kind, recovery class) of an ingest-skill code or an agent code; an unknown code is INCOMPLETE / SKILL_ERROR (kept verbatim)."""
-    return ERROR_KINDS.get(code) or AGENT_ERRORS.get(code) or ("INCOMPLETE", "SKILL_ERROR")
+    return ERROR_KINDS.get(code) or OPTIONAL_ERROR_KINDS.get(code) or AGENT_ERRORS.get(code) or ("INCOMPLETE", "SKILL_ERROR")
 
 
 def check_contract(contract: Any) -> List[str]:
