@@ -6,6 +6,9 @@
  "type": "object",
  "required": ["schema", "scope", "entities"],
  "additionalProperties": false,
+ "if": {"properties": {"scope": {"const": "project"}}, "required": ["scope"]},
+ "then": {"required": ["project"]},
+ "else": {"not": {"required": ["project"]}},
  "properties": {
   "schema": {"const": "video-agent/entity-store@1"},
   "scope": {"enum": ["global", "project"]},
@@ -14,7 +17,7 @@
   "entities": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/entity"}}
  },
  "$defs": {
-  "text": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"},
+  "text": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$"},
   "entity": {
    "type": "object",
    "required": ["id", "canonical", "type"],
