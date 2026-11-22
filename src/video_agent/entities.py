@@ -94,8 +94,8 @@ def _schema() -> Dict[str, Any]:
 
 
 def validate_doc(doc: Any) -> List[str]:
-    """Schema errors of a store document (each with the path of the field), then the rules a schema cannot state: unique ids, and no spelling
-    (canonical or alias, ignoring case) naming two entities."""
+    """Schema errors of a store document (each with the path of the field), then the rules a schema cannot state: unique ids, no spelling
+    (canonical or alias, ignoring case) naming two entities, and one pronunciation a language (ignoring case, as normalize_entity)."""
     import jsonschema
     v = jsonschema.Draft202012Validator(_schema())
     errs = [_schema_error(e) for e in sorted(v.iter_errors(doc), key=lambda e: list(e.absolute_path))]
@@ -107,6 +107,13 @@ def validate_doc(doc: Any) -> List[str]:
         if e["id"] in ids:
             errs.append(f"entities/{i}/id: {e['id']!r} is used by entity {ids[e['id']]} too")
         ids.setdefault(e["id"], i)
+        langs: Dict[str, int] = {}
+        for j, p in enumerate(e.get("pronunciation") or []):
+            k = p["lang"].lower()
+            if k in langs:
+                errs.append(f"entities/{i}/pronunciation/{j}/lang: {p['lang']!r} repeats the language of pronunciation {langs[k]} "
+                            "(one pronunciation a language)")
+            langs.setdefault(k, j)
         for s in [e["canonical"]] + list(e.get("aliases") or []):
             k = s.casefold()
             if k in spellings and spellings[k] != e["id"]:
@@ -644,10 +651,17 @@ def emphasis_words(entities: List[Dict[str, Any]]) -> List[str]:
 
 
 def find(entities: List[Dict[str, Any]], name: Any) -> Optional[Dict[str, Any]]:
+    """The entity a spelling names, compared as the store compares spellings (ignoring case, spacing kept: a JSON import can hold `A  B`
+    and `A B` as two entities): the exact spelling first, then without the surrounding whitespace, then with every run of whitespace
+    collapsed, only when that names one entity."""
     if not isinstance(name, str):
         return None
-    k = " ".join(name.split()).casefold()
-    want = _owners(entities).get(k)
+    owner = _owners(entities)
+    want = owner.get(name.casefold()) or owner.get(name.strip().casefold())
+    if want is None:
+        k = " ".join(name.split()).casefold()
+        hits = {i for s, i in owner.items() if " ".join(s.split()) == k}
+        want = hits.pop() if len(hits) == 1 else None
     return next((e for e in entities if e["id"] == want), None)
 
 
