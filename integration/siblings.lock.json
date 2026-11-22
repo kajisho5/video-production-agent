@@ -46,10 +46,10 @@
     },
     "dubbing": {
       "repo": "kajisho5/dubbing-skill",
-      "tag": "v1.1.0",
-      "sha": "09d81af060d2492a79ee48081a143cb8c6fc3fdb",
-      "version": "1.1.0",
-      "pin": "src/video_agent/tools/dubbing/contract_1.1.0.json"
+      "tag": "v1.1.1",
+      "sha": "67cbfad03e8e79544a6619336d4bdfdab7665466",
+      "version": "1.1.1",
+      "pin": "src/video_agent/tools/dubbing/contract_1.1.1.json"
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
