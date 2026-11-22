@@ -412,6 +412,56 @@ class EndToEndTests(_PlanBase):
         self.assertEqual([x["term"] for x in doc["entries"]], ["Jane Doe", "Jane Dough", "Jayne Doe"])
         self.assertTrue(any("pronunciation dictionary" in s for s in r["ir"].doc["plan"]["summary"]))
 
+    def test_revision_keeps_entities_applied_to_a_stored_preference(self):
+        from video_agent.preferences import PreferenceStore
+        from video_agent.project import load_ir, save_ir
+        ent.EntityStore(self.ws).add(JANE)
+        PreferenceStore(self.ws, "conf").promote({"motion.lower_third": "Jane Dough"}, by="t", reason="r", source={})
+        svc = self.svc()
+        ir = svc.plan([self.src], "generic", user_requirements={}, params={"language": "en"}, use_cache=False, channel="conf")
+        path = str(Path(self.ws) / "plans" / "pref.project.json")
+        save_ir(ir, path)
+        svc.revise(load_ir(path), path, user_requirements={"audio.normalize": True})
+        el = next(e for op in load_ir(path).doc["graphics"]["operations"] for e in op["elements"] if e["type"] == "lower_third")
+        self.assertEqual((el["parameters"]["name"], el["parameters"]["title"]), ("Jane Doe", "CTO, Acme Corp"), "a preference's name stays corrected on revision")
+
+
+class StoreSafetyTests(_Tmp):
+    def test_one_writer_at_a_time(self):
+        st = ent.EntityStore(self.ws)
+        st.add(ACME)
+        lock = st.path.with_name(st.path.name + ".lock")
+        lock.write_text("123", encoding="utf-8")   # another process is writing
+        with self.assertRaises(ent.EntityError) as cm:
+            with st.locked(timeout=0.2):
+                pass
+        self.assertIn("another process", str(cm.exception))
+        old = time_now = __import__("time").time() - 600
+        os.utime(lock, (old, time_now))   # a crashed writer's lock is taken over
+        st.add(JANE)
+        self.assertFalse(lock.exists())
+        self.assertEqual(len(st.list()), 2)
+
+    def test_export_never_overwrites_the_store(self):
+        st = ent.EntityStore(self.ws)
+        st.add(ACME)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli_main(["--workspace", self.ws, "entities", "export", "-o", str(st.path)])
+        self.assertEqual(rc, 2)
+        self.assertEqual(len(st.list()), 1, "the store is intact")
+
+    def test_replace_import_token_is_bound_to_the_file_content(self):
+        perms = load_permissions(self.ws, scopes="all", env={})
+        f = Path(self.ws) / "in.csv"
+        f.write_text("canonical,type\nA,term\n", encoding="utf-8")
+        from video_agent.mcp_permissions import call_digest
+        args = {"file": str(f), "replace": True}
+        d1 = call_digest("entities_import", args, classify("entities_import", args, perms, self.ws))
+        f.write_text("canonical,type\nB,term\n", encoding="utf-8")
+        d2 = call_digest("entities_import", args, classify("entities_import", args, perms, self.ws))
+        self.assertNotEqual(d1, d2)
+
 
 class DubbingTests(_Tmp):
     def test_pronunciation_dictionary_for_the_dub_language(self):

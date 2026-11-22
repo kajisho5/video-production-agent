@@ -1216,10 +1216,6 @@ class Service:
         # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
         prev_req = dict((old["request"].get("args") or {}).get("requirements") or {})
         prev_req.update(user_requirements or {})
-        # ADR-128: the entities the plan recorded, applied to the revised requirements (a revision never reads the stores' newer content)
-        ent_rec = entities_task.revised_record((old["request"].get("args") or {}).get("entities"), prev_req, self.workspace)
-        if prev_req.get(entities_task.EMPHASIS_KEY) == entities_task.EMPHASIS_VALUE and entities_task.EMPHASIS_KEY not in ((ent_rec or {}).get("rewrites") or {}):
-            raise ValueError(f"{entities_task.EMPHASIS_KEY}=entities highlights the names in the entity memory this plan recorded, and it recorded none: plan again")
         brief_record = (old["request"].get("args") or {}).get("brief")
         rejected_brief = any(d["status"] == "REJECTED" and d["subject"] == brief_task.SUBJECT for d in old["decisions"])
         if brief_record and rejected_brief and not brief_record.get("rejected"):
@@ -1232,6 +1228,12 @@ class Service:
         profile = load_profile(old["project"]["profile"]["name"])
         recorded_prefs = (old["request"].get("args") or {}).get("preferences") or {}   # ADR-111: the versions the plan used, never the store's newer ones
         pref_values = {k: (recorded_prefs.get("values") or {})[k] for k in recorded_prefs.get("applied") or [] if k in (recorded_prefs.get("values") or {})}
+        # ADR-128: the entities the plan recorded (never the stores' newer content), applied to the effective revised requirements: the recorded
+        # preferences and brief first, the explicit keys last, as the plan applied them
+        effective = {**pref_values, **brief_task.values_of(brief_record), **prev_req}
+        ent_rec = entities_task.revised_record((old["request"].get("args") or {}).get("entities"), effective, self.workspace)
+        if effective.get(entities_task.EMPHASIS_KEY) == entities_task.EMPHASIS_VALUE and entities_task.EMPHASIS_KEY not in ((ent_rec or {}).get("rewrites") or {}):
+            raise ValueError(f"{entities_task.EMPHASIS_KEY}=entities highlights the names in the entity memory this plan recorded, and it recorded none: plan again")
         rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(entities_task.requirement_values(ent_rec, {**pref_values, **brief_task.values_of(brief_record), **prev_req})))
         analysis = AnalysisResult.from_ir(old)
         if verify_task.parse_verify_requirements({k: v for k, v in prev_req.items() if k.startswith(verify_task.PREFIX)}) and not any(

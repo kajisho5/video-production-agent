@@ -686,6 +686,8 @@ def cmd_entities(args, svc: Service) -> int:
         elif c == "export":
             body = store.export_csv() if args.format == "csv" else json.dumps(store.load(), indent=1, ensure_ascii=False) + "\n"
             if args.output:
+                if Path(args.output).resolve() == store.path.resolve():
+                    raise ent.EntityError(f"refusing to export over the store itself ({store.path}): choose another file")
                 Path(args.output).write_text(body, encoding="utf-8")
                 out = {"store": store.name, "exported": len(store.list()), "file": args.output, "format": args.format}
             else:

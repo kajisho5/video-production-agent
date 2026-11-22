@@ -297,6 +297,7 @@ def classify(name: str, args: Mapping[str, Any], perms: Permissions, workspace: 
             raise_to(DESTRUCTIVE, item)
         elif name == "entities_import" and args.get("replace") and store is not None:
             raise_to(DESTRUCTIVE, {"action": "replace_store", "store": store.name, **_file_facts(str(store.path)), "file": str(args.get("file")),
+                                   "source": _file_facts(str(args.get("file"))),   # the token is bound to the file's content too
                                    "detail": "the store becomes exactly the file's entities: any other entity in it is removed"})
         elif name == "entities_export" and args.get("output"):
             out = str(args["output"])

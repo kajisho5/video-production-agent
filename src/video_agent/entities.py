@@ -13,7 +13,7 @@
 - **One entity**: `id` (a slug), `canonical` (the spelling to use), `type` (person | organization | product | place | term), `aliases` (other
   spellings and common mis-hearings), `title` (role, for a lower third), `pronunciation` ([{lang, reading, ipa?, accent?}]), `speaker`
   ({speaker_id?, voiceprint?}: diarization-skill's anonymous id or the path of a diarization-skill/voiceprint@1 enrollment), `note`.
-- **Files**: JSON validated by schemas/entity-store.schema.json on every read and write (a hand edit that breaks it is refused with the
+- **Files**: JSON validated by video_agent/schemas/entity-store.schema.json on every read and write (a hand edit that breaks it is refused with the
   path of the bad field, never guessed around), written atomically. CSV import / export with the same fields (`|` between list items).
   `$VIDEO_AGENT_ENTITIES_DIR` replaces `<workspace>/entities`.
 - **Nothing is added automatically**: `suggest` lists candidates from a plan's transcripts (capitalised tokens that recur mid-sentence,
@@ -32,14 +32,16 @@ import json
 import os
 import re
 import tempfile
+import time
 import unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .models import now_iso
 
 SCHEMA = "video-agent/entity-store@1"
-SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "entity-store.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "entity-store.schema.json"   # shipped inside the package (package-data)
 TYPES = ("person", "organization", "product", "place", "term")
 ENV_DIR = "VIDEO_AGENT_ENTITIES_DIR"
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -141,6 +143,37 @@ class EntityStore:
             raise EntityError(f"{self.path} is the store of {store_name(doc.get('project'))}, not {self.name}")
         return doc
 
+    @contextmanager
+    def locked(self, timeout: float = 10.0, stale: float = 120.0):
+        """One writer at a time, from load to save: an exclusive lock file next to the store (os.O_EXCL works on every OS). A lock older
+        than `stale` seconds is a crashed writer's and is taken over; waiting longer than `timeout` refuses the write."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock = self.path.with_name(self.path.name + ".lock")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > stale:
+                        lock.unlink()
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.monotonic() > deadline:
+                    raise EntityError(f"{self.path} is being changed by another process (lock {lock.name}); try again")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+
     def digest(self) -> Optional[str]:
         return hashlib.sha256(self.path.read_bytes()).hexdigest() if self.path.exists() else None
 
@@ -170,6 +203,10 @@ class EntityStore:
         return doc["entities"][_index(doc, ref)]
 
     def add(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        with self.locked():
+            return self._add(raw)
+
+    def _add(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         doc = self.load()
         e = normalize_entity(raw)
         e.setdefault("id", _free_id(doc, slug(e["canonical"])))
@@ -182,6 +219,10 @@ class EntityStore:
         return e
 
     def edit(self, ref: str, changes: Dict[str, Any], add_aliases: Iterable[str] = (), remove_aliases: Iterable[str] = ()) -> Dict[str, Any]:
+        with self.locked():
+            return self._edit(ref, changes, add_aliases, remove_aliases)
+
+    def _edit(self, ref: str, changes: Dict[str, Any], add_aliases: Iterable[str] = (), remove_aliases: Iterable[str] = ()) -> Dict[str, Any]:
         doc = self.load()
         i = _index(doc, ref)
         cur = dict(doc["entities"][i])
@@ -209,6 +250,10 @@ class EntityStore:
         return e
 
     def remove(self, ref: str) -> Dict[str, Any]:
+        with self.locked():
+            return self._remove(ref)
+
+    def _remove(self, ref: str) -> Dict[str, Any]:
         doc = self.load()
         i = _index(doc, ref)
         gone = doc["entities"].pop(i)
@@ -225,6 +270,10 @@ class EntityStore:
         return buf.getvalue()
 
     def import_csv(self, text: str, replace: bool = False) -> Dict[str, Any]:
+        with self.locked():
+            return self._import_csv(text, replace)
+
+    def _import_csv(self, text: str, replace: bool = False) -> Dict[str, Any]:
         """Rows by id (a row without one gets the slug of its canonical): new ids are added, existing ones take the row's fields. With
         `replace` the store becomes exactly the rows. All rows are checked before anything is written."""
         rows = rows_from_csv(text)
