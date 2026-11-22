@@ -327,7 +327,8 @@ def cmd_plan(args, svc: Service) -> int:
     ir = svc.plan(args.inputs, args.profile, request_text=args.request or "", user_requirements=_kv(args.set), project_name=args.name, hash_sources=not args.no_hash,
                   strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
                   ingest_records=ingest, brief=args.brief or "", brief_answer=answer, ai_model=args.ai_model or "host-chat",
-                  channel=getattr(args, "channel", None), use_preferences=not getattr(args, "no_preferences", False))
+                  channel=getattr(args, "channel", None), use_preferences=not getattr(args, "no_preferences", False),
+                  entity_project=getattr(args, "entity_project", None), use_entities=not getattr(args, "no_entities", False))
     brief = (ir.doc["request"].get("args") or {}).get("brief")
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
@@ -605,6 +606,127 @@ def cmd_revise(args, svc: Service) -> int:
     if out.get("dropped_proposals"):
         print("suppressed (rejected earlier):", "; ".join(f"{d['subject']}@{d['asset_id']}: {d['decision']}" for d in out["dropped_proposals"]))
     print(out["hint"])
+    return 0
+
+
+def _pron_args(args) -> Optional[List[Dict[str, Any]]]:
+    """--pronunciation LANG=READING (repeatable), with --ipa LANG=IPA / --accent LANG=N for the same language."""
+    from .entities import EntityError
+    def pairs(vals, what):
+        out = {}
+        for v in vals or []:
+            if "=" not in v:
+                raise EntityError(f"--{what} takes LANG=VALUE, not {v!r}")
+            k, x = v.split("=", 1)
+            out[k.strip()] = x.strip()
+        return out
+    reading, ipa, accent = pairs(args.pronunciation, "pronunciation"), pairs(args.ipa, "ipa"), pairs(args.accent, "accent")
+    stray = sorted((set(ipa) | set(accent)) - set(reading))
+    if stray:
+        raise EntityError(f"--ipa / --accent for {', '.join(stray)} need --pronunciation for that language")
+    if not reading:
+        return None
+    return [{"lang": k, "reading": v, **({"ipa": ipa[k]} if k in ipa else {}), **({"accent": accent[k]} if k in accent else {})} for k, v in reading.items()]
+
+
+def _speaker_args(args) -> Optional[Dict[str, Any]]:
+    from .entities import check_voiceprint
+    sp = {}
+    if args.speaker_id:
+        sp["speaker_id"] = args.speaker_id
+    if args.voiceprint:
+        sp["voiceprint"] = check_voiceprint(args.voiceprint)
+    return sp or None
+
+
+def cmd_entities(args, svc: Service) -> int:
+    """ADR-128: the entity memory (global, or a project's store with --project). A refusal is exit 2 with the reason; nothing is written."""
+    from . import entities as ent
+    try:
+        store = ent.EntityStore(svc.workspace, args.project)
+        c = args.ent_cmd
+        if c == "list":
+            items = store.list(args.type)
+            out: Any = {"store": store.name, "path": str(store.path), "entities": items}
+        elif c == "add":
+            raw = {"id": args.id, "canonical": args.canonical, "type": args.type, "aliases": args.alias or [], "title": args.title,
+                   "pronunciation": _pron_args(args), "speaker": _speaker_args(args), "note": args.note}
+            out = {"store": store.name, "added": store.add(raw)}
+        elif c == "edit":
+            changes: Dict[str, Any] = {}
+            for k in ("canonical", "type", "title", "note"):
+                if getattr(args, k) is not None:
+                    changes[k] = getattr(args, k)
+            pr = _pron_args(args)
+            if pr is not None:
+                changes["pronunciation"] = pr
+            sp = _speaker_args(args)
+            if sp is not None:
+                changes["speaker"] = sp
+            for k in args.clear or []:
+                changes[k] = None
+            out = {"store": store.name, "edited": store.edit(args.ref, changes, add_aliases=args.add_alias or [], remove_aliases=args.remove_alias or [])}
+        elif c == "remove":
+            out = {"store": store.name, "removed": store.remove(args.ref)}
+        elif c == "import":
+            text = Path(args.file).read_text(encoding="utf-8-sig")
+            if args.file.lower().endswith(".json"):
+                doc = json.loads(text)
+                errs = ent.validate_doc(doc) if isinstance(doc, dict) and "schema" in doc else ["a JSON import is an entity store document (video-agent/entity-store@1)"]
+                if errs:
+                    raise ent.EntityError(f"{args.file}: " + "; ".join(errs[:10]))
+                buf = __import__("io").StringIO()
+                import csv as _csv
+                w = _csv.DictWriter(buf, fieldnames=list(ent.CSV_COLUMNS), lineterminator="\n")
+                w.writeheader()
+                for e in doc["entities"]:
+                    w.writerow(ent.entity_to_row(e))
+                text = buf.getvalue()
+            out = store.import_csv(text, replace=args.replace)
+        elif c == "export":
+            body = store.export_csv() if args.format == "csv" else json.dumps(store.load(), indent=1, ensure_ascii=False) + "\n"
+            if args.output:
+                if Path(args.output).resolve() == store.path.resolve():
+                    raise ent.EntityError(f"refusing to export over the store itself ({store.path}): choose another file")
+                Path(args.output).write_text(body, encoding="utf-8")
+                out = {"store": store.name, "exported": len(store.list()), "file": args.output, "format": args.format}
+            else:
+                sys.stdout.write(body)
+                return 0
+        else:   # suggest
+            doc = load_ir(args.project_file).doc
+            trs = [o.get("data") or {} for o in (doc.get("analysis") or {}).get("observations") or [] if o.get("kind") == "transcript"]
+            known = (ent.snapshot(svc.workspace, args.project) or {}).get("entities") or []
+            out = {"store": store.name, "transcripts": len(trs), "candidates": ent.suggest(trs, known, min_count=args.min_count),
+                   "next": "add the ones you want: video-agent entities add <canonical> --type <type> [--alias ...] (nothing is added automatically)"}
+    except (ValueError, OSError) as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(out, True)
+        return 0
+    if args.ent_cmd == "list":
+        print(f"{out['store']} ({out['path']}): {len(out['entities'])} entit{'y' if len(out['entities']) == 1 else 'ies'}")
+        for e in out["entities"]:
+            extra = [f"aka {', '.join(e['aliases'])}"] if e.get("aliases") else []
+            extra += [e["title"]] if e.get("title") else []
+            print(f"  {e['id']:<24} {e['type']:<12} {e['canonical']}" + (f"  ({'; '.join(extra)})" if extra else ""))
+    elif args.ent_cmd == "suggest":
+        print(f"{len(out['candidates'])} candidate(s) from {out['transcripts']} transcript(s):")
+        for c_ in out["candidates"]:
+            print(f"  {c_['text']:<32} x{c_['count']}  {', '.join(c_['reasons'])}")
+        print(out["next"])
+    elif args.ent_cmd in ("add", "edit", "remove"):
+        verb = {"add": "added", "edit": "edited", "remove": "removed"}[args.ent_cmd]
+        e = out[verb]
+        print(f"{verb} {e['id']} ({e['type']}: {e['canonical']}) in {out['store']}")
+    elif args.ent_cmd == "import":
+        print(f"{out['store']}: {len(out['added'])} added, {len(out['updated'])} updated, {len(out['unchanged'])} unchanged, {len(out['removed'])} removed")
+    else:
+        print(f"{out['exported']} entities of {out['store']} written to {out['file']} ({out['format']})")
     return 0
 
 
@@ -1100,6 +1222,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--brief-requirements", metavar="FILE", help="the chat model's JSON answer to the brief (host provider, ADR-061)")
     p.add_argument("--channel", help="the channel / brand / series this video belongs to: its stored preferences apply, and channel-scoped feedback goes there (ADR-111)")
     p.add_argument("--no-preferences", action="store_true", help="plan without the stored preferences (global and channel)")
+    p.add_argument("--entity-project", help="the entity memory's project store to apply on top of the global one (default: --channel) (ADR-128)")
+    p.add_argument("--no-entities", action="store_true", help="plan without the entity memory")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("brief", help="read a brief into --set keys (no media analysed): what plan --brief would apply (ADR-061)")
     p.add_argument("text"); p.add_argument("--profile", default="generic")
@@ -1151,6 +1275,33 @@ def build_parser() -> argparse.ArgumentParser:
     q = psub.add_parser("rollback", help="a new version whose rules are those of an earlier one (nothing is deleted)"); q.add_argument("--channel")
     q.add_argument("--to", type=int, dest="to_v", required=True); q.add_argument("--by"); q.add_argument("--reason", default="")
     p.set_defaults(fn=cmd_preferences)
+    p = sub.add_parser("entities", help="the entity memory: people and proper nouns applied to transcription, subtitles, lower thirds and dubbing (ADR-128)")
+    esub = p.add_subparsers(dest="ent_cmd", required=True)
+
+    def _ent_common(q, fields=True):
+        q.add_argument("--project", help="a project's store (an event, a series); default: the global store")
+        if fields:
+            q.add_argument("--title", help="role / title for a lower third"); q.add_argument("--note")
+            q.add_argument("--pronunciation", action="append", metavar="LANG=READING", help="how to say it, in the language's own script (dubbing)")
+            q.add_argument("--ipa", action="append", metavar="LANG=IPA"); q.add_argument("--accent", action="append", metavar="LANG=N", help="accent nucleus in morae (VOICEVOX)")
+            q.add_argument("--speaker-id", help="diarization-skill's anonymous id (SPEAKER_00, ...)")
+            q.add_argument("--voiceprint", help="a diarization-skill/voiceprint@1 file of this person's enrolled voice")
+    q = esub.add_parser("list", help="the store's entities"); _ent_common(q, False); q.add_argument("--type", choices=["person", "organization", "product", "place", "term"])
+    q = esub.add_parser("add", help="add an entity"); q.add_argument("canonical", help="the spelling to use"); _ent_common(q)
+    q.add_argument("--type", required=True, choices=["person", "organization", "product", "place", "term"]); q.add_argument("--id", help="default: a slug of the spelling")
+    q.add_argument("--alias", action="append", help="another spelling or a common mis-hearing (repeatable)")
+    q = esub.add_parser("edit", help="change an entity (by id, spelling or alias)"); q.add_argument("ref"); _ent_common(q)
+    q.add_argument("--canonical"); q.add_argument("--type", choices=["person", "organization", "product", "place", "term"])
+    q.add_argument("--add-alias", action="append"); q.add_argument("--remove-alias", action="append")
+    q.add_argument("--clear", action="append", choices=["aliases", "title", "pronunciation", "speaker", "note"], help="remove a field (repeatable)")
+    q = esub.add_parser("remove", help="remove an entity (by id, spelling or alias)"); q.add_argument("ref"); _ent_common(q, False)
+    q = esub.add_parser("import", help="merge a CSV (or an entity store JSON) into the store: by id, new ones added, existing ones replaced")
+    q.add_argument("file"); _ent_common(q, False); q.add_argument("--replace", action="store_true", help="the store becomes exactly the file's entities")
+    q = esub.add_parser("export", help="the store as CSV (default) or JSON"); _ent_common(q, False)
+    q.add_argument("--format", choices=["csv", "json"], default="csv"); q.add_argument("-o", "--output")
+    q = esub.add_parser("suggest", help="candidate entities from a plan's transcripts (nothing is added: confirm each with `add`)")
+    q.add_argument("project_file", metavar="project"); _ent_common(q, False); q.add_argument("--min-count", type=int, default=2)
+    p.set_defaults(fn=cmd_entities)
     p = sub.add_parser("corrections", help="corrections per minute of a project: feedback per delivered minute per plan version, vs. the previous and the channel's recent average (report only)")
     p.add_argument("project"); p.set_defaults(fn=cmd_corrections)
     p = sub.add_parser("diff", help="show the PlanDiff between two plan versions (default: previous → current)")

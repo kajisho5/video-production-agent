@@ -52,13 +52,17 @@ SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.7.", "0.8.", "0.9.", "0.10.", "0.11.", "0
                                              # added; transcribe, its schemas and the engines are unchanged. The agent runs find (step 33)
                                              # 0.12.1 (addendum 15): `rule` added to transcription/speakers, a tool the agent does not call
                                              # 0.13.0 (addendum 30): opt-in transcribe inputs domain_vocabulary / corrections, capabilities
-                                             # domain_vocabulary / post_correction, optional provenance objects; the agent sends none of them
+                                             # domain_vocabulary / post_correction, optional provenance objects; ADR-128: the agent sends the two inputs
+                                             # with the entity memory's names (speakers / terms and alias corrections only)
 SUPPORTED_SCHEMAS = {"transcript": TRANSCRIPT_SCHEMA, "speech_event": SPEECH_EVENT_SCHEMA, "engine_spec": ENGINE_SPEC_SCHEMA}
 REQUIRED_CAPABILITIES = ("speech_recognition", "engine_registry", "input_path_policy", "offline_mode")
 # typed request keys the agent may set (a subset of the contract's tool input; the contract is checked to declare them)
 PARAMETER_KEYS = ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline")
 # 0.9.0: optional inputs a contract may declare (not required by check_contract); sent only when asked for and only to a contract that declares them
-OPTIONAL_PARAMETER_KEYS = ("word_segmentation",)
+OPTIONAL_PARAMETER_KEYS = ("word_segmentation", "domain_vocabulary", "corrections")
+# ADR-128: entity memory sends the 0.13.0 inputs domain_vocabulary {speakers, terms, max_terms, japanese?} and corrections [{from, to, match}]
+# (only the names the user stored; never programme or slide material from here), each only to a contract that declares it
+DOMAIN_VOCABULARY_KEYS = ("speakers", "terms", "max_terms", "japanese")
 REQUEST_PARAMETER_KEYS = PARAMETER_KEYS + OPTIONAL_PARAMETER_KEYS
 WORD_SEGMENTATIONS = ("engine", "dictionary")
 BUDGET_KEYS = ("timeout", "max_audio_seconds")
@@ -169,6 +173,44 @@ def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
                       result_keys=sorted((t.get("output") or {}).keys())) for t in contract.get("tools") or []]
     return SkillPackage(skill_id=SKILL_ID, name=contract.get("name") or CONTRACT_ID, version=ver, description=contract.get("description", ""),
                         capabilities=["ffmpeg", "ffprobe"], tools=tools, repository="kajisho5/transcription-skill", role="speech recognition (recognition only)")
+
+
+def _short_texts(v: Any, what: str, limit: int) -> List[str]:
+    if not isinstance(v, list) or len(v) > limit or not all(isinstance(x, str) and x.strip() and len(x) <= 100 and not any(ord(c) < 32 for c in x) for x in v):
+        raise ToolError(f"transcription: {what} must be a list of at most {limit} short names")
+    return list(v)
+
+
+def _check_domain_vocabulary(v: Any) -> Dict[str, Any]:
+    """ADR-128: the names entity memory hands over (speakers / terms), never free text: programme and slides are not sent from here."""
+    if not isinstance(v, dict) or not v or set(v) - set(DOMAIN_VOCABULARY_KEYS) or not (v.get("speakers") or v.get("terms")):
+        raise ToolError("transcription: domain_vocabulary must be {{speakers?, terms?, max_terms?, japanese?}} with at least one name")
+    out: Dict[str, Any] = {}
+    for k in ("speakers", "terms"):
+        if v.get(k):
+            out[k] = _short_texts(v[k], f"domain_vocabulary.{k}", 200)
+    if "max_terms" in v:
+        m = v["max_terms"]
+        if isinstance(m, bool) or not isinstance(m, int) or not 1 <= m <= 200:
+            raise ToolError("transcription: domain_vocabulary.max_terms must be an integer in [1, 200]")
+        out["max_terms"] = m
+    if "japanese" in v:
+        if not isinstance(v["japanese"], bool):
+            raise ToolError("transcription: domain_vocabulary.japanese must be a boolean")
+        out["japanese"] = v["japanese"]
+    return out
+
+
+def _check_corrections(v: Any) -> List[Dict[str, str]]:
+    if not isinstance(v, list) or not v or len(v) > 500:
+        raise ToolError("transcription: corrections must be a non-empty list of at most 500 {from, to, match} rules")
+    out = []
+    for r in v:
+        if not isinstance(r, dict) or set(r) - {"from", "to", "match"} or r.get("match", "word") not in ("word", "substring"):
+            raise ToolError("transcription: a correction is {from, to, match: word | substring}")
+        _short_texts([r.get("from"), r.get("to")], "a correction's from / to", 2)
+        out.append({"from": r["from"], "to": r["to"], "match": r.get("match", "word")})
+    return out
 
 
 def _one_json_document(stdout: str) -> Dict[str, Any]:
@@ -410,6 +452,10 @@ class TranscriptionAdapter(ToolAdapter):
             elif k == "initial_prompt":
                 if not isinstance(v, str) or "\x00" in v or len(v) > 500:
                     raise ToolError("transcription: initial_prompt must be a short string (vocabulary hint)")
+            elif k == "domain_vocabulary":
+                v = _check_domain_vocabulary(v)
+            elif k == "corrections":
+                v = _check_corrections(v)
             params[k] = v
         if self.offline:
             params["offline"] = True   # the adapter's constraint can only tighten

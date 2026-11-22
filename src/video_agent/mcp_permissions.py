@@ -49,8 +49,13 @@ TOOL_CLASSES: Dict[str, str] = {
     "check": READ, "artifacts": READ, "preflight": READ,
     "plan": WRITE, "revise": WRITE, "approve": WRITE, "reject": WRITE, "preferences": WRITE, "render": WRITE, "transcript_edit": WRITE,
     "selects": WRITE,
+    # ADR-128: the entity memory. list / suggest read; add / edit / import write the store (a new version of the agent's own file); export writes a
+    # file when given one; remove deletes an entity (always previewed and confirmed); import with replace can delete many
+    "entities_list": READ, "entities_suggest": READ, "entities_add": WRITE, "entities_edit": WRITE, "entities_import": WRITE, "entities_export": READ,
+    "entities_remove": DESTRUCTIVE,
 }
-ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,), "transcript_edit": (DESTRUCTIVE,), "selects": (DESTRUCTIVE,)}
+ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,), "transcript_edit": (DESTRUCTIVE,), "selects": (DESTRUCTIVE,),
+                                          "entities_import": (DESTRUCTIVE,), "entities_export": (WRITE, DESTRUCTIVE)}
 
 
 class PermissionConfigError(ValueError):
@@ -272,6 +277,34 @@ def classify(name: str, args: Mapping[str, Any], perms: Permissions, workspace: 
     elif name == "preferences":
         if (args.get("action") or "list") in ("list", "show", "diff"):
             call.cls = READ
+    elif name.startswith("entities_"):   # ADR-128
+        from .entities import EntityStore, EntityError
+        try:
+            store = EntityStore(workspace, args.get("project") or None)
+        except EntityError:
+            store = None   # the CLI refuses the project name itself
+        if store is not None and name in ("entities_add", "entities_edit", "entities_import", "entities_remove"):
+            call.writes.append(str(store.path))
+        if name == "entities_remove" and store is not None:
+            item: Dict[str, Any] = {"action": "remove_entity", "store": store.name, "ref": args.get("ref"), **_file_facts(str(store.path))}
+            item.pop("plan", None)
+            try:
+                e = store.get(str(args.get("ref") or ""))
+                item.update(entity={"id": e["id"], "type": e["type"], "canonical": e["canonical"]},
+                            detail="the entity leaves the store: later plans no longer apply its spelling, aliases, title or reading")
+            except (EntityError, ValueError) as exc:
+                item["detail"] = f"nothing to remove: {exc}"
+            raise_to(DESTRUCTIVE, item)
+        elif name == "entities_import" and args.get("replace") and store is not None:
+            raise_to(DESTRUCTIVE, {"action": "replace_store", "store": store.name, **_file_facts(str(store.path)), "file": str(args.get("file")),
+                                   "source": _file_facts(str(args.get("file"))),   # the token is bound to the file's content too
+                                   "detail": "the store becomes exactly the file's entities: any other entity in it is removed"})
+        elif name == "entities_export" and args.get("output"):
+            out = str(args["output"])
+            call.writes.append(out)
+            raise_to(WRITE)
+            if os.path.lexists(out):
+                raise_to(DESTRUCTIVE, {"action": "overwrite", **_file_facts(out), "detail": "the export replaces this file"})
     elif name == "check":
         if args.get("qc"):
             call.cls = WRITE   # qc-skill stores its report in the workspace

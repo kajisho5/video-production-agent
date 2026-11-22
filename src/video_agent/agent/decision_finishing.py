@@ -284,7 +284,7 @@ def decide_finishing(eng: DecisionEngine, m: Dict[str, Requirement], analysis: A
                     eng.decide(subject="subtitle.mux", type="TRANSFORM", decision=f"mux the subtitles into {subject} as a soft (player-toggleable) track",
                                reason=f"user asked for a soft subtitle track ({mr.source}); the picture and the audio are stream-copied, the sidecar is still produced",
                                confidence=1.0, evidence=ev + [mr.id], risk="LOW", approval=approval_for("subtitle.mux", explicit=mr, keys=APPROVAL_KEYS), provenance="USER",
-                               params={"asset_id": subject, "format": "srt", "mode": "mux", **{k: v for k, v in (sub.get("render") or {}).items() if k != "caption_profile"}},
+                               params={"asset_id": subject, "format": "srt", "mode": "mux", **{k: v for k, v in (sub.get("render") or {}).items() if k not in ("caption_profile", "emphasis")}},
                                requirements=req + [mr], serves_intent=None)
         cap_block(GENERATE_SKILL, f"capability.{GENERATE_SKILL}")
         if sub["burn_in"]:

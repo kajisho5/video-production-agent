@@ -56,6 +56,11 @@ NEW_KEYS = ("subtitle.regional_profile", "subtitle.caption_profile", "subtitle.p
 # where no installed font covers the subtitle's script. Only the user names it (never a brief, never chosen here); the Skill reads the family from the files
 FONTS_DIR_KEY = "subtitle.fonts_dir"
 NEW_KEYS = NEW_KEYS + (FONTS_DIR_KEY,)
+# ADR-128: subtitle-skill render's `emphasis` (burn only) in its `words` mode, with the names of the entity memory: `subtitle.emphasis=entities`.
+# The plan resolves the value to {mode: words, words: [...]} from the stores it records (entities.py); other emphasis modes are not wired
+EMPHASIS_KEY = "subtitle.emphasis"
+EMPHASIS_ENTITIES = "entities"
+NEW_KEYS = NEW_KEYS + (EMPHASIS_KEY,)
 REQUIREMENT_KEYS = ("subtitle", "subtitle.format", "subtitle.burn_in", "subtitle.mode", "subtitle.max_chars_per_line", "subtitle.max_lines") + NEW_KEYS
 # subtitle-skill render's `mode` (contract capabilities.render_modes, pinned 0.2.0): burn into the picture, or mux a soft track. Muxing is
 # subtitle-skill's job (ecosystem.json: 字幕生成・検証 / 字幕焼き込み; the contract's render delegates to ffmpeg-skill/caption --mode mux),
@@ -139,6 +144,8 @@ def _parse_new_options(vals: Dict[str, Any], fmt: Optional[str], burn: bool, mux
         if not os.path.isdir(fd):
             raise EditRequirementError(f"{FONTS_DIR_KEY} directory not found: {fd}")
         render["fonts_dir"] = os.path.abspath(fd)
+    if EMPHASIS_KEY in vals:
+        render.update(_emphasis(vals[EMPHASIS_KEY], burn))
     if "subtitle.regional_profile" in vals:
         rp = vals["subtitle.regional_profile"]
         if not isinstance(rp, str) or rp not in REGIONAL_PROFILES:
@@ -349,12 +356,28 @@ def ir_captions_generate(subject: str, output: str, fmt: str, language: str, cue
     return rec
 
 
+def _emphasis(v: Any, burn: bool) -> Dict[str, Any]:
+    """ADR-128: `subtitle.emphasis=entities`, resolved by the plan into subtitle-skill's {mode: words, words: [...]} (burn only)."""
+    if "emphasis" not in (_SUB_CONTRACT["parameters"].get("render") or []):
+        raise EditRequirementError(f"{EMPHASIS_KEY}: the pinned subtitle-skill contract declares no render emphasis")
+    if v == EMPHASIS_ENTITIES:   # the --set gate: the plan resolves it to the names (Service._entity_record refuses it when there are none)
+        if not burn:
+            raise EditRequirementError(f"{EMPHASIS_KEY} highlights words drawn into the picture: it needs subtitle.burn_in=true (subtitle-skill emphasis is burn only)")
+        return {}
+    if not (isinstance(v, dict) and v.get("mode") == "words" and set(v) <= {"mode", "words"} and isinstance(v.get("words"), list) and v["words"]
+            and len(v["words"]) <= 500 and all(isinstance(w, str) and w.strip() and len(w) <= 100 and not _CTRL_RE.search(w) for w in v["words"])):
+        raise EditRequirementError(f"{EMPHASIS_KEY} must be {EMPHASIS_ENTITIES} (the names in the entity memory)")
+    if not burn:
+        raise EditRequirementError(f"{EMPHASIS_KEY} highlights words drawn into the picture: it needs subtitle.burn_in=true (subtitle-skill emphasis is burn only)")
+    return {"emphasis": {"mode": "words", "words": [w.strip() for w in v["words"]]}}
+
+
 def ir_captions_burn(subject: str, input_id: str, sidecar: str, output: str, decision_ids: List[str], scope: Optional[Dict[str, float]] = None,
                      op_type: str = "captions.burn", render: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """IR captions.burn, or (ADR-063) captions.mux: the same references; the compiler asks subtitle-skill render for the mode. ADR-101: the
     render options the user asked for (placement, regional_profile, caption_profile) ride on the record. ADR-107: fonts_dir on the burn only."""
     rec: Dict[str, Any] = {"type": op_type, "asset": subject, "input": input_id, "sidecar": sidecar, "output": output}
-    for k in ("placement", "regional_profile", "caption_profile") + (("fonts_dir",) if op_type == "captions.burn" else ()):
+    for k in ("placement", "regional_profile", "caption_profile") + (("fonts_dir", "emphasis") if op_type == "captions.burn" else ()):   # ADR-128: emphasis
         if (render or {}).get(k):
             rec[k] = render[k]
     if scope is not None:

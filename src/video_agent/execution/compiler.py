@@ -351,6 +351,10 @@ def lower_captions(tool: str, op: Dict[str, Any], current: Optional[str], out_id
         if op["type"] != "captions.burn":
             raise CompileError(f"{op['type']} cannot take fonts_dir: the fonts are for a burn-in (a soft track is drawn by the player)")
         args["fonts_dir"] = op["fonts_dir"]
+    if op.get("emphasis"):   # ADR-128: the entity memory's names, highlighted on a burn (subtitle-skill emphasis words)
+        if op["type"] != "captions.burn":
+            raise CompileError(f"{op['type']} cannot take emphasis: subtitle-skill draws it on a burn-in only")
+        args["emphasis"] = op["emphasis"]
     return args
 
 

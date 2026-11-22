@@ -40,6 +40,13 @@ TOOL_TIMEOUT_S = 6 * 3600   # a render of a long recording can take hours; the c
 
 _STR = {"type": "string"}
 _PROJECT = {"type": "string", "description": "path of the project.json that plan printed"}
+_ENT_PROJECT = {"type": "string", "description": "a project's entity store (an event, a series); default the global one"}
+_ENT_TYPE = {"type": "string", "enum": ["person", "organization", "product", "place", "term"]}
+_ENT_FIELDS = {"canonical": {"type": "string", "description": "the spelling to use"}, "type": _ENT_TYPE,
+               "aliases": {"type": "array", "items": _STR, "description": "other spellings and common mis-hearings"}, "title": {"type": "string", "description": "role, for a lower third"},
+               "pronunciation": {"type": "array", "items": {"type": "object", "required": ["lang", "reading"], "properties": {"lang": _STR, "reading": _STR, "ipa": _STR, "accent": {"type": "integer"}}}},
+               "speaker_id": {"type": "string", "description": "diarization-skill's anonymous id (SPEAKER_00, ...)"},
+               "voiceprint": {"type": "string", "description": "a diarization-skill/voiceprint@1 file of the person's enrolled voice"}, "note": _STR}
 
 TOOLS: List[Dict[str, Any]] = [
     {"name": "doctor", "description": "Inspect the environment: ffmpeg, the production skills and their status (AVAILABLE / MISSING / DEGRADED).",
@@ -62,7 +69,9 @@ TOOLS: List[Dict[str, Any]] = [
          "brief": {"type": "string", "description": "the user's brief in their own words, read into requirement keys (explicit `set` wins)"},
          "brief_requirements": {"type": ["object", "array"], "description": "your answer to the brief's host_request: {\"requirements\": [{key, value, phrase, confidence}], \"unmapped\": [...]}"},
          "channel": {"type": "string", "description": "the channel / brand / series this video belongs to: its stored preferences apply (ADR-111)"},
-         "no_preferences": {"type": "boolean", "description": "plan without the stored preferences"}}}},
+         "no_preferences": {"type": "boolean", "description": "plan without the stored preferences"},
+         "entity_project": {"type": "string", "description": "the entity memory's project store applied on top of the global one (default: channel)"},
+         "no_entities": {"type": "boolean", "description": "plan without the entity memory"}}}},
     {"name": "brief", "description": (
         "Read the user's brief (e.g. \"60 s vertical, captions, -14 LUFS\") into the agent's requirement keys without analysing media. "
         "Without brief_requirements the result has `host_request`: answer it with keys from its allowed_keys only, each quoting the "
@@ -93,6 +102,23 @@ TOOLS: List[Dict[str, Any]] = [
          "feedback": {"type": "string", "description": "promote: the feedback id"}, "confirm_scope": {"type": "string", "enum": ["channel", "all_videos"]},
          "channel": {"type": "string", "description": "the channel's store (default global)"}, "version": {"type": "integer"},
          "from": {"type": "integer"}, "to": {"type": "integer"}, "by": _STR, "reason": _STR}}},
+    # ADR-128: the entity memory. Names of real people: they stay in the workspace and reach only the local Skills a plan uses them with
+    {"name": "entities_list", "description": "The entity memory (people, organisations, products, places, terms with their spellings, aliases, titles, readings) of the global store or a project's.",
+     "inputSchema": {"type": "object", "properties": {"project": _ENT_PROJECT, "type": _ENT_TYPE}}},
+    {"name": "entities_add", "description": "Add one entity the user named (never one you guessed: suggest first and let the user confirm).",
+     "inputSchema": {"type": "object", "required": ["canonical", "type"], "properties": {"project": _ENT_PROJECT, **_ENT_FIELDS, "id": _STR}}},
+    {"name": "entities_edit", "description": "Change an entity (by id, spelling or alias): fields given replace the stored ones; add_aliases / remove_aliases; clear removes fields.",
+     "inputSchema": {"type": "object", "required": ["ref"], "properties": {"project": _ENT_PROJECT, "ref": _STR, **{k: v for k, v in _ENT_FIELDS.items() if k != "aliases"},
+                                                                       "add_aliases": {"type": "array", "items": _STR}, "remove_aliases": {"type": "array", "items": _STR},
+                                                                       "clear": {"type": "array", "items": {"enum": ["aliases", "title", "pronunciation", "speaker", "note"]}}}}},
+    {"name": "entities_remove", "description": "Remove an entity (destructive: returns a preview and a confirm_token first).",
+     "inputSchema": {"type": "object", "required": ["ref"], "properties": {"project": _ENT_PROJECT, "ref": _STR}}},
+    {"name": "entities_import", "description": "Merge a CSV (or an entity store JSON) file into the store by id; replace=true makes the store exactly the file (destructive, confirmed).",
+     "inputSchema": {"type": "object", "required": ["file"], "properties": {"project": _ENT_PROJECT, "file": _STR, "replace": {"type": "boolean"}}}},
+    {"name": "entities_export", "description": "The store as CSV (default) or JSON: returned, or written to output.",
+     "inputSchema": {"type": "object", "properties": {"project": _ENT_PROJECT, "format": {"enum": ["csv", "json"]}, "output": _STR}}},
+    {"name": "entities_suggest", "description": "Candidate entities from a plan's transcripts (recurring capitalised names, low-confidence name-like words). Nothing is added: show them to the user, then entities_add the ones they confirm.",
+     "inputSchema": {"type": "object", "required": ["plan"], "properties": {"project": _ENT_PROJECT, "plan": _PROJECT, "min_count": {"type": "integer", "minimum": 1}}}},
     {"name": "corrections", "description": "Corrections per minute of a project per plan version, vs. the previous version and the channel's recent average. A report only.",
      "inputSchema": {"type": "object", "required": ["project"], "properties": {"project": _PROJECT}}},
     {"name": "validate", "description": "Validate a Project IR (schema, semantics, capabilities).",
@@ -171,12 +197,13 @@ def listed_tools(perms: Permissions) -> List[Dict[str, Any]]:
             out.append({**t, "description": t["description"] + " [no permission class: refused on this server]"})
             continue
         esc = ESCALATES.get(name, ())
-        note = f" [permission class: {cls}" + (f"; a call can be {' / '.join(esc)}, which needs a preview and a confirm_token" if esc else "")
+        note = f" [permission class: {cls}" + (f"; a call can be {' / '.join(esc)}, which needs a preview and a confirm_token" if esc else
+                                               "; every call needs a preview and a confirm_token" if cls in CONFIRMED_CLASSES else "")
         off = [c for c in (cls, *esc) if not perms.enabled(c)]
         if off:
             note += f"; {' / '.join(off)} disabled on this server"
         schema = dict(t["inputSchema"])
-        if esc:
+        if esc or cls in CONFIRMED_CLASSES:   # ADR-128: entities_remove is destructive on every call
             schema["properties"] = {**schema.get("properties", {}), "confirm_token": _CONFIRM_TOKEN}
         out.append({**t, "description": t["description"] + note + "]", "inputSchema": schema,
                     "annotations": {"readOnlyHint": cls == READ and not esc, "destructiveHint": DESTRUCTIVE in (cls, *esc),
@@ -231,7 +258,8 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         options += [f"--kind={k}" for k in a.get("kinds") or []]
         if a.get("ai_brief", True):
             options += ["--ai-brief", *opt("--ai-model", "ai_model")]
-        options += [*opt("--brief", "brief"), *_brief_file(a, tmpdir), *opt("--channel", "channel"), *(["--no-preferences"] if a.get("no_preferences") else [])]
+        options += [*opt("--brief", "brief"), *_brief_file(a, tmpdir), *opt("--channel", "channel"), *(["--no-preferences"] if a.get("no_preferences") else []),
+                    *opt("--entity-project", "entity_project"), *(["--no-entities"] if a.get("no_entities") else [])]
         if a.get("brief_requirements") is not None and not any(o.startswith("--ai-model=") for o in options):
             options += opt("--ai-model", "ai_model")
         return cmd("plan", options, [str(i) for i in inputs])
@@ -258,6 +286,35 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         if act == "rollback":
             return ["preferences", "rollback", *opt("--channel", "channel"), f"--to={need('to')}", *opt("--by", "by"), *opt("--reason", "reason")]
         raise ValueError("preferences: 'action' must be promote, list, show, diff or rollback")
+    if name.startswith("entities_"):   # ADR-128
+        act = name.split("_", 1)[1]
+        proj = opt("--project", "project")
+
+        def fields() -> List[str]:
+            out = [*opt("--title", "title"), *opt("--note", "note"), *opt("--speaker-id", "speaker_id"), *opt("--voiceprint", "voiceprint")]
+            for pr in a.get("pronunciation") or []:
+                if not isinstance(pr, dict) or not pr.get("lang") or not pr.get("reading"):
+                    raise ValueError(f"{name}: a pronunciation is {{lang, reading, ipa?, accent?}}")
+                out.append(f"--pronunciation={pr['lang']}={pr['reading']}")
+                out += [f"--ipa={pr['lang']}={pr['ipa']}"] if pr.get("ipa") else []
+                out += [f"--accent={pr['lang']}={pr['accent']}"] if pr.get("accent") is not None else []
+            return out
+        if act == "list":
+            return ["entities", "list", *proj, *opt("--type", "type")]
+        if act == "add":
+            return ["entities", "add", *proj, f"--type={need('type')}", *opt("--id", "id"), *fields(), *[f"--alias={x}" for x in a.get("aliases") or []], "--", need("canonical")]
+        if act == "edit":
+            return ["entities", "edit", *proj, *opt("--canonical", "canonical"), *opt("--type", "type"), *fields(), *[f"--add-alias={x}" for x in a.get("add_aliases") or []],
+                    *[f"--remove-alias={x}" for x in a.get("remove_aliases") or []], *[f"--clear={x}" for x in a.get("clear") or []], "--", need("ref")]
+        if act == "remove":
+            return ["entities", "remove", *proj, "--", need("ref")]
+        if act == "import":
+            return ["entities", "import", *proj, *(["--replace"] if a.get("replace") else []), "--", need("file")]
+        if act == "export":
+            return ["entities", "export", *proj, *opt("--format", "format"), *opt("--output", "output")]
+        if act == "suggest":
+            return ["entities", "suggest", *proj, *opt("--min-count", "min_count"), "--", need("plan")]
+        raise KeyError(name)
     if name == "corrections":
         return cmd("corrections", [], [need("project")])
     if name in ("validate", "diff"):
