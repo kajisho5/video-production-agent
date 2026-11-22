@@ -243,6 +243,32 @@ class RoundTripTests(_Tmp):
         self.assertEqual(rc, 2)
         self.assertEqual(len(ent.EntityStore(self.ws, "p").list()), 2, "a refused file writes nothing")
 
+    def test_json_import_refuses_a_language_twice_ignoring_case(self):
+        src = {"schema": ent.SCHEMA, "scope": "global",
+               "entities": [{"id": "a", "canonical": "A", "type": "term", "pronunciation": [{"lang": "en", "reading": "ay"}, {"lang": "EN", "reading": "eh"}]}]}
+        self.assertEqual(ent.validate_doc(src), ["entities/0/pronunciation/1/lang: 'EN' repeats the language of pronunciation 0 (one pronunciation a language)"])
+        st = ent.EntityStore(self.ws)
+        with self.assertRaises(ent.EntityError) as cm:
+            st.import_doc(src)
+        self.assertIn("entities/0/pronunciation/1/lang", str(cm.exception))
+        self.assertFalse(st.path.exists(), "nothing written")
+        with self.assertRaises(ent.EntityError) as cm:
+            st.import_csv("canonical,type,pronunciation\nA,term,en=ay|EN=eh\n")
+        self.assertIn("one pronunciation a language", str(cm.exception), "the same rule as the CSV import")
+        ok = {**src, "entities": [{**src["entities"][0], "pronunciation": [{"lang": "en", "reading": "ay"}, {"lang": "en-GB", "reading": "eh"}]}]}
+        self.assertEqual(ent.validate_doc(ok), [], "a regional tag is another language")
+
+    def test_find_prefers_the_exact_spelling_over_collapsed_spacing(self):
+        es = [{"id": "a", "canonical": "A  B", "type": "term", "title": "Two spaces"}, {"id": "b", "canonical": "A B", "type": "term", "title": "One space"}]
+        self.assertEqual(ent.validate_doc({"schema": ent.SCHEMA, "scope": "global", "entities": es}), [], "two spellings, as the store compares them")
+        self.assertEqual(ent.find(es, "A  B")["id"], "a")
+        self.assertEqual(ent.find(es, "a  b")["id"], "a", "ignoring case")
+        self.assertEqual(ent.find(es, "A B")["id"], "b")
+        self.assertEqual(ent.find(es, " A  B ")["id"], "a", "the surrounding whitespace is not part of the spelling")
+        self.assertIsNone(ent.find(es, "A   B"), "collapsed, it names two entities: none is chosen")
+        self.assertEqual(ent.find(es[:1], "A B")["id"], "a", "collapsed, it names one entity")
+        self.assertEqual(ent.find(es[1:], "A\tB")["id"], "b")
+
     def test_csv_refusals_name_the_line(self):
         st = ent.EntityStore(self.ws)
         for csv_text, needle in (("canonical,type\nX,celebrity\n", "line 2"), ("canonical\nX\n", "header"), ("canonical,type,colour\nX,term,red\n", "unknown CSV column"),
