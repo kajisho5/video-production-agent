@@ -75,6 +75,28 @@ class SchemaTests(_Tmp):
             st.list()
 
 
+    def test_blank_spellings_are_refused_with_their_path(self):
+        good = {"schema": ent.SCHEMA, "scope": "global", "entities": [dict(ACME, id="acme-corp")]}
+        self.assertEqual(ent.validate_doc(good), [])
+        errs = ent.validate_doc({**good, "entities": [dict(ACME, id="acme-corp", canonical="   ")]})
+        self.assertEqual(errs, ["entities/0/canonical: is blank (only whitespace)"])
+        errs = ent.validate_doc({**good, "entities": [dict(ACME, id="acme-corp", aliases=["Acme Core", "  "])]})
+        self.assertEqual(errs, ["entities/0/aliases/1: is blank (only whitespace)"])
+        self.assertEqual(ent.validate_doc({**good, "entities": [dict(ACME, id="acme-corp", canonical=" Acme  Corp ")]}), [], "nonblank text passes")
+
+    def test_scope_and_project_agree(self):
+        g = {"schema": ent.SCHEMA, "scope": "global", "entities": []}
+        self.assertEqual(ent.validate_doc(dict(g, project="conf26")), ["project: a global store names no project"])
+        self.assertEqual(ent.validate_doc(dict(g, scope="project")), ["project: a project store names its project"])
+        self.assertEqual(ent.validate_doc(dict(g, scope="project", project="conf26")), [])
+        st = ent.EntityStore(self.ws, "conf26")
+        st.path.parent.mkdir(parents=True)
+        st.path.write_text(json.dumps(dict(g, project="conf26", entities=[dict(ACME, id="acme-corp")])), encoding="utf-8")
+        with self.assertRaises(ent.EntityError) as cm:
+            ent.snapshot(self.ws, "conf26")   # a global document in a project's file is never applied as project memory
+        self.assertIn("a global store names no project", str(cm.exception))
+
+
 class CrudTests(_Tmp):
     def test_add_edit_remove_by_id_spelling_or_alias(self):
         st = ent.EntityStore(self.ws)
@@ -114,6 +136,53 @@ class CrudTests(_Tmp):
         self.assertIsNone(ent.snapshot(self.ws, "empty-project"), "no entity in either store: nothing to apply")
 
 
+class SnapshotTests(_Tmp):
+    def _other(self) -> Path:
+        p = Path(self.tmp) / "other.json"
+        p.write_bytes(json.dumps({"schema": ent.SCHEMA, "scope": "global", "entities": []}).encode("utf-8"))
+        return p
+
+    def test_the_digest_is_of_the_bytes_the_entities_came_from(self):
+        import hashlib
+        from unittest import mock
+        st = ent.EntityStore(self.ws)
+        st.add(ACME)
+        data = st.path.read_bytes()
+        real_bytes, real_text = Path.read_bytes, Path.read_text
+        reads = []
+
+        def after(path, out):
+            reads.append(path)
+            if path == st.path and reads.count(st.path) == 1:   # another writer replaces the store right after the first read
+                os.replace(str(self._other()), str(st.path))
+            return out
+        with mock.patch.object(Path, "read_bytes", lambda p: after(p, real_bytes(p))), \
+                mock.patch.object(Path, "read_text", lambda p, *a, **k: after(p, real_text(p, *a, **k))):
+            snap = ent.snapshot(self.ws, None)
+        self.assertEqual(reads.count(st.path), 1, "one read of the store")
+        self.assertEqual((snap["stores"][0]["sha256"], snap["stores"][0]["entities"]), (hashlib.sha256(data).hexdigest(), 1))
+        self.assertEqual([e["id"] for e in snap["entities"]], ["acme-corp"])
+
+    def test_a_project_alias_that_is_a_global_name_names_the_project_entity(self):
+        ent.EntityStore(self.ws).add({"canonical": "Acme", "type": "organization", "id": "a", "title": "global",
+                                      "pronunciation": [{"lang": "en", "reading": "AK-mee"}]})
+        ent.EntityStore(self.ws, "conf26").add({"canonical": "Zeta Corp", "type": "organization", "id": "z", "aliases": ["Acme"], "title": "project",
+                                                "pronunciation": [{"lang": "en", "reading": "ZAY-ta"}]})
+        snap = ent.snapshot(self.ws, "conf26")
+        self.assertIn("'Acme' of a (named by z)", snap["shadowed"])
+        es = snap["entities"]
+        self.assertEqual(ent.find(es, "acme")["id"], "z")
+        rec = ent.plan_record(snap, {"motion.lower_third": "Acme"}, self.ws)
+        self.assertEqual(rec["rewrites"]["motion.lower_third"]["to"], "Zeta Corp")
+        self.assertEqual(rec["requirements"]["motion.lower_third.title"]["value"], "project")
+        vocab, rules = ent.transcription_inputs(es)
+        self.assertEqual(vocab["terms"], ["Zeta Corp"], "the shadowed spelling is not a competing canonical name")
+        self.assertEqual(rules, [{"from": "Acme", "to": "Zeta Corp", "match": "word"}])
+        d = ent.pronunciation_dictionary(es, "en")
+        self.assertEqual([(x["term"], x["reading"]) for x in d["entries"]], [("Zeta Corp", "ZAY-ta"), ("Acme", "ZAY-ta")])
+        self.assertEqual(ent.find(ent.snapshot(self.ws, None)["entities"], "acme")["id"], "a", "without the project the global entity")
+
+
 class RoundTripTests(_Tmp):
     def test_csv_export_import_round_trip(self):
         a = ent.EntityStore(self.ws)
@@ -134,6 +203,45 @@ class RoundTripTests(_Tmp):
         only = "canonical,type\nNew Name,person\n"
         res = b.import_csv(only, replace=True)
         self.assertEqual((res["added"], len(res["removed"])), (["new-name"], 5))
+
+    def test_a_literal_pipe_in_a_list_value_round_trips(self):
+        a = ent.EntityStore(self.ws)
+        a.add({"canonical": "One", "type": "term", "aliases": ["A|B", "C\\D", "E\\|F"], "pronunciation": [{"lang": "en", "reading": "x|y"}]})
+        a.add({"canonical": "Two", "type": "term", "aliases": ["A", "B"]})
+        text = a.export_csv()
+        b = ent.EntityStore(self.ws, "copy")
+        b.import_csv(text)
+        got = {e["canonical"]: e for e in b.list()}
+        self.assertEqual(got["One"]["aliases"], ["A|B", "C\\D", "E\\|F"], "one value with a pipe stays one value")
+        self.assertEqual(got["Two"]["aliases"], ["A", "B"], "two values stay two")
+        self.assertEqual(got["One"]["pronunciation"], [{"lang": "en", "reading": "x|y"}])
+        self.assertEqual(b.export_csv(), text)
+        self.assertEqual(ent.rows_from_csv("canonical,type,aliases\nX,term,a\\b|c\n")[0]["aliases"], ["a\\b", "c"], "an unknown escape is kept as written")
+
+    def test_surplus_fields_are_a_row_error(self):
+        st = ent.EntityStore(self.ws)
+        with self.assertRaises(ent.EntityError) as cm:
+            st.import_csv("canonical,type\nAcme, Inc,organization\n")
+        self.assertIn("CSV line 2: 1 field(s) more than the header", str(cm.exception))
+        self.assertFalse(st.path.exists(), "nothing written")
+
+    def test_json_import_keeps_the_entities_as_validated(self):
+        src = {"schema": ent.SCHEMA, "scope": "global",
+               "entities": [{"id": "a", "canonical": "A  B", "type": "term"}, {"id": "b", "canonical": "A B", "type": "term", "aliases": ["A|B"]}]}
+        self.assertEqual(ent.validate_doc(src), [])
+        f = Path(self.tmp) / "in.json"
+        f.write_text(json.dumps(src), encoding="utf-8")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli_main(["--workspace", self.ws, "--json", "entities", "import", "--project", "p", str(f)])
+        self.assertEqual((rc, json.loads(buf.getvalue())["added"]), (0, ["a", "b"]), buf.getvalue())
+        got = [(e["id"], e["canonical"], e.get("aliases")) for e in ent.EntityStore(self.ws, "p").list()]
+        self.assertEqual(got, [("a", "A  B", None), ("b", "A B", ["A|B"])], "not collapsed through CSV")
+        f.write_text(json.dumps({**src, "entities": [{"id": "a", "canonical": "   ", "type": "term"}]}), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            rc = cli_main(["--workspace", self.ws, "--json", "entities", "import", "--project", "p", str(f)])
+        self.assertEqual(rc, 2)
+        self.assertEqual(len(ent.EntityStore(self.ws, "p").list()), 2, "a refused file writes nothing")
 
     def test_csv_refusals_name_the_line(self):
         st = ent.EntityStore(self.ws)
@@ -375,8 +483,12 @@ class PlanTests(_PlanBase):
         from video_agent.project import load_ir, save_ir
         save_ir(ir, path)
         ent.EntityStore(self.ws).edit("jane-doe", {"title": "Changed after the plan"})
-        out = svc.revise(load_ir(path), path, user_requirements={"audio.normalize": True})
-        nd = load_ir(path).doc if not isinstance(out, dict) or "ir" not in out else out["ir"].doc
+        before = ir.version
+        out = svc.revise(load_ir(path), path, user_requirements={"audio.loudness.target_lufs": -16})   # an unrelated change that makes v2
+        self.assertTrue(out["created"], out)
+        self.assertEqual(out["version"], before + 1)
+        nd = load_ir(path).doc
+        self.assertEqual(nd["plan"]["version"], before + 1, "the lower third below is the revision's, not the original plan's")
         el = next(e for op in nd["graphics"]["operations"] for e in op["elements"] if e["type"] == "lower_third")
         self.assertEqual((el["parameters"]["name"], el["parameters"]["title"]), ("Jane Doe", "CTO, Acme Corp"), "the plan's record, not the store's newer content")
 
@@ -421,7 +533,8 @@ class EndToEndTests(_PlanBase):
         ir = svc.plan([self.src], "generic", user_requirements={}, params={"language": "en"}, use_cache=False, channel="conf")
         path = str(Path(self.ws) / "plans" / "pref.project.json")
         save_ir(ir, path)
-        svc.revise(load_ir(path), path, user_requirements={"audio.normalize": True})
+        out = svc.revise(load_ir(path), path, user_requirements={"audio.loudness.target_lufs": -16})
+        self.assertEqual((out["created"], out["version"]), (True, ir.version + 1), out)
         el = next(e for op in load_ir(path).doc["graphics"]["operations"] for e in op["elements"] if e["type"] == "lower_third")
         self.assertEqual((el["parameters"]["name"], el["parameters"]["title"]), ("Jane Doe", "CTO, Acme Corp"), "a preference's name stays corrected on revision")
 
@@ -474,6 +587,10 @@ class DubbingTests(_Tmp):
         self.assertEqual((doc["schema"], len(doc["entries"])), ("dubbing/pronunciation@1", 3))
         self.assertTrue(Path(path).resolve().is_relative_to(Path(self.ws).resolve()) if hasattr(Path, "is_relative_to") else True)
         self.assertIn("EXPERIMENTAL", ent.summary_lines(rec)[0])
+        Path(path).write_text('{"schema": "dubbing/pron', encoding="utf-8")   # a file an earlier, interrupted write left
+        again = ent.plan_record(snap, {"dub.cues": str(cues), "dub.lang": "en-GB"}, self.ws)["requirements"]["dub.pronunciation"]["value"]
+        self.assertEqual((again, json.loads(Path(path).read_text(encoding="utf-8"))), (path, doc), "repaired, not reused")
+        self.assertEqual([n for n in os.listdir(Path(path).parent) if n.endswith(".tmp")], [], "no temporary file left")
         mine = Path(self.tmp) / "mine.json"
         rec = ent.plan_record(snap, {"dub.cues": str(cues), "dub.lang": "en", "dub.pronunciation": str(mine)}, self.ws)
         self.assertEqual(rec["requirements"], {})

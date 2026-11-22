@@ -670,19 +670,13 @@ def cmd_entities(args, svc: Service) -> int:
             out = {"store": store.name, "removed": store.remove(args.ref)}
         elif c == "import":
             text = Path(args.file).read_text(encoding="utf-8-sig")
-            if args.file.lower().endswith(".json"):
-                doc = json.loads(text)
-                errs = ent.validate_doc(doc) if isinstance(doc, dict) and "schema" in doc else ["a JSON import is an entity store document (video-agent/entity-store@1)"]
-                if errs:
-                    raise ent.EntityError(f"{args.file}: " + "; ".join(errs[:10]))
-                buf = __import__("io").StringIO()
-                import csv as _csv
-                w = _csv.DictWriter(buf, fieldnames=list(ent.CSV_COLUMNS), lineterminator="\n")
-                w.writeheader()
-                for e in doc["entities"]:
-                    w.writerow(ent.entity_to_row(e))
-                text = buf.getvalue()
-            out = store.import_csv(text, replace=args.replace)
+            if args.file.lower().endswith(".json"):   # merged as validated, never through CSV (whose normalization would change spellings)
+                try:
+                    out = store.import_doc(json.loads(text), replace=args.replace)
+                except ent.EntityError as e:
+                    raise ent.EntityError(f"{args.file}: {e}") from None
+            else:
+                out = store.import_csv(text, replace=args.replace)
         elif c == "export":
             body = store.export_csv() if args.format == "csv" else json.dumps(store.load(), indent=1, ensure_ascii=False) + "\n"
             if args.output:
