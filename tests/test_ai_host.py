@@ -439,7 +439,8 @@ class McpServerTests(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         full = {"inputs": ["a"], "project": "p", "decision": "all", "reason": "r", "output": "o", "text": "t",
                 "input": "a", "transcript": "t.json", "mode": "remove", "words": "1",   # transcript_edit (ADR-123)
-                "canonical": "Jane Doe", "type": "person", "ref": "jane-doe", "file": "e.csv", "plan": "p"}   # entities_* (ADR-128)
+                "canonical": "Jane Doe", "type": "person", "ref": "jane-doe", "file": "e.csv", "plan": "p",   # entities_* (ADR-128)
+                "folder": "/f", "plan_id": "abc"}   # rename_* (ADR-129)
         for t in TOOLS:
             tool_argv(t["name"], full, tmp)
 
