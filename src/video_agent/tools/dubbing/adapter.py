@@ -4,7 +4,7 @@
         `dubbing dub --json --offline --overwrite --ffmpeg-skill=<dir> --output=<out.mp4> --lang=L [--k=v ...] -- <programme> <translated cues>`
           ─(its own engine worker; every media step through ffmpeg-skill)─→ the programme with its dialogue replaced
 
-Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_1.0.0.json -- the repository has no
+Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_1.1.0.json -- the repository has no
 release tag, so the pin follows main as voice-enhance-skill's does, ADR-073):
     contract → `dubbing contract --json`
     doctor   → `dubbing doctor --json --offline --ffmpeg-skill=<dir>` (dubbing/doctor@1: python / ffmpeg_skill / engines /
@@ -59,7 +59,8 @@ OPERATION_TYPES = {"dub": "DUB"}
 CAPABILITY_IDS = {"DUB": "speech.dub"}
 TOOL_OF_TYPE = {"DUB": TOOL_DUB}
 # 1.0.0 (https://github.com/kajisho5/dubbing-skill v1.0.0, automatic re-pin 2026-11-21, ADR-117): si contract-diff none; the gate takes 1.0.
-SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.")   # 0.2.0 (dubbing-skill #20, main 979dc1a; ADR-107 addendum 10): the optional, experimental
+# 1.1.0 (https://github.com/kajisho5/dubbing-skill v1.1.0, automatic re-pin 2026-11-22, ADR-117): si contract-diff additive; the gate takes 1.1.
+SUPPORTED_SKILL_VERSIONS = ("0.1.", "0.2.", "1.0.", "1.1.")   # 0.2.0 (dubbing-skill #20, main 979dc1a; ADR-107 addendum 10): the optional, experimental
                                               # qwen3_tts engine (engines.experimental, engine.revision / engine.experimental in provenance). Additive;
                                               # the agent does not wire qwen3_tts into plans. 0.2.1 (#21, main f929f4a; addendum 14):
                                               # `terms --transcript` and its `heard` result; `terms` is not an op tool here, and it is not run
@@ -97,7 +98,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "im
 # policy is fatal: the consent gate (`policy.consent_record.bypass: null`) is what lets the agent pass a reference at all.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "error_shape", "policy")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv", "schema", "limits")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

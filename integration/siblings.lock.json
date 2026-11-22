@@ -39,17 +39,17 @@
     },
     "diarization": {
       "repo": "kajisho5/diarization-skill",
-      "tag": "v1.0.0",
-      "sha": "68fef945301fea649f4b8d81ccb40fcd20111ff9",
-      "version": "1.0.0",
-      "pin": "src/video_agent/tools/diarization/contract_1.0.0.json"
+      "tag": "v1.0.1",
+      "sha": "e49556e997e61c3fb7a882439f5fba796030a880",
+      "version": "1.0.1",
+      "pin": "src/video_agent/tools/diarization/contract_1.0.1.json"
     },
     "dubbing": {
       "repo": "kajisho5/dubbing-skill",
-      "tag": "v1.0.0",
-      "sha": "bd19cba9356b268e16cb8bb3157c03f86168456e",
-      "version": "1.0.0",
-      "pin": "src/video_agent/tools/dubbing/contract_1.0.0.json"
+      "tag": "v1.1.0",
+      "sha": "09d81af060d2492a79ee48081a143cb8c6fc3fdb",
+      "version": "1.1.0",
+      "pin": "src/video_agent/tools/dubbing/contract_1.1.0.json"
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
@@ -158,10 +158,10 @@
     },
     "voice-enhance": {
       "repo": "kajisho5/voice-enhance-skill",
-      "tag": "v1.0.0",
-      "sha": "c8a18c1b583f37db767d962b7c0b858d44da2ce0",
-      "version": "1.0.0",
-      "pin": "src/video_agent/tools/voice_enhance/contract_1.0.0.json"
+      "tag": "v1.1.0",
+      "sha": "81846e288be7366e1b301d9426da51378fc85a74",
+      "version": "1.1.0",
+      "pin": "src/video_agent/tools/voice_enhance/contract_1.1.0.json"
     }
   }
 }

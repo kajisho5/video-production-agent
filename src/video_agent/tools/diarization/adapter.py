@@ -5,7 +5,7 @@
          --min-speakers=N --max-speakers=N] [--audio-stream=N] --timeout=T -- <media>`
           ─(its own worker: pyannote.audio 4.x + speaker-diarization-community-1 from a local directory, offline)─→ turns JSON
 
-Protocol (diarization-skill's own contract, `diarization contract --json`, pinned from main in contract_1.0.0.json -- the repository
+Protocol (diarization-skill's own contract, `diarization contract --json`, pinned from main in contract_1.0.1.json -- the repository
 has no release tag, so the pin follows main as ingest-skill's and voice-enhance-skill's do):
     contract → `diarization contract --json`
     doctor   → `diarization doctor --json` (ok, ready.{diarize, assign, check}, checks, problems; exit 3 while not ok, never downloads)
@@ -73,7 +73,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "argv")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "turns", "execution")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.0.1.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
