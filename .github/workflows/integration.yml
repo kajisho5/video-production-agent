@@ -115,6 +115,13 @@ jobs:
         continue-on-error: ${{ inputs.siblings == 'main' }}
         env:
           VIDEO_AGENT_QC_DIR: "${{ github.workspace }}/../qc-skill"
+      # ADR-129: smart rename on real files through the real ingest-skill (offload, rename preview / apply / undo, verify); skipped before ingest-skill 1.1.0
+      - id: rename
+        if: matrix.shard == 1
+        run: python -m unittest -v tests.test_rename.RenameRealSkillTests 2>&1 | tee "$TEST_LOGS/rename.log"
+        continue-on-error: ${{ inputs.siblings == 'main' }}
+        env:
+          VIDEO_AGENT_INGEST_DIR: "${{ github.workspace }}/../ingest-skill"
       # ADR-080: the pinned blender-skill / hyperframes-skill contracts of the render_3d / html_scene_render handoffs against the real checkouts
       # (contract only: no Blender, no Chromium; hyperframes' contract needs its npm dependencies, installed without their install scripts)
       - if: matrix.shard == 1
@@ -168,8 +175,8 @@ jobs:
         env:
           OUTCOMES: >-
             shard=${{ steps.shard.outcome }}
-            ${{ matrix.shard == 1 && format('color={0} qc={1} handoff={2} ecosystem={3} measurements={4} html={5}', steps.color.outcome, steps.qc.outcome,
-            steps.handoff.outcome, steps.ecosystem.outcome, steps.measurements.outcome, steps.html.outcome) || '' }}
+            ${{ matrix.shard == 1 && format('color={0} qc={1} handoff={2} ecosystem={3} measurements={4} html={5} rename={6}', steps.color.outcome, steps.qc.outcome,
+            steps.handoff.outcome, steps.ecosystem.outcome, steps.measurements.outcome, steps.html.outcome, steps.rename.outcome) || '' }}
         run: |
           mkdir -p canary-result
           base="canary-result/ffmpeg-${{ matrix.ffmpeg_skill }}-shard-${{ matrix.shard }}"

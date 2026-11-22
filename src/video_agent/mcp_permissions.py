@@ -53,6 +53,8 @@ TOOL_CLASSES: Dict[str, str] = {
     # file when given one; remove deletes an entity (always previewed and confirmed); import with replace can delete many
     "entities_list": READ, "entities_suggest": READ, "entities_add": WRITE, "entities_edit": WRITE, "entities_import": WRITE, "entities_export": READ,
     "entities_remove": DESTRUCTIVE,
+    # ADR-129: smart rename. preview reads (ingest rename plan writes nothing); apply and undo rename files: always previewed and confirmed
+    "rename_preview": READ, "rename_apply": DESTRUCTIVE, "rename_undo": DESTRUCTIVE,
 }
 ESCALATES: Dict[str, Tuple[str, ...]] = {"plan": (DESTRUCTIVE, PUBLISH), "revise": (PUBLISH,), "render": (PUBLISH,), "transcript_edit": (DESTRUCTIVE,), "selects": (DESTRUCTIVE,),
                                           "entities_import": (DESTRUCTIVE,), "entities_export": (WRITE, DESTRUCTIVE)}
@@ -305,6 +307,12 @@ def classify(name: str, args: Mapping[str, Any], perms: Permissions, workspace: 
             raise_to(WRITE)
             if os.path.lexists(out):
                 raise_to(DESTRUCTIVE, {"action": "overwrite", **_file_facts(out), "detail": "the export replaces this file"})
+    elif name in ("rename_apply", "rename_undo"):   # ADR-129: the preview and the folder it renames (agent/rename.py)
+        from .agent.rename import confirmation_items
+        writes, items = confirmation_items(name, args, workspace)
+        call.writes += writes
+        for it in items:
+            raise_to(DESTRUCTIVE, it)
     elif name == "check":
         if args.get("qc"):
             call.cls = WRITE   # qc-skill stores its report in the workspace

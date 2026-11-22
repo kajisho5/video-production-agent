@@ -48,6 +48,14 @@ _ENT_FIELDS = {"canonical": {"type": "string", "description": "the spelling to u
                "speaker_id": {"type": "string", "description": "diarization-skill's anonymous id (SPEAKER_00, ...)"},
                "voiceprint": {"type": "string", "description": "a diarization-skill/voiceprint@1 file of the person's enrolled voice"}, "note": _STR}
 
+_RENAME_PROPS = {"folder": {"type": "string", "description": "the offloaded copy (with its ingest-manifest.json)"},
+                 "template": {"type": "string", "description": "ingest-skill template, default {date}_{event}_{room}_{camera}_{scene:S02}_{speaker:Speaker-}_{seq:04}{ext}"},
+                 "event": _STR, "room": _STR, "camera": _STR, "set": {"type": "array", "items": _STR, "description": "more fields, FIELD=VALUE"},
+                 "evidence": {"type": "array", "items": _STR, "description": "folders / files of diarization turns or name proposals and transcripts of the clips"},
+                 "entity_project": _STR, "no_entities": {"type": "boolean"}, "scene_gap": {"type": "number"}, "no_scenes": {"type": "boolean"},
+                 "utc_offset": _STR, "date_from_mtime": {"type": "boolean"},
+                 "copy_to": {"type": "string", "description": "renamed verified copies here instead of renaming in place"}}
+
 TOOLS: List[Dict[str, Any]] = [
     {"name": "doctor", "description": "Inspect the environment: ffmpeg, the production skills and their status (AVAILABLE / MISSING / DEGRADED).",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -119,6 +127,16 @@ TOOLS: List[Dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {"project": _ENT_PROJECT, "format": {"enum": ["csv", "json"]}, "output": _STR}}},
     {"name": "entities_suggest", "description": "Candidate entities from a plan's transcripts (recurring capitalised names, low-confidence name-like words). Nothing is added: show them to the user, then entities_add the ones they confirm.",
      "inputSchema": {"type": "object", "required": ["plan"], "properties": {"project": _ENT_PROJECT, "plan": _PROJECT, "min_count": {"type": "integer", "minimum": 1}}}},
+    # ADR-129: smart rename of an offloaded copy through ingest-skill `rename` (preview reads; apply / undo rename files and are always confirmed)
+    {"name": "rename_preview", "description": (
+        "Smart rename preview: for an offloaded copy (a folder ingest offload wrote), every clip's new name from the template (date, event, room, camera, "
+        "scene, speaker from the entity memory via diarization / transcripts given as evidence, seq) with each field's source. Nothing is renamed. Show the "
+        "user the rows; only after their yes call rename_apply with the returned plan_id."),
+     "inputSchema": {"type": "object", "required": ["folder"], "properties": _RENAME_PROPS}},
+    {"name": "rename_apply", "description": "Rename exactly the previewed plan (plan_id from rename_preview): destructive, returns a preview and a confirm_token first.",
+     "inputSchema": {"type": "object", "required": ["folder", "plan_id"], "properties": {**_RENAME_PROPS, "plan_id": _STR}}},
+    {"name": "rename_undo", "description": "Restore the original names of the last rename of a folder (or of the given undo manifest): destructive, confirmed.",
+     "inputSchema": {"type": "object", "required": ["folder"], "properties": {"folder": _STR, "undo": {"type": "string", "description": "an ingest-rename/<time>.json file"}}}},
     {"name": "corrections", "description": "Corrections per minute of a project per plan version, vs. the previous version and the channel's recent average. A report only.",
      "inputSchema": {"type": "object", "required": ["project"], "properties": {"project": _PROJECT}}},
     {"name": "validate", "description": "Validate a Project IR (schema, semantics, capabilities).",
@@ -315,6 +333,9 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         if act == "suggest":
             return ["entities", "suggest", *proj, *opt("--min-count", "min_count"), "--", need("plan")]
         raise KeyError(name)
+    if name.startswith("rename_"):   # ADR-129
+        from .agent.rename import mcp_argv
+        return mcp_argv(name, a)
     if name == "corrections":
         return cmd("corrections", [], [need("project")])
     if name in ("validate", "diff"):
