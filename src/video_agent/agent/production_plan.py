@@ -85,7 +85,7 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    "bgm_library": ("asset", "library", "tags", "mood", "file", "crossfade", "duration"), "bgm_generate": ("asset", "prompt", "tags", "seed", "duration"),
                    "voice_isolate": ("asset", "atten_lim_db"), "voice_dereverb": ("asset", "taps", "delay", "iterations"), "voice_bleed_reduce": ("asset", "inputs", "dominance_db"),
                    # dubbing-skill DUB (ADR-085): the subject, the user's files (translated / source cues, reference voice + its consent record) and the typed options
-                   "speech_dub": ("asset", "lang", "cues", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "duck", "voice_gain", "max_overrun"),
+                   "speech_dub": ("asset", "lang", "cues", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "pronunciation", "duck", "voice_gain", "max_overrun"),
                    # handed-off jobs with a pinned Skill contract (ADR-080): the job.<skill>.<name> parameters, named for the handoff (never run here)
                    "render_3d": ("model", "preset", "transparent"), "html_scene_render": ("scene", "codec"),
                    # publish-skill (ADR-087): the subject, its delivery target, the platform and the metadata the user approved

@@ -49,6 +49,19 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
         for key in prefs.get("applied") or []:
             if key not in taken and key in (prefs.get("values") or {}):
                 reqs.append(Requirement(key=key, value=prefs["values"][key], provenance="PREFERENCE", source=source_of(prefs, key)))
+    # ADR-128: the entity memory this plan recorded: a value it rewrote (the canonical spelling of a lower third's name, subtitle.emphasis=entities
+    # → the names) keeps the user's provenance; a value it adds (the lower third's title, the dub's pronunciation dictionary) is PREFERENCE
+    ents = args.get("entities") or {}
+    if ents:
+        for r in reqs:
+            rw = (ents.get("rewrites") or {}).get(r.key)
+            if rw is not None and r.value == rw["from"]:
+                r.value = rw["to"]
+                r.source = f"{r.source}+entities" + (f":{rw['entity']}" if rw.get("entity") else "")
+        taken = {r.key for r in reqs}
+        for key, add in (ents.get("requirements") or {}).items():
+            if key not in taken:
+                reqs.append(Requirement(key=key, value=add["value"], provenance="PREFERENCE", source=f"entities:{add.get('entity') or ''}"))
     # keyword pass on the raw text (only unambiguous phrases)
     seen = {r.key for r in reqs}
     for rx, key, value in KEYWORDS:

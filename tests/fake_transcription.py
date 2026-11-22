@@ -104,6 +104,15 @@ def transcript(params: dict, fp: str) -> dict:
                             if float(a) <= float(w[0]) and float(w[1]) <= float(b)] or None)
                  if timed is not None else None, "speaker_id": None}
                 for i, (a, b, t) in enumerate(meta["segments"], 1)]
+    applied = []
+    for rule in params.get("corrections") or []:   # ADR-128: as transcription-skill 0.13.0 (vocab.py): after recognition, whole words ignoring case
+        import re as _re
+        body = _re.escape(rule["from"])
+        pat = _re.compile(body if rule.get("match") == "substring" else r"(?<!\w)" + body + r"(?!\w)", _re.IGNORECASE)
+        for sg in segs:
+            if pat.search(sg["text"]):
+                sg["text"] = pat.sub(rule["to"], sg["text"])
+                applied.append({"from": rule["from"], "to": rule["to"], "segment_id": sg["id"]})
     tid = "tr_" + hashlib.sha256((fp + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:12]
     prov_params = {"language": params.get("language"), "word_timestamps": bool(params.get("word_timestamps")), "temperature": params.get("temperature", 0.0),
                    "initial_prompt": params.get("initial_prompt"), "beam_size": params.get("beam_size", 5)}
@@ -119,7 +128,10 @@ def transcript(params: dict, fp: str) -> dict:
                            "parameters": prov_params, "parameters_hash": "p" * 64, "cache_key": "c" * 64, "created_at": "2026-09-04T10:00:00Z", "processing_seconds": 0.01,
                            "skill_version": contract()["version"], "skill": "transcription-skill", "tool": "transcription/transcribe",
                            "language_detection": None if params.get("language") else {"candidate": lang, "probability": 0.93, "min_probability": 0.5},
-                           "audio_extraction": {"tool": "ffmpeg", "recipe": {"channels": 1, "sample_rate": 16000, "codec": "pcm_s16le", "container": "wav"}, "engine_seconds": 0.0}},
+                           "audio_extraction": {"tool": "ffmpeg", "recipe": {"channels": 1, "sample_rate": 16000, "codec": "pcm_s16le", "container": "wav"}, "engine_seconds": 0.0},
+                           **({"domain_vocabulary": {"terms": (params["domain_vocabulary"].get("speakers") or []) + (params["domain_vocabulary"].get("terms") or []),
+                                                     "delivered_as": "initial_prompt"}} if params.get("domain_vocabulary") else {}),
+                           **({"corrections": {"rules": len(params["corrections"]), "applied": applied}} if params.get("corrections") else {})},
             "warnings": []}
 
 

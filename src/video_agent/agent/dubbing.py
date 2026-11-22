@@ -30,7 +30,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models import Requirement
-from ..tools.dubbing.adapter import (CONSENT_EXTENSIONS, CUES_EXTENSIONS, DOCTOR_CODES, LANG_RE, REFERENCE_EXTENSIONS, VOICE_RE, readiness_code, engines as contract_engines,
+from ..tools.dubbing.adapter import (CONSENT_EXTENSIONS, CUES_EXTENSIONS, PRONUNCIATION_EXTENSIONS, DOCTOR_CODES, LANG_RE, REFERENCE_EXTENSIONS, VOICE_RE, readiness_code, engines as contract_engines,
                                      lifecycle as contract_lifecycle, parameters as contract_parameters, pinned_contract, unfit_policies)
 from .audio import SWITCH as AUDIO_SWITCH
 from .editing import EditRequirementError, _bool
@@ -41,11 +41,14 @@ OP = "speech.dub"
 SKILL = "speech_dub"
 TYPE = "DUB"
 CAP_TYPED = f"{PACKAGE}:{TYPE}"
-FILES = {"dub.cues": CUES_EXTENSIONS, "dub.source_cues": CUES_EXTENSIONS, "dub.reference": REFERENCE_EXTENSIONS, "dub.consent": CONSENT_EXTENSIONS}
+FILES = {"dub.cues": CUES_EXTENSIONS, "dub.source_cues": CUES_EXTENSIONS, "dub.reference": REFERENCE_EXTENSIONS, "dub.consent": CONSENT_EXTENSIONS,
+         "dub.pronunciation": PRONUNCIATION_EXTENSIONS}   # ADR-128: a dubbing/pronunciation@1 dictionary (the user's, or written from the entity memory)
+# ADR-128: the one dub.* key the entity memory may supply (provenance PREFERENCE, source entities:...): the readings the user stored, for the dub's language
+ENTITY_KEYS = ("dub.pronunciation",)
 NUMBERS = {f"dub.{k}": k for k in contract_parameters()}   # dub.duck / dub.voice_gain / dub.max_overrun → the contract's DUB option
-REQUIREMENT_KEYS = ("dub.cues", "dub.lang", "dub.source_cues", "dub.engine", "dub.voice", "dub.on_unfit", "dub.reference", "dub.consent") + tuple(NUMBERS)
+REQUIREMENT_KEYS = ("dub.cues", "dub.lang", "dub.source_cues", "dub.engine", "dub.voice", "dub.on_unfit", "dub.reference", "dub.consent", "dub.pronunciation") + tuple(NUMBERS)
 # the IR operation's parameters (beside type / asset / input / output / temporal_scope / decision_ids): what the compiler copies by name
-PARAMS = ("cues", "lang", "source_cues", "engine", "voice", "on_unfit", "reference", "consent") + tuple(NUMBERS.values())
+PARAMS = ("cues", "lang", "source_cues", "engine", "voice", "on_unfit", "reference", "consent", "pronunciation") + tuple(NUMBERS.values())
 # DUB's lifecycle as the pinned contract's provides[] states it (STABLE from dubbing-skill 1.0.0), never a literal here (ADR-085 addendum 1)
 LIFECYCLE = contract_lifecycle(pinned_contract()).get(OP) or "UNKNOWN"
 # always CONFIRM (floor CONFIRM: the explicit requirement does not waive it, and neither does a STABLE lifecycle -- a synthetic voice replaces someone's words)
@@ -87,7 +90,7 @@ def parse_dub_requirements(m: Dict[str, Requirement]) -> Optional[Dict[str, Any]
     unknown = sorted(k for k in given if k not in REQUIREMENT_KEYS)
     if unknown:
         raise EditRequirementError(f"unknown requirement key(s): {', '.join(unknown)}; dub.* keys are {', '.join(REQUIREMENT_KEYS)}")
-    not_user = sorted(k for k, r in given.items() if r.provenance != "USER")
+    not_user = sorted(k for k, r in given.items() if r.provenance != "USER" and not (k in ENTITY_KEYS and r.provenance == "PREFERENCE" and str(r.source).startswith("entities")))
     if not_user:
         raise EditRequirementError(f"{', '.join(not_user)}: dubbing is opt-in on the request (--set), never from a profile, a brief or a default")
     for k in ("dub.cues", "dub.lang"):
@@ -146,13 +149,15 @@ def ir_dub_operation(subject: str, params: Dict[str, Any], decision_ids: List[st
 
 def user_files(params: Dict[str, Any]) -> List[str]:
     """The files of a dub the user named (cues, source cues, reference voice, consent record): their directories become allowed input roots."""
-    return [params[k] for k in ("cues", "source_cues", "reference", "consent") if params.get(k)]
+    return [params[k] for k in ("cues", "source_cues", "reference", "consent", "pronunciation") if params.get(k)]
 
 
 def _words(p: Dict[str, Any]) -> str:
     bits = [f"cues {os.path.basename(p['cues'])} ({p['lang']})"]
     if p.get("engine") or p.get("voice"):
         bits.append("voice " + "/".join(str(x) for x in (p.get("engine"), p.get("voice")) if x))
+    if p.get("pronunciation"):   # ADR-128: dubbing-skill's --pronunciation (EXPERIMENTAL in its contract)
+        bits.append(f"pronunciation dictionary {os.path.basename(p['pronunciation'])} (EXPERIMENTAL)")
     if p.get("reference"):
         bits.append(f"reference voice {os.path.basename(p['reference'])} with its consent record {os.path.basename(p['consent'])}")
     return ", ".join(bits)

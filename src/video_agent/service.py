@@ -32,6 +32,7 @@ from .agent import qc_checks as qc_checks_task
 from .agent import transcript_verify as verify_task
 from .agent import transcribe_options as transcribe_task
 from . import preferences as prefs_task
+from . import entities as entities_task
 from .agent.remotion import check_remotion_keys
 from .agent.html_layer import PREFIX as HTML_LAYER_PREFIX, SUBJECT as HTML_LAYER_SUBJECT, check_html_layer_keys
 from .agent.documents import SKILL as DOCUMENT_SKILL, check_document_keys
@@ -527,11 +528,14 @@ class Service:
     def plan(self, inputs: List[str], profile_name: str = "generic", request_text: str = "", user_requirements: Optional[Dict[str, Any]] = None,
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
              kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None,
-             brief: str = "", brief_answer: Any = None, ai_model: str = "host-chat", channel: Optional[str] = None, use_preferences: bool = True) -> ProjectIR:
+             brief: str = "", brief_answer: Any = None, ai_model: str = "host-chat", channel: Optional[str] = None, use_preferences: bool = True,
+             entity_project: Optional[str] = None, use_entities: bool = True) -> ProjectIR:
         """brief (ADR-061): the user's brief in their own words, read into `--set` keys by the AI provider (or the chat model's
         answer `brief_answer`, host provider) or, with neither, by the rule-based reader; explicit `user_requirements` win.
         channel / use_preferences (ADR-111): the project's channel (brand / series) and whether the global and channel preference
-        stores' current rules apply (under the brief and explicit keys); the versions used are recorded in request.args.preferences."""
+        stores' current rules apply (under the brief and explicit keys); the versions used are recorded in request.args.preferences.
+        entity_project / use_entities (ADR-128): the entity memory's project store (default: the channel) on top of the global one, and whether
+        the plan applies it; what it applied is recorded in request.args.entities and shown in the plan summary."""
         explicit = dict(user_requirements or {})
         _check_requirement_keys(explicit)
         self._check_provider_requirements(explicit)
@@ -555,6 +559,10 @@ class Service:
                                  f"do not fit this request: {e}; plan with --no-preferences or roll the store back (video-agent preferences rollback)")
             prefs["applied"] = sorted(stored)
             user_requirements = {**stored, **user_requirements}   # ADR-111: global < channel < brief < explicit
+        ent_rec = self._entity_record(user_requirements, entity_project or channel_id, use_entities)   # ADR-128: None when the stores are empty
+        if ent_rec is not None:
+            user_requirements = entities_task.requirement_values(ent_rec, user_requirements)
+            _check_requirement_keys(user_requirements)   # the values the entity memory supplied pass the same gate
         qc_checks_task.parse_qc_check_requirements(user_requirements)   # ADR-112: the stinger / loop-seam checks with something to check, before any analysis
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
@@ -622,10 +630,12 @@ class Service:
         t_record = self._check_transcribe_options(inputs, topts, kinds or [], params or {}, allowed, user_requirements) if topts else None
         if topts:
             params = dict(params or {}, **topts)   # the transcript kind's parameters (media/analysis.py): no other kind reads them
+        if ent_rec is not None and "transcript" in (kinds or []):   # ADR-128: the names to transcription-skill's own domain_vocabulary / corrections
+            params = self._entity_transcription(ent_rec, inputs, allowed, dict(params or {}), user_requirements)
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records, allowed_inputs=allowed)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {}),
-                                                   **({"preferences": prefs} if prefs is not None else {})})
+                                                   **({"preferences": prefs} if prefs is not None else {}), **({"entities": ent_rec} if ent_rec is not None else {})})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         if channel_id:
             ir.doc["project"]["channel_id"] = channel_id   # ADR-111: the channel / brand / series the channel-scoped preferences belong to
@@ -634,7 +644,47 @@ class Service:
             t_record["measured"] = transcribe_task.measured([r for a in analysis.analyses for r in a.get("rows") or []], analysis.observations, topts)
             ir.doc["provenance"]["transcription_options"] = t_record
             ir.finalize_hash()
+        if ent_rec is not None:   # ADR-128: every use of the entity memory, in the plan's own words
+            ir.doc["plan"]["summary"] += entities_task.summary_lines(ent_rec)
+            ir.finalize_hash()
         return ir
+
+    def _entity_record(self, reqs: Dict[str, Any], project: Optional[str], use: bool) -> Optional[Dict[str, Any]]:
+        """ADR-128: the entity memory a plan applies (global + the project's store), or None when there is none. `subtitle.emphasis=entities`
+        without names to highlight is refused here, before any analysis."""
+        snap = entities_task.snapshot(self.workspace, project) if use else None
+        rec = entities_task.plan_record(snap, reqs, self.workspace) if snap is not None else None
+        if reqs.get(entities_task.EMPHASIS_KEY) == entities_task.EMPHASIS_VALUE and entities_task.EMPHASIS_KEY not in ((rec or {}).get("rewrites") or {}):
+            raise ValueError(f"{entities_task.EMPHASIS_KEY}=entities highlights the names in the entity memory, and "
+                             + ("this plan is made without it (--no-entities)" if not use else "it has no person, organisation, product or place "
+                                f"({entities_task.store_name(None)}{' + ' + entities_task.store_name(project) if project else ''}); add them with `video-agent entities add`"))
+        return rec
+
+    def _entity_transcription(self, rec: Dict[str, Any], inputs: List[str], allowed: Optional[List[str]], params: Dict[str, Any],
+                              reqs: Dict[str, Any]) -> Dict[str, Any]:
+        """ADR-128: the entities as transcription-skill's domain_vocabulary and corrections, sent only to an installed contract that declares both
+        and only when every engine the request can reach runs on this machine (the names never leave it). Otherwise recorded as withheld."""
+        vocab, rules = entities_task.transcription_inputs(rec["entities"])
+        if not vocab and not rules:
+            return params
+        router = self.adapter(list(allowed) if allowed else [str(Path(p).resolve().parent) for p in inputs])
+        ad = router.adapter_for(TRANSCRIBE_TOOL)
+        why = None
+        if not isinstance(ad, TranscriptionAdapter):
+            why = "transcription-skill is not installed here"
+        else:
+            declared = next((t.get("input") or {} for t in ad.contract.get("tools") or [] if t.get("name") == TRANSCRIBE_TOOL), {})
+            engines = {str(e.get("id")): e for e in ad.contract.get("engines") or [] if isinstance(e, dict)}
+            want = params.get("engine")
+            reach = [engines[want]] if want in engines else list(engines.values())
+            if not {"domain_vocabulary", "corrections"} <= set(declared):
+                why = f"transcription-skill {ad.version} does not take domain_vocabulary / corrections (0.13.0 or later does)"
+            elif not reach or any(e.get("execution_mode") != "local" or e.get("requires_network") for e in reach):
+                why = ("the requested engine" if want else "an engine the Skill may pick") + " does not run locally: the names stay on this machine"
+        entities_task.add_transcription(rec, vocab, rules, withheld=why)
+        if why:
+            return params
+        return dict(params, **({"domain_vocabulary": vocab} if vocab else {}), **({"corrections": rules} if rules else {}))
 
     def _check_transcribe_options(self, inputs: List[str], opts: Dict[str, str], kinds: List[str], params: Dict[str, Any], allowed: Optional[List[str]],
                                   user_requirements: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1166,6 +1216,10 @@ class Service:
         # merged requirements: previous explicit ones + new structured feedback; free text is appended to the request
         prev_req = dict((old["request"].get("args") or {}).get("requirements") or {})
         prev_req.update(user_requirements or {})
+        # ADR-128: the entities the plan recorded, applied to the revised requirements (a revision never reads the stores' newer content)
+        ent_rec = entities_task.revised_record((old["request"].get("args") or {}).get("entities"), prev_req, self.workspace)
+        if prev_req.get(entities_task.EMPHASIS_KEY) == entities_task.EMPHASIS_VALUE and entities_task.EMPHASIS_KEY not in ((ent_rec or {}).get("rewrites") or {}):
+            raise ValueError(f"{entities_task.EMPHASIS_KEY}=entities highlights the names in the entity memory this plan recorded, and it recorded none: plan again")
         brief_record = (old["request"].get("args") or {}).get("brief")
         rejected_brief = any(d["status"] == "REJECTED" and d["subject"] == brief_task.SUBJECT for d in old["decisions"])
         if brief_record and rejected_brief and not brief_record.get("rejected"):
@@ -1178,7 +1232,7 @@ class Service:
         profile = load_profile(old["project"]["profile"]["name"])
         recorded_prefs = (old["request"].get("args") or {}).get("preferences") or {}   # ADR-111: the versions the plan used, never the store's newer ones
         pref_values = {k: (recorded_prefs.get("values") or {})[k] for k in recorded_prefs.get("applied") or [] if k in (recorded_prefs.get("values") or {})}
-        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules({**pref_values, **brief_task.values_of(brief_record), **prev_req}))
+        rules = resolve_rules(SYSTEM_CONSTRAINTS + profile.rules + _request_rules(entities_task.requirement_values(ent_rec, {**pref_values, **brief_task.values_of(brief_record), **prev_req})))
         analysis = AnalysisResult.from_ir(old)
         if verify_task.parse_verify_requirements({k: v for k, v in prev_req.items() if k.startswith(verify_task.PREFIX)}) and not any(
                 o.kind == "transcript" and any(isinstance(sg, dict) and isinstance(sg.get("words"), list) for sg in (o.data or {}).get("segments") or [])
@@ -1191,7 +1245,8 @@ class Service:
         rejected = [d for d in old["decisions"] if d["status"] == "REJECTED"]
         suppressed = [{"subject": d["subject"], "asset_id": (d.get("params") or {}).get("asset_id")} for d in rejected]
         request = Request(raw=raw, received_at=old["request"]["received_at"], channel=old["request"]["channel"],
-                          args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso(), **({"brief": brief_record} if brief_record else {})})
+                          args={**(old["request"].get("args") or {}), "requirements": prev_req, "revised_at": now_iso(), **({"brief": brief_record} if brief_record else {}),
+                                **({"entities": ent_rec} if ent_rec is not None else {})})
         new_version = ir.version + 1
         fresh = ProjectIR.new(old["project"]["name"], old["project"]["profile"], self.workspace)
         fresh.doc["project"] = dict(old["project"])   # same project identity: sessions / events keep their deterministic ids across versions
@@ -1227,6 +1282,8 @@ class Service:
         nd["provenance"]["source_hashes"] = old["provenance"]["source_hashes"]
         if old["provenance"].get("transcription_options"):   # ADR-113: the same recorded analysis, so the same record
             nd["provenance"]["transcription_options"] = old["provenance"]["transcription_options"]
+        if ent_rec is not None:   # ADR-128: the uses of the recorded entity memory, in the plan summary
+            nd["plan"]["summary"] += entities_task.summary_lines(ent_rec)
         nd["analysis"] = {**old["analysis"], "inferences": nd["analysis"]["inferences"], "contexts": nd["analysis"].get("contexts") or []}   # same observations / analyses; the re-plan's inferences (AI ones reused) and contexts
         if editor_obs is not None:   # ADR-098: the read-back is evidence of v(n+1) (v(n) and its snapshot stay as they were)
             nd["analysis"]["observations"] = list(old["analysis"]["observations"]) + [editor_obs.to_dict()]

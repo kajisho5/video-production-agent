@@ -69,6 +69,7 @@ DOCTOR_CODES = ("ENGINE_UNAVAILABLE", "MODEL_NOT_FOUND", "FFMPEG_SKILL_UNAVAILAB
 VIDEO_OUTPUTS = (".mp4", ".mov", ".mkv")   # the contract's `-o <out.mp4|out.mov|out.mkv|out.wav>`: the agent keeps the picture, so never .wav
 CUES_EXTENSIONS = (".json", ".srt", ".vtt")  # CUES_INPUT
 CONSENT_EXTENSIONS = (".json",)             # dubbing/consent@1 is a JSON file
+PRONUNCIATION_EXTENSIONS = (".json",)       # ADR-128: dubbing/pronunciation@1 is a JSON file (the --pronunciation dictionary)
 REFERENCE_EXTENSIONS = (".wav", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus")
 LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8}){0,3}$")   # a BCP-47 tag; the engine's language list is the Skill's to check
 VOICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$")      # a voice id (chatterbox built-in, Style-Bert-VITS2 MODEL[:SPEAKER[:STYLE]])
@@ -412,7 +413,7 @@ class DubbingAdapter(ToolAdapter):
         hit = scan_forbidden(args, FORBIDDEN_ARG_KEYS)
         if hit:
             raise ToolError(f"forbidden key {hit}")
-        allowed = {"input", "output", "cues", "lang", "source_cues", "engine", "voice", "reference", "consent", "on_unfit"} | set(self.parameters)
+        allowed = {"input", "output", "cues", "lang", "source_cues", "engine", "voice", "reference", "consent", "on_unfit", "pronunciation"} | set(self.parameters)
         unknown = sorted(k for k in args if k not in allowed)
         if unknown:
             raise ToolError(f"unknown {op.tool} argument(s): {', '.join(unknown)}")
@@ -448,6 +449,10 @@ class DubbingAdapter(ToolAdapter):
         for name, (lo, hi) in self.parameters.items():
             if args.get(name) is not None:
                 options.append(f"--{name.replace('_', '-')}={_number(args[name], name, lo, hi)}")
+        if args.get("pronunciation") is not None:   # ADR-128: dubbing-skill's --pronunciation dictionary (dubbing/pronunciation@1, EXPERIMENTAL)
+            pr = self._existing(args["pronunciation"], "pronunciation", PRONUNCIATION_EXTENSIONS)
+            files.append(pr)
+            options.append(f"--pronunciation={pr}")
         if args.get("on_unfit") is not None:
             if args["on_unfit"] not in self.unfit:
                 raise ToolError(f"on_unfit {args['on_unfit']!r} must be one of {', '.join(self.unfit)}")

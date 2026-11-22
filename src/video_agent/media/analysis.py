@@ -46,7 +46,7 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     # (ADR-113: word_segmentation, sent only when a plan's transcribe.word_segmentation names it and the contract declares it)
     "transcript": {"skill": "speech_transcription", "needs_audio": True,
                    "params": ("language", "engine", "model", "word_timestamps", "temperature", "initial_prompt", "beam_size", "offline", "timeout", "max_audio_seconds",
-                              "word_segmentation")},
+                              "word_segmentation", "domain_vocabulary", "corrections")},   # ADR-128: entity memory's names, sent when the store has any
     # multi-source sync (ADR-035): the time offset (and clock drift) of every other input relative to the FIRST input, measured by
     # the registry-selected sync tool (audio cross-correlation in the Skill). Pairwise: one observation per (reference, target); the agent never correlates itself.
     # `max_offset` / `analyze_seconds` / `fix_drift` go to the tool; `min_confidence` is the agent's gate for applying the result to the TimelineMap
@@ -317,10 +317,15 @@ def scrub_for_ai(v: Any) -> Any:
     """`_scrub`, and every value under a path-like key (`file`, `path`, `*_path`, `*_dir`, ...) reduced to its basename:
     what leaves the process for an AI provider or the MCP host brief (ADR-069)."""
     if isinstance(v, dict):
-        return {k: (_basename(x) if _PATH_KEYS.match(str(k)) else scrub_for_ai(x)) for k, x in v.items() if not _LEAK_KEYS.search(str(k))}
+        return {k: (_basename(x) if _PATH_KEYS.match(str(k)) else scrub_for_ai(x)) for k, x in v.items() if not _LEAK_KEYS.search(str(k)) and str(k) not in _PRIVATE_KEYS}
     if isinstance(v, list):
         return [scrub_for_ai(x) for x in v]
     return _scrub(v)
+
+
+# ADR-128: the names entity memory handed to the recogniser (the transcript's provenance records them, and the decoder prompt they were put in)
+# stay on this machine: an AI provider sees what was said, never the user's list of names
+_PRIVATE_KEYS = frozenset({"vocabulary", "domain_vocabulary", "corrections", "initial_prompt"})
 
 
 def _scrub(v: Any) -> Any:

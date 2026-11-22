@@ -78,7 +78,7 @@ REQUIRED_ERROR_CODES = ("CANCELLED", "DEPENDENCY_ERROR", "INTERNAL_ERROR", "INVA
                         "PATH_NOT_ALLOWED", "TOOL_ERROR", "UNSUPPORTED_FORMAT", "UNSUPPORTED_OPERATION", "VALIDATION_ERROR")
 REQUIRED_OUT_OF_SCOPE = ("speech_recognition", "transcription", "speaker_diarization", "ai_editing_decisions", "arbitrary_ffmpeg_execution")
 COMMON_ARGS = ("operation", "format", "document_id", "language", "cues", "constraints", "video_duration", "output", "regional_profile")   # ADR-101: regional_profile
-RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode", "placement", "caption_profile", "fonts_dir")   # mode: the contract's render parameter (burn | mux, ADR-063); ADR-101: placement / caption_profile; ADR-107: fonts_dir
+RENDER_ARGS = COMMON_ARGS + ("input", "sidecar", "mode", "placement", "caption_profile", "fonts_dir", "emphasis")   # ADR-128: emphasis (words)   # mode: the contract's render parameter (burn | mux, ADR-063); ADR-101: placement / caption_profile; ADR-107: fonts_dir
 # ADR-107: subtitle-skill 0.9.0's guided refusal of a burn no installed font covers: INVALID_INPUT with details {"field": "fonts_dir"} (its message keeps the
 # engine's reason and names the field). Read by the field, never by the message; execution/recovery.py says what the user supplies.
 FONTS_DIR_FIELD = "fonts_dir"
@@ -478,13 +478,21 @@ class SubtitleAdapter(ToolAdapter):
             if not isinstance(pl, dict) or not pl.get("avoid") or set(pl) - set(PLACEMENT_KEYS):
                 raise ToolError(f"subtitle-skill: placement must be {{avoid: [regions], {', '.join(PLACEMENT_KEYS[1:])}?}}")
             req["placement"] = json.loads(json.dumps(pl))
+        if args.get("emphasis") is not None:   # ADR-128: subtitle-skill emphasis in its words mode (burn only), the entity memory's names
+            em = args["emphasis"]
+            if "emphasis" not in [str(x) for x in params.get("render") or []] or mode == "mux":
+                raise ToolError("subtitle-skill: emphasis is a burn-in option the installed contract must declare")
+            if not (isinstance(em, dict) and em.get("mode") == "words" and set(em) <= {"mode", "words"} and isinstance(em.get("words"), list) and em["words"]
+                    and all(isinstance(w, str) and w.strip() for w in em["words"])):
+                raise ToolError("subtitle-skill: emphasis must be {mode: words, words: [word, ...]}")
+            req["emphasis"] = {"mode": "words", "words": list(em["words"])}
         if args.get("fonts_dir") is not None:   # ADR-107: the caller's own font files, burn only; a directory inside the workspace, sent workspace-relative
             req["fonts_dir"] = self._fonts_dir_for(args["fonts_dir"], paths, mode)
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("workspace",)), "request")
         if hit:
             raise ToolError(f"subtitle-skill: refusing to send a request carrying {hit}")
         return {"request": req, "output": out, "input": src, "type": op_type, "format": fmt, "workspace": self.workspace, "cue_count": len(cues), "mode": mode,
-                "placement": req.get("placement"), "fonts_dir": req.get("fonts_dir")}
+                "placement": req.get("placement"), "fonts_dir": req.get("fonts_dir"), "emphasis": req.get("emphasis")}
 
     def _fonts_dir_for(self, ref: Any, paths: Dict[str, str], mode: Optional[str]) -> str:
         """ADR-107: render's `fonts_dir` (subtitle-skill 0.9.0, burn only) checked like the render input: declared by the installed contract, an existing
@@ -607,7 +615,7 @@ class SubtitleAdapter(ToolAdapter):
                                 "warnings": [dict(w) for w in doc.get("observation") or [] if isinstance(w, dict)],
                                 "provenance": {"skill": doc.get("skill"), "skill_version": doc.get("skill_version"), "contract_version": doc.get("contract_version"), "output_hash": sha},
                                 "commands": []}
-        for k in ("conformance", "placement", "regional_profile", "caption_profile", "fonts_dir"):   # ADR-101: what the Skill reports about the new inputs, as provenance (ADR-107: fonts_dir {path, family, files})
+        for k in ("conformance", "placement", "regional_profile", "caption_profile", "fonts_dir", "emphasis"):   # ADR-128: emphasis marks; ADR-101: what the Skill reports about the new inputs, as provenance (ADR-107: fonts_dir {path, family, files})
             if doc.get(k) is not None:
                 data[k] = doc[k]
         if b["type"] == "render":

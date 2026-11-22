@@ -2749,6 +2749,29 @@
        "maximum": 1
       }
      }
+    },
+    "emphasis": {
+     "type": "object",
+     "required": [
+      "mode",
+      "words"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "mode": {
+       "const": "words"
+      },
+      "words": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 500,
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+       }
+      }
+     }
     }
    }
   },
@@ -3867,6 +3890,10 @@
      "items": {
       "type": "string"
      }
+    },
+    "pronunciation": {
+     "type": "string",
+     "minLength": 1
     }
    }
   }
