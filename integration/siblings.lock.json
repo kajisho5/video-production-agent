@@ -46,10 +46,10 @@
     },
     "dubbing": {
       "repo": "kajisho5/dubbing-skill",
-      "tag": "v1.1.1",
-      "sha": "67cbfad03e8e79544a6619336d4bdfdab7665466",
-      "version": "1.1.1",
-      "pin": "src/video_agent/tools/dubbing/contract_1.1.1.json"
+      "tag": "v1.1.2",
+      "sha": "9acbfb1671a7832785483015342aeb34a23d2278",
+      "version": "1.1.2",
+      "pin": "src/video_agent/tools/dubbing/contract_1.1.2.json"
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
@@ -67,10 +67,10 @@
     },
     "ingest": {
       "repo": "kajisho5/ingest-skill",
-      "tag": "v1.0.0",
-      "sha": "ed687ab1b37e13bbd96ef961f02feda9992f1aeb",
-      "version": "1.0.0",
-      "pin": "src/video_agent/tools/ingest/contract_1.0.0.json"
+      "tag": "v1.1.0",
+      "sha": "9f5247e46c02b3b8707aa6bcff10b63a75899013",
+      "version": "1.1.0",
+      "pin": "src/video_agent/tools/ingest/contract_1.1.0.json"
     },
     "media-analysis": {
       "repo": "kajisho5/media-analysis-skill",

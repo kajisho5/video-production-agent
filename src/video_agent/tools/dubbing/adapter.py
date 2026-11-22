@@ -4,7 +4,7 @@
         `dubbing dub --json --offline --overwrite --ffmpeg-skill=<dir> --output=<out.mp4> --lang=L [--k=v ...] -- <programme> <translated cues>`
           ─(its own engine worker; every media step through ffmpeg-skill)─→ the programme with its dialogue replaced
 
-Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_1.1.1.json -- the repository has no
+Protocol (dubbing-skill's own contract, `dubbing contract --json`, pinned from main in contract_1.1.2.json -- the repository has no
 release tag, so the pin follows main as voice-enhance-skill's does, ADR-073):
     contract → `dubbing contract --json`
     doctor   → `dubbing doctor --json --offline --ffmpeg-skill=<dir>` (dubbing/doctor@1: python / ffmpeg_skill / engines /
@@ -99,7 +99,7 @@ DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "deterministic", "im
 # policy is fatal: the consent gate (`policy.consent_record.bypass: null`) is what lets the agent pass a reference at all.
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "execution", "error_shape", "policy")
 FATAL_DRIFT_TOOL_KEYS = ("role", "writes_media", "mutates_input", "argv", "schema", "limits")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.1.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_1.1.2.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
