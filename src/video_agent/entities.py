@@ -14,7 +14,7 @@
   spellings and common mis-hearings), `title` (role, for a lower third), `pronunciation` ([{lang, reading, ipa?, accent?}]), `speaker`
   ({speaker_id?, voiceprint?}: diarization-skill's anonymous id or the path of a diarization-skill/voiceprint@1 enrollment), `note`.
 - **Files**: JSON validated by video_agent/schemas/entity-store.schema.json on every read and write (a hand edit that breaks it is refused with the
-  path of the bad field, never guessed around), written atomically. CSV import / export with the same fields (`|` between list items).
+  path of the bad field, never guessed around), written atomically. CSV import / export with the same fields (`|` between list items; a literal `|` or `\\` in a value is written `\\|` / `\\\\`).
   `$VIDEO_AGENT_ENTITIES_DIR` replaces `<workspace>/entities`.
 - **Nothing is added automatically**: `suggest` lists candidates from a plan's transcripts (capitalised tokens that recur mid-sentence,
   low-confidence words that look like names) and the user adds the ones they want with `add`.
@@ -98,7 +98,7 @@ def validate_doc(doc: Any) -> List[str]:
     (canonical or alias, ignoring case) naming two entities."""
     import jsonschema
     v = jsonschema.Draft202012Validator(_schema())
-    errs = [f"{'/'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message}" for e in sorted(v.iter_errors(doc), key=lambda e: list(e.absolute_path))]
+    errs = [_schema_error(e) for e in sorted(v.iter_errors(doc), key=lambda e: list(e.absolute_path))]
     if errs:
         return errs
     ids: Dict[str, int] = {}
@@ -112,9 +112,20 @@ def validate_doc(doc: Any) -> List[str]:
             if k in spellings and spellings[k] != e["id"]:
                 errs.append(f"entities/{i}: {s!r} already names entity {spellings[k]!r}")
             spellings.setdefault(k, e["id"])
-    if doc["scope"] == "project" and not doc.get("project"):
-        errs.append("project: a project store names its project")
     return errs
+
+
+def _schema_error(e: Any) -> str:
+    """One schema error as `<path of the field>: <reason>`, in words for the rules whose jsonschema message names no field."""
+    where = "/".join(str(p) for p in e.absolute_path) or "(top)"
+    rule = list(e.schema_path)
+    if rule[:1] == ["then"]:
+        return "project: a project store names its project"
+    if rule[:1] == ["else"]:
+        return "project: a global store names no project"
+    if e.validator == "pattern" and isinstance(e.instance, str) and not e.instance.strip():
+        return f"{where}: is blank (only whitespace)"
+    return f"{where}: {e.message}"
 
 
 class EntityStore:
@@ -130,10 +141,18 @@ class EntityStore:
         return {"schema": SCHEMA, "scope": "project" if self.project else "global", **({"project": self.project} if self.project else {}), "entities": []}
 
     def load(self) -> Dict[str, Any]:
+        return self.read()[0]
+
+    def read(self) -> Tuple[Dict[str, Any], Optional[str]]:
+        """The validated document and the sha256 of the very bytes it was parsed from (None when there is no file): one read, so a writer
+        replacing the store in between cannot pair one version's digest with another version's entities."""
         if not self.path.exists():
-            return self.empty()
+            return self.empty(), None
         try:
-            doc = json.loads(self.path.read_text(encoding="utf-8"))
+            data = self.path.read_bytes()
+            doc = json.loads(data.decode("utf-8"))
+        except FileNotFoundError:
+            return self.empty(), None
         except (OSError, ValueError) as e:
             raise EntityError(f"{self.path}: not a readable JSON file ({e}); fix or remove it") from e
         errs = validate_doc(doc)
@@ -141,7 +160,7 @@ class EntityStore:
             raise EntityError(f"{self.path} is not a valid {SCHEMA} store: " + "; ".join(errs[:10]))
         if (doc.get("project") or None) != self.project:
             raise EntityError(f"{self.path} is the store of {store_name(doc.get('project'))}, not {self.name}")
-        return doc
+        return doc, hashlib.sha256(data).hexdigest()
 
     @contextmanager
     def locked(self, timeout: float = 10.0, stale: float = 120.0):
@@ -173,9 +192,6 @@ class EntityStore:
                 lock.unlink()
             except FileNotFoundError:
                 pass
-
-    def digest(self) -> Optional[str]:
-        return hashlib.sha256(self.path.read_bytes()).hexdigest() if self.path.exists() else None
 
     def save(self, doc: Dict[str, Any]) -> None:
         doc = dict(doc, updated_at=now_iso())
@@ -276,15 +292,33 @@ class EntityStore:
     def _import_csv(self, text: str, replace: bool = False) -> Dict[str, Any]:
         """Rows by id (a row without one gets the slug of its canonical): new ids are added, existing ones take the row's fields. With
         `replace` the store becomes exactly the rows. All rows are checked before anything is written."""
-        rows = rows_from_csv(text)
-        doc = self.empty() if replace else self.load()
-        before = {e["id"]: e for e in self.load()["entities"]} if self.path.exists() else {}
+        rows = []
+        for r in rows_from_csv(text):
+            e = normalize_entity(r)
+            e.setdefault("id", slug(e["canonical"]))
+            rows.append(e)
+        return self._merge(rows, replace)
+
+    def import_doc(self, doc: Any, replace: bool = False) -> Dict[str, Any]:
+        """An entity store document (an `export --format json`), merged by id as a CSV is, with its entities as they are: validated against
+        the schema, never re-normalized through CSV (two spellings that differ only in spacing stay two spellings)."""
+        errs = validate_doc(doc) if isinstance(doc, dict) and "schema" in doc else [f"a JSON import is an entity store document ({SCHEMA})"]
+        if errs:
+            raise EntityError("; ".join(errs[:10]))
+        rows = [{k: v for k, v in e.items() if k not in ("added_at", "updated_at")} for e in doc["entities"]]
+        with self.locked():
+            return self._merge(rows, replace)
+
+    def _merge(self, rows: List[Dict[str, Any]], replace: bool) -> Dict[str, Any]:
+        """Entities with ids, merged by id (under the lock); the destination document is validated before it is saved."""
+        cur = self.load()
+        doc = self.empty() if replace else cur
+        before = {e["id"]: e for e in cur["entities"]}
         index = {e["id"]: i for i, e in enumerate(doc["entities"])}
         added, updated, unchanged = [], [], []
         now = now_iso()
         for r in rows:
-            e = normalize_entity(r)
-            e.setdefault("id", slug(e["canonical"]))
+            e = dict(r)
             old = before.get(e["id"])
             stamp = {"added_at": (old or {}).get("added_at") or now}
             if old is not None and _content(old) == _content(e):
@@ -438,8 +472,33 @@ def check_voiceprint(path: str) -> str:
 
 
 # ---- CSV rows
+def _escape(value: str) -> str:
+    """One list item in a CSV cell: `\\` and `|` are escaped, so `|` between items is never read as part of one."""
+    return value.replace("\\", "\\\\").replace("|", "\\|")
+
+
+def _join(items: Iterable[str]) -> str:
+    return "|".join(_escape(x) for x in items)
+
+
 def _split(cell: Any) -> List[str]:
-    return [x.strip() for x in str(cell or "").split("|") if x.strip()]
+    """The items of a CSV list cell: split at each `|` that is not escaped, then `\\|` → `|` and `\\\\` → `\\` (the reverse of _join)."""
+    items, cur, esc = [], [], False
+    for ch in str(cell or ""):
+        if esc:
+            cur.append(ch if ch in "|\\" else "\\" + ch)
+            esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == "|":
+            items.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if esc:
+        cur.append("\\")
+    items.append("".join(cur))
+    return [x.strip() for x in items if x.strip()]
 
 
 def _pairs(cell: Any, what: str) -> Dict[str, str]:
@@ -455,9 +514,9 @@ def _pairs(cell: Any, what: str) -> Dict[str, str]:
 def entity_to_row(e: Dict[str, Any]) -> Dict[str, str]:
     pr = e.get("pronunciation") or []
     sp = e.get("speaker") or {}
-    return {"id": e["id"], "canonical": e["canonical"], "type": e["type"], "aliases": "|".join(e.get("aliases") or []), "title": e.get("title", ""),
-            "pronunciation": "|".join(f"{p['lang']}={p['reading']}" for p in pr), "ipa": "|".join(f"{p['lang']}={p['ipa']}" for p in pr if p.get("ipa")),
-            "accent": "|".join(f"{p['lang']}={p['accent']}" for p in pr if p.get("accent") is not None),
+    return {"id": e["id"], "canonical": e["canonical"], "type": e["type"], "aliases": _join(e.get("aliases") or []), "title": e.get("title", ""),
+            "pronunciation": _join(f"{p['lang']}={p['reading']}" for p in pr), "ipa": _join(f"{p['lang']}={p['ipa']}" for p in pr if p.get("ipa")),
+            "accent": _join(f"{p['lang']}={p['accent']}" for p in pr if p.get("accent") is not None),
             "speaker_id": sp.get("speaker_id", ""), "voiceprint": sp.get("voiceprint", ""), "note": e.get("note", "")}
 
 
@@ -471,6 +530,8 @@ def rows_from_csv(text: str) -> List[Dict[str, Any]]:
         raise EntityError(f"unknown CSV column(s): {', '.join(unknown)} (columns: {', '.join(CSV_COLUMNS)})")
     out: List[Dict[str, Any]] = []
     for n, row in enumerate(reader, start=2):
+        if None in row:   # DictReader keeps the fields past the header under None
+            raise EntityError(f"CSV line {n}: {len(row[None])} field(s) more than the header's {len(cols)} column(s) (quote a value with a comma)")
         row = {(k or "").strip(): (v or "") for k, v in row.items()}
         if not any(v.strip() for v in row.values()):
             continue
@@ -502,8 +563,9 @@ def snapshot(workspace: str, project: Optional[str]) -> Optional[Dict[str, Any]]
     merged: Dict[str, Dict[str, Any]] = {}
     used = []
     for st in stores:
-        ents = st.load()["entities"]
-        used.append({"store": st.name, "path": str(st.path), "sha256": st.digest(), "entities": len(ents)})
+        doc, sha = st.read()
+        ents = doc["entities"]
+        used.append({"store": st.name, "path": str(st.path), "sha256": sha, "entities": len(ents)})
         for e in ents:
             merged[e["id"]] = dict(_content(e), store=st.name)
     if not merged:
@@ -528,11 +590,27 @@ def _cjk(s: str) -> bool:
     return bool(_CJK.search(s))
 
 
+def _owners(entities: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Each spelling (casefolded) → the id of the entity it names: a project store's entity before a global one, as in snapshot, so a project
+    alias that is a global entity's canonical spelling names the project's entity."""
+    owner: Dict[str, str] = {}
+    for e in sorted(entities, key=lambda x: x.get("store", "global") == "global"):
+        for s in [e["canonical"]] + list(e.get("aliases") or []):
+            owner.setdefault(s.casefold(), e["id"])
+    return owner
+
+
+def _owns(owner: Dict[str, str], e: Dict[str, Any], spelling: str) -> bool:
+    return owner.get(spelling.casefold(), e["id"]) == e["id"]
+
+
 def transcription_inputs(entities: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, str]]]]:
     """transcription-skill's own inputs: domain_vocabulary {speakers: people, terms: the rest, max_terms} and corrections [{from: alias, to:
-    canonical, match: word | substring (CJK)}], within the Skill's limits (the first entities by id win when there are more)."""
-    people = [e["canonical"] for e in entities if e["type"] == "person"]
-    others = [e["canonical"] for e in entities if e["type"] != "person"]
+    canonical, match: word | substring (CJK)}], within the Skill's limits (the first entities by id win when there are more). A spelling another
+    entity owns (a global canonical spelling a project entity has as an alias) is neither a term nor a correction source of the shadowed one."""
+    owner = _owners(entities)
+    people = [e["canonical"] for e in entities if e["type"] == "person" and _owns(owner, e, e["canonical"])]
+    others = [e["canonical"] for e in entities if e["type"] != "person" and _owns(owner, e, e["canonical"])]
     names = (people + others)[:MAX_TERMS]
     vocab = None
     if names:
@@ -545,7 +623,7 @@ def transcription_inputs(entities: List[Dict[str, Any]]) -> Tuple[Optional[Dict[
     seen = set()
     for e in entities:
         for a in e.get("aliases") or []:
-            if a == e["canonical"] or a.casefold() in seen or len(rules) >= MAX_CORRECTIONS:
+            if a == e["canonical"] or a.casefold() in seen or len(rules) >= MAX_CORRECTIONS or not _owns(owner, e, a):
                 continue
             seen.add(a.casefold())
             rules.append({"from": a, "to": e["canonical"], "match": "substring" if _cjk(a) else "word"})
@@ -569,16 +647,15 @@ def find(entities: List[Dict[str, Any]], name: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(name, str):
         return None
     k = " ".join(name.split()).casefold()
-    for e in entities:
-        if k in {s.casefold() for s in [e["canonical"]] + list(e.get("aliases") or [])}:
-            return e
-    return None
+    want = _owners(entities).get(k)
+    return next((e for e in entities if e["id"] == want), None)
 
 
 def pronunciation_dictionary(entities: List[Dict[str, Any]], lang: str) -> Optional[Dict[str, Any]]:
     """A dubbing/pronunciation@1 dictionary of the entities' readings for `lang` (an entry for en serves en-US; one for en-US only en-US), the
     canonical spelling and its aliases each as a term. None when no entity has a reading for the language."""
     want = str(lang or "").lower()
+    owner = _owners(entities)
     entries = []
     for e in entities:
         for p in e.get("pronunciation") or []:
@@ -586,7 +663,7 @@ def pronunciation_dictionary(entities: List[Dict[str, Any]], lang: str) -> Optio
             if not (want == pl or want.startswith(pl + "-")):
                 continue
             for term in [e["canonical"]] + list(e.get("aliases") or []):
-                if len(term) <= MAX_PRONUNCIATION_TERM:
+                if len(term) <= MAX_PRONUNCIATION_TERM and _owns(owner, e, term):
                     entries.append({"term": term, "lang": p["lang"], "reading": p["reading"], **{k: p[k] for k in ("ipa", "accent") if k in p}})
     if not entries:
         return None
@@ -664,13 +741,27 @@ DUB_PRONUNCIATION_KEY = "dub.pronunciation"
 
 
 def pronunciation_file(workspace: str, doc: Dict[str, Any]) -> str:
-    """The dictionary written into the workspace under its content's hash (the same readings give the same file)."""
-    body = json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1) + "\n"
+    """The dictionary written into the workspace under its content's hash (the same readings give the same file). Written to a temporary file
+    beside it and moved into place, so a reader never sees half a file; a file already there is reused only when its bytes are the expected
+    ones, so a later plan repairs one an earlier failure left."""
+    data = (json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1) + "\n").encode("utf-8")
     d = Path(workspace) / "entities" / "pronunciation"
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f"pronunciation-{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}.json"
-    if not p.exists():
-        p.write_text(body, encoding="utf-8")
+    p = d / f"pronunciation-{hashlib.sha256(data).hexdigest()[:16]}.json"
+    try:
+        if p.read_bytes() == data:
+            return str(p.resolve())
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(d))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, p)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return str(p.resolve())
 
 
