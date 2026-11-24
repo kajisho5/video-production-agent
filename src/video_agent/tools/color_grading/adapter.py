@@ -176,13 +176,7 @@ def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None
 
 
 def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
-    # The tagged pin and the reviewed alpha block of color-grading-skill abe1d5e are both supported.
-    # Every other change to the alpha contract still goes through the fatal comparison.
-    baseline = pinned or pinned_contract()
-    alpha = live.get("alpha")
-    if alpha != baseline.get("alpha") and alpha == json.loads(PINNED_CONTRACT_PATH.with_name("contract_alpha_abe1d5e.json").read_text(encoding="utf-8")):
-        baseline = {**baseline, "alpha": alpha}
-    return breaking_drift(live, baseline, FATAL_DRIFT_KEYS, "operations", "type", FATAL_DRIFT_OPERATION_KEYS)
+    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "operations", "type", FATAL_DRIFT_OPERATION_KEYS)
 
 
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
