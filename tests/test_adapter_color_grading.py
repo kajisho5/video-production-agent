@@ -135,6 +135,14 @@ class ColorGradingAdapterTests(unittest.TestCase):
         self.assertEqual(req["schema"], "color-grading/request@1"); self.assertEqual(req["project"]["operations"], [{"op_id": "edit", "type": "RETAG", "input": "source", "parameters": {"target": "bt709"}}])
         self.assertEqual((req["project"]["outputs"][0]["format"], req["project"]["outputs"][0]["operation"], req["project"]["source"]["path"]), ("mp4", "op:edit", str(Path(self.src).resolve())))
         self.assertEqual(b["workspace"], self.ws)
+        self.assertNotIn("alpha_mode", req["project"]["source"])
+        for mode in ("premultiplied", "straight"):
+            declared = ad.build_request("color-grading/run", self._op(source_alpha_mode=mode).args, paths)
+            self.assertEqual(declared["request"]["project"]["source"]["alpha_mode"], mode)
+            self.assertNotIn("source_alpha_mode", declared["request"]["project"]["operations"][0]["parameters"])
+        with self.assertRaises(ToolError):
+            ad.build_request("color-grading/run", self._op(source_alpha_mode="auto").args, paths)
+
         lut = Path(self.tmp) / "src" / "look.cube"; lut.write_text("TITLE fake\n")
         b = ad.build_request("color-grading/run", {"operation": "LUT_APPLY", "input": "a", "output": "a_retag", "lut": "lut1", "lut_strength": 0.5}, dict(paths, lut1=str(lut)))
         self.assertEqual(b["request"]["project"]["operations"][0]["parameters"], {"lut_path": str(lut.resolve()), "lut_strength": 0.5}); self.assertEqual(b["lut_root"], str(lut.parent))

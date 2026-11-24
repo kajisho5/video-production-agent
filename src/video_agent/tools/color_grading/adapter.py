@@ -53,7 +53,7 @@ SUPPORTED_SKILL_VERSIONS = ("0.2.", "0.3.", "0.4.", "0.5.", "0.6.", "1.0.", "1.1
 ENGINE_ID = "ffmpeg-skill"
 CANONICAL_INVOCATION = ["color-grading", "run", "-", "--json"]
 REQUIRED_EXECUTION_FLAGS = {"shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False}
-COMMON_ARGS = ("operation", "input", "output", "format", "lut", "expect")
+COMMON_ARGS = ("operation", "input", "output", "format", "lut", "expect", "source_alpha_mode")
 EXPECT_KEYS = ("width", "height", "duration", "duration_tolerance", "pix_fmt")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # color-grading-skill 0.5.0 (its ADR-25): an alpha source is refused for every operation that re-encodes through ffmpeg-skill/color
@@ -176,7 +176,13 @@ def contract_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None
 
 
 def contract_breaking_drift(live: Dict[str, Any], pinned: Optional[Dict[str, Any]] = None) -> List[str]:
-    return breaking_drift(live, pinned or pinned_contract(), FATAL_DRIFT_KEYS, "operations", "type", FATAL_DRIFT_OPERATION_KEYS)
+    # The tagged pin and the reviewed alpha block of color-grading-skill abe1d5e are both supported.
+    # Every other change to the alpha contract still goes through the fatal comparison.
+    baseline = pinned or pinned_contract()
+    alpha = live.get("alpha")
+    if alpha != baseline.get("alpha") and alpha == json.loads(PINNED_CONTRACT_PATH.with_name("contract_alpha_abe1d5e.json").read_text(encoding="utf-8")):
+        baseline = {**baseline, "alpha": alpha}
+    return breaking_drift(live, baseline, FATAL_DRIFT_KEYS, "operations", "type", FATAL_DRIFT_OPERATION_KEYS)
 
 
 def package_from_contract(contract: Dict[str, Any]) -> SkillPackage:
@@ -392,6 +398,11 @@ class ColorGradingAdapter(ToolAdapter):
                                "project": {"project_id": pid, "source": {"source_id": "src", "path": str(Path(src).resolve())},
                                            "operations": [{"op_id": "edit", "type": op_type, "input": "source", "parameters": params}],
                                            "outputs": [{"output_id": "out", "operation": "op:edit", "path": str(Path(out).resolve()), "format": fmt, "overwrite": True, **({"expect": expect} if expect else {})}]}}
+        if "source_alpha_mode" in args:
+            mode = args["source_alpha_mode"]
+            if mode not in ("straight", "premultiplied"):
+                raise ToolError("color-grading: source_alpha_mode must be straight or premultiplied")
+            req["project"]["source"]["alpha_mode"] = mode
         if timeout:
             req["options"] = {"timeout": float(timeout)}
         hit = scan_forbidden(req, tuple(f for f in self.forbidden if f not in ("path", "paths", "workspace")), "request")
