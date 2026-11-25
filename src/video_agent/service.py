@@ -172,6 +172,12 @@ class Service:
             self.adapter([])   # injected adapters (tests) declare their packages up front
 
     # ---- adapters / tools
+    def pacing(self, source, output, references=(), profile=None, protect=None, apply=False):
+        from .agent.pacing import route
+        from .tools.ffmpeg_skill.pacing import PacingAdapter
+        return route(self.workspace, PacingAdapter(self.skill_dir, self.workspace), source, output,
+                     references, profile, protect, apply)
+
     def adapter(self, allowed_inputs: Optional[List[str]] = None) -> ToolRouter:
         """The tool router with every adapter available in this environment: ffmpeg-skill (media engine) and, when
         installed, media-analysis-skill (observation Skill). Adapters are registered here and nowhere else."""

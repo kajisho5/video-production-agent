@@ -75,7 +75,6 @@ class RealMediaTests(unittest.TestCase):
         cls.ws = str(Path(cls.tmp) / "ws")
 
     def test_reference_pacing_route_with_protected_pause_and_bgm_review(self):
-        from video_agent.agent.pacing import route
         skill = locate_ffmpeg_skill()
         if not skill.offers_flag("silence", "--extract-profile"):
             self.skipTest("installed sibling predates pacing-profile@1")
@@ -91,10 +90,11 @@ class RealMediaTests(unittest.TestCase):
         bed = media("bed.mkv", "0.15*sin(2*PI*440*t)")
         protected = work/"keep.json"
         protected.write_text('[{"start_ms":1250,"end_ms":1500,"reason":"word ending"}]')
-        pending = route(work, skill.root, src, "delivered.mp4", [bed], protect=protected, apply=True)
+        service = Service(workspace=str(work), ffmpeg_skill_dir=str(skill.root))
+        pending = service.pacing(src, "delivered.mp4", [bed], protect=protected, apply=True)
         self.assertEqual(pending["status"], "NEEDS_REVIEW")
         self.assertFalse((work/"delivered.mp4").exists())
-        result = route(work, skill.root, src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True)
+        result = service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True)
         self.assertTrue(result["profile"]["probe_meta"]["warnings"])
         self.assertEqual(result["status"], "COMPLETED")
         self.assertEqual(result["cut_plan"]["cut_count"], 2)

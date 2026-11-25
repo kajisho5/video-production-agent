@@ -177,8 +177,7 @@ def cmd_selects(args, svc: Service) -> int:
 
 
 def cmd_pacing(args, svc: Service) -> int:
-    from .agent.pacing import route
-    result = route(svc.workspace, svc.skill_dir, args.input, args.output, args.reference,
+    result = svc.pacing(args.input, args.output, args.reference,
                    args.profile, args.protect_ranges, args.apply)
     _print(result, args.json)
     return 3 if result["status"] == "NEEDS_REVIEW" else 0
