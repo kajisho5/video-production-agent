@@ -74,6 +74,32 @@ class RealMediaTests(unittest.TestCase):
         make_media(cls.src)
         cls.ws = str(Path(cls.tmp) / "ws")
 
+    def test_reference_pacing_route_with_protected_pause_and_bgm_review(self):
+        from video_agent.agent.pacing import route
+        skill = locate_ffmpeg_skill()
+        if not skill.offers_flag("silence", "--extract-profile"):
+            self.skipTest("installed sibling predates pacing-profile@1")
+        work = Path(tmp_dir(self, prefix="pacing_"))
+        def media(name, expression):
+            path = work/name
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                            "testsrc2=size=64x48:rate=30:duration=3", "-f", "lavfi", "-i",
+                            f"aevalsrc='{expression}':s=48000:d=3", "-c:v", "ffv1", "-c:a", "pcm_s16le",
+                            str(path)], check=True)
+            return path
+        src = media("talk.mkv", "0.15*sin(2*PI*440*t)*(1-between(t,0.8,2.2))")
+        bed = media("bed.mkv", "0.15*sin(2*PI*440*t)")
+        protected = work/"keep.json"
+        protected.write_text('[{"start_ms":1250,"end_ms":1500,"reason":"word ending"}]')
+        pending = route(work, skill.root, src, "delivered.mp4", [bed], protect=protected, apply=True)
+        self.assertEqual(pending["status"], "NEEDS_REVIEW")
+        self.assertFalse((work/"delivered.mp4").exists())
+        result = route(work, skill.root, src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True)
+        self.assertTrue(result["profile"]["probe_meta"]["warnings"])
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["cut_plan"]["cut_count"], 2)
+        self.assertTrue(all(result["verification"].values()))
+
     def test_end_to_end_youtube(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube")
