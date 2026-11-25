@@ -6,7 +6,7 @@ pipeline, CONFIRM).
          [--beats] [--conform] [--fast] [--aspect=A] [--fit=F] --out-dir=<job>/ops/<…>_motion --json --timeout=T`
           → analyze (ffmpeg-skill measurements) → render (Remotion, verified frame count / fps / size / audio) ; no --platform: the agent delivers
 
-Protocol (remotion-ffmpeg-skill's own contract, `python scripts/_contract.py --json`, pinned from the v0.14.0 release tag in contract_0.14.4.json):
+Protocol (remotion-ffmpeg-skill's own contract, `python scripts/_contract.py --json`, pinned from the v0.14.0 release tag in contract_0.14.5.json):
 pipeline's inputSchema / flags / output (`timeline`, `render`, `look`, `verified`, `warnings`, `steps`), the shared output (`status`
 completed | failed, `output`), the failure shape (`status: failed`, `error`, `kind` input | missing_tool | timeout | failed, exit 2 / 3 / 4 / 1).
 doctor (`scripts/doctor.py --json [--project DIR]`) → `ok` and `checks[]` {check, ok, value, fix} (python, node, npm, ffmpeg-skill, ffmpeg and,
@@ -58,7 +58,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "inputSchema", "flags", "output", "dry_run")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "output_failure", "conventions")
 FATAL_DRIFT_TOOL_KEYS = ("role", "flags", "output")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.14.4.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.14.5.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
