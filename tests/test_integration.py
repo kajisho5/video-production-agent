@@ -812,6 +812,31 @@ if __name__ == "__main__":
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class DeadlineRealTests(unittest.TestCase):
+    """ADR-133 (roadmap step 22): the deadline estimate against the real engine on this machine. Two renders of the 16 s fixture fill the
+    speed book; the third render's operations must take within 30 % of what the plan estimated from it."""
+
+    def test_estimate_within_30_percent_of_the_real_run(self):
+        tmp = tmp_dir(self, prefix="va_deadline_")
+        src = str(Path(tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True)
+        make_media(src)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        seconds = []
+        for n in range(3):
+            ir = svc.plan([src], "youtube")
+            rec = svc.apply_deadline(ir, "30m") if n == 2 else None
+            path = str(Path(svc.workspace) / "plans" / f"run{n}.project.json")
+            save_ir(ir, path)
+            out = svc.render(load_ir(path), path, approve=["all"])
+            self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution", {}).get("failed_op"))
+            seconds.append(sum(r["seconds"] for r in out["execution"]["results"] if r["ok"]))
+        self.assertEqual((rec["status"], rec["dropped"], rec["defaults"]), ("fits", [], []), rec)
+        real = seconds[-1]
+        print(f"deadline estimate {rec['estimated_seconds']:.2f} s, real {real:.2f} s (earlier runs {seconds[0]:.2f} / {seconds[1]:.2f} s)")
+        self.assertLessEqual(abs(rec["estimated_seconds"] - real), 0.3 * real, (rec["estimated_seconds"], real, rec["steps"]))
+
+
 class NoAudioSourceTests(unittest.TestCase):
     """A video-only source (real-world: DJI drones, some screen captures) must analyze, plan and render without audio steps."""
 

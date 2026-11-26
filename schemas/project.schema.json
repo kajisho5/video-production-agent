@@ -476,6 +476,59 @@
     }
    }
   },
+  "deadline": {
+   "type": "object",
+   "additionalProperties": false,
+   "description": "ADR-133: deadline mode (plan --deadline): the budget, the estimate per step from this machine's speed book, what was dropped and why, fits | at_risk; present only when planned with a deadline",
+   "required": [
+    "rule",
+    "budget_seconds",
+    "estimated_seconds",
+    "status",
+    "dropped"
+   ],
+   "properties": {
+    "rule": {
+     "const": "deadline@1"
+    },
+    "deadline": {
+     "type": "string"
+    },
+    "budget_seconds": {
+     "type": "number"
+    },
+    "media_seconds": {
+     "type": "number"
+    },
+    "machine": {
+     "type": "string"
+    },
+    "hw_encoder": {
+     "type": "boolean"
+    },
+    "estimated_seconds": {
+     "type": "number"
+    },
+    "status": {
+     "enum": [
+      "fits",
+      "at_risk"
+     ]
+    },
+    "dropped": {
+     "type": "array"
+    },
+    "steps": {
+     "type": "array"
+    },
+    "defaults": {
+     "type": "array"
+    },
+    "warning": {
+     "type": "string"
+    }
+   }
+  },
   "delivery": {
    "type": "object",
    "required": [
