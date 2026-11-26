@@ -5262,7 +5262,9 @@ class AudioProductionAdapterTests(unittest.TestCase):
         from video_agent.tools.audio_production import ContractError, check_contract, contract_drift, pinned_contract
         ad = self._adapter()
         self.assertEqual(ad.version, pinned_version("audio-production")); self.assertEqual(ad.tools, {"audio-production/run"}); self.assertEqual(ad.drift(), [])
-        self.assertEqual(len(ad.lowering.supported_types()), 18); self.assertTrue({"LOUDNESS_SET", "STEMS"} <= set(ad.lowering.supported_types()))   # 1.1.0 / 1.2.0 (ADR-107 addendum 12): + LOUDNESS_SET, STEMS (declared, not planned)
+        # every operation the pin declares is a lowering type, read from the pin so a re-pin that adds operations moves it (ADR-117 addendum 1)
+        self.assertEqual(ad.lowering.supported_types(), sorted(o["type"] for o in pinned_contract()["operations"]))
+        self.assertTrue({"LOUDNESS_SET", "STEMS"} <= set(ad.lowering.supported_types()))   # 1.1.0 / 1.2.0 (ADR-107 addendum 12): + LOUDNESS_SET, STEMS (declared, not planned)
         self.assertEqual(sorted(ad.lowering.unsupported), ["CHANNEL_MAP", "FORMAT_CONVERT", "RESAMPLE"])   # 0.4.6 (ADR-071): + FILLER_REMOVE (planned since ADR-072 as audio.filler_remove)
         pk = ad.package()
         self.assertEqual((pk.skill_id, pk.version, pk.capabilities, [t.tool_id for t in pk.tools]), ("audio-production", pinned_version("audio-production"), ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production"], ["audio-production/run"]))
