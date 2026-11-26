@@ -178,7 +178,7 @@ def cmd_selects(args, svc: Service) -> int:
 
 def cmd_pacing(args, svc: Service) -> int:
     result = svc.pacing(args.input, args.output, args.reference,
-                   args.profile, args.protect_ranges, args.apply)
+                   args.profile, args.protect_ranges, args.apply, args.confirm)
     _print(result, args.json)
     return 3 if result["status"] == "NEEDS_REVIEW" else 0
 
@@ -1203,7 +1203,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reference", action="append", default=[], help="completed reference video (repeatable)")
     p.add_argument("--profile", help="preset or reviewed profile; fallback when a reference is uncertain")
     p.add_argument("--protect-ranges", help="upstream source-clock protect-ranges@1 JSON")
-    p.add_argument("--apply", action="store_true", help="approve and execute the edit")
+    p.add_argument("--apply", action="store_true", help="execute the approved edit (needs --confirm)")
+    p.add_argument("--confirm", help="the confirm_token the preview printed, passed only after the user approved its cuts")
     p.set_defaults(fn=cmd_pacing)
 
     p = sub.add_parser("transcript-edit", help="preview cutting the words / sentences you choose from the transcript (ripple delete); nothing is cut (ADR-123)")

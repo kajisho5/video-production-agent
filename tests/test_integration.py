@@ -91,14 +91,23 @@ class RealMediaTests(unittest.TestCase):
         protected = work/"keep.json"
         protected.write_text('[{"start_ms":1250,"end_ms":1500,"reason":"word ending"}]')
         service = Service(workspace=str(work), ffmpeg_skill_dir=str(skill.root))
-        pending = service.pacing(src, "delivered.mp4", [bed], protect=protected, apply=True)
+        pending = service.pacing(src, "delivered.mp4", [bed], protect=protected, apply=True, confirm="unreviewed")
         self.assertEqual(pending["status"], "NEEDS_REVIEW")
         self.assertFalse((work/"delivered.mp4").exists())
-        result = service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True)
+        with self.assertRaises(ValueError):   # no apply without the approved preview's token
+            service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True)
+        preview = service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected)
+        self.assertEqual((preview["status"], preview["profile_used"]), ("PREVIEW", "youtube-talk"))
+        self.assertFalse((work/"delivered.mp4").exists())
+        result = service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True,
+                                confirm=preview["confirm_token"])
         self.assertTrue(result["profile"]["probe_meta"]["warnings"])
         self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["cut_plan"], preview["cut_plan"])
         self.assertEqual(result["cut_plan"]["cut_count"], 2)
+        self.assertTrue(any(k["start_ms"] <= 1250 and 1500 <= k["end_ms"] for k in result["cut_plan"]["keep"]))
         self.assertTrue(all(result["verification"].values()))
+        self.assertTrue((work/"delivered.mp4").is_file())
 
     def test_end_to_end_youtube(self):
         svc = Service(workspace=self.ws)

@@ -18,9 +18,14 @@ class PacingAdapter:
 
     def _call(self, tool, *args):
         code, stdout, stderr = run_process_group([sys.executable, str(self.skill.script(tool)), *args, "--json"], 3600)
+        try:
+            doc = json.loads(stdout)
+        except ValueError:
+            doc = {}
         if code:
-            raise ValueError(f"{tool} failed: {stderr[-1000:]}")
-        doc = json.loads(stdout)
+            error = doc.get("error") if isinstance(doc, dict) else None
+            kind = f" [{error.get('code') or error.get('kind')}]" if isinstance(error, dict) else ""
+            raise ValueError(f"{tool} failed{kind}: {stderr[-1000:]}")
         if doc.get("status") != "completed":
             raise ValueError(f"{tool} did not complete")
         return doc
