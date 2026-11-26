@@ -156,7 +156,7 @@ class VersionOnlyDriftTests(unittest.TestCase):
         self.assertTrue(compare_to_pin("video-editing-skill", live, pinned, supported, drift).content_drift)
 
     def test_version_outside_the_gate_fails(self):
-        for skill, new in (("video-editing-skill", "0.10.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.2.0"),
+        for skill, new in (("video-editing-skill", "0.10.0"), ("video-editing-skill", "1.0.0"), ("color-grading-skill", "1.3.0"),
                            ("color-grading-skill", "2.0.0"), ("subtitle-skill", "0.12.0"), ("qc-skill", "1.5.0"), ("thumbnail-skill", "0.2.0")):
             pinned, supported, drift = adapter(skill)
             with self.subTest(skill=skill, version=new):
