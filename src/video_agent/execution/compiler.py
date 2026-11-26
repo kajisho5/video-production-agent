@@ -809,6 +809,37 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             tool = tool_for(QC_SKILL, subject)
             add(tool, lower_qc_package(tool, members, spec["rules"]), [m["input"] for m in members], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
 
+    def chunked_delivery(subject: str, t: Dict[str, Any], art_id: str, ext: str, chunked: Dict[str, Any]) -> None:
+        """ADR-134: the target's export, chunk by chunk: a frame-accurate cut of each chunk of the programme, exported with the preset, then
+        the exported chunks joined by stream copy into the deliverable. Each chunk's operations carry their own chained key (the range is in
+        the arguments), so a resumed render reuses the chunks that are done and starts at the first unfinished one."""
+        st = state[subject]
+        ids = list(t.get("decision_ids") or [])
+        tools = chunked.get("tools") or {}
+        cut_tool, join_tool = tools.get("cut"), tools.get("join")
+        if not cut_tool or not join_tool:
+            raise CompileError("chunked_render names no cut / join tool; the plan must name every tool it runs")
+        export_tool = tool_for("delivery_export", t["id"])
+        cdir = job / "ops" / f"{st['stem']}_chunks_{t['id']}"
+        parts: List[str] = []
+        total = float(chunked.get("programme_seconds") or 0.0)
+        for c in chunked["chunks"]:
+            n = int(c["index"])
+            cut_id, part_id = f"{subject}_chunk{n:03d}_cut", f"{subject}_chunk{n:03d}_{t['id']}"
+            paths[cut_id] = str(cdir / f"chunk{n:03d}_cut.mp4")
+            paths[part_id] = str(cdir / f"chunk{n:03d}_{t['id']}.{ext}")
+            cargs: Dict[str, Any] = {"input": st["current"], "start": f"{float(c['start']):.6f}", "accurate": True, "output": cut_id}
+            if c.get("end") is not None:
+                cargs["end"] = f"{float(c['end']):.6f}"
+            secs = (float(c["end"]) if c.get("end") is not None else total) - float(c["start"])
+            o = add(cut_tool, cargs, [st["current"]], [cut_id], ids, st["fp"], skill="render_chunk")
+            o.chunk, o.media_seconds = n, max(0.0, round(secs, 3))
+            o = add(export_tool, {"input": cut_id, "preset": t["preset"], "no_normalize": True, "output": part_id}, [cut_id], [part_id], ids, st["fp"], skill="delivery_export")
+            o.chunk, o.media_seconds = n, max(0.0, round(secs, 3))
+            parts.append(part_id)
+        o = add(join_tool, {"inputs": parts, "transition": "none", "copy": True, "output": art_id}, parts, [art_id], ids, st["fp"], skill="render_chunk_join")
+        o.chunk_join = True
+
     def delivery(subject: str) -> None:
         st = state[subject]
         for t in d["delivery"]["targets"]:
@@ -816,10 +847,14 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             if t.get("preset"):
                 ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
                 paths[art_id] = str(job / "artifacts" / f"{st['stem']}_{t['id']}.{ext}")
-                # ADR-121: the agent's own loudness decision wins over ffmpeg-skill 4.0's platform-preset normalisation; the adapter passes
-                # --no-normalize only where the checkout publishes it and the preset is a platform preset
-                args = {"input": st["current"], "preset": t["preset"], "no_normalize": True, "output": art_id}
-                add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
+                chunked = d.get("chunked_render")
+                if chunked and chunked.get("subject") == subject and t["id"] in (chunked.get("targets") or []):
+                    chunked_delivery(subject, t, art_id, ext, chunked)
+                else:
+                    # ADR-121: the agent's own loudness decision wins over ffmpeg-skill 4.0's platform-preset normalisation; the adapter passes
+                    # --no-normalize only where the checkout publishes it and the preset is a platform preset
+                    args = {"input": st["current"], "preset": t["preset"], "no_normalize": True, "output": art_id}
+                    add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
                 add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), st["fp"], kind="qa", skill="delivery_check")
             elif st["current"] not in d["assets"]:
                 # generic profile: the last processed intermediate is the deliverable (no re-encode). Checking

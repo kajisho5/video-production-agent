@@ -110,14 +110,25 @@ class FakeAdapter(ToolAdapter):
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": ["ffmpeg loudnorm"]}, ["ffmpeg loudnorm"], "", 0.2, attempt, dry_run)
         if script in ("cut", "export", "fit"):
             dur = in_dur
-            if script == "cut":
+            if script == "cut" and "segments" in op.args:
                 segs = [tuple(float(x) for x in s.split("-")) for s in op.args["segments"].split(",")]
                 dur = sum(e - s for s, e in segs)
+            elif script == "cut":   # ADR-134: one range (a chunk of a chunked render); no end runs to the end of the input
+                dur = (float(op.args["end"]) if op.args.get("end") is not None else in_dur) - float(op.args["start"])
             self.duration = dur
             if out and not dry_run:
                 # no subtitle stream survives cut / fit / export: the real export.py writes the picture and the audio only (measured, ADR-063)
                 _write_fake(out, {"duration": dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", dur)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
+        if script == "join":   # ADR-134: the stream-copy join of a chunked render's chunks; every input must exist, the output is their sum
+            assert op.args.get("copy") is True and op.args.get("transition") == "none", op.args
+            metas = [_read_fake(paths.get(i, i)) for i in op.args["inputs"]]
+            if any(m is None for m in metas):
+                return ToolResult(op.id, op.tool, False, 1, None, {}, [], "error: an input cannot be joined: missing", 0.1, attempt, dry_run)
+            dur = round(sum(float(m["duration"]) for m in metas), 6)
+            if out and not dry_run:
+                _write_fake(out, {"duration": dur, "lufs": metas[0].get("lufs", self.lufs), "joined": len(metas)})
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "mode": "copy", "clips": len(metas), "probe": probe_doc(out or "", dur)}, ["ffmpeg concat copy"], "", 0.1, attempt, dry_run)
         if script == "check":
             rows = [{"check": "duration", "status": "PASS", "value": f"{in_dur}s", "expected": "any", "fix": "", "kind": "judgement"},
                     {"check": "video codec", "status": "PASS", "value": "h264", "expected": "h264", "fix": "", "kind": "format"}]

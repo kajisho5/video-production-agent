@@ -837,6 +837,84 @@ class DeadlineRealTests(unittest.TestCase):
         self.assertLessEqual(abs(rec["estimated_seconds"] - real), 0.3 * real, (rec["estimated_seconds"], real, rec["steps"]))
 
 
+def _framemd5(path: str) -> str:
+    """The decoded picture, frame by frame (ffmpeg's framemd5 muxer), hashed into one digest."""
+    import hashlib
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", path, "-map", "0:v:0", "-f", "framemd5", "-"], check=True, capture_output=True).stdout
+    rows = [ln for ln in out.decode().splitlines() if ln and not ln.startswith("#")]
+    return f"{len(rows)}:{hashlib.sha256(chr(10).join(rows).encode()).hexdigest()}"
+
+
+class ChunkedRenderRealTests(unittest.TestCase):
+    """ADR-134 (roadmap step 23, Done when): a 2 h fixture rendered in 600 s chunks, the render killed (SIGKILL, the whole process group)
+    while chunk 3 is being rendered, then `render --resume last`: the resumed job reuses chunks 1-2, starts at chunk 3, and its output's
+    framemd5 equals an uninterrupted run's. The fixture is tiny (64x36 at 5 fps, picture only) so the twelve chunks stay quick; the delivery
+    preset is h265 (source resolution), so nothing is scaled."""
+
+    def test_killed_in_chunk_3_resumes_at_chunk_3_and_matches_an_uninterrupted_run(self):
+        import signal
+        import time
+        tmp = tmp_dir(self, prefix="va_chunks_")
+        src = str(Path(tmp) / "src" / "allday.mp4")
+        Path(src).parent.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "testsrc2=size=64x36:rate=5:duration=7200",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-pix_fmt", "yuv420p", src], check=True)
+        prof = json.loads((Path(__file__).resolve().parents[1] / "profiles" / "generic.json").read_text(encoding="utf-8"))
+        prof.update(name="chunked-master", delivery={"targets": [{"id": "master", "preset": "h265", "platform": "custom", "artifact_type": "MASTER"}]})
+        (Path(tmp) / "chunked-master.json").write_text(json.dumps(prof), encoding="utf-8")
+        ws = str(Path(tmp) / "ws")
+        svc = Service(workspace=ws)
+        ir = svc.plan([src], str(Path(tmp) / "chunked-master"), hash_sources=False)
+        ch = ir.doc.get("chunked_render")
+        self.assertIsNotNone(ch, ir.doc["analysis"]["warnings"])
+        self.assertEqual((len(ch["chunks"]), ch["rate"], ch["chunks"][2]["start"], ch["chunks"][-1]["end"]), (12, "5/1", 1200.0, None))
+        plan = str(Path(ws) / "plans" / "allday.project.json")
+        save_ir(ir, plan)
+        whole = svc.render(load_ir(plan), plan, approve=["all"])
+        self.assertEqual(whole["status"], "COMPLETED", whole["execution"].get("failed_op"))
+        self.assertEqual((whole["chunks"]["done"], whole["chunks"]["reused"]), (12, 0))
+        art = next(op_out for op_out in whole["paths"] if op_out.endswith("_delivery_master"))
+        expected = _framemd5(whole["paths"][art])
+        self.assertTrue(expected.startswith("36000:"), expected)   # 7200 s x 5 fps: no frame lost or doubled at the eleven joins
+
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+        proc = subprocess.Popen([sys.executable, "-m", "video_agent.cli", "--workspace", ws, "render", plan, "--approve", "all"], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        first = whole["job"]["id"]
+        state, killed_job = None, None
+        try:
+            deadline = time.monotonic() + 600
+            while time.monotonic() < deadline and proc.poll() is None:
+                jobs = [p for p in (Path(ws) / "jobs").iterdir() if p.name != first and (p / "chunks.json").exists()]
+                if jobs:
+                    try:
+                        state = json.loads((jobs[0] / "chunks.json").read_text(encoding="utf-8"))
+                    except ValueError:
+                        state = None
+                    if state and [c["status"] for c in state["chunks"][:2]] == ["done", "done"]:
+                        os.killpg(proc.pid, signal.SIGKILL)   # chunk 3's cut is starting or running: the render and its engine die together
+                        killed_job = jobs[0].name
+                        break
+                time.sleep(0.02)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        self.assertIsNotNone(killed_job, "the render finished or failed before chunk 3")
+        state = json.loads((Path(ws) / "jobs" / killed_job / "chunks.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(state["chunks"][2]["status"], "done", state["chunks"][2])
+        self.assertEqual(json.loads((Path(ws) / "jobs" / killed_job / "job.json").read_text(encoding="utf-8"))["state"], "EXECUTING")
+
+        resumed = svc.render(load_ir(plan), plan, approve=["all"], resume="last")
+        self.assertEqual(resumed["status"], "COMPLETED", resumed["execution"].get("failed_op"))
+        self.assertEqual(resumed["resume"]["resumed_from"], killed_job)
+        self.assertEqual((resumed["chunks"]["reused"], resumed["chunks"]["started_at"], resumed["chunks"]["done"]), (2, 3, 12), resumed["chunks"])
+        self.assertEqual([c["status"] for c in resumed["chunks"]["chunks"]], ["reused"] * 2 + ["done"] * 10)
+        got = _framemd5(resumed["paths"][art])
+        print(f"chunked render: uninterrupted {expected}, killed in chunk 3 then resumed {got}")
+        self.assertEqual(got, expected)
+
+
 class NoAudioSourceTests(unittest.TestCase):
     """A video-only source (real-world: DJI drones, some screen captures) must analyze, plan and render without audio steps."""
 

@@ -145,6 +145,12 @@ def group_of(op_skill: str, op_tool: str, doc_groups: Dict[str, str]) -> str:
     return doc_groups.get(op_tool) or doc_groups.get(op_skill) or "required"
 
 
+def _media_of(op: Any, programme_seconds: float) -> float:
+    """ADR-134: the media seconds one operation encodes -- a chunk of a chunked render its own range, every other operation the programme."""
+    m = getattr(op, "media_seconds", None)
+    return float(m) if isinstance(m, (int, float)) and not isinstance(m, bool) and m >= 0 else programme_seconds
+
+
 def estimate(ops: List[Any], seconds_of_media: float, book: SpeedBook, machine: str) -> List[Dict[str, Any]]:
     rows = []
     for op in ops:
@@ -154,7 +160,7 @@ def estimate(ops: List[Any], seconds_of_media: float, book: SpeedBook, machine: 
         else:
             (a, b, n), basis = got, "measured"
         rows.append({"op_id": op.id, "tool": op.tool, "skill": op.skill, "outputs": list(op.outputs), "decision_ids": list(op.decision_ids),
-                     "seconds": round(a + b * seconds_of_media, 3), "basis": basis, "runs": n})
+                     "seconds": round(a + b * _media_of(op, seconds_of_media), 3), "basis": basis, "runs": n})
     return rows
 
 
@@ -227,7 +233,7 @@ def record_run(workspace: str, hw_encoder: bool, doc: Dict[str, Any], ops: List[
         op = by_op.get(getattr(r, "op_id", None))
         if op is None or not getattr(r, "ok", False) or getattr(r, "dry_run", False) or op.id in (reused or []):
             continue
-        book.record(machine, op.tool, float(r.seconds or 0.0), secs)
+        book.record(machine, op.tool, float(r.seconds or 0.0), _media_of(op, secs))
         n += 1
     if n:
         book.save()

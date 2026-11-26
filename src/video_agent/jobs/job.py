@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -65,7 +66,10 @@ class JobStore:
 
     def save(self, job: Job) -> None:
         job.dir.mkdir(parents=True, exist_ok=True)
-        (job.dir / "job.json").write_text(json.dumps(job.to_dict(), indent=2) + "\n", encoding="utf-8")
+        # ADR-134: saved after every operation (the checkpoint), so written whole: a render killed mid-save leaves the previous record
+        tmp = job.dir / "job.json.tmp"
+        tmp.write_text(json.dumps(job.to_dict(), indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, job.dir / "job.json")
 
     def load(self, job_id: str) -> Job:
         p = Path(self.workspace) / "jobs" / job_id / "job.json"
