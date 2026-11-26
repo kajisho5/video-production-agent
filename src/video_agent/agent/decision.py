@@ -26,6 +26,8 @@ from .faces import APPROVAL_KEY as FACE_APPROVAL_KEY, SUBJECT as FACE_SUBJECT, d
 from .slides import decide_slides
 from .documents import APPROVAL_KEY as DOCUMENT_APPROVAL_KEY, SUBJECT as DOCUMENT_SUBJECT, decide_documents
 from .remotion import APPROVAL_KEY as REMOTION_APPROVAL_KEY, SUBJECT as REMOTION_SUBJECT, decide_remotion
+from .microphones import (APPROVAL_KEY as AUTOMIX_APPROVAL_KEY, SUBJECT as AUTOMIX_SUBJECT, TRACKS_APPROVAL_KEY, TRACKS_SUBJECT as LANGUAGE_TRACKS_SUBJECT,
+                          decide_microphones, decide_transcript as decide_microphone_transcript, parse_requirements as parse_microphone_requirements, clip_of as microphone_clip)
 from .bgm import APPROVAL_KEY as BGM_APPROVAL_KEY, BGM_INPUT, SUBJECT as BGM_SUBJECT, decide_bgm, parse_bgm_requirements
 from .decision_finishing import APPROVAL_KEYS as FINISHING_APPROVAL_KEYS, decide_finishing
 from .editing import (AI_KEY, AI_OP, CONDENSE_APPROVE_KEY, CONDENSE_KEY, CONDENSE_OP, CONDENSE_SKILL, IMAGE_INSERT_OP, OPERATIONS, PROGRAMME, PUNCH_IN_OP,
@@ -57,7 +59,7 @@ INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "
 SERVING_SUBJECTS = {"clean_and_deliver": ("silence.leading", "silence.trailing", "silence.internal.", "audio.loudness", "delivery."),
                     "clean_only": ("silence.leading", "silence.trailing", "silence.internal.", "audio.loudness"),
                     "inspect_and_clean": ("silence.leading", "silence.trailing", "audio.loudness"),
-                    "normalize_audio": ("audio.loudness",), "cleanup_silence": ("silence.leading", "silence.trailing", "silence.internal.")}
+                    "normalize_audio": ("audio.loudness",), "automix_microphones": (AUTOMIX_SUBJECT,), "language_tracks": (LANGUAGE_TRACKS_SUBJECT,), "cleanup_silence": ("silence.leading", "silence.trailing", "silence.internal.")}
 # approval policy keys and their explicit DEFAULT when a profile / request says nothing (recorded with provenance DEFAULT)
 APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silence.trailing": ("silence.trailing.approval", "AUTO"),
                  "silence.internal": ("silence.internal.approval", "CONFIRM"), "audio.loudness": ("audio.loudness.approval", "AUTO"),
@@ -92,6 +94,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  FACE_SUBJECT: FACE_APPROVAL_KEY,
                  # ADR-092: a music bed (a library licence as declared, or generated music) under the mix: CONFIRM, floor CONFIRM
                  BGM_SUBJECT: BGM_APPROVAL_KEY,
+                 # ADR-134: the microphones' automix replaces the clip's sound, the language tracks add a deliverable: CONFIRM, waived by their explicit requirement
+                 AUTOMIX_SUBJECT: AUTOMIX_APPROVAL_KEY, LANGUAGE_TRACKS_SUBJECT: TRACKS_APPROVAL_KEY,
                  # ADR-093: a Remotion render of new graphics over the picture: CONFIRM, floor CONFIRM
                  REMOTION_SUBJECT: REMOTION_APPROVAL_KEY,
                  # ADR-095: artifacts-skill reads a document and writes nothing: AUTO, like the QC gate's measurement
@@ -183,7 +187,8 @@ def _serves(intent: Intent, subject: str) -> Optional[str]:
 
 def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, inferences: List[Inference], rules: RuleSet,
            caps: Dict[str, Capability], registry: SkillRegistry, tool_supports=None,
-           explicit_providers: Optional[Dict[str, str]] = None, default_providers: Optional[Dict[str, str]] = None) -> List[Decision]:
+           explicit_providers: Optional[Dict[str, str]] = None, default_providers: Optional[Dict[str, str]] = None,
+           mic_channel_ok: Optional[bool] = None, mic_track_ok: Optional[bool] = None) -> List[Decision]:
     """tool_supports: callable(tool id) -> bool from the tool router; when given, a skill whose tools no adapter supports is
     BLOCKED too -- including one whose Providers collide and neither explicit_providers nor default_providers resolves it
     (docs/CAPABILITY_MODEL.md's collision policy, Tier 3): the same per-skill choices `Service.tools_for()` used to build
@@ -314,6 +319,18 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if vreq["ops"]:   # ADR-073: voice-enhance-skill per input after its cut / filler removal (bleed reduction: all mixed inputs), always CONFIRM
             decide_voice(eng, vreq, analysis, audio_assets, audio_mix_ok, [a.id for a in audio_assets] if audio_mix_ok else [], caps,
                          lambda aid: a_ev + probe_ids_of([aid]), approval_for, cap_block)
+    # ---- the clip's microphones (ADR-134): automix → the clip's sound, the interpreters' language tracks, the transcript by microphone
+    mic_req = parse_microphone_requirements(m)
+    if mic_req is not None:
+        timing = sorted(k for k in edits if k in ("video.speed", IMAGE_INSERT_OP)) + sorted(k for k in ("edit.takes", "edit.selects") if k in m and m[k].provenance == "USER")
+        decide_microphones(eng, m, analysis, approval_for, cap_block, probe_ids_of, mic_channel_ok,
+                           {"audio_production": audio["production"], "timing": timing, "inputs": len(analysis.assets), "track_ok": mic_track_ok})
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for mic in mic_req["microphones"]:
+            a_, _ = microphone_clip(mic, analysis.assets)
+            if a_ is not None:
+                groups.setdefault(a_.id, []).append(mic)
+        decide_microphone_transcript(eng, analysis, groups)
     # ---- take selection (ADR-053): explicit `edit.takes`; the picks (one per line, in line order) become the concat inputs, the other
     # takes and the music bed get no decision and no step of their own
     takes = decide_takes(eng, m, analysis, inferences, edits, approval_for, probe_ids_of, cap_block, AI_KIND_PREFIX, cap_missing=cap_missing)

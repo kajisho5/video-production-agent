@@ -117,6 +117,12 @@ def _value(v: Any, spec: Dict[str, Any], what: str) -> Any:
         limit = int(spec.get("max_items") or DEFAULT_MAX_ITEMS)
         if not isinstance(v, list) or len(v) > limit:
             raise ToolError(f"audio-production: {what} must be a list of at most {limit} items")
+        if not items.get("type") and not props:
+            # ADR-134: an array the contract types only by its description is a list of input indexes (MIX_TRACKS.languages[].inputs, STEMS.inputs):
+            # non-negative integers, nothing else; the Skill checks which indexes it takes
+            if not all(isinstance(x, int) and not isinstance(x, bool) and 0 <= x < 64 for x in v):
+                raise ToolError(f"audio-production: {what} must be a list of input indexes (integers >= 0)")
+            return list(v)
         return [_value(x, items, f"{what}[{i}]") for i, x in enumerate(v)]
     if t == "object":
         props = spec.get("properties") or {}

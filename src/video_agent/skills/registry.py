@@ -341,6 +341,17 @@ def default_registry() -> SkillRegistry:
     # assembled picture. ffmpeg-skill/audio --replace stream-copies the video and conforms the new audio to the video's duration.
     r.register(SkillSpec("audio_mux", "1.0", "Replace a video's audio with a programme audio track (video stream-copied, audio conformed to the video duration)",
                          {"asset": "video", "audio": "audio"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "encoder:aac"], "LOW", True, "AUTO", ["ffmpeg-skill/audio"]))
+    # ADR-134: the microphones of a clip. One microphone as a mono WAV at the clip's rate (a channel of the clip's audio, or its own file), the
+    # gain-sharing automix of the floor microphones (audio-production 1.5.0 AUTOMIX) and the interpreters' language tracks (MIX_TRACKS with languages)
+    r.register(SkillSpec("mic_extract", "1.0", "One microphone of a clip as a mono WAV at the clip's sample rate (a channel of its audio, or the microphone's own file)",
+                         {"asset": "video|audio", "channel": "int"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/audio"]))
+    for name, typ, desc, inputs in (
+        ("audio_automix", "AUTOMIX", "Gain-sharing automatic mix of 2..8 microphones (shared gains sum to 0 dB; window / gain-rate limit given, no default)",
+         {"assets": "audio[]", "window_ms": "float", "max_gain_rate_db_per_s": "float"}),
+        ("audio_mix_tracks", "MIX_TRACKS", "The floor under each interpreter, one language-tagged track per language (MKV)", {"assets": "audio[]", "languages": "list"}),
+    ):
+        r.register(SkillSpec(name, "1.0", desc, inputs, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffprobe", "ffmpeg-skill", "audio-production", f"audio-production:{typ}"],
+                             "MEDIUM", True, "CONFIRM", ["audio-production/run"]))
     r.register(SkillSpec("visual_inspection", "1.0", "Contact sheet for human/AI review", {"artifact": "video"}, {"artifact": "THUMBNAIL"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/look"]))
     # measurement skills only media-analysis-skill provides (external observation Skill; tool ids from its contract)

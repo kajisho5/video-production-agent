@@ -35,6 +35,7 @@ SECONDS = {
     "DiarizationRealTests": 22, "RemotionRealTests": 22, "BeatGridRealTests": 18, "TranscriptionRealTests": 18,
     "PublishRealTests": 2, "ProductionContextRealTests": 1, "ProductionDecisionEngineRealTests": 1,
     "SpeechToPlanRealTests": 1, "ConcatWholeFramesRealTests": 10, "PreflightRealTests": 70, "DeadlineRealTests": 110,
+    "MicrophonesRealTests": 40,
 }
 DEFAULT_SECONDS = 60
 

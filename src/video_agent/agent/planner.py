@@ -39,6 +39,8 @@ from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_
 from .publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 from .editing import TRANSCRIPT_EDIT_OP
 from .word_cut import SUBJECT as WORD_CUT_SUBJECT
+from .microphones import (AUTOMIX_SKILL, EXTRACT_SKILL as MIC_EXTRACT_SKILL, SUBJECT as AUTOMIX_SUBJECT, TRACKS_ROLE, TRACKS_SKILL, TRACKS_SUBJECT, ir_automix,
+                          ir_tracks)
 
 
 def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[str, str], version: int = 1, frame_accurate: bool = False,
@@ -81,6 +83,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
     captions_ops: List[Dict[str, Any]] = []
     graphics_ops: List[Dict[str, Any]] = []
     color_ops: List[Dict[str, Any]] = []
+    automix_ops: List[Dict[str, Any]] = []   # ADR-134: audio.automix[] (the clips' microphones), written only when planned
     speech_ops: List[Dict[str, Any]] = []   # ADR-085: the `speech` section (dubbing-skill DUB), written only when planned
     qc_plan: Dict[str, Any] = {"enabled": False, "decision_ids": [], "subjects": {}, "sidecars": {}}
     delivery: List[Dict[str, Any]] = []
@@ -514,7 +517,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             current_of[subject], last_of[subject], scope_of[subject] = out_id, st.id, scope
             summary.append(rd.decision)
 
-    def face_steps(asset: Any, current: str) -> "tuple[str, Optional[str]]":
+    def face_steps(asset: Any, current: str, after: Optional[str] = None) -> "tuple[str, Optional[str]]":
         """ADR-090: an approved (or pending) video.redact_faces on a source, before its trim (the rectangles are on the source timeline):
         one IR operation and three steps -- the segments cut out, their rectangles redacted, the pieces put back over the source."""
         nonlocal order
@@ -529,7 +532,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         blurred = [f"{asset.id}_faces_blur{n:02d}_{k}" for n, reg in enumerate(segs, start=1) for k in range(1, len(reg["rects"]) + 1)]
         last_pieces = [f"{asset.id}_faces_blur{n:02d}_{len(reg['rects'])}" for n, reg in enumerate(segs, start=1)]
         rp = {k: op[k] for k in ("mode", "blur_strength", "block_size") if k in op}
-        prev: Optional[str] = None
+        prev: Optional[str] = after   # ADR-134: the step that made `current` (the microphones' mux), if any
         for sid, skill, params, ins, outs in (
                 (f"step_faces_segment_{asset.id}", FACE_SEGMENT_SKILL, {"segments": len(segs)}, [current], seg_ids),
                 (f"step_faces_blur_{asset.id}", FACE_BLUR_SKILL, {"rects": sum(len(x["rects"]) for x in segs), **rp}, seg_ids, blurred),
@@ -540,6 +543,87 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             prev = sid
         summary.append(d.decision)
         return op["output"], prev
+    def mic_steps(asset: Any, current: str) -> "tuple[str, Optional[str]]":
+        """ADR-134: the clip's microphones (an approved / pending `audio.automix`): each microphone as a mono WAV at the clip's rate (a channel of
+        the clip, or its own file), AUTOMIX of the floor / presenter microphones, and the mix muxed under the picture -- before the faces / the trim,
+        so every later edit cuts the mixed sound with its picture. Returns (current, last step)."""
+        nonlocal order
+        d = next((x for x in decisions if x.subject == AUTOMIX_SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == asset.id), None)
+        if d is None:
+            return current, None
+        rec = ir_automix(asset.id, d, d.params["microphones"], current)
+        automix_ops.append(rec)
+        scope = {"start": 0.0, "end": round(durations.get(asset.id, 0.0), 3)}
+        prev: List[str] = []
+        for x in rec["microphones"]:
+            order += 1
+            sid = f"step_mic_{asset.id}_{x['id']}"
+            steps.append(ProductionStep(id=sid, order=order, skill=MIC_EXTRACT_SKILL, tool=tool_for(MIC_EXTRACT_SKILL), inputs=[current] if "channel" in x else [],
+                                        params={"asset": asset.id, "microphone": x["id"], **({"channel": x["channel"]} if "channel" in x else {"file": os.path.basename(x["path"])}),
+                                                "sample_rate": rec["sample_rate"]},
+                                        outputs=[x["output"]], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope))
+            prev.append(sid)
+        order += 1
+        am = ProductionStep(id=f"step_automix_{asset.id}", order=order, skill=AUTOMIX_SKILL, tool=tool_for(AUTOMIX_SKILL), inputs=[x["output"] for x in rec["microphones"]],
+                            params={"asset": asset.id, "inputs": [x["id"] for x in rec["microphones"]], **{k: rec[k] for k in ("window_ms", "max_gain_rate_db_per_s", "hold_below_dbfs", "channels") if k in rec}},
+                            outputs=[rec["output"]], depends_on=prev, evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+        order += 1
+        mx = ProductionStep(id=f"step_automix_mux_{asset.id}", order=order, skill=AUDIO_MUX_SKILL, tool=tool_for(AUDIO_MUX_SKILL), inputs=[current, rec["output"]],
+                            params={"asset": asset.id, "video": current, "audio": rec["output"]}, outputs=[rec["mux"]["output"]], depends_on=[am.id],
+                            evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id, temporal_scope=scope)
+        steps.extend([am, mx])
+        summary.append(d.decision)
+        return rec["mux"]["output"], mx.id
+
+    def language_track_steps(asset: Any, remove: List[List[float]]) -> None:
+        """ADR-134: the interpreters' language tracks of a clip (MIX_TRACKS over the floor mix and each interpreter microphone), each input cut first
+        with the clip's trim (the removed ranges of its picture), written as one MKV of language-tagged tracks next to the programme."""
+        nonlocal order
+        rec = next((r for r in automix_ops if r["asset"] == asset.id), None)
+        d = next((x for x in decisions if x.subject == TRACKS_SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == asset.id), None)
+        if rec is None or d is None:
+            if d is not None:
+                summary.append(f"{TRACKS_SUBJECT} of {asset.id} not planned: the automix it puts under the interpreters is not")
+            return
+        tr = ir_tracks(asset.id, d, rec_mics(rec, d), rec["output"], cut_ranges(remove) if remove else [])
+        rec["language_tracks"] = tr
+        rec["decision_ids"] = sorted(set(rec["decision_ids"]) | {d.id})
+        dur = durations.get(asset.id, 0.0)
+        ids = [d.id] + list(rec["decision_ids"])
+        prev: List[str] = [f"step_automix_{asset.id}"]
+        for x in tr["microphones"]:
+            order += 1
+            sid = f"step_mic_{asset.id}_{x['id']}"
+            steps.append(ProductionStep(id=sid, order=order, skill=MIC_EXTRACT_SKILL, tool=tool_for(MIC_EXTRACT_SKILL), inputs=[asset.id] if "channel" in x else [],
+                                        params={"asset": asset.id, "microphone": x["id"], **({"channel": x["channel"]} if "channel" in x else {"file": os.path.basename(x["path"])}),
+                                                "sample_rate": rec["sample_rate"]},
+                                        outputs=[x["output"]], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id,
+                                        temporal_scope={"start": 0.0, "end": round(dur, 3)}))
+            prev.append(sid)
+        ins = list(tr["inputs"])
+        if tr.get("remove"):
+            cut_prev = list(prev)
+            for i, cut_id in dict.fromkeys(zip(list(ins), tr["cut"])):   # the floor is an input of every track: it is cut once
+                order += 1
+                sid = f"step_language_cut_{cut_id}"
+                steps.append(ProductionStep(id=sid, order=order, skill="audio_cut", tool=tool_for("audio_cut"), inputs=[i], params={"asset": asset.id, "remove": tr["remove"]},
+                                            outputs=[cut_id], depends_on=cut_prev, evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id,
+                                            temporal_scope={"start": 0.0, "end": kept_after_cut(dur, tr["remove"])}))
+                prev.append(sid)
+            ins = list(tr["cut"])
+        order += 1
+        st = ProductionStep(id=f"step_language_tracks_{asset.id}", order=order, skill=TRACKS_SKILL, tool=tool_for(TRACKS_SKILL), inputs=ins,
+                            params={"asset": asset.id, "languages": [l["language"] for l in tr["languages"]], "levels": tr["levels"], "format": tr["format"]},
+                            outputs=[tr["output"]], depends_on=prev, evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id,
+                            temporal_scope={"start": 0.0, "end": kept_after_cut(dur, tr["remove"]) if tr.get("remove") else round(dur, 3)})
+        steps.append(st)
+        outputs.append({"role": TRACKS_ROLE, "logical": tr["output"], "format": tr["format"],
+                        "expected": {"source": asset.id, "languages": [l["language"] for l in tr["languages"]], "tracks": len(tr["languages"])}})
+        summary.append(d.decision + (" (cut like the picture)" if tr.get("remove") else ""))
+
+    def rec_mics(rec: Dict[str, Any], d: Decision) -> List[Dict[str, Any]]:
+        return list((next((x for x in decisions if x.id in rec["decision_ids"] and x.subject == AUTOMIX_SUBJECT), d)).params.get("microphones") or [])
+
     def dub_steps(subject: str) -> None:
         """ADR-085: the `speech.dub` decision of a subject → one step (dubbing-skill DUB) and one IR `speech` operation on the subject's picture after
         its edits and before the finishing: the programme with its dialogue replaced (video stream-copied), on the same timeline."""
@@ -818,8 +902,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
         cond_spans = (list(cond_dec.params["spans"]) if cond_dec is not None else []) + (list(te_dec.params["spans"]) if te_dec is not None else [])
         current = asset.id
         last_step: Optional[str] = None
-        if asset.id not in audio_subjects:   # ADR-090: faces are blurred on the source timeline, before anything re-times it
-            current, last_step = face_steps(asset, current)
+        if asset.id not in audio_subjects:   # ADR-134: the microphones' automix becomes the clip's sound first; ADR-090: then the faces, before anything re-times it
+            current, mic_last = mic_steps(asset, current)
+            current, last_step = face_steps(asset, current, mic_last)
+            last_step = last_step or mic_last
         audio_remove: List[List[float]] = []   # ADR-072: what this plan cuts out of the input's audio (the filler words' times follow it)
         if (dec_ids or internal or cond_spans) and end > start:
             keep = [[round(start, 3), round(end, 3)]] if editor_dec is None else [list(r) for r in ek]
@@ -863,7 +949,9 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                 # several (internal pauses removed inside it) stay the multi-range cut of silence_cleanup
                 # ADR-109: a cut between words is far tighter than a pause, so a word cut is frame-accurate whatever precision is asked
                 forced = bool(editor_dec is not None or cond_spans or (snap_dec is not None and snap_dec.id in dec_ids) or (xf_dec is not None and xf_dec.id in dec_ids)
-                              or any(did in dec_ids for _, did in word_cuts))
+                              or any(did in dec_ids for _, did in word_cuts)
+                              # ADR-134: the interpreters' tracks are cut sample-accurately at the same ranges, so the picture is cut on them too
+                              or any(x.subject == TRACKS_SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED" and x.params.get("asset_id") == asset.id for x in decisions))
                 accurate = bool(frame_accurate or explicit_trim or forced)
                 trim_skill = TRIM_SKILL if (explicit_trim or editor_dec is not None) and len(keep) == 1 else "silence_cleanup"
                 rec: Dict[str, Any] = {"type": "video.trim", "asset": asset.id, "keep": keep, "accurate": accurate, "decision_ids": dec_ids}
@@ -923,6 +1011,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                + f"; at most {scope['end']:.2f}s remain (what is removed is matched by audio-production)")
         if asset.id in audio_subjects and voice_decs:
             current, last_step = voice_steps(asset.id, current, last_step)
+        if asset.id not in audio_subjects:   # ADR-134: the interpreters' tracks, cut with the clip's trim (the ranges its picture loses)
+            language_track_steps(asset, [list(r) for r in removed] if (dec_ids or internal or cond_spans) and end > start else [])
         current_of[asset.id] = current
         if last_step:
             last_of[asset.id] = last_step
@@ -1190,4 +1280,4 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
     return {"ai_generated": {a: dict(v) for a, v in sorted(ai_sources.items())}, "plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade,
-            "documents": documents}
+            "documents": documents, "automix": automix_ops}

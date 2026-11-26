@@ -93,6 +93,11 @@ TURNS_SCHEMA = "diarization-skill/turns@1"
 SPEAKERS_TOOL = "transcription/speakers"
 # roadmap step 33 (ADR-107 addendum 15): phrase -> every timed hit in a transcript (transcription-skill 0.12.0, its ADR-045). Read-only, standard library
 FIND_TOOL = "transcription/find"
+# ADR-134 (transcription-skill 0.15.0, its ADR-051): one transcript per microphone, merged by time; speaker_id = the microphone's name, words said
+# over someone else under `overlapping_segments`. Sent only to a contract that declares the tool; every transcribe parameter the agent may set is shared
+MICROPHONES_TOOL = "transcription/microphones"
+MICROPHONE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")   # the Skill's own rule for a microphone's name
+MICROPHONES_RANGE = (2, 8)
 FIND_KIND = "transcript_hits"
 FIND_PARAMETERS = {"find_phrase": "phrase", "find_fuzzy": "fuzzy", "find_context": "context"}   # analysis request names -> the tool's input names
 FIND_RESULT_KEYS = ("phrase", "normalized_phrase", "normalization", "fuzzy", "context", "count", "hits", "transcripts")
@@ -340,7 +345,7 @@ class TranscriptionAdapter(ToolAdapter):
 
     def supports(self, tool: str) -> bool:
         # recognition, and (step 33) phrase search in a transcript the agent measured; segments / export / check are not measurement tools
-        return tool in (TRANSCRIBE_TOOL, FIND_TOOL) and tool in self.tools
+        return tool in (TRANSCRIBE_TOOL, FIND_TOOL, MICROPHONES_TOOL) and tool in self.tools
 
     def declares_input(self, tool: str, key: str) -> bool:
         return key in ((self.tools.get(tool) or {}).get("input") or {})
@@ -348,6 +353,11 @@ class TranscriptionAdapter(ToolAdapter):
     owns_cache = True   # the Skill owns the transcript cache (<workspace>/transcripts); the agent records its status as provenance only
 
     def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
+        if tool == MICROPHONES_TOOL:   # ADR-134: the clip's microphones (the analyzer gives their files and names); the shared parameters as transcribe's
+            declared = (self.tools.get(TRANSCRIBE_TOOL) or {}).get("input") or {}
+            return {"asset_id": asset_id, "microphones": list((parameters or {}).get("microphones") or []),
+                    "parameters": {k: v for k, v in (parameters or {}).items() if k in REQUEST_PARAMETER_KEYS and k in declared},
+                    "budget": {k: v for k, v in (parameters or {}).items() if k in BUDGET_KEYS}, "cache_policy": cache_policy}
         if tool == FIND_TOOL:   # the transcript itself travels inline (never a path); the analyzer gives the one it measured for this asset
             return {"asset_id": asset_id, "transcript": (parameters or {}).get("transcript"),
                     **{FIND_PARAMETERS[k]: v for k, v in (parameters or {}).items() if k in FIND_PARAMETERS and v is not None}}
@@ -403,9 +413,52 @@ class TranscriptionAdapter(ToolAdapter):
             params["context"] = c
         return {"tool": FIND_TOOL, "params": params}
 
+    def build_microphones_request(self, args: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
+        """ADR-134: `transcription/microphones` for the microphones of one clip: each {input, name, audio_stream?} checked like a transcribe input,
+        the shared recognition parameters checked as transcribe's (word timestamps always on: cross-talk is decided per word)."""
+        mics = args.get("microphones")
+        if not isinstance(mics, list) or not MICROPHONES_RANGE[0] <= len(mics) <= MICROPHONES_RANGE[1]:
+            raise ToolError(f"transcription: microphones takes {MICROPHONES_RANGE[0]}..{MICROPHONES_RANGE[1]} microphones")
+        if dry_run:
+            raise ToolError("transcription: microphones has no dry run of its own")
+        shared = {k: v for k, v in args.items() if k not in ("microphones", "crosstalk_margin_db", "speaker_turns") + LONGFORM_KEYS}
+        shared["input"] = mics[0].get("input") if isinstance(mics[0], dict) else None
+        params = self.build_request(TRANSCRIBE_TOOL, shared)["params"]
+        params.pop("input", None)
+        params.pop("speaker_turns", None)
+        params["word_timestamps"] = True
+        out, names = [], []
+        for k, m in enumerate(mics):
+            if not isinstance(m, dict) or set(m) - {"input", "name", "audio_stream"} or not m.get("input"):
+                raise ToolError(f"transcription: microphones[{k}] must be {{input, name, audio_stream?}}")
+            name = m.get("name")
+            if not isinstance(name, str) or not MICROPHONE_NAME_RE.match(name):
+                raise ToolError(f"transcription: microphones[{k}].name must be 1..64 letters, digits, space, '.', '_' or '-' (the Skill's rule), got {name!r}")
+            item: Dict[str, Any] = {"input": self.check_input(m["input"]), "name": name}
+            if m.get("audio_stream") is not None:
+                if isinstance(m["audio_stream"], bool) or not isinstance(m["audio_stream"], int) or m["audio_stream"] < 0:
+                    raise ToolError(f"transcription: microphones[{k}].audio_stream must be an integer >= 0")
+                item["audio_stream"] = m["audio_stream"]
+            out.append(item)
+            names.append(name)
+        if len(set(names)) != len(names):
+            raise ToolError("transcription: two microphones have the same name")
+        params["microphones"] = out
+        if args.get("crosstalk_margin_db") is not None:
+            v = args["crosstalk_margin_db"]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.0 <= float(v) <= 40.0:
+                raise ToolError("transcription: crosstalk_margin_db must be a number in [0, 40]")
+            params["crosstalk_margin_db"] = float(v)
+        return {"tool": MICROPHONES_TOOL, "params": params}
+
     def build_request(self, tool: str, args: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
         if not self.supports(tool):
             raise ToolError(f"transcription: unsupported tool {tool} (recognition only: {TRANSCRIBE_TOOL})")
+        if tool == MICROPHONES_TOOL:
+            for k in args:
+                if str(k).lower() in FORBIDDEN_ARG_KEYS or str(k) in ADAPTER_OWNED_KEYS:
+                    raise ToolError(f"transcription: refusing argument {k!r}")
+            return self.build_microphones_request(args, dry_run=dry_run)
         if tool == FIND_TOOL:
             for k in args:
                 if str(k).lower() in FORBIDDEN_ARG_KEYS:
@@ -601,7 +654,13 @@ class TranscriptionAdapter(ToolAdapter):
             return ToolResult(op.id, op.tool, code == 0, code, None, data, [], tail, secs, attempt, True)
         tr = result["transcript"]
         data["transcript"] = tr
-        data["cache"] = {"status": "hit" if result.get("cache_hit") else "miss", "key": result.get("cache_key"), "owner": SKILL_ID}
+        if req["tool"] == MICROPHONES_TOOL:   # one recognition (and one cache entry) per microphone
+            mics = [{k: m.get(k) for k in ("name", "cache_hit", "cache_key")} for m in result.get("microphones") or [] if isinstance(m, dict)]
+            data["microphones"] = mics
+            data["cache"] = {"status": "hit" if mics and all(m.get("cache_hit") for m in mics) else "miss", "key": ",".join(str(m.get("cache_key") or "") for m in mics),
+                             "owner": SKILL_ID, "microphones": mics}
+        else:
+            data["cache"] = {"status": "hit" if result.get("cache_hit") else "miss", "key": result.get("cache_key"), "owner": SKILL_ID}
         if result.get("cache_hit") and tr.get("asset_id") != req["params"].get("asset_id"):
             data["cache"]["stored_asset_id"] = tr.get("asset_id")   # the first caller's id; identity = fingerprint (checked by the analyzer)
         data["engine"] = {"id": tr.get("engine"), "version": tr.get("engine_version"), "execution_mode": (tr.get("provenance") or {}).get("execution_mode"),
@@ -721,6 +780,8 @@ class TranscriptionAdapter(ToolAdapter):
         tr = result.get("transcript")
         if not isinstance(tr, dict):
             return errs + ["ok result without transcript"]
+        if req["tool"] == MICROPHONES_TOOL:
+            return errs + check_microphone_transcript(tr, result, req["params"], self.version, self.engines, dict((self.contract.get("schemas") or {})))
         if not isinstance(result.get("cache_hit"), bool) or not result.get("cache_key"):
             errs.append("result lacks cache_hit / cache_key")
         # a cache hit returns the stored document unchanged (the Skill's contract): its asset_id is whatever the first caller
@@ -825,6 +886,37 @@ def check_transcript(tr: Dict[str, Any], params: Dict[str, Any], skill_version: 
             errs.append("transcript duration must be positive")
     except (TypeError, ValueError):
         errs.append("transcript duration is not a number")
+    return errs
+
+
+def check_microphone_transcript(tr: Dict[str, Any], result: Dict[str, Any], params: Dict[str, Any], skill_version: str, engines: Dict[str, Dict[str, Any]],
+                                schemas: Dict[str, str]) -> List[str]:
+    """ADR-134: a merged transcript is accepted when it is a Transcript of the first microphone's file (its duration / source, transcribe's
+    provenance, checked as any transcript) whose speakers are exactly the microphones sent, with the merge recorded by transcription/microphones
+    for these microphones and `overlapping_segments` beside the segments (never dropped)."""
+    names = [m["name"] for m in params.get("microphones") or []]
+    plain = dict(tr, segments=[{k: v for k, v in s.items() if k != "speaker_id"} for s in tr.get("segments") or [] if isinstance(s, dict)])
+    errs = check_transcript(plain, params, skill_version, engines, schemas)
+    mm = tr.get("microphone_merge")
+    if not isinstance(mm, dict):
+        return errs + ["transcript has no microphone_merge record"]
+    if mm.get("tool") != MICROPHONES_TOOL or mm.get("skill") != CONTRACT_ID or str(mm.get("skill_version") or "") != skill_version:
+        errs.append(f"microphone_merge by {mm.get('skill')!r}@{mm.get('skill_version')!r} / {mm.get('tool')!r}, not {CONTRACT_ID}@{skill_version} / {MICROPHONES_TOOL}")
+    if [str(m.get("name")) for m in mm.get("microphones") or [] if isinstance(m, dict)] != names:
+        errs.append("microphone_merge.microphones are not the microphones sent")
+    for m in mm.get("microphones") or []:
+        if not _FP_RE.match(str(((m or {}).get("source") or {}).get("fingerprint") or "")):
+            errs.append(f"microphone {m.get('name')!r}: source.fingerprint is not sha256:<64 hex>")
+    for what in ("segments", "overlapping_segments"):
+        rows = tr.get(what)
+        if not isinstance(rows, list):
+            errs.append(f"{what} is not a list")
+            continue
+        bad = [s.get("id") for s in rows if not isinstance(s, dict) or s.get("speaker_id") not in names]
+        if bad:
+            errs.append(f"{what} {bad[:3]} carry a speaker that is not one of the microphones {names}")
+    if [str(m.get("name")) for m in result.get("microphones") or [] if isinstance(m, dict)] != names:
+        errs.append("result.microphones are not the microphones sent")
     return errs
 
 

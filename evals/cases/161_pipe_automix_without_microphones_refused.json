@@ -1,0 +1,26 @@
+{
+ "name": "pipe_automix_without_microphones_refused",
+ "profile": "generic",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "panel.mp4",
+    "channels": 4
+   }
+  ],
+  "extra_capabilities": [
+   "audio-production",
+   "audio-production:CUT",
+   "audio-production:AUTOMIX",
+   "audio-production:MIX_TRACKS",
+   "audio-production:NORMALIZE"
+  ],
+  "transcription": false
+ },
+ "requirements": {
+  "audio.automix": "panel"
+ },
+ "expect": {
+  "plan_error": "no microphones are declared"
+ }
+}

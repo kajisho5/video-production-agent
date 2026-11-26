@@ -236,6 +236,42 @@ def main() -> int:
                    "included_by_overlap": [], "applied": False, "next": "fake"}
             print(json.dumps({"ok": True, "tool": req["tool"], "result": res}, ensure_ascii=False))
             return 0
+        if req["tool"] == "transcription/microphones":   # ADR-134: one transcript per microphone (as transcribe), merged by time, speaker_id = the name
+            mics = p.get("microphones")
+            if not isinstance(mics, list) or not 2 <= len(mics) <= 8 or p.get("word_timestamps") is False:
+                return _err("INVALID_INPUT", "'microphones' must be a list of 2..8 objects {input, name?, audio_stream?}")
+            if any(k in p for k in ("input", "audio_stream", "speaker_turns", "dry_run", "speech_regions")):
+                return _err("INVALID_INPUT", "per microphone or not available here")
+            roots = [os.path.realpath(r) for r in (p.get("allowed_input_roots") or [])]
+            docs, names = [], []
+            for k, m in enumerate(mics):
+                if roots and not any(_within(r, os.path.realpath(m["input"])) for r in roots):
+                    return _err("INVALID_INPUT", "input is outside the allowed roots", {"reason": "outside_allowed_roots"})
+                if not os.path.isfile(m["input"]):
+                    return _err("FILE_NOT_FOUND", "no such input")
+                fp = hashlib.sha256(Path(m["input"]).read_bytes()).hexdigest()
+                docs.append(transcript(dict(p, input=m["input"], word_timestamps=True), fp))
+                names.append(m.get("name") or f"MIC_{k + 1:02d}")
+            segs, over = [], []
+            for k, doc in enumerate(docs):   # the fake hears the same words on every microphone; microphone k's words are shifted by k * 0.3 s
+                for sg in doc["segments"]:
+                    shifted = dict(sg, start=round(sg["start"] + 0.3 * k, 3), end=round(sg["end"] + 0.3 * k, 3), speaker_id=names[k],
+                                   words=[dict(w, start=round(w["start"] + 0.3 * k, 3), end=round(w["end"] + 0.3 * k, 3), speaker_id=names[k]) for w in sg.get("words") or []] or None)
+                    (over if segs and shifted["start"] < segs[-1]["end"] else segs).append(shifted)
+            for i, sg in enumerate(segs, 1):
+                sg["id"] = f"seg_{i:04d}"
+            for i, sg in enumerate(over, 1):
+                sg["id"] = f"ovl_{i:04d}"
+            merged = dict(docs[0], id="tr_merged_" + docs[0]["id"][3:], segments=segs, overlapping_segments=over)
+            merged["microphone_merge"] = {"skill": "transcription-skill", "skill_version": contract()["version"], "tool": "transcription/microphones", "method": "per_microphone_transcripts_merged_by_time",
+                                          "microphones": [{"name": names[k], "transcript_id": d["id"], "language": d["language"], "source": dict(d["source"])} for k, d in enumerate(docs)],
+                                          "counts": {"segments": len(segs), "words": sum(len(x.get("words") or []) for x in segs), "words_dropped_as_crosstalk": 0,
+                                                     "overlapping_segments": len(over), "overlapping_words": sum(len(x.get("words") or []) for x in over)}, "dropped": []}
+            if MODE == "mic_wrong_speaker":
+                segs[0]["speaker_id"] = "SOMEONE"
+            res = {"transcript": merged, "microphones": [{"name": n, "cache_hit": False, "cache_key": "c" * 64} for n in names], "warnings": []}
+            print(json.dumps({"ok": True, "tool": req["tool"], "result": res}, ensure_ascii=False))
+            return 0
         if req["tool"] == "transcription/find":   # roadmap step 33: a plain case-folded substring search over the segment texts (the real Skill normalises more)
             tr, phrase = p["transcript"], p["phrase"]
             hits = [{"source": tr["source"]["filename"], "transcript_id": tr["id"], "match": "normalized", "ratio": 1.0, "start": sg["start"], "end": sg["end"],

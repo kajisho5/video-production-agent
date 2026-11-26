@@ -54,6 +54,10 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    "audio_filler_remove": ("asset", "lexicon", "pad", "merge_gap", "declick_ms", "word_count"), "audio_voice_cleanup": ("asset", "level"), "audio_noise_reduction": ("asset", "mode", "strength_db"), "audio_dynamics": ("asset", "gate", "compressor", "limiter"),
                    # take assembly crossfades (ADR-054): the programme audio replaces the assembled picture's hard-cut audio
                    "audio_mux": ("asset", "video", "audio"),
+                   # ADR-134: the clip's microphones -- one microphone as a WAV (its channel or its file's name, the clip's rate), the automix, the language tracks
+                   "mic_extract": ("asset", "microphone", "channel", "file", "sample_rate"),
+                   "audio_automix": ("asset", "inputs", "window_ms", "max_gain_rate_db_per_s", "hold_below_dbfs", "channels"),
+                   "audio_mix_tracks": ("asset", "languages", "levels", "format"),
                    # finishing (ADR-031): colour / graphics / subtitles / thumbnail, and the QC gate (ADR-032)
                    # ADR-100: the parameters of the new colour operations by the contract's names
                    "color_ocio": ("asset", "config", "source_space", "destination_space", "display", "view", "look", "lut_size", "output_tags"),
