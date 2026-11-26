@@ -92,7 +92,7 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(joins[0].outputs[0].endswith("_delivery_youtube"))
         self.assertEqual(len({o.idempotency_key for o in cuts + exports}), 24, "every chunk operation has its own key")
         self.assertEqual(cuts[0].media_seconds, 600.0)
-        self.assertTrue(paths[joins[0].outputs[0]].endswith(".mp4") and "/artifacts/" in paths[joins[0].outputs[0]])
+        self.assertTrue(paths[joins[0].outputs[0]].endswith(".mp4") and "artifacts" in Path(paths[joins[0].outputs[0]]).parts)
 
     def test_a_short_programme_is_not_chunked_and_unchanged(self):
         svc, ir = self.plan(duration=600.0)
