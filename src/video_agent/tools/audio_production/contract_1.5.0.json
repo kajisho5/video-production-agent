@@ -4,7 +4,7 @@
   "id": "audio-production",
   "name": "audio-production-skill",
   "package": "audio-production-skill",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "kind": "execution",
   "role": "audio production (processing); not measurement, not decision",
   "description": "Deterministic audio production execution: gain, sample-accurate trim / cut, silence removal (explicit ranges), filler removal (caller-supplied word timings), fades, EBU R128 loudness normalisation, several delivery loudness versions in one run, stems (dialogue / music / effects files that sum to the mix), mix (with sidechain ducking), concat, mono/stereo/downmix, FFT noise reduction, typed dynamics (gate / compressor / limiter), speech clean-up presets, format conversion and audio extraction from video containers; typed operation graph in, validated artifacts with provenance out. Not an AI agent.",
@@ -24,7 +24,7 @@
     {
       "tool_id": "audio-production/run",
       "skill_id": "audio-production",
-      "version": "1.4.3",
+      "version": "1.5.0",
       "role": "execution",
       "description": "Execute a typed AudioProject (operation graph) and write validated audio artifacts with provenance",
       "inputs": [
@@ -36,6 +36,7 @@
       "deterministic": true,
       "idempotency_hint": "content_equivalent; intermediates reused by deterministic operation id",
       "operations": [
+        "AUTOMIX",
         "CONCAT",
         "CUT",
         "DOWNMIX",
@@ -46,6 +47,7 @@
         "GAIN",
         "LOUDNESS_SET",
         "MIX",
+        "MIX_TRACKS",
         "MONO",
         "NOISE_REDUCTION",
         "NORMALIZE",
@@ -74,6 +76,12 @@
     }
   ],
   "provides": [
+    {
+      "id": "audio.automix",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "AUTOMIX"
+    },
     {
       "id": "audio.concat",
       "lifecycle": "EXPERIMENTAL",
@@ -133,6 +141,12 @@
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "audio-production/run",
       "operation": "MIX"
+    },
+    {
+      "id": "audio.mix_tracks",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "audio-production/run",
+      "operation": "MIX_TRACKS"
     },
     {
       "id": "audio.mono",
@@ -590,6 +604,162 @@
         "ffprobe",
         "encoder:pcm_s16le",
         "filter:amix"
+      ],
+      "keeps_timeline": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "MIX_TRACKS",
+      "description": "MIX (the same fold, levels and duration: input 0's) with a pan per input and an optional set of language mixes written as one language-tagged track each (e.g. the floor sound under each interpreter); no duck",
+      "inputs": {
+        "min": 2,
+        "max": 8
+      },
+      "parameters": {
+        "levels": {
+          "type": "array",
+          "required": false,
+          "description": "per-input {gain_db, mute, pan?}, aligned with inputs (omit: 0 dB, unmuted, no pan). pan -1 (left) .. 1 (right), constant power (0: -3.01 dB per side), on a 1-channel input only; with any pan the mix is stereo and every other 1-channel input is centred",
+          "items": {
+            "type": "object",
+            "properties": {
+              "gain_db": {
+                "type": "number",
+                "min": -60,
+                "max": 60
+              },
+              "mute": {
+                "type": "boolean"
+              },
+              "pan": {
+                "type": "number",
+                "min": -1,
+                "max": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "languages": {
+          "type": "array",
+          "required": false,
+          "description": "1..8 language mixes [{language_id, language, title?, inputs}]: each is the floor (input 0 and every input no language names) plus that language's inputs, at the same levels and pans; referenced as op:<op_id>.<language_id>. The operation itself is then a track set: an output referencing it is written as one audio track per language, named and tagged with its language (format mkv: PCM, mp4: AAC; ffmpeg-skill/audio --track). Without languages the operation is one mix",
+          "min_items": 1,
+          "max_items": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "language_id": {
+                "type": "string",
+                "required": true,
+                "description": "id of the language mix; it is referenced as op:<op_id>.<language_id>"
+              },
+              "language": {
+                "type": "string",
+                "required": true,
+                "pattern": "^[a-z]{3}$",
+                "description": "ISO 639-2 code written as the track's language tag (eng, jpn, ...)"
+              },
+              "title": {
+                "type": "string",
+                "required": false,
+                "max_length": 64,
+                "description": "track name (omit: none)"
+              },
+              "inputs": {
+                "type": "array",
+                "required": true,
+                "description": "indexes (>= 1) of the inputs only this language's mix has (an interpreter, a dub); inputs named by no language are the floor sound, in every language's mix"
+              }
+            },
+            "required": [
+              "language_id",
+              "language",
+              "inputs"
+            ],
+            "additionalProperties": false
+          },
+          "rule": "an input index (>= 1) in at most one language; input 0 and every unnamed input are the floor of every language"
+        }
+      },
+      "tool": "ffmpeg-skill/audio",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "encoder:pcm_s16le",
+        "filter:amix"
+      ],
+      "keeps_timeline": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "AUTOMIX",
+      "description": "Gain-sharing automatic mix of 2..8 microphone inputs (one person each): every shared input's gain follows its share of the total level, so the shared gains always sum to 0 dB (power) and the noise of the mix stays that of one open input; the inputs not carrying the sound are as far down as their level is below the one that is. Mono output, input 0's duration; every input must share one sample rate. Computed in this process on 16-bit PCM (ffmpeg-skill has no gain envelope)",
+      "inputs": {
+        "min": 2,
+        "max": 8
+      },
+      "parameters": {
+        "window_ms": {
+          "type": "number",
+          "required": true,
+          "min": 1.0,
+          "max": 1000.0,
+          "description": "time constant of the level measurement in ms (no default)"
+        },
+        "max_gain_rate_db_per_s": {
+          "type": "number",
+          "required": true,
+          "min": 10.0,
+          "max": 10000.0,
+          "description": "no input's gain changes faster than this, dB per second (no default); reported as measured"
+        },
+        "channels": {
+          "type": "array",
+          "required": false,
+          "description": "per-input {gain_db?, weight_db?, pinned?}, aligned with inputs (omit: 0 dB, weight 0, shared); at least one input must be shared",
+          "items": {
+            "type": "object",
+            "properties": {
+              "gain_db": {
+                "type": "number",
+                "min": -60.0,
+                "max": 60.0,
+                "default": 0.0,
+                "description": "fixed gain added to the input's share (a pinned input: its whole gain)"
+              },
+              "weight_db": {
+                "type": "number",
+                "min": -30.0,
+                "max": 30.0,
+                "default": 0.0,
+                "description": "scales the input's measured level only: a negative weight gives a noisy input a smaller share (ignored when pinned)"
+              },
+              "pinned": {
+                "type": "boolean",
+                "default": false,
+                "description": "true: the input is not shared; it is mixed at gain_db throughout (e.g. a moderator's microphone that stays open)"
+              }
+            },
+            "additionalProperties": false
+          },
+          "rule": "one entry per input; at least one not pinned"
+        },
+        "hold_below_dbfs": {
+          "type": "number",
+          "required": false,
+          "min": -100.0,
+          "max": 0.0,
+          "description": "while every shared input's level is below this, the gains hold: the last open input stays open through a pause (omit: the shares follow the inputs' own noise)"
+        }
+      },
+      "tool": "ffmpeg-skill/audio",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "encoder:pcm_s16le"
       ],
       "keeps_timeline": false,
       "deterministic": "content_equivalent"
@@ -1360,6 +1530,18 @@
       "codec": "opus",
       "required_capability": "encoder:libopus",
       "lossless": false
+    },
+    "mkv": {
+      "extension": ".mkv",
+      "codec": "pcm_s24le",
+      "required_capability": "encoder:pcm_s24le",
+      "lossless": true
+    },
+    "mp4": {
+      "extension": ".mp4",
+      "codec": "aac",
+      "required_capability": "encoder:aac",
+      "lossless": false
     }
   },
   "intermediate_format": {
@@ -1536,7 +1718,10 @@
         "duck_threshold",
         "duck_attack",
         "duck_release",
-        "replace"
+        "replace",
+        "track",
+        "track_name",
+        "track_lang"
       ],
       "cut": [
         "declick_ms"
@@ -1669,6 +1854,33 @@
       "sources (sha256)"
     ],
     "identity": "sha256 over canonical JSON of {type, parameters, input identities, tool versions}; sources by file sha256; no timestamps, no UUIDs"
+  },
+  "in_process": {
+    "operations": [
+      "AUTOMIX",
+      "MIX_TRACKS (levels[].pan)"
+    ],
+    "what": "sample arithmetic in this process (Python standard library) on 16-bit PCM WAV that ffmpeg-skill/audio wrote first: AUTOMIX's gain sharing and MIX_TRACKS's constant-power pan. No process is started, no ffmpeg runs, nothing outside the work directory is written",
+    "why": "ffmpeg-skill has no gain envelope and no pan flag",
+    "automix_hop_seconds": 0.005,
+    "automix_rule": "gain_i = level_i - power sum of every shared input's level (dB): shared gains sum to 0 dB (power); levels slew at most max_gain_rate_db_per_s / 2, so no gain moves faster than max_gain_rate_db_per_s; measurements.automix reports the measured rate, the shared gain sum, each input's open_ratio (share above -6 dB) and mean share, the held ratio and clipped samples",
+    "pan_law": "constant power: left cos((pan + 1) pi / 4), right sin((pan + 1) pi / 4); 0 = -3.01 dB per side"
+  },
+  "language_tracks": {
+    "parameter": "MIX_TRACKS.languages",
+    "part_reference": "op:<op_id>.<language_id> (one language mix, any format)",
+    "set_reference": "op:<op_id> (one audio track per language, in order, each named and tagged)",
+    "set_formats": [
+      "mkv",
+      "mp4"
+    ],
+    "ffmpeg_skill_flags": [
+      "audio.track",
+      "audio.track_name",
+      "audio.track_lang"
+    ],
+    "response_key": "language_tracks",
+    "per_output": "outputs[].tracks: language_id, language, title, index, duration as ffmpeg-skill reported writing them"
   },
   "cleanup": {
     "cli_flag": "--cleanup",
