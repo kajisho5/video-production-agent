@@ -141,6 +141,36 @@ class PlanTests(unittest.TestCase):
         _, b = self.plan(chunk_seconds=300)
         self.assertNotEqual(a.plan_hash(), b.plan_hash())
 
+    def test_validator_refuses_chunks_that_overlap_gap_or_stop_short(self):
+        svc, ir = self.plan()
+        p = str(Path(self.tmp) / "ws" / "p.project.json")
+        cases = {
+            "overlap": lambda ch: ch["chunks"][1].update(start=0.0, start_frame=0),
+            "gap": lambda ch: ch["chunks"][0].update(end=500.0),
+            "order": lambda ch: ch["chunks"].reverse(),
+            "short": lambda ch: ch["chunks"][-1].update(end=7000.0),
+            "frame": lambda ch: ch["chunks"][2].update(start_frame=36001),
+            "subject": lambda ch: ch.update(subject="asset_nope"),
+            "target": lambda ch: ch.update(targets=["nope"]),
+        }
+        for name, spoil in cases.items():
+            with self.subTest(name=name):
+                _, ir2 = self.plan()
+                spoil(ir2.doc["chunked_render"])
+                save_ir(ir2, p)
+                rep = svc.validate(load_ir(p))
+                self.assertFalse(rep.ok)
+                self.assertTrue(any(e.startswith("chunked_render: ") for e in rep.errors), rep.errors)
+
+    def test_the_programme_length_is_the_video_subjects_own(self):
+        """A longer separate deliverable (another subject) does not set the video's chunking."""
+        from video_agent.agent import chunks as ckm
+        _, ir = self.plan(duration=600.0)
+        doc = json.loads(json.dumps(ir.doc))
+        doc["plan"]["steps"].append({"skill": "delivery_export", "tool": "ffmpeg-skill/export", "params": {"preset": "youtube", "target": "audio"},
+                                     "outputs": ["programme_audio_delivery_audio"], "temporal_scope": {"start": 0.0, "end": 7200.0}})
+        self.assertIsNone(ckm.plan_chunks(doc, None, lambda t: True)["record"])
+
     def test_validates_against_the_schema(self):
         svc, ir = self.plan()
         p = str(Path(self.tmp) / "ws" / "p.project.json")

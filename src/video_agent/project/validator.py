@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from ..agent.chunks import check_record as check_chunked_render   # ADR-134
 from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STAGES, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH,
                            FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
@@ -53,6 +54,7 @@ class ValidationReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"ok": self.ok, "errors": self.errors, "warnings": self.warnings}
+
 
 
 def produced_subjects(d: Dict[str, Any]) -> set:
@@ -1174,6 +1176,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
     rep.errors += check_speech_operations(d)   # ADR-085
+    rep.errors += check_chunked_render(d)   # ADR-134
     rep.errors += check_timeline_exports(d)
     rep.errors += check_nle(d)   # ADR-089
     rep.errors += check_take_assembly(d)

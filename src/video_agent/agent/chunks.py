@@ -103,7 +103,16 @@ def plan_chunks(doc: Dict[str, Any], chunk_seconds: Optional[float], supports: C
     if chunk_seconds == 0:
         return {"record": None, "warning": None}
     exports = [s for s in (doc.get("plan") or {}).get("steps") or [] if s.get("skill") == "delivery_export" and s.get("outputs")]
-    longest = max([float((s.get("temporal_scope") or {}).get("end") or 0.0) for s in exports] or [0.0])
+    videos = {aid: a for aid, a in (doc.get("assets") or {}).items() if ((a.get("technical") or {}).get("video"))}
+    if len(videos) == 1:
+        # the programme length is the one video subject's own: its export step's planned duration (the programme after its trims, what
+        # the export receives), else the source's probed duration -- never another subject's export (a longer audio deliverable)
+        only = next(iter(videos))
+        own = [s for s in exports if str(s["outputs"][0]).startswith(f"{only}_delivery_")]
+        longest = max([float((s.get("temporal_scope") or {}).get("end") or 0.0) for s in own] or [0.0]) \
+            or float((videos[only].get("technical") or {}).get("duration") or 0.0)
+    else:
+        longest = max([float((s.get("temporal_scope") or {}).get("end") or 0.0) for s in exports] or [0.0])
     if not explicit and longest < LONG_PROGRAMME_SECONDS:
         return {"record": None, "warning": None}
 
@@ -114,7 +123,6 @@ def plan_chunks(doc: Dict[str, Any], chunk_seconds: Optional[float], supports: C
         return no("the programme is joined from several inputs (concat, camera switch or grid)")
     if any(op.get("type") in ("audio.concat", "audio.mix") for op in (doc.get("audio") or {}).get("operations") or []):
         return no("the programme's sound is a joined or mixed audio programme")
-    videos = {aid: a for aid, a in (doc.get("assets") or {}).items() if ((a.get("technical") or {}).get("video"))}
     if len(videos) != 1:
         return no(f"chunking takes one video source ({len(videos)} in this plan)")
     subject, asset = next(iter(videos.items()))
@@ -151,6 +159,47 @@ def plan_chunks(doc: Dict[str, Any], chunk_seconds: Optional[float], supports: C
               "chunks": ranges, "reason": ("chunk length asked for (plan --chunk-seconds)" if explicit else
                                            f"a programme of {LONG_PROGRAMME_SECONDS / 60:.0f} min or more is rendered in {size / 60:g}-minute chunks")}
     return {"record": record, "warning": None}
+
+
+def check_record(doc: Dict[str, Any]) -> List[str]:
+    """The validator's semantic check of `chunked_render` (what the schema cannot say across items): the subject and targets exist, the
+    tools are the export's package, and the chunks run 1..n, touch end to start on increasing whole frames, the last one to the end."""
+    rec = doc.get("chunked_render")
+    if not rec:
+        return []
+    errs: List[str] = []
+    pre = "chunked_render: "
+    if rec.get("subject") not in (doc.get("assets") or {}):
+        errs.append(pre + f"subject {rec.get('subject')!r} is not an asset of the plan")
+    ids = {t.get("id") for t in (doc.get("delivery") or {}).get("targets") or []}
+    missing = [t for t in rec.get("targets") or [] if t not in ids]
+    if missing:
+        errs.append(pre + f"target(s) {', '.join(map(str, missing))} are not delivery targets of the plan")
+    try:
+        n, dnm = (int(x) for x in str(rec.get("rate")).split("/", 1))
+        rate = Fraction(n, dnm)
+    except (ValueError, ZeroDivisionError):
+        return errs + [pre + f"rate {rec.get('rate')!r} is not N/D"]
+    chunks = rec.get("chunks") or []
+    if [c.get("index") for c in chunks] != list(range(1, len(chunks) + 1)):
+        errs.append(pre + "chunk indexes must run 1..n in order")
+    for i, c in enumerate(chunks):
+        frame = c.get("start_frame")
+        if frame is not None and abs(float(c["start"]) - _time_of(int(frame), rate)) > 1e-6:
+            errs.append(pre + f"chunk {c.get('index')}: start {c['start']} is not frame {frame} at {rec['rate']}")
+        if i + 1 < len(chunks):
+            nxt = chunks[i + 1]
+            if c.get("end") is None or float(c["end"]) != float(nxt["start"]):
+                errs.append(pre + f"chunk {c.get('index')} must end where chunk {nxt.get('index')} starts (no gap, no overlap)")
+            if float(nxt["start"]) <= float(c["start"]):
+                errs.append(pre + f"chunk {nxt.get('index')} must start after chunk {c.get('index')}")
+            if frame is not None and nxt.get("start_frame") is not None and int(nxt["start_frame"]) <= int(frame):
+                errs.append(pre + f"chunk {nxt.get('index')}'s start frame must be after chunk {c.get('index')}'s")
+        elif c.get("end") is not None:
+            errs.append(pre + "the last chunk must run to the end of the programme (end null)")
+    if chunks and float(chunks[0].get("start", -1)) != 0.0:
+        errs.append(pre + "the first chunk must start at 0")
+    return errs
 
 
 def summary_line(rec: Dict[str, Any]) -> str:
