@@ -61,6 +61,10 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # (UNSUPPORTED_FORMAT, details.reason alpha_not_preserved, exit 6). That is the source media, not arguments the compiler got wrong, so it gets
 # its own recovery class (UNSUPPORTED_MEDIA: BLOCK, never retried) instead of the generic INVALID_ARGS (ADR-097 addendum 6).
 ALPHA_REFUSAL_REASON = "alpha_not_preserved"
+# ADR-131: color-grading-skill 1.1.0 on (its ADR-33) refuses a source stated as premultiplied for a grade that keeps the alpha when the installed
+# ffmpeg-skill/color cannot divide the colour by the alpha (UNSUPPORTED_FORMAT, details.reason alpha_premultiplied, exit 6; every ffmpeg-skill before
+# 4.8.0, which added --source-alpha-mode). The arguments are right and the engine lacks the capability, so it is UNSUPPORTED_MEDIA as well, not INVALID_ARGS
+ALPHA_REFUSAL_REASONS = (ALPHA_REFUSAL_REASON, "alpha_premultiplied")
 # color-grading-skill 0.6.0 (its ADR-29 / ADR-30, ADR-106 here): VALIDATION_ERROR reasons the Skill raises when ffmpeg-skill/color's own check of the
 # written file fails -- the clamp's legal_levels step, or the alpha step of an alpha-keeping grade (alpha_lost also for a VP9 alpha the probe does
 # not see). Not retryable (the same source and engine fail the same way); each gets its own recovery class so the BLOCK names what to change.
@@ -558,7 +562,7 @@ class ColorGradingAdapter(ToolAdapter):
 
     def _fail(self, op: Operation, attempt: int, dry_run: bool, t0: float, code: int, errc: str, message: str, retryable: bool, details: Optional[Dict[str, Any]] = None) -> ToolResult:
         r = failed_result(op, SKILL_ID, getattr(self, "version", ""), attempt, dry_run, t0, code, errc, message, retryable, details)
-        if errc == "UNSUPPORTED_FORMAT" and (details or {}).get("reason") == ALPHA_REFUSAL_REASON:
+        if errc == "UNSUPPORTED_FORMAT" and (details or {}).get("reason") in ALPHA_REFUSAL_REASONS:
             r.data["error"]["recovery_class"] = "UNSUPPORTED_MEDIA"
         elif errc == "VALIDATION_ERROR" and (details or {}).get("reason") in VALIDATION_REASON_CLASS:   # ADR-106
             r.data["error"]["recovery_class"] = VALIDATION_REASON_CLASS[details["reason"]]

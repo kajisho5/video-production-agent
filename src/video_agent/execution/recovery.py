@@ -11,10 +11,13 @@ RECOVERY_TABLE: Dict[str, Dict[str, Any]] = {
     "INPUT_MISSING":  {"action": "BLOCK", "hint": "input file disappeared or is outside the allowed roots"},
     "INVALID_ARGS":   {"action": "BLOCK", "hint": "compiler produced arguments the tool rejects (agent bug, not retried)"},
     # ADR-097 addendum 6 (color-grading-skill 0.5.0): the Skill refuses the source itself, e.g. an alpha plane its re-encode would drop
-    # (UNSUPPORTED_FORMAT, alpha_not_preserved). Not an agent bug and not retryable: the same source fails the same way
+    # (UNSUPPORTED_FORMAT, alpha_not_preserved), or (ADR-131) a premultiplied source the installed engine cannot un-premultiply (alpha_premultiplied).
+    # Not an agent bug and not retryable: the same source and engine fail the same way
     "UNSUPPORTED_MEDIA": {"action": "BLOCK", "hint": "the Skill refuses this source for the operation (see the error's reason, e.g. alpha_not_preserved: an alpha "
-                                                     "plane a re-encode would drop); not retried -- flatten or export the source first, or use an operation that "
-                                                     "keeps it (RETAG / STRIP_DOVI)"},
+                                                     "plane a re-encode would drop; alpha_premultiplied: a premultiplied source the installed engine cannot "
+                                                     "un-premultiply, ffmpeg-skill 4.8.0+ has color --source-alpha-mode); not retried -- flatten or export the "
+                                                     "source first (straight alpha with source_alpha_mode: straight, or update ffmpeg-skill), or use an "
+                                                     "operation that keeps it (RETAG / STRIP_DOVI)"},
     # ADR-106 (color-grading-skill 0.6.0): ffmpeg-skill/color's own check of the written file failed (VALIDATION_ERROR, never retryable): the same
     # source and engine fail the same way, so both BLOCK with what to change
     "LEGAL_LEVELS_FAILED": {"action": "BLOCK", "hint": "LEGALIZE's clamp left the file outside the profile's legal levels by ffmpeg-skill's own measurement "

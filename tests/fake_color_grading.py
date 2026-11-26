@@ -8,7 +8,8 @@ and misbehaves on request via FAKE_CG_MODE:
   malformed | empty | two_docs | text | nonzero_ok | wrong_schema | wrong_skill | wrong_version | bad_contract | contract_fail |
   contract_drift | hash_mismatch | unknown_code | internal_error | doctor_fail | doctor_degraded | no_provenance | not_hdr (HDR_TO_SDR
   on an SDR source → TOOL_ERROR from the engine, like the real Skill without force) | no_keep_alpha (an ffmpeg-skill without color
-  --keep-alpha) | alpha_lost | alpha_mismatch | alpha_unverified | legal_levels_failed (0.6.0's VALIDATION_ERROR reasons)
+  --keep-alpha) | no_source_alpha_mode (an ffmpeg-skill without color --source-alpha-mode: a premultiplied grade is refused,
+  alpha_premultiplied) | alpha_lost | alpha_mismatch | alpha_unverified | legal_levels_failed (0.6.0's VALIDATION_ERROR reasons)
 
 A source whose fake probe says an alpha pix_fmt (e.g. "yuva444p10le") is refused for the contract's `alpha.refused_for` operations with
 UNSUPPORTED_FORMAT / alpha_not_preserved (exit 6), as color-grading-skill 0.5.0 does; RETAG / STRIP_DOVI still run on it. As in 0.6.0
@@ -205,6 +206,14 @@ def main() -> int:
         if lossy:
             return err("UNSUPPORTED_FORMAT", f"source has an alpha channel ({meta['pix_fmt']}); operation(s) {lossy} would lose it",
                        {"reason": "alpha_not_preserved", "pix_fmt": meta["pix_fmt"], "op_ids": lossy})
+        # 1.2.0 (its ADR-33 addendum 1): a source stated as premultiplied is graded with the alpha kept only on an engine with color
+        # --source-alpha-mode; FAKE_CG_MODE=no_source_alpha_mode (ffmpeg-skill before 4.8.0) refuses it before anything runs
+        grading = sorted(str(o.get("op_id")) for o in pj["operations"] if isinstance(o, dict) and o.get("type") in (ka.get("operations") or []))
+        if grading and pj["source"].get("alpha_mode") == "premultiplied" and MODE == "no_source_alpha_mode":
+            return err("UNSUPPORTED_FORMAT", "a premultiplied source cannot be graded with the alpha kept: ffmpeg-skill/color cannot un-premultiply it "
+                       "(send a straight-alpha source with alpha_mode: straight, drop_alpha: true, or a stream copy)",
+                       {"reason": "alpha_premultiplied", "op_ids": grading, "alpha_mode_selection": {"alpha_mode": "premultiplied", "rule": "request",
+                                                                                                   "format_states": None, "codec": str(meta.get("codec") or "")}})
     results = []
     for i, op in enumerate(ops):
         where = f"operations[{i}]"
@@ -257,10 +266,13 @@ def main() -> int:
             params = dict(params, tonemap=params.get("tonemap") or ("mobius" if rule == "hlg_default" else "hable"))
             extra["tonemap_selection"] = {"tonemap": params["tonemap"], "rule": rule, "input_transfer": transfer}
         if alpha and re.match(alpha["pix_fmt_pattern"], str(meta.get("pix_fmt") or "")) and t in ((alpha.get("keep_alpha") or {}).get("operations") or []):
-            extra["alpha"] = {"kept": True, "precision_bits": 8, "alpha_codec": line, "alpha_mode": "straight", "source_colour": "taken as straight (not un-premultiplied)",
-                              "tool": "ffmpeg-skill/color --keep-alpha", "verification": {"step": "alpha", "ok": True},
-                              # 1.1.0 (its ADR-33): how the alpha mode was chosen; the agent sends no alpha_mode, so it is assumed straight
-                              "alpha_mode_selection": {"alpha_mode": "straight", "rule": "assumed", "format_states": False, "codec": str(meta.get("codec") or "")}}
+            stated = pj["source"].get("alpha_mode")
+            mode = stated or "straight"
+            extra["alpha"] = {"kept": True, "precision_bits": 8, "alpha_codec": line, "alpha_mode": mode,
+                              "source_colour": "un-premultiplied before grade" if mode == "premultiplied" else "taken as straight (not un-premultiplied)",
+                              "tool": "ffmpeg-skill/color --keep-alpha", "verification": {"step": "alpha", "ok": True, **({"source_alpha_mode": mode} if stated else {})},
+                              # 1.1.0 (its ADR-33): how the alpha mode was chosen; without project.source.alpha_mode it is assumed straight
+                              "alpha_mode_selection": {"alpha_mode": mode, "rule": "request" if stated else "assumed", "format_states": False, "codec": str(meta.get("codec") or "")}}
         results.append({"node_id": f"op:{op['op_id']}", "operation_id": hashlib.sha256(json.dumps([t, params, sha(src)], sort_keys=True).encode()).hexdigest(), "type": t, **extra,
                         "tool": OPS[t]["tool"], "required_capabilities": OPS[t]["required_capabilities"], "input": op["input"], "parameters": params,
                         "status": "reused" if MODE == "reused" else "completed", "input_hash": sha(src), "seconds": 0.01, "tool_commands_observed": ["fake ffmpeg -i in -vf x out"], "measurements": {}})
