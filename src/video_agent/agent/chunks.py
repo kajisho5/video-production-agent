@@ -1,9 +1,11 @@
 """Chunked render of a long programme (ADR-134; roadmap step 23): the delivery encode runs chunk by chunk, so a render that stops in chunk 3
 resumes at chunk 3 (`render --resume`) instead of encoding the whole programme again.
 
-    programme ─┬─ ffmpeg-skill/cut --start a1 --end a2 --accurate ─ ffmpeg-skill/export --preset P ─┐
-               ├─ ffmpeg-skill/cut --start a2 --end a3 --accurate ─ ffmpeg-skill/export --preset P ─┼─ ffmpeg-skill/join --transition none --copy ─ deliverable
-               └─ ...                                                                              ─┘
+    programme ─┬─ engine cut --start a1 --end a2 --accurate ─ engine export --preset P ─┐
+               ├─ engine cut --start a2 --end a3 --accurate ─ engine export --preset P ─┼─ engine join --transition none --copy ─ deliverable
+               └─ ...                                                                  ─┘
+
+(the engine's tools are the ones the plan names: the export step's package, its cut and its join)
 
 - **Which plans**: one video programme from one source (no concat, camera switch, grid or audio programme), whose delivery target exports
   with a platform or mastering preset (not `copy`: a stream copy has nothing to render), at a constant frame rate the probe measured, and
@@ -13,7 +15,7 @@ resumes at chunk 3 (`render --resume`) instead of encoding the whole programme a
   time rounded down to the microsecond, so the frame at the boundary starts the next chunk and is never in both. The last chunk runs to the
   end of the programme (`end: null`), so a programme a little longer or shorter than planned loses nothing.
 - **Each chunk** is cut frame-accurately (one re-encode at the engine's cut quality, the same generation as a trimmed plan) and exported with
-  the target's preset; the exported chunks share one encoding, so they are joined by stream copy (ffmpeg-skill `join --copy`, which checks
+  the target's preset; the exported chunks share one encoding, so they are joined by stream copy (the engine's `join --copy`, which checks
   that they match and refuses a join that would gap or shift the sound). Nothing is re-encoded after the join.
 - **Resume**: every chunk operation has its own chained idempotency key (the chunk's range is in its arguments), and the job records each
   completed operation as soon as it is done (the checkpoint). A resumed render reuses the chunks whose outputs are intact and starts at the
