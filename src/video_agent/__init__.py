@@ -1,2 +1,2 @@
 """video-production-agent: AI Production Brain / Orchestrator on top of ffmpeg-skill."""
-__version__ = "0.8.2"
+__version__ = "0.9.1"

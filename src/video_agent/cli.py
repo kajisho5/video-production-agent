@@ -176,6 +176,13 @@ def cmd_selects(args, svc: Service) -> int:
     return 0
 
 
+def cmd_pacing(args, svc: Service) -> int:
+    result = svc.pacing(args.input, args.output, args.reference,
+                   args.profile, args.protect_ranges, args.apply, args.confirm)
+    _print(result, args.json)
+    return 3 if result["status"] == "NEEDS_REVIEW" else 0
+
+
 def cmd_transcript_edit(args, svc: Service) -> int:
     """ADR-123: preview a transcript edit (the user's words / sentences to remove or keep) through transcription-skill select and video-editing-skill
     ripple. Nothing is cut: the transcript-edit file is written and the cuts are listed for the user to approve."""
@@ -1190,6 +1197,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reject-dead-air", action="store_true", help="reject silent / speechless shots (default: flagged only)")
     p.add_argument("-o", "--output", help="where to write the selects file (default <workspace>/selects/selects.json)")
     p.set_defaults(fn=cmd_selects)
+    p = sub.add_parser("pacing", help="preview or apply a reference-derived pacing profile and verify the delivery")
+    p.add_argument("input")
+    p.add_argument("-o", "--output", required=True, help="new MKV or MP4 in the workspace")
+    p.add_argument("--reference", action="append", default=[], help="completed reference video (repeatable)")
+    p.add_argument("--profile", help="preset or reviewed profile; fallback when a reference is uncertain")
+    p.add_argument("--protect-ranges", help="upstream source-clock protect-ranges@1 JSON")
+    p.add_argument("--apply", action="store_true", help="execute the approved edit (needs --confirm)")
+    p.add_argument("--confirm", help="the confirm_token the preview printed, passed only after the user approved its cuts")
+    p.set_defaults(fn=cmd_pacing)
+
     p = sub.add_parser("transcript-edit", help="preview cutting the words / sentences you choose from the transcript (ripple delete); nothing is cut (ADR-123)")
     p.add_argument("input"); p.add_argument("--transcript", required=True, help="the input's transcript (transcription-skill transcript JSON with word timings)")
     p.add_argument("--remove-words", help="word index ranges to remove, e.g. 12-40,55"); p.add_argument("--remove-segments", help="sentences (segment ids) to remove")
