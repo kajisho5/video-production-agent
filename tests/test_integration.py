@@ -846,7 +846,7 @@ def _framemd5(path: str) -> str:
 
 
 class ChunkedRenderRealTests(unittest.TestCase):
-    """ADR-134 (roadmap step 23, Done when): a 2 h fixture rendered in 600 s chunks, the render killed (SIGKILL, the whole process group)
+    """ADR-135 (roadmap step 23, Done when): a 2 h fixture rendered in 600 s chunks, the render killed (SIGKILL, the whole process group)
     while chunk 3 is being rendered, then `render --resume last`: the resumed job reuses chunks 1-2, starts at chunk 3, and its output's
     framemd5 equals an uninterrupted run's. The fixture is tiny (64x36 at 5 fps, picture only) so the twelve chunks stay quick; the delivery
     preset is h265 (source resolution), so nothing is scaled."""
@@ -3533,6 +3533,83 @@ shutil.copyfile(files[0], os.path.join(out, os.path.basename(files[0])))   # ide
 _FAKE_WPE = '''def wpe_v8(Y, taps=10, delay=3, iterations=3, psd_context=0, statistics_mode="full", inplace=False):
     return Y.copy()   # identity: a stand-in for nara_wpe (voice-enhance-skill's own tests do the same), never the real engine
 '''
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")
+class MicrophonesRealTests(unittest.TestCase):
+    """ADR-134 on the real ffmpeg-skill (audio --channel / --sample-rate, 3.7.0+) and audio-production-skill (1.5.0 AUTOMIX / MIX_TRACKS): a short
+    clip whose 4-channel audio is three panel microphones taking turns (each heard 14 dB down on the others) and an interpreter. The plan splits
+    the channels, automixes the three (the profile preset's values), muxes the mix under the picture and writes the interpreter's track over the
+    floor as a language-tagged MKV. Measured: the Skill's own automix report (gain rate within the limit, shared gains summing to 0 dB, every
+    microphone open for its turn), the delivered clip's sound, the track's language tag."""
+
+    @classmethod
+    def setUpClass(cls):
+        from video_agent.tools.audio_production import locate_audio_production
+        cls.ap = locate_audio_production()
+        cls.tmp = tmp_dir(cls, prefix="va_mics_")
+        src = Path(cls.tmp) / "src"; src.mkdir()
+        cls.clip = str(src / "panel.mov")
+        turn = ["between(t\\,0\\,3)", "between(t\\,3\\,6)", "between(t\\,6\\,9)"]
+        freqs = (300, 500, 700)
+        chans = ["+".join(f"{0.3 if j == i else 0.06}*sin(2*PI*{freqs[j]}*t)*{turn[j]}" for j in range(3)) for i in range(3)] + ["0.2*sin(2*PI*900*t)"]
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+                        "-f", "lavfi", "-i", f"aevalsrc='{'|'.join(chans)}':s=48000:c=4.0", "-t", "9", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                        "-c:a", "pcm_s16le", cls.clip], check=True)
+
+    def test_automix_language_tracks_end_to_end(self):
+        if not self.ap:
+            self.skipTest("needs an audio-production-skill checkout (VIDEO_AGENT_AUDIO_PRODUCTION_DIR); CI clones it")
+        from video_agent.tools.audio_production import AudioProductionAdapter
+        sk = locate_ffmpeg_skill()
+        chk = sk.catalog_check()
+        if not (chk.offers("audio", "channel") and chk.offers("audio", "sample_rate")):
+            self.skipTest(f"ffmpeg-skill {sk.version} publishes no audio --channel / --sample-rate (3.7.0+)")
+        ad = AudioProductionAdapter(self.ap, workspace=self.tmp, allowed_inputs=[self.tmp], ffmpeg_skill_dir=str(sk.root))
+        if ad.operation_status(ad.doctor()).get("AUTOMIX") == "unsupported":
+            self.skipTest(f"audio-production-skill {ad.version} has no AUTOMIX (1.5.0+)")
+        svc = Service(workspace=str(Path(self.tmp) / "ws"))
+        mics = [{"id": "chair", "name": "Chair", "channel": 0, "language": "eng"}, {"id": "smith", "name": "Smith", "channel": 1, "language": "eng"},
+                {"id": "tanaka", "name": "Tanaka", "channel": 2, "language": "eng"},
+                {"id": "ja", "name": "Interpreter JA", "role": "interp", "language": "jpn", "channel": 3}]
+        tracks = sk.offers_flag("audio", "--track")   # ffmpeg-skill 4.x writes named, language-tagged tracks; on 3.x the tracks are a plan-time BLOCK
+        ir = svc.plan([self.clip], "generic", user_requirements={"audio.microphones": mics, "audio.automix": True, "audio.language_tracks": True})
+        if not tracks:
+            [b] = [x for x in ir.doc["decisions"] if x["approval"] == "BLOCK"]
+            self.assertEqual(b["subject"], "audio.language_tracks"); self.assertIn("--track", b["reason"])
+            ir = svc.plan([self.clip], "generic", user_requirements={"audio.microphones": mics, "audio.automix": True})
+        d = ir.doc
+        self.assertEqual(svc.validate(ir).errors, [])
+        self.assertEqual([x["subject"] for x in d["decisions"] if x["approval"] == "BLOCK"], [], d["plan"]["summary"])
+        rec = d["audio"]["automix"][0]
+        p = str(Path(self.tmp) / "p.json"); save_ir(ir, p)
+        out = svc.render(load_ir(p), p, approve=["all"])
+        self.assertEqual(out["execution"]["status"], "COMPLETED", out["execution"])
+        res = out["execution"]["results"]
+        am = next(r for r in res if (r.get("data") or {}).get("operation_type") == "AUTOMIX")
+        m = am["data"]["operation"]["measurements"]["automix"]
+        print("\n[automix measured]", json.dumps(m, ensure_ascii=False)[:1500])
+        limit = float(rec["max_gain_rate_db_per_s"])
+        self.assertEqual((m["window_ms"], m["max_gain_rate_db_per_s"]), (float(rec["window_ms"]), limit), "the preset's values reached the Skill")
+        self.assertLessEqual(float(m["measured_max_gain_rate_db_per_s"]), limit, "no gain moves faster than the preset's limit")
+        self.assertLessEqual(max(abs(m["shared_gain_sum_db"]["min"]), abs(m["shared_gain_sum_db"]["max"])), 0.1, "the shared gains sum to 0 dB")
+        for row in m["inputs"]:   # each panellist talks for 3 of the 9 seconds: open for about a third of the time
+            self.assertTrue(0.25 <= row["open_ratio"] <= 0.45, row)
+        self.assertEqual(m["clipped_samples"], 0)
+        mux = next(r for r in res if r["tool"] == "ffmpeg-skill/audio" and r["ok"] and str(r.get("output") or "").endswith(".mov"))
+        pr = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,channels:format=duration", "-of", "json", mux["output"]],
+                                       capture_output=True, text=True, check=True).stdout)
+        kinds = [(st["codec_type"], st.get("channels")) for st in pr["streams"]]
+        self.assertIn(("video", None), kinds); self.assertIn(("audio", 1), kinds, "the clip's sound is the mono floor mix")
+        if not tracks:
+            return
+        art = next(a for a in out["artifacts"] if a["type"] == "LANGUAGE_TRACKS")
+        tr = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:stream_tags=language,title", "-of", "json", art["path"]],
+                                       capture_output=True, text=True, check=True).stdout)
+        audio = [st for st in tr["streams"] if st["codec_type"] == "audio"]
+        print("[language tracks]", json.dumps(audio, ensure_ascii=False))
+        self.assertEqual([((st.get("tags") or {}).get("language"), (st.get("tags") or {}).get("title")) for st in audio], [("eng", "Floor"), ("jpn", "Interpreter JA")],
+                         "the floor, then the floor under the interpreter, each tagged")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and locate_ffmpeg_skill(), "needs ffmpeg and ffmpeg-skill")

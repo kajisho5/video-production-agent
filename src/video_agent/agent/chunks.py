@@ -1,4 +1,4 @@
-"""Chunked render of a long programme (ADR-134; roadmap step 23): the delivery encode runs chunk by chunk, so a render that stops in chunk 3
+"""Chunked render of a long programme (ADR-135; roadmap step 23): the delivery encode runs chunk by chunk, so a render that stops in chunk 3
 resumes at chunk 3 (`render --resume`) instead of encoding the whole programme again.
 
     programme ─┬─ engine cut --start a1 --end a2 --accurate ─ engine export --preset P ─┐

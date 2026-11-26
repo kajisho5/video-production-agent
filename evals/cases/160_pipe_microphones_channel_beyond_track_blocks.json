@@ -1,0 +1,48 @@
+{
+ "name": "pipe_microphones_channel_beyond_track_blocks",
+ "profile": "generic",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "panel.mp4",
+    "channels": 2
+   }
+  ],
+  "extra_capabilities": [
+   "audio-production",
+   "audio-production:CUT",
+   "audio-production:AUTOMIX",
+   "audio-production:MIX_TRACKS",
+   "audio-production:NORMALIZE"
+  ],
+  "transcription": false
+ },
+ "requirements": {
+  "audio.microphones": [
+   {
+    "id": "chair",
+    "name": "Chair",
+    "channel": 0,
+    "pinned": true
+   },
+   {
+    "id": "smith",
+    "name": "Smith",
+    "channel": 1
+   },
+   {
+    "id": "tanaka",
+    "name": "Tanaka",
+    "channel": 2,
+    "weight_db": -3
+   }
+  ],
+  "audio.automix": true
+ },
+ "expect": {
+  "blocked": true,
+  "blocked_subjects": [
+   "audio.automix"
+  ]
+ }
+}

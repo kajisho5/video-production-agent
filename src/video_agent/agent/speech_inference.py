@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from ..media.analyzer import AnalysisResult
 from ..models import Event, Inference
 from ..policy.rules import RuleSet
+from ..temporal.events import merged_speakers
 
 SPEECH_MERGE_GAP_KEY = "speech.merge_gap_seconds"
 SPEECH_MERGE_GAP_DEFAULT = 0.5           # seconds: recognised segments closer than this are one logical speech interval
@@ -66,8 +67,7 @@ def infer_speech(analysis: AnalysisResult, rules: RuleSet) -> List[Inference]:
         if not speech:
             continue   # no recognition → no speech inference (never inferred from silence alone)
         # ADR-096: a speaker id only as an anonymous id of the speaker merge the asset's transcript records (speakers.assign); never otherwise
-        merged = {s for o in analysis.observations if o.asset_id == asset.id and o.kind == "transcript"
-                  for s in (((o.data or {}).get("speaker_assignment") or {}).get("speakers") or [])}
+        merged = {s for o in analysis.observations if o.asset_id == asset.id and o.kind == "transcript" for s in merged_speakers(o.data)}   # ADR-134: or the microphones
         if any(e.metadata.get("speaker_id") is not None and e.metadata["speaker_id"] not in merged for e in speech):
             raise ValueError(f"asset {asset.id}: a SpeechEvent carries a speaker id no recorded speaker merge gave it; speaker identification is not part of this system")
         dur: Optional[float] = asset.technical.get("duration")

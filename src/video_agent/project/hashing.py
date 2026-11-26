@@ -13,7 +13,7 @@ PLAN_SECTIONS = ("assets", "video", "audio", "captions", "graphics", "color", "d
 
 
 # ADR-085: the `speech` section (dubbing) is hashed only when a plan has it, so every plan without one keeps the hash it always had
-OPTIONAL_PLAN_SECTIONS = ("speech", "chunked_render")   # ADR-134: chunked_render changes the delivered bytes; hashed only when planned
+OPTIONAL_PLAN_SECTIONS = ("speech", "chunked_render")   # ADR-135: chunked_render changes the delivered bytes; hashed only when planned
 
 
 def plan_hash(doc: Dict[str, Any]) -> str:

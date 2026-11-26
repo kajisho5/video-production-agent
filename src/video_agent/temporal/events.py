@@ -67,6 +67,20 @@ def classify(event: Event) -> Event:
     return event
 
 
+def merged_speakers(tr: Any) -> List[str]:
+    """The speaker ids a transcript may carry: those of a recorded speaker merge -- transcription-skill's merge of diarization-skill's anonymous
+    turns (`speaker_assignment`, ADR-096) or its transcription by microphone, the microphones' names (`microphone_merge`, ADR-134). None otherwise."""
+    if not isinstance(tr, dict):
+        return []
+    sa = tr.get("speaker_assignment")
+    if isinstance(sa, dict):
+        return [str(x) for x in sa.get("speakers") or []]
+    mm = tr.get("microphone_merge")
+    if isinstance(mm, dict):
+        return [str(m.get("name")) for m in mm.get("microphones") or [] if isinstance(m, dict) and m.get("name")]
+    return []
+
+
 def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
     """Deterministic Observation → Event transformation for the implemented observation kinds. Only a validated tool
     measurement (provenance OBSERVED, source '<tool>@<version>') may become an OBSERVED event; anything else is refused.
@@ -111,9 +125,10 @@ def events_from_observation(obs: Observation, asset: Asset) -> List[Event]:
         # one SpeechEvent per recognised segment: interval + text as recognised. No merge, no importance, no edit point. A speaker id only
         # when the transcript records transcription-skill's merge of diarization-skill's turns (ADR-096): an anonymous SPEAKER_nn of those turns
         tr = obs.data
-        sa = tr.get("speaker_assignment") if isinstance(tr.get("speaker_assignment"), dict) else None
+        merged = merged_speakers(tr)
+        sa = tr if merged else None
         for seg in tr.get("segments") or []:
-            if seg.get("speaker_id") is not None and (sa is None or seg["speaker_id"] not in (sa.get("speakers") or [])):
+            if seg.get("speaker_id") is not None and (sa is None or seg["speaker_id"] not in merged):
                 raise ValueError(f"transcript segment {seg.get('id')} carries a speaker id {seg['speaker_id']!r} no recorded speaker merge gave it; recognition never identifies speakers")
             e = mk("SPEECH", TimeRange(float(seg["start"]), float(seg["end"])),
                    {"text": seg.get("text", ""), "language": tr.get("language"), "language_source": tr.get("language_source"), "segment_id": seg.get("id"),

@@ -1,0 +1,95 @@
+{
+ "name": "pipe_microphones_automix_language_tracks_end_to_end",
+ "profile": "generic",
+ "pipeline": {
+  "inputs": [
+   {
+    "name": "panel.mp4",
+    "channels": 4
+   }
+  ],
+  "extra_capabilities": [
+   "audio-production",
+   "audio-production:CUT",
+   "audio-production:AUTOMIX",
+   "audio-production:MIX_TRACKS",
+   "audio-production:NORMALIZE"
+  ],
+  "transcription": false
+ },
+ "requirements": {
+  "audio.microphones": [
+   {
+    "id": "chair",
+    "name": "Chair",
+    "channel": 0,
+    "pinned": true
+   },
+   {
+    "id": "smith",
+    "name": "Smith",
+    "channel": 1
+   },
+   {
+    "id": "tanaka",
+    "name": "Tanaka",
+    "channel": 2,
+    "weight_db": -3
+   },
+   {
+    "id": "ja",
+    "name": "Interpreter JA",
+    "role": "interp",
+    "language": "jpn",
+    "channel": 3
+   }
+  ],
+  "audio.automix": true,
+  "audio.language_tracks": true
+ },
+ "expect": {
+  "blocked": false,
+  "steps": [
+   "mic_extract",
+   "mic_extract",
+   "mic_extract",
+   "audio_automix",
+   "audio_mux",
+   "silence_cleanup",
+   "mic_extract",
+   "audio_cut",
+   "audio_cut",
+   "audio_mix_tracks"
+  ],
+  "decisions": {
+   "audio.automix": {
+    "type": "TRANSFORM",
+    "approval": "AUTO"
+   },
+   "audio.language_tracks": {
+    "type": "TRANSFORM",
+    "approval": "AUTO"
+   }
+  },
+  "render": {
+   "status": "COMPLETED",
+   "execution_status": "COMPLETED",
+   "tools": [
+    "ffmpeg-skill/audio",
+    "ffmpeg-skill/audio",
+    "ffmpeg-skill/audio",
+    "audio-production/run",
+    "ffmpeg-skill/audio",
+    "ffmpeg-skill/cut",
+    "ffmpeg-skill/audio",
+    "audio-production/run",
+    "audio-production/run",
+    "audio-production/run"
+   ],
+   "artifacts": {
+    "LANGUAGE_TRACKS": "candidate",
+    "MASTER": "candidate"
+   }
+  }
+ }
+}

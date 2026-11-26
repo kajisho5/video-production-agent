@@ -1,4 +1,4 @@
-"""Chunked render of a long programme (ADR-134, roadmap step 23): the delivery export runs chunk by chunk (frame-accurate cut + export per
+"""Chunked render of a long programme (ADR-135, roadmap step 23): the delivery export runs chunk by chunk (frame-accurate cut + export per
 chunk, joined by stream copy), the job records every finished operation as it goes (the checkpoint), and `render --resume` restarts at the
 first unfinished chunk. Against the fake engine and fake Skills (tests/pipeline_harness.py); the real-engine run with a kill in chunk 3 is
 tests/test_integration.py::ChunkedRenderRealTests."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from ..agent.chunks import check_record as check_chunked_render   # ADR-134
+from ..agent.chunks import check_record as check_chunked_render   # ADR-135
 from ..agent.decision_engine import check_decisions
 from ..agent.audio import (AUDIO_ORDER, DUCK_FIELDS, DUCK_REQUIRED, DYNAMICS_STAGES, FILLER_DECLICK_RANGE, FILLER_LEXICON_MAX_ITEMS, FILLER_LEXICON_MAX_LENGTH,
                            FILLER_MAX_WORDS, FILLER_MERGE_GAP_RANGE, FILLER_PAD_RANGE, FILLER_PRESETS, FILLER_WORD_MAX_LENGTH, MAX_MIX_INPUTS, MIX_GAIN_RANGE, NOISE_REDUCTION_MODES, NOISE_REDUCTION_STRENGTH, OPERATIONS as AUDIO_OPERATIONS, VOICE_CLEANUP_LEVELS,
@@ -24,6 +24,8 @@ from ..agent.documents import SKILL as DOCUMENT_SKILL, document_problems
 from ..agent.qc_checks import check_problems as qc_check_problems
 from ..agent.html_layer import SKILL as HTML_LAYER_SKILL, SUBJECT as HTML_LAYER_SUBJECT, html_layer_problems, layer_id as html_layer_id
 from ..agent.remotion import SKILL as REMOTION_SKILL, SUBJECT as REMOTION_SUBJECT, remotion_problems
+from ..agent.microphones import AUTOMIX_SKILL, EXTRACT_SKILL as MIC_EXTRACT_SKILL, TRACKS_SKILL, automix_problems
+from ..agent.takes import AUDIO_MUX_SKILL
 from ..agent.bgm import BGM_INPUT, SUBJECT as BGM_SUBJECT, bgm_problems, skill_of as bgm_skill_of
 from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJECT, face_problems
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
@@ -1078,6 +1080,34 @@ def check_take_crossfade(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def check_automix(d: Dict[str, Any]) -> List[str]:
+    """ADR-134: every `audio.automix[]` record is about a clip whose declared microphones it names, with the Skill's ranges, its decisions known,
+    and a plan step for each of its stages; a declared microphone is a file inside the allowed roots or a channel the clip has."""
+    errs: List[str] = []
+    ids = {x["id"] for x in d["decisions"]}
+    allowed = list(d["execution"].get("allowed_inputs") or [])
+    step_keys = {(s["skill"], (s.get("params") or {}).get("asset")) for s in d["plan"]["steps"]}
+    seen = set()
+    for rec in d["audio"].get("automix") or []:
+        aid = rec.get("asset")
+        if aid in seen:
+            errs.append(f"audio.automix: {aid} has two records")
+        seen.add(aid)
+        errs += automix_problems(rec, d["assets"].get(aid), allowed)
+        for did in rec.get("decision_ids") or []:
+            if did not in ids:
+                errs.append(f"audio.automix {aid} cites unknown decision {did}")
+        for sk in (MIC_EXTRACT_SKILL, AUTOMIX_SKILL, AUDIO_MUX_SKILL) + ((TRACKS_SKILL,) if rec.get("language_tracks") else ()):
+            if (sk, aid) not in step_keys:
+                errs.append(f"audio.automix on {aid}: {sk} has no plan step")
+    for aid, a in d["assets"].items():
+        for m in a.get("microphones") or []:
+            src = m.get("source") or {}
+            if src.get("kind") == "file" and not any(_under(str(src.get("path")), r) for r in allowed):
+                errs.append(f"asset {aid}: microphone {m.get('id')} file is outside the allowed input roots")
+    return errs
+
+
 def check_plan_dependencies(d: Dict[str, Any]) -> List[str]:
     """Every step input that is not a source asset must be produced by a step the consuming step (transitively) depends on:
     the plan's dependency graph, not the listing order, is what makes a multi-Skill chain executable in order (ADR-031)."""
@@ -1167,6 +1197,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
     xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-087: a rejected publish decision is rejected-cited
     xf_rec += list(d["delivery"].get("nle") or [])   # ADR-089: a rejected hand-off decision is rejected-cited
+    xf_rec += [dict(r, type=r.get("type") or "audio.automix") for r in d["audio"].get("automix") or []]   # ADR-134: a rejected automix / language tracks is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + speech_operations(d) + d["delivery"]["targets"] + timelines + xf_rec:
         for did in op.get("decision_ids") or []:
             if did in rejected:
@@ -1176,12 +1207,13 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_audio_operations(d)
     rep.errors += check_finishing_operations(d)
     rep.errors += check_speech_operations(d)   # ADR-085
-    rep.errors += check_chunked_render(d)   # ADR-134
+    rep.errors += check_chunked_render(d)   # ADR-135
     rep.errors += check_timeline_exports(d)
     rep.errors += check_nle(d)   # ADR-089
     rep.errors += check_take_assembly(d)
     rep.errors += check_publish(d)   # ADR-087
     rep.errors += check_plan_dependencies(d)
+    rep.errors += check_automix(d)   # ADR-134
     for op in timelines:
         for did in op.get("decision_ids") or []:
             if did not in ids:

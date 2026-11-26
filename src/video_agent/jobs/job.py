@@ -66,7 +66,7 @@ class JobStore:
 
     def save(self, job: Job) -> None:
         job.dir.mkdir(parents=True, exist_ok=True)
-        # ADR-134: saved after every operation (the checkpoint), so written whole: a render killed mid-save leaves the previous record
+        # ADR-135: saved after every operation (the checkpoint), so written whole: a render killed mid-save leaves the previous record
         tmp = job.dir / "job.json.tmp"
         tmp.write_text(json.dumps(job.to_dict(), indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, job.dir / "job.json")

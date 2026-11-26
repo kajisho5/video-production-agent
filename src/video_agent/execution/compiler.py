@@ -20,6 +20,7 @@ from ..agent.finishing import THUMBNAIL_BATCH_TOOL, THUMBNAIL_TOOL_OF, thumbnail
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL, SIDECAR_EXTENSIONS
 from ..agent.takes import AUDIO_MUX_SKILL
+from ..agent.microphones import AUTOMIX_SKILL, EXTRACT_SKILL as MIC_EXTRACT_SKILL, TRACKS_SKILL
 from ..agent.timeline import TIMELINE_EXTENSIONS, TIMELINE_SKILL, TIMELINE_SUBJECT
 from ..agent.nle import MODES as NLE_MODES
 from ..agent.image_prepare import prepare_chain, prepared_id
@@ -35,6 +36,14 @@ from ..tools.dubbing.adapter import TOOL_DUB
 from ..tools.voice_enhance.adapter import stem_name as voice_stem_name
 from ..models import Operation, stable_hash
 from ..project.ir import ProjectIR
+
+
+def _stat(path: str) -> Dict[str, Any]:
+    try:
+        st = os.stat(path)
+        return {"size": st.st_size, "mtime": st.st_mtime}
+    except OSError:
+        return {}
 
 
 def tool_version_of(versions: Dict[str, str], tool: str) -> str:
@@ -810,7 +819,7 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             add(tool, lower_qc_package(tool, members, spec["rules"]), [m["input"] for m in members], [], list(qc.get("decision_ids") or []), st["fp"], kind="qa", skill=QC_SKILL)
 
     def chunked_delivery(subject: str, t: Dict[str, Any], art_id: str, ext: str, chunked: Dict[str, Any]) -> None:
-        """ADR-134: the target's export, chunk by chunk: a frame-accurate cut of each chunk of the programme, exported with the preset, then
+        """ADR-135: the target's export, chunk by chunk: a frame-accurate cut of each chunk of the programme, exported with the preset, then
         the exported chunks joined by stream copy into the deliverable. Each chunk's operations carry their own chained key (the range is in
         the arguments), so a resumed render reuses the chunks that are done and starts at the first unfinished one."""
         st = state[subject]
@@ -877,6 +886,69 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 args = {"input": st["current"], "preset": "copy", "output": art_id}
                 add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
 
+    def mic_files(asset_id: str, asset: Dict[str, Any], mics: List[Dict[str, Any]], sr: int, ids: List[str]) -> None:
+        """ADR-134: each microphone as a mono WAV at the clip's rate: a channel of the clip (--channel N), or its own file (--mono)."""
+        st = state[asset_id]
+        decl = {x.get("id"): x for x in asset.get("microphones") or []}
+        for x in mics:
+            if x["output"] in paths:
+                continue
+            paths[x["output"]] = str(job / "ops" / f"{st['stem']}_00_mic_{x['id']}" / f"{st['stem']}_mic_{x['id']}.wav")
+            tool = tool_for(MIC_EXTRACT_SKILL, asset_id)
+            if "channel" in x:
+                args: Dict[str, Any] = {"input": asset_id, "channel": int(x["channel"]), "sample_rate": int(sr), "output": x["output"]}
+                ins, fp = [asset_id], f"{st['fp']}|channel:{int(x['channel'])}"
+            else:
+                src = f"{x['output']}_source"
+                paths[src], keys[src] = x["path"], ""
+                args = {"input": src, "mono": True, "sample_rate": int(sr), "output": x["output"]}
+                if x.get("audio_stream") is not None:
+                    args["audio_stream"] = int(x["audio_stream"])
+                sha = ((decl.get(x["id"]) or {}).get("source") or {}).get("sha256")
+                ins, fp = [src], ("sha256:" + sha) if sha else source_fingerprint({"path": x["path"], "technical": {"file": _stat(x["path"])}})
+            add(tool, args, ins, [x["output"]], ids, fp, skill=MIC_EXTRACT_SKILL)
+
+    def automix_stage(asset_id: str, asset: Dict[str, Any], rec: Dict[str, Any]) -> str:
+        st = state[asset_id]
+        ids = list(rec.get("decision_ids") or [])
+        mic_files(asset_id, asset, rec["microphones"], rec["sample_rate"], ids)
+        out = rec["output"]
+        paths[out] = str(job / "ops" / f"{st['stem']}_00_automix" / f"{st['stem']}_automix.wav")
+        tool = tool_for(AUTOMIX_SKILL, asset_id)
+        if tool != AUDIO_TOOL:
+            raise CompileError(f"AUTOMIX runs on {AUDIO_TOOL}, the plan names {tool}")
+        args: Dict[str, Any] = {"operation": "AUTOMIX", "inputs": [x["output"] for x in rec["microphones"]], "window_ms": float(rec["window_ms"]),
+                                "max_gain_rate_db_per_s": float(rec["max_gain_rate_db_per_s"]), "channels": [dict(c) for c in rec["channels"]], "output": out}
+        if rec.get("hold_below_dbfs") is not None:
+            args["hold_below_dbfs"] = float(rec["hold_below_dbfs"])
+        add(tool, args, list(args["inputs"]), [out], ids, st["fp"], skill=AUTOMIX_SKILL)
+        mux = rec["mux"]
+        ext = Path(asset["path"]).suffix.lower() or ".mp4"
+        paths[mux["output"]] = str(job / "ops" / f"{st['stem']}_00_automix_mux" / f"{st['stem']}_automix_mux{ext}")
+        mtool = tool_for(AUDIO_MUX_SKILL, asset_id)
+        add(mtool, {"input": st["current"], "replace": out, "output": mux["output"]}, [st["current"], out], [mux["output"]], ids, st["fp"], skill=AUDIO_MUX_SKILL)
+        return mux["output"]
+
+    def language_tracks_stage(asset_id: str, asset: Dict[str, Any], rec: Dict[str, Any]) -> None:
+        st = state[asset_id]
+        tr = rec["language_tracks"]
+        ids = list(tr.get("decision_ids") or []) + [i for i in rec.get("decision_ids") or [] if i not in (tr.get("decision_ids") or [])]
+        mic_files(asset_id, asset, tr["microphones"], rec["sample_rate"], ids)
+        ins = list(tr["inputs"])
+        if tr.get("remove"):
+            ctool = tool_for("audio_cut", asset_id)
+            for i, c in dict.fromkeys(zip(list(ins), tr["cut"])):   # the floor (an input of every track) is cut once
+                paths[c] = str(job / "ops" / f"{st['stem']}_00_language_cut" / f"{c}.wav")
+                add(ctool, {"operation": "CUT", "input": i, "remove": [list(r) for r in tr["remove"]], "output": c}, [i], [c], ids, st["fp"], skill="audio_cut")
+            ins = list(tr["cut"])
+        out = tr["output"]
+        paths[out] = str(job / "artifacts" / f"{st['stem']}_language_tracks.{tr['format']}")
+        tool = tool_for(TRACKS_SKILL, asset_id)
+        if tool != AUDIO_TOOL:
+            raise CompileError(f"MIX_TRACKS runs on {AUDIO_TOOL}, the plan names {tool}")
+        add(tool, {"operation": "MIX_TRACKS", "inputs": ins, "levels": [dict(lv) for lv in tr["levels"]],
+                   "languages": [dict(l, inputs=list(l["inputs"])) for l in tr["languages"]], "format": tr["format"], "output": out}, ins, [out], ids, st["fp"], skill=TRACKS_SKILL)
+
     bleed = next((op for op in d["audio"]["operations"] if op["type"] == "voice.bleed_reduce"), None)
     if bleed is not None:
         # ADR-073: one voice-enhance call for every mixed input as recorded (a mixed input carries no cut); each cleaned track is written as
@@ -897,6 +969,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
         stem = f"{idx:02d}_{Path(asset['path']).stem}"  # index keeps two inputs with the same file name apart
         state[asset_id] = {"current": asset_id, "gen": 0, "stem": stem, "fp": fp}
         st = state[asset_id]
+        mic = next((r for r in (d["audio"].get("automix") or []) if r.get("asset") == asset_id), None)
+        if mic is not None:   # ADR-134: the microphones' automix replaces the clip's sound before anything else edits it
+            st["current"] = automix_stage(asset_id, asset, mic)
         faces = next((op for op in d["video"]["operations"] if op["asset"] == asset_id and op["type"] == FACE_SUBJECT), None)
         if faces is not None:   # ADR-090: faces blurred on the source timeline, before the trim re-times it
             ids = list(faces.get("decision_ids") or [])
@@ -927,6 +1002,8 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             args = lower_video_trim(tool, op, st["current"], out_id)
             add(tool, args, [st["current"]], [out_id], list(op.get("decision_ids") or []), fp, skill=trim_skill)
             st["current"] = out_id
+        if mic is not None and mic.get("language_tracks"):   # ADR-134: the interpreters' tracks, cut like the picture, as one MKV beside the programme
+            language_tracks_stage(asset_id, asset, mic)
         cut = next((op for op in d["audio"]["operations"] if op["type"] == "audio.cut" and op["asset"] == asset_id), None)
         if cut is not None:   # audio production path (ADR-030): the silence decisions as one audio.cut; audio outputs are WAV
             st["gen"] += 1

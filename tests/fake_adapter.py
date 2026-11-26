@@ -113,14 +113,14 @@ class FakeAdapter(ToolAdapter):
             if script == "cut" and "segments" in op.args:
                 segs = [tuple(float(x) for x in s.split("-")) for s in op.args["segments"].split(",")]
                 dur = sum(e - s for s, e in segs)
-            elif script == "cut":   # ADR-134: one range (a chunk of a chunked render); no end runs to the end of the input
+            elif script == "cut":   # ADR-135: one range (a chunk of a chunked render); no end runs to the end of the input
                 dur = (float(op.args["end"]) if op.args.get("end") is not None else in_dur) - float(op.args["start"])
             self.duration = dur
             if out and not dry_run:
                 # no subtitle stream survives cut / fit / export: the real export.py writes the picture and the audio only (measured, ADR-063)
                 _write_fake(out, {"duration": dur, "lufs": in_meta.get("lufs", self.lufs) if in_meta else self.lufs})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": [f"ffmpeg {script}"], "probe": probe_doc(out or "", dur)}, [f"ffmpeg {script}"], "", 0.2, attempt, dry_run)
-        if script == "join":   # ADR-134: the stream-copy join of a chunked render's chunks; every input must exist, the output is their sum
+        if script == "join":   # ADR-135: the stream-copy join of a chunked render's chunks; every input must exist, the output is their sum
             assert op.args.get("copy") is True and op.args.get("transition") == "none", op.args
             metas = [_read_fake(paths.get(i, i)) for i in op.args["inputs"]]
             if any(m is None for m in metas):
@@ -164,6 +164,18 @@ class FakeAdapter(ToolAdapter):
                    "confidence": [1.0] + [(_read_fake(p) or {}).get("sync_confidence", 0.9) for p in inputs[1:]],
                    "cuts": [{"start": 0.0, "end": ref_dur, "camera": 0}], "commands": ["ffmpeg multicam"], "probe": probe_doc(out or "", ref_dur)}
             return ToolResult(op.id, op.tool, True, 0, out, doc, doc["commands"], "", 0.3, attempt, dry_run)
+        if script == "audio" and not op.args.get("replace"):
+            # ADR-134: one microphone as a mono WAV (--channel N of the input's track, or --mono of a microphone file) at --sample-rate
+            assert set(op.args) <= {"input", "channel", "mono", "audio_stream", "sample_rate", "output"} and ("channel" in op.args) != bool(op.args.get("mono")), op.args
+            chans = int((in_meta or {}).get("channels", 2))
+            if "channel" in op.args and not 0 <= int(op.args["channel"]) < chans:
+                return ToolResult(op.id, op.tool, False, 1, None, {"status": "failed", "error": {"kind": "input", "message": f"--channel {op.args['channel']}: the track has {chans} channel(s)"}},
+                                  [], f"error: --channel {op.args['channel']}: the track has {chans} channel(s)", 0.1, attempt, dry_run)
+            if out and not dry_run:
+                _write_fake(out, {"duration": in_dur, "channels": 1, "video": False, "sample_rate": int(op.args.get("sample_rate") or (in_meta or {}).get("sample_rate", 48000)),
+                                  "lufs": (in_meta or {}).get("lufs", self.lufs), "mic": op.args.get("channel", os.path.basename(src or ""))})
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "commands": ["ffmpeg audio --channel"], "probe": probe_doc(out or "", in_dur, video=False, channels=1)},
+                              ["ffmpeg audio"], "", 0.1, attempt, dry_run)
         if script == "audio":
             # a fake mux (tests only, ADR-054): only --replace is catalogued; the picture is stream-copied, so the output lasts as long as
             # the video input (the real audio.py pads / trims the new audio to the video's duration)

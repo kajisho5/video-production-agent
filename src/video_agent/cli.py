@@ -500,7 +500,7 @@ def cmd_render(args, svc: Service) -> int:
             r = out["resume"]
             print(f"  resumed from {r['resumed_from']} ({r['prior_state']}); plan {'CHANGED' if r['plan_changed'] else 'unchanged'}; reused {len(out['execution']['skipped'])} of {r['candidate_ops']} completed operation(s)")
         ch = out.get("chunks")
-        if ch:   # ADR-134: the chunked render's state, also in <job>/chunks.json
+        if ch:   # ADR-135: the chunked render's state, also in <job>/chunks.json
             print(f"  chunks: {ch['done']} of {ch['total']} done" + (f", {ch['reused']} reused from the earlier job, rendering started at chunk {ch['started_at']}" if ch["reused"] else ""))
         if out["status"] == "WAITING_FOR_APPROVAL":
             for d in out.get("pending", []):
@@ -1254,7 +1254,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-preferences", action="store_true", help="plan without the stored preferences (global and channel)")
     p.add_argument("--entity-project", help="the entity memory's project store to apply on top of the global one (default: --channel) (ADR-128)")
     p.add_argument("--no-entities", action="store_true", help="plan without the entity memory")
-    p.add_argument("--chunk-seconds", type=float, metavar="S", help="render the delivery in chunks of S seconds on whole frames (ADR-134; default: 600 s chunks "
+    p.add_argument("--chunk-seconds", type=float, metavar="S", help="render the delivery in chunks of S seconds on whole frames (ADR-135; default: 600 s chunks "
                    "for a programme of 30 min or more; 0: never chunk); render --resume restarts at the first unfinished chunk")
     p.add_argument("--deadline", help="deadline mode (撮って出し, ADR-133): 30m, 1h30m, 90s, minutes, or HH:MM; optional finishing that would miss it is dropped, and the plan says so")
     p.set_defaults(fn=cmd_plan)

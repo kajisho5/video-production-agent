@@ -53,7 +53,7 @@ class Executor:
         self.completed: Dict[str, Any] = dict(completed_keys or {})   # idempotency_key -> {output, size, mtime}
         self.cancel_event = threading.Event()
         self.log: List[str] = []
-        # ADR-134: called after each operation that completed ("ran") or was reused ("reused"), before the next one starts -- the job's
+        # ADR-135: called after each operation that completed ("ran") or was reused ("reused"), before the next one starts -- the job's
         # checkpoint, so a render that is killed keeps the record of every operation done before it
         self.checkpoint: Optional[Callable[[Operation, str], None]] = None
 

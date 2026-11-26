@@ -281,6 +281,23 @@ def main() -> int:
                 return err("TOOL_ERROR", "MIX duck needs ffmpeg-skill/audio --duck, which the located ffmpeg-skill (1.0.0) does not declare",
                            {"reason": "ffmpeg_skill_flag_missing", "feature": "MIX duck", "tool": "ffmpeg-skill/audio", "missing_flags": ["duck"], "ffmpeg_skill_version": "1.0.0"},
                            retryable=False, dry_run=dry_run)
+    elif t == "AUTOMIX":   # ADR-134: mono inputs at one rate, one channels entry each, at least one shared
+        dur = durs[0]
+        ch = params.get("channels") or [{} for _ in in_paths]
+        if len(ch) != len(in_paths) or all(c.get("pinned") for c in ch):
+            return err("INVALID_REQUEST", "AUTOMIX.channels: one entry per input, at least one not pinned", {"field": "channels"})
+        rates = {int((json.loads(Path(p).read_bytes().decode()) if Path(p).read_bytes().startswith(b'{"fake"') else {}).get("sample_rate", 48000)) for p in in_paths}
+        if len(rates) != 1:
+            return err("INVALID_REQUEST", f"AUTOMIX inputs must share one sample rate, got {sorted(rates)}", {"field": "inputs"})
+    elif t == "MIX_TRACKS":
+        dur = durs[0]
+        langs = params.get("languages")
+        if langs is not None:
+            named = [k for l in langs for k in l.get("inputs") or []]
+            if not langs or any(not l.get("inputs") for l in langs) or len(set(named)) != len(named) or any(not 1 <= k < len(in_paths) for k in named):
+                return err("INVALID_REQUEST", "MIX_TRACKS.languages: each language a non-empty set of inputs 1.., an input in at most one", {"field": "languages"})
+            if o.get("format") not in ("mkv", "mp4"):
+                return err("UNSUPPORTED_FORMAT", "a MIX_TRACKS with languages is written as one track per language, format mkv or mp4")
     elif t == "FILLER_REMOVE":
         if ("words" in params) == ("transcript" in params):
             return err("INVALID_REQUEST", "FILLER_REMOVE takes exactly one of words / transcript", {"field": "words"})
@@ -324,6 +341,10 @@ def main() -> int:
     if t in ("FADE_IN", "FADE_OUT") and float(params["duration"]) > dur + 0.001:
         return err("INVALID_TIME_RANGE", "fade longer than the media")
     channels = max(in_channels(p) for p in in_paths)
+    if t == "AUTOMIX":
+        channels = 1
+    if t == "MIX_TRACKS" and any("pan" in lv for lv in params.get("levels") or []):
+        channels = 2
     if t == "MONO":
         if channels != 2:
             return err("INVALID_CHANNEL_LAYOUT", "MONO takes a 2-channel input", {"channels": channels})
@@ -385,6 +406,11 @@ def main() -> int:
                    "tool_commands_observed": [f"{tool} {op_id[:16]} (fake, provenance only)"]})
     if t == "FILLER_REMOVE":
         record["measurements"] = {"filler_remove": fr_meas, "effective_ranges": [{"start": a, "end": b} for a, b in ranges]}
+    if t == "AUTOMIX":
+        record["measurements"] = {"automix": {"max_gain_rate_db_per_s": params["max_gain_rate_db_per_s"], "measured_max_rate_db_per_s": round(params["max_gain_rate_db_per_s"] * 0.9, 3),
+                                              "shared_gain_sum_db": {"min": -0.01, "max": 0.01}, "inputs": [{"open_ratio": round(1.0 / len(in_paths), 3)} for _ in in_paths]}}
+    if t == "MIX_TRACKS" and params.get("languages"):
+        record["measurements"] = {"language_tracks": [{"language_id": l["language_id"], "language": l["language"]} for l in params["languages"]]}
     if t == "NORMALIZE":
         record["measurements"] = {"loudness": {"measured_by": "ffmpeg-skill/loudness --measure-only", "target_lufs": params["target_lufs"], "true_peak_db": params["true_peak_db"],
                                                "integrated_lufs": float(params["target_lufs"]) - 0.1, "true_peak_dbtp": float(params["true_peak_db"]) - 0.5, "loudness_range_lu": 3.0}}

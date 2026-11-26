@@ -26,7 +26,7 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "export": {"positional": ["input"], "flags": {"preset": "str", "fit": "str", "crf": "int", "allow_long": "bool", "no_scale": "bool", "no_normalize": "bool", "output": "path_out"},
                "detected_flags": ["no_normalize"], "verification_keeps_output": True,
                "produces_output": True, "result_keys": ["output", "probe", "verification", "loudness"]},
-    # ADR-134: the stream-copy join of a chunked render's exported chunks (`--transition none --copy`, ffmpeg-skill 2.24+). The agent drives
+    # ADR-135: the stream-copy join of a chunked render's exported chunks (`--transition none --copy`, ffmpeg-skill 2.24+). The agent drives
     # join.py only this way, so a checkout whose --help does not offer --copy cannot run it (the plan is then not chunked)
     "join": {"positional": ["inputs"], "flags": {"transition": "str", "copy": "bool", "output": "path_out"}, "requires_flag": "--copy",
              "produces_output": True, "result_keys": ["output", "mode", "clips"]},
@@ -47,7 +47,13 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     # ADR-054 (verified against ffmpeg-skill 2.21.0 --help and source): audio.py --replace FILE swaps the audio track; the video is
     # stream-copied and the new audio is padded / trimmed to the video's duration (apad,atrim), so the picture is never shortened.
     # Only --replace is catalogued: the agent uses audio.py as the mux of a take assembly's programme audio, nothing else.
-    "audio": {"positional": ["input"], "flags": {"replace": "path_in", "output": "path_out"}, "produces_output": True, "result_keys": ["output", "probe", "audio", "video"]},
+    # ADR-134 (verified against ffmpeg-skill 4.8.3 `_contract.py --json --static` and audio.py --help; --channel / --sample-rate since 3.7.0): one
+    # microphone of a clip as a mono WAV at the clip's rate -- `channel` keeps channel N of the track (0-based), `mono` folds a microphone file to one
+    # channel, `audio_stream` picks a file's stream, `sample_rate` resamples. Detected and required when given: an engine that does not publish one
+    # refuses the step (it is never dropped, which would write every channel or the file's own rate)
+    "audio": {"positional": ["input"], "flags": {"replace": "path_in", "channel": "int", "mono": "bool", "audio_stream": "int", "sample_rate": "int", "output": "path_out"},
+              "detected_flags": ["channel", "mono", "audio_stream", "sample_rate"], "required_when_given": ["channel", "mono", "audio_stream", "sample_rate"],
+              "produces_output": True, "result_keys": ["output", "probe", "audio", "video"]},
     "report": {"positional": [], "flags": {"after": "path_in", "before": "path_in", "platform": "str", "commands": "path_in", "notes": "path_in", "title": "str", "output": "path_out", "no_sheets": "bool"},
                "produces_output": True, "result_keys": ["report", "check"]},
     # ---- ADR-046 Priority A batch (verified against ffmpeg-skill v0.16.2 --help)

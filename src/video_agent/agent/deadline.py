@@ -146,7 +146,7 @@ def group_of(op_skill: str, op_tool: str, doc_groups: Dict[str, str]) -> str:
 
 
 def _media_of(op: Any, programme_seconds: float) -> float:
-    """ADR-134: the media seconds one operation encodes -- a chunk of a chunked render its own range, every other operation the programme."""
+    """ADR-135: the media seconds one operation encodes -- a chunk of a chunked render its own range, every other operation the programme."""
     m = getattr(op, "media_seconds", None)
     return float(m) if isinstance(m, (int, float)) and not isinstance(m, bool) and m >= 0 else programme_seconds
 
