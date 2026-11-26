@@ -74,6 +74,41 @@ class RealMediaTests(unittest.TestCase):
         make_media(cls.src)
         cls.ws = str(Path(cls.tmp) / "ws")
 
+    def test_reference_pacing_route_with_protected_pause_and_bgm_review(self):
+        skill = locate_ffmpeg_skill()
+        if not skill.offers_flag("silence", "--extract-profile"):
+            self.skipTest("installed sibling predates pacing-profile@1")
+        work = Path(tmp_dir(self, prefix="pacing_"))
+        def media(name, expression):
+            path = work/name
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                            "testsrc2=size=64x48:rate=30:duration=3", "-f", "lavfi", "-i",
+                            f"aevalsrc='{expression}':s=48000:d=3", "-c:v", "ffv1", "-c:a", "pcm_s16le",
+                            str(path)], check=True)
+            return path
+        src = media("talk.mkv", "0.15*sin(2*PI*440*t)*(1-between(t,0.8,2.2))")
+        bed = media("bed.mkv", "0.15*sin(2*PI*440*t)")
+        protected = work/"keep.json"
+        protected.write_text('[{"start_ms":1250,"end_ms":1500,"reason":"word ending"}]')
+        service = Service(workspace=str(work), ffmpeg_skill_dir=str(skill.root))
+        pending = service.pacing(src, "delivered.mp4", [bed], protect=protected, apply=True, confirm="unreviewed")
+        self.assertEqual(pending["status"], "NEEDS_REVIEW")
+        self.assertFalse((work/"delivered.mp4").exists())
+        with self.assertRaises(ValueError):   # no apply without the approved preview's token
+            service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True)
+        preview = service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected)
+        self.assertEqual((preview["status"], preview["profile_used"]), ("PREVIEW", "youtube-talk"))
+        self.assertFalse((work/"delivered.mp4").exists())
+        result = service.pacing(src, "delivered.mp4", [bed], "youtube-talk", protected, apply=True,
+                                confirm=preview["confirm_token"])
+        self.assertTrue(result["profile"]["probe_meta"]["warnings"])
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["cut_plan"], preview["cut_plan"])
+        self.assertEqual(result["cut_plan"]["cut_count"], 2)
+        self.assertTrue(any(k["start_ms"] <= 1250 and 1500 <= k["end_ms"] for k in result["cut_plan"]["keep"]))
+        self.assertTrue(all(result["verification"].values()))
+        self.assertTrue((work/"delivered.mp4").is_file())
+
     def test_end_to_end_youtube(self):
         svc = Service(workspace=self.ws)
         ir = svc.plan([self.src], "youtube")
