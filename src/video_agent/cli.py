@@ -1162,6 +1162,73 @@ def cmd_explain(args, svc: Service) -> int:
     return 0
 
 
+def cmd_follow(args, svc: Service) -> int:
+    """ADR-136: follow a recording still being written (media-analysis-skill follow) until it is complete, then plan it (and render)."""
+    from .agent import follow as follow_task
+    from .agent.deadline import DeadlineError
+    try:
+        if args.deadline_after:
+            follow_task.parse_after(args.deadline_after)   # refused before the wait, not hours later
+        reqs = _kv(args.set)
+    except (DeadlineError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    emit = (lambda line: print(line, file=sys.stderr, flush=True)) if args.json else (lambda line: print(line, flush=True))
+    if not args.json:
+        print(f"Following {args.recording} every {args.interval:g} s (complete on " + ", ".join(
+            x for x in (("--final" if args.final else ""), (f"marker {args.complete_marker}" if args.complete_marker else ""), f"{args.settle:g} s unchanged") if x) + ")")
+    try:
+        max_wait = follow_task.parse_after(args.max_wait) if args.max_wait else None
+        rec = svc.follow_recording(args.recording, interval=args.interval, settle=args.settle, marker=args.complete_marker, final=args.final,
+                                   kind=args.kind, max_wait=max_wait, once=args.once, emit=emit)
+    except (follow_task.FollowError, DeadlineError) as e:
+        code = getattr(e, "code", "INVALID_REQUEST")
+        if args.json:
+            _print({"status": "FAILED", "error": {"code": code, "message": str(e)}}, True)
+        else:
+            print(f"error ({code}): {e}", file=sys.stderr)
+        return 3 if code in ("SKILL_MISSING", "SKILL_TOO_OLD") else 1
+    if not rec.get("complete"):
+        if args.json:
+            _print({"status": "GROWING", "follow": rec}, True)
+        return 0
+    ir = svc.plan([rec["recording"]], args.profile, request_text=args.request or "", user_requirements=reqs, project_name=args.name,
+                  params={"language": args.language}, chunk_seconds=args.chunk_seconds)
+    ir.doc["provenance"]["follow"] = rec
+    if args.deadline_after:
+        dl = svc.apply_deadline_after(ir, args.deadline_after, rec)
+    else:
+        dl = None
+    out = args.output or default_plan_path(svc.workspace, [rec["recording"]], args.profile)
+    save_ir(ir, out)
+    rep = svc.validate(ir)
+    result: Dict[str, Any] = {"status": "PLANNED", "project": out, "follow": rec, "summary": ir.doc["plan"]["summary"], "validation": rep.to_dict(),
+                              **({"deadline": dl} if dl else {})}
+    if not args.json:
+        print(f"Project IR: {out}")
+        _print_plan(ir.doc)
+        if dl:
+            print(f"Deadline {dl['deadline']} (detected {rec['detected_at']}): estimated {dl['estimated_seconds']:.0f} s of {dl['budget_seconds']:.0f} s left ({dl['status']})")
+            for d in dl["dropped"]:
+                print(f"  dropped {d['group']}: {d['reason']}")
+            if dl.get("warning"):
+                print(f"  AT RISK: {dl['warning']}")
+    if args.render and rep.ok:
+        approve = [a for x in (args.approve or []) for a in x.split(",") if a]
+        r = svc.render(load_ir(out), out, approve=approve or None)
+        result.update(status=r["status"], render={"job": r["job"]["id"], "status": r["status"], **({"chunks": r["chunks"]} if r.get("chunks") else {}),
+                                                  **({"pending": [d["id"] for d in r.get("pending") or []]} if r.get("pending") else {})})
+        if not args.json:
+            print(f"Job {r['job']['id']}: {r['status']}")
+            for d in r.get("pending") or []:
+                print(f"  CONFIRM {d['id']}  {d['subject']}: {d['decision']}")
+    if args.json:
+        _print(result, True)
+    if not rep.ok:
+        return 2
+    return 4 if result["status"] == "WAITING_FOR_APPROVAL" else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="video-agent", description="AI video production orchestrator (ffmpeg-skill as the execution engine)")
     ap.add_argument("--version", action="version", version=f"video-agent {__version__}")
@@ -1258,6 +1325,23 @@ def build_parser() -> argparse.ArgumentParser:
                    "for a programme of 30 min or more; 0: never chunk); render --resume restarts at the first unfinished chunk")
     p.add_argument("--deadline", help="deadline mode (撮って出し, ADR-133): 30m, 1h30m, 90s, minutes, or HH:MM; optional finishing that would miss it is dropped, and the plan says so")
     p.set_defaults(fn=cmd_plan)
+    p = sub.add_parser("follow", help="follow a recording still being written (MKV / MPEG-TS / fragmented MP4) until it is complete, then plan it (ADR-136)")
+    p.add_argument("recording")
+    p.add_argument("--profile", default="generic")
+    p.add_argument("--interval", type=float, default=10.0, help="seconds between looks (default 10)")
+    p.add_argument("--settle", type=float, default=30.0, help="complete when size and mtime are unchanged this many seconds (default 30, ingest-skill's rule)")
+    p.add_argument("--complete-marker", help="complete when this file exists (the recorder or a person creates it when the recording ends)")
+    p.add_argument("--final", action="store_true", help="the recording has already ended: measure to the end now")
+    p.add_argument("--kind", default="silence", choices=["silence", "scene_detection"], help="what media-analysis-skill measures as the file grows (default silence)")
+    p.add_argument("--max-wait", help="give up when not complete after this long (e.g. 9h); the follow state is kept")
+    p.add_argument("--once", action="store_true", help="look once, report, and exit (0 while it grows)")
+    p.add_argument("--deadline-after", help="deadline mode (ADR-133) counted from the end of the recording: e.g. 30m after the completion was detected")
+    p.add_argument("--render", action="store_true", help="render the plan once it is made (CONFIRM decisions still wait for --approve)")
+    p.add_argument("--approve", action="append", help="decision ids (or all) to approve for --render")
+    p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE"); p.add_argument("--request"); p.add_argument("--language"); p.add_argument("--name")
+    p.add_argument("--chunk-seconds", type=float, metavar="S", help="as plan --chunk-seconds (ADR-135)")
+    p.add_argument("-o", "--output")
+    p.set_defaults(fn=cmd_follow)
     p = sub.add_parser("brief", help="read a brief into --set keys (no media analysed): what plan --brief would apply (ADR-061)")
     p.add_argument("text"); p.add_argument("--profile", default="generic")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="explicit requirements: they win over the brief")

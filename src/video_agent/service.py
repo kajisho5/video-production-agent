@@ -23,6 +23,7 @@ from .agent.speakers import check_speaker_keys, speaker_assign_requested, speake
 from .agent import measurements as measurements_task
 from .agent import deadline as deadline_task
 from .agent import chunks as chunks_task
+from .agent import follow as follow_task
 from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.faces import REQUIREMENT_KEYS as _FACE_REQUIREMENT_KEYS, check_face_keys, face_kind
@@ -1563,6 +1564,37 @@ class Service:
         if rec is not None:
             d["chunked_render"] = rec
             d["plan"]["summary"].append(chunks_task.summary_line(rec))
+        return rec
+
+    def follow_recording(self, recording: str, **kw: Any) -> Dict[str, Any]:
+        """ADR-136: follow a recording still being written through media-analysis-skill `follow` until it is complete (agent/follow.py).
+        Keyword arguments are follow_task.follow's (interval, settle, marker, final, kind, max_wait, once, emit, clock, sleep)."""
+        from .tools.ffmpeg_skill.adapter import run_process_group
+        skill = locate_media_analysis(self.media_analysis_dir)
+        run = None
+        if skill is not None:
+            def run(argv: List[str], timeout: float) -> "tuple[int, str, str]":
+                old = {k: os.environ.get(k) for k in skill.env}
+                try:
+                    for k, v in skill.env.items():   # as the adapter does: the checkout's src on PYTHONPATH, the rest of the environment kept
+                        os.environ[k] = v if k != "PYTHONPATH" or not old.get(k) else v + os.pathsep + old[k]
+                    return run_process_group(list(skill.command) + argv, timeout)
+                finally:
+                    for k, v in old.items():
+                        if v is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = v
+        return follow_task.follow(run, recording, self.workspace, **kw)
+
+    def apply_deadline_after(self, ir: ProjectIR, after: str, follow_rec: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
+        """ADR-136: a deadline N after the recording ended (ADR-133's estimate and drops), counted from the moment its completion was
+        detected; the time since then (the plan's own analysis) is already spent."""
+        secs = follow_task.parse_after(after)
+        rec = self.apply_deadline(ir, follow_task.deadline_text(secs, float(follow_rec["detected_epoch"]), now=now), now=now)
+        rec["deadline"] = f"{after} after the recording ended"
+        rec["relative_to"] = {"event": "recording_complete", "detected_at": follow_rec["detected_at"], "after_seconds": secs, "reason": follow_rec.get("reason")}
+        ir.doc["deadline"] = rec
         return rec
 
     def _hw_encoder(self) -> bool:

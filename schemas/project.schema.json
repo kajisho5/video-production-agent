@@ -612,6 +612,33 @@
     },
     "warning": {
      "type": "string"
+    },
+    "relative_to": {
+     "type": "object",
+     "description": "ADR-136: a deadline N after the recording ended (video-agent follow --deadline-after), counted from when its completion was detected",
+     "additionalProperties": false,
+     "required": [
+      "event",
+      "detected_at",
+      "after_seconds"
+     ],
+     "properties": {
+      "event": {
+       "const": "recording_complete"
+      },
+      "detected_at": {
+       "type": "string"
+      },
+      "after_seconds": {
+       "type": "number"
+      },
+      "reason": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     }
     }
    }
   },

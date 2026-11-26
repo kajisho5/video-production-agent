@@ -94,6 +94,7 @@ video-agent preflight <workspace>/plans/input.youtube.project.json   # 書き出
 video-agent render <workspace>/plans/input.youtube.project.json --resume last   # 途中失敗後: 完了済み操作を再利用
 video-agent plan allday.mp4 --profile youtube --chunk-seconds 600   # 長尺（30 分以上は既定で 600 s）: 書き出しを frame 単位の区間ごとに行い stream copy でつなぐ（ADR-135）。--chunk-seconds 0 で一括
 video-agent render <plan> --resume last   # 止まった render は最初の未完了区間から再開（<job>/chunks.json に区間ごとの状態）
+video-agent follow /Volumes/REC/room-a.mkv --profile youtube --interval 10 --settle 30 --deadline-after 30m   # 収録中のファイル（MKV / MPEG-TS / fragmented MP4）を media-analysis-skill follow で追い、完了（--final / --complete-marker / settle）を検出したら plan する。締め切りは完了検出時刻から（ADR-136）。--render で続けて render
 video-agent reject  <project> --decision <id> --reason "..."       # 却下（理由必須）→ render は BLOCKED
 video-agent revise  <project> [--set audio.loudness.target_lufs=-16]  # Plan v2 を生成（v1 は .v1.json に保存）、PlanDiff を表示
 video-agent approve <project> --decision all                       # v2 を承認して render 可能に
