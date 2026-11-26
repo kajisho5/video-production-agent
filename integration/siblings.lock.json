@@ -11,10 +11,10 @@
     },
     "audio-production": {
       "repo": "kajisho5/audio-production-skill",
-      "tag": "v1.4.3",
-      "sha": "2e2eef1417642e6542845c6dde2313b1df436515",
-      "version": "1.4.3",
-      "pin": "src/video_agent/tools/audio_production/contract_1.4.3.json"
+      "tag": "v1.5.0",
+      "sha": "91374b46dca106f8f04cf5844b870111aef30bae",
+      "version": "1.5.0",
+      "pin": "src/video_agent/tools/audio_production/contract_1.5.0.json"
     },
     "blender": {
       "repo": "kajisho5/blender-skill",
@@ -74,10 +74,10 @@
     },
     "media-analysis": {
       "repo": "kajisho5/media-analysis-skill",
-      "tag": "v0.2.0",
-      "sha": "a11b408f9a9232aa891fe3cd3095955c2c2af2b8",
-      "version": "0.2.0",
-      "pin": "src/video_agent/tools/media_analysis/contract_0.2.0.json"
+      "tag": "v0.3.0",
+      "sha": "093254f7ac887e53c7c658c6f99a844848a37fb9",
+      "version": "0.3.0",
+      "pin": "src/video_agent/tools/media_analysis/contract_0.3.0.json"
     },
     "motion-graphics": {
       "repo": "kajisho5/motion-graphics-skill",
@@ -144,10 +144,10 @@
     },
     "transcription": {
       "repo": "kajisho5/transcription-skill",
-      "tag": "v0.14.0",
-      "sha": "96e9a08d625811d426d8b693763e26b5c5a9167d",
-      "version": "0.14.0",
-      "pin": "src/video_agent/tools/transcription/contract_0.14.0.json"
+      "tag": "v0.15.0",
+      "sha": "b7beb5a121d1dbff7daf67334a9bf93309f0522f",
+      "version": "0.15.0",
+      "pin": "src/video_agent/tools/transcription/contract_0.15.0.json"
     },
     "video-editing": {
       "repo": "kajisho5/video-editing-skill",

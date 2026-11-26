@@ -53,7 +53,7 @@ class VersionGateTests(unittest.TestCase):
         self.assertTrue({"follow_growing_files", "chunked_long_recordings", "transcript_search", "domain_vocabulary", "post_correction"} <= set(tr.pinned_contract()["capabilities"]))
         self.assertIn("transcription/find", [t["name"] for t in tr.pinned_contract()["tools"]])
         self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")
-        for v in ("0.1.0", "0.3.0", "0.15.0", "0.130.0", "1.0.0"):
+        for v in ("0.1.0", "0.3.0", "0.16.0", "0.130.0", "1.0.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
@@ -157,11 +157,11 @@ class VersionGateTests(unittest.TestCase):
         # addendum 32: 1.4.0 adds the top-level loudness.loudnorm_mode (additive); the gate takes 1.4.x
         self.assertEqual(ap.pinned_contract()["version"], pinned_version("audio-production"))   # addendum 17: 1.3.0 adds the opt-in filler_lexicons.opt_in / opt_in_use
         self.assertTrue({"LOUDNESS_SET", "STEMS"} <= {o["type"] for o in ap.pinned_contract()["operations"]})
-        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2", "1.4.0", "1.4.3", "1.4.3", pinned_version("audio-production")):
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2", "1.4.0", "1.5.0", "1.5.0", pinned_version("audio-production")):
             live = with_version(ap.pinned_contract(), v)
             self.assertEqual(ap.check_contract(live), [], v)
             self.assertEqual(ap.contract_breaking_drift(live), [], v)
-        for v in ("0.5.0", "1.5.0", "1.10.0", "2.0.0", "10.0.0"):
+        for v in ("0.5.0", "1.6.0", "1.10.0", "2.0.0", "10.0.0"):
             self.assertTrue(ap.check_contract(with_version(ap.pinned_contract(), v)), v)
         # a 1.0.x install (no LOUDNESS_SET / STEMS) is drift against the 1.4.1 pin, and fatal, as after every content re-pin
         old = with_version(ap.pinned_contract(), "1.0.1")
