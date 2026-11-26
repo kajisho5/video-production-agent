@@ -143,7 +143,7 @@ class VersionGateTests(unittest.TestCase):
         # same contract; 1.0 is not a new contract generation, and 0.7 / 1.1 / 2.0 stay out. Addendum 1: the 1.0 line is kept; 1.0.1 is version-only
         # ADR-107 addendum 5: 1.1.0 adds opt-in alpha_mode / drop_alpha (the alpha block changed: re-pinned); the gate takes 1.1.x, 1.2 / 2.0 stay out
         self.assertEqual(cg.pinned_contract()["version"], pinned_version("color-grading"))   # ADR-105: 0.5.1, HLG tone map defaults to mobius
-        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1", "1.1.0", "1.2.0", pinned_version("color-grading")):
+        for v in ("0.2.0", "0.4.0", "0.5.0", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "1.0.0", "1.0.1", "1.1.0", "1.2.1", pinned_version("color-grading")):
             live = with_version(cg.pinned_contract(), v)
             self.assertEqual(cg.check_contract(live), [], v)
             self.assertEqual(cg.contract_breaking_drift(live), [], v)
