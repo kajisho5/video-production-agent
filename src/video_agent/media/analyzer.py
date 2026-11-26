@@ -13,6 +13,7 @@ from ..models import Asset, Observation, now_iso
 from ..temporal import Timeline
 from ..temporal.events import events_from_observation
 from ..tools.base import ToolAdapter, ToolError
+from . import longform as longform_task
 from .analysis import (probe_facts, sync_facts, ANALYSIS_KINDS, CORE_KINDS, CROP_TOOL_ARGS, IR_STRATEGY, LEGACY_STRATEGY, SYNC_MIN_CONFIDENCE_DEFAULT, SYNC_TOOL_PARAMS, AnalysisError,
                        AnalysisRequest, Analyzer, BudgetMeter, ObservationCache, cache_key, validate_observation)
 
@@ -144,6 +145,20 @@ class MediaAnalyzer(Analyzer):
             if "transcript_hits" in kinds_here:   # step 33: the search reads the transcript measured just before it
                 kinds_here = sorted(kinds_here, key=lambda k: 1 if k == "transcript_hits" else 0)
             transcript_of: Optional[Observation] = None
+            longform = None
+            if "transcript" in kinds_here and has_audio and "speech_transcription" in self.tools:   # ADR-132: a long input is transcribed in chunks
+                tr_tool = self.tools["speech_transcription"]
+                longform = longform_task.plan_source(dur, req.kind_params("transcript").get("language"),
+                                                     declares=lambda k: bool(getattr(self.adapter, "declares_input", lambda t, kk: False)(tr_tool, k)),
+                                                     regions_tool="speech_region_analysis" in self.tools)
+                if longform and longform.get("cuts_from") == "speech_regions":   # the regions are measured just before the transcript
+                    kinds_here = [k for k in kinds_here if k != "speech_regions"]
+                    kinds_here.insert(kinds_here.index("transcript"), "speech_regions")
+                    if "speech_regions" not in req.kinds:
+                        req.kinds = list(req.kinds) + ["speech_regions"]   # the request records what this analysis measured
+                if longform and not longform["chunked"]:
+                    warnings.append(f"{p}: {longform['duration']:.0f} s input: {longform['reason']}")
+            regions_obs: Optional[Observation] = None
             for kind in kinds_here:
                 only = ANALYSIS_KINDS[kind].get("only_input_param")
                 if only and req.params.get(only) != n_input:
@@ -193,7 +208,14 @@ class MediaAnalyzer(Analyzer):
                     args = {"input": asset.path}
                 else:
                     args = {"input": asset.path}
+                if kind == "transcript" and longform and longform["chunked"]:
+                    kp = dict(kp, **longform_task.transcribe_params(longform, longform_task.regions_of(regions_obs.data) if regions_obs else None))
                 o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
+                if kind == "transcript" and longform:
+                    row["longform"] = dict(longform)
+                    if o is not None and longform["chunked"]:   # chunked recognition, and which measured regions its cuts come from (an id, not a copy)
+                        o.parameters = dict(o.parameters or {}, chunk_seconds=longform["chunk_seconds"],
+                                            **({"speech_regions": regions_obs.id} if longform.get("cuts_from") == "speech_regions" and regions_obs else {}))
                 rows.append(row)
                 if o is None:
                     warnings.append(f"{kind} analysis failed for {p}: {(row.get('error') or {}).get('kind')} {(row.get('error') or {}).get('message', '')}".rstrip())
@@ -207,6 +229,8 @@ class MediaAnalyzer(Analyzer):
                     attrs_of = o
                 if kind == "transcript":
                     transcript_of = o
+                if kind == "speech_regions":
+                    regions_obs = o
                 if kind == "transcript_hits":
                     o.parameters = {k: v for k, v in (o.parameters or {}).items() if k != "transcript"} | {"transcript": transcript_of.id}
                 self._events(kind, o, asset, dur, tl, params)

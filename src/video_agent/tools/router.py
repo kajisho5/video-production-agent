@@ -63,3 +63,8 @@ class ToolRouter(ToolAdapter):
     def owns_cache_for(self, tool: str) -> bool:
         a = self.adapter_for(tool)
         return bool(getattr(a, "owns_cache", False)) if a else False
+
+    def declares_input(self, tool: str, key: str) -> bool:
+        """Whether the installed Skill behind `tool` takes request input `key` (an opt-in input the agent sends only where declared)."""
+        a = self.adapter_for(tool)
+        return bool(getattr(a, "declares_input", lambda t, k: False)(tool, key)) if a else False
