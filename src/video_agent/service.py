@@ -29,6 +29,7 @@ from .agent.dubbing import check_dub_keys, user_files as dub_user_files
 from .agent.publish import check_publish_keys
 from .agent.slides import check_slide_keys, slide_kind
 from .agent.bgm import check_bgm_keys
+from .agent import microphones as mic_task
 from .agent import qc_checks as qc_checks_task
 from .agent import transcript_verify as verify_task
 from .agent import transcribe_options as transcribe_task
@@ -505,7 +506,7 @@ class Service:
         self.require_tools(tools, ["media_probe", "silence_analysis", "loudness_analysis"] + [ANALYSIS_KINDS[k]["skill"] for k in (kinds or []) if k in ANALYSIS_KINDS and k not in CORE_KINDS], adapter, user_requirements)
         req = self.analysis_request(inputs, rules, request_text, user_requirements, profile, hash_sources, strategy=strategy, cache_policy=cache_policy, kinds=kinds, params=params)
         analyzer = MediaAnalyzer(adapter, tools=tools, silence_threshold_db=float(rules.get("silence.threshold_db", -40)), hash_sources=hash_sources,
-                                 cache_dir=self.workspace if use_cache else None)
+                                 cache_dir=self.workspace if use_cache else None, work_dir=self.workspace)
         analysis = analyzer.run(req)
         if ingest_records:
             by_path = {str(Path(a.path).resolve()): a for a in analysis.assets}
@@ -546,6 +547,8 @@ class Service:
         explicit = dict(user_requirements or {})
         _check_requirement_keys(explicit)
         self._check_provider_requirements(explicit)
+        if mic_task.requested(explicit):   # ADR-134: recorded as used (absolute paths, ids, roles), so a revision reads the same microphones from anywhere
+            explicit[mic_task.MICS_KEY] = mic_task.parse_microphones(explicit[mic_task.MICS_KEY])
         self._ai_calls = []   # provenance.ai_calls of this project: the brief's call (if any) and the recommendation call share the budget
         brief_record = self.extract_brief(brief, explicit, profile_name, answer=brief_answer, ai_model=ai_model) if (brief or "").strip() else None
         user_requirements = {**brief_task.values_of(brief_record), **explicit}   # explicit wins (ADR-061)
@@ -570,6 +573,9 @@ class Service:
         if ent_rec is not None:
             user_requirements = entities_task.requirement_values(ent_rec, user_requirements)
             _check_requirement_keys(user_requirements)   # the values the entity memory supplied pass the same gate
+        if ent_rec is not None and mic_task.requested(user_requirements):
+            user_requirements = self._entity_microphones(ent_rec, user_requirements)   # ADR-134: a microphone's speaker in the entity memory's spelling
+        mic_groups = self._microphone_groups(inputs, user_requirements)
         qc_checks_task.parse_qc_check_requirements(user_requirements)   # ADR-112: the stinger / loop-seam checks with something to check, before any analysis
         if _subtitles_requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # the cues come from a recognised transcript (ADR-031): the measurement a requirement needs, chosen by the system
@@ -639,6 +645,13 @@ class Service:
             params = dict(params or {}, **topts)   # the transcript kind's parameters (media/analysis.py): no other kind reads them
         if ent_rec is not None and "transcript" in (kinds or []):   # ADR-128: the names to transcription-skill's own domain_vocabulary / corrections
             params = self._entity_transcription(ent_rec, inputs, allowed, dict(params or {}), user_requirements)
+        if mic_groups:
+            files = [m_["path"] for g in mic_groups.values() for m_ in g if "path" in m_]
+            if files:   # ADR-134: the microphone files are read by the Skills too: their directories join the analysis roots
+                allowed = sorted(set(list(allowed or [str(Path(p_).resolve().parent) for p_ in inputs]) + [str(Path(f).resolve().parent) for f in files]))
+            by_mic = {k: g for k, g in mic_groups.items() if sum(1 for m_ in g if m_["role"] in mic_task.MIXED_ROLES) >= 2}
+            if by_mic and "transcript" in (kinds or []):   # a clip with 2+ speakers' microphones is transcribed by microphone (transcription/microphones)
+                params = dict(params or {}, microphones=by_mic)
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records, allowed_inputs=allowed)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {}),
@@ -655,6 +668,41 @@ class Service:
             ir.doc["plan"]["summary"] += entities_task.summary_lines(ent_rec)
             ir.finalize_hash()
         return ir
+
+    @staticmethod
+    def _microphone_groups(inputs: List[str], reqs: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        """ADR-134: the declared microphones by the input they belong to (absolute path): `clip` names it, else the only input. With several
+        inputs and no `clip` they are not grouped here (the decision blocks on it after the probe)."""
+        if not mic_task.requested(reqs):
+            return {}
+        mics = mic_task.parse_microphones(reqs[mic_task.MICS_KEY])
+        paths = [str(Path(p_).resolve()) for p_ in inputs]
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for m_ in mics:
+            want = m_.get("clip")
+            hits = [p_ for p_ in paths if not want or os.path.realpath(p_) == os.path.realpath(os.path.abspath(want)) or os.path.basename(p_) == os.path.basename(want)]
+            if len(hits) == 1:
+                out.setdefault(hits[0], []).append(m_)
+        return out
+
+    @staticmethod
+    def _entity_microphones(rec: Dict[str, Any], reqs: Dict[str, Any]) -> Dict[str, Any]:
+        """ADR-134: a microphone whose speaker (or name) is a person in the entity memory is shown and transcribed in that entity's spelling."""
+        mics = mic_task.parse_microphones(reqs[mic_task.MICS_KEY])
+        new, used = [], []
+        for m_ in mics:
+            e = entities_task.find(rec["entities"], m_.get("speaker") or m_["name"])
+            if e is not None and e.get("type") == "person" and m_.get("speaker") != e["canonical"]:
+                new.append(dict(m_, speaker=e["canonical"]))
+                used.append(e["id"])
+            else:
+                new.append(m_)
+        if not used:
+            return reqs
+        rec.setdefault("rewrites", {})[mic_task.MICS_KEY] = {"from": reqs[mic_task.MICS_KEY], "to": new, "entity": ",".join(used)[:200]}
+        rec.setdefault("applied", []).append({"use": "microphones", "entities": used,
+                                              "line": f"entities: {len(used)} speaker name(s) of the microphones in the entity memory's spelling"})
+        return dict(reqs, **{mic_task.MICS_KEY: new})
 
     def _entity_record(self, reqs: Dict[str, Any], project: Optional[str], use: bool) -> Optional[Dict[str, Any]]:
         """ADR-128: the entity memory a plan applies (global + the project's store), or None when there is none. `subtitle.emphasis=entities`
@@ -1022,7 +1070,9 @@ class Service:
                                           + ([word_cut_task.AI_INTENT] if word_cut_task.parse_word_cut_requirements(rm) is not None else []),
                                           # ADR-109: the numbered words the AI names ranges of (indices and text, never times to write back)
                                           extra_context=word_cut_task.ai_context(analysis) if word_cut_task.parse_word_cut_requirements(rm) is not None else None)
-        decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default)
+        decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default,
+                           mic_channel_ok=self._mic_extract_ok(router, tools) if mic_task.MICS_KEY in rm else None,
+                           mic_track_ok=self._mic_track_ok(router, tools) if mic_task.TRACKS_KEY in rm else None)
         dropped: List[Dict[str, Any]] = []
         if suppressed:
             keys = {(s["subject"], s.get("asset_id")) for s in suppressed}
@@ -1041,6 +1091,35 @@ class Service:
                           constraints=[r.to_dict() for r in rules.all_rules if r.hard], objective=f"{intent.primary} ({profile.name})", inferences=inferences,
                           audio_production=bool(parse_audio_requirements(rm)["production"]), qc_tolerance_lu=float(rules.get("audio.loudness.tolerance_lu", 2.0)))
         return reqs, intent, inferences, decisions, plan, dropped, contexts
+
+    @staticmethod
+    def _mic_extract_ok(router: Any, tools: Dict[str, str]) -> Optional[bool]:
+        """ADR-134: whether the engine tool the registry chose for mic_extract publishes --channel and --sample-rate (None: not known here)."""
+        tool = tools.get(mic_task.EXTRACT_SKILL)
+        ad = router.adapter_for(tool) if tool else None
+        skill = getattr(ad, "skill", None)
+        if skill is None or not hasattr(skill, "catalog_check"):
+            return None
+        try:
+            chk = skill.catalog_check()
+        except Exception:   # noqa: BLE001 -- an unreadable contract is "not known here"; the step is refused at run time instead
+            return None
+        if getattr(chk, "status", "") != "checked":
+            return None
+        name = tool.split("/", 1)[1]
+        return bool(chk.offers(name, "channel") and chk.offers(name, "sample_rate"))
+
+    @staticmethod
+    def _mic_track_ok(router: Any, tools: Dict[str, str]) -> Optional[bool]:
+        """ADR-134: whether the engine audio-production writes language tracks with publishes audio --track (4.x); None: not known here."""
+        tool = tools.get(mic_task.EXTRACT_SKILL)
+        skill = getattr(router.adapter_for(tool) if tool else None, "skill", None)
+        if skill is None or not hasattr(skill, "offers_flag"):
+            return None
+        try:
+            return bool(skill.offers_flag(tool.split("/", 1)[1], "--track"))
+        except Exception:   # noqa: BLE001 -- not known here; audio-production refuses the step itself
+            return None
 
     def _ai_inferences(self, analysis: AnalysisResult, rules, prior_ai=None, request_text: str = "", intent: str = "", extra_intents: Optional[List[str]] = None,
                        extra_context: Optional[Dict[str, Any]] = None) -> List[Inference]:
@@ -1072,6 +1151,8 @@ class Service:
         d["requirements"] = [r.to_dict() for r in reqs]
         d["source"] = {"agent_version": __version__, "tool_versions": self.tool_versions(), "generator": "video-agent plan"}
         d["assets"] = {a.id: a.to_dict() for a in analysis.assets}
+        for aid_, mics_ in self._declared_microphones(reqs, analysis).items():   # ADR-134: written only when declared, so an unchanged request keeps its plan hash
+            d["assets"][aid_]["microphones"] = mics_
         d["analysis"] = {"observations": [o.to_dict() for o in analysis.observations], "inferences": [i.to_dict() for i in inferences], "strategy": analysis.strategy,
                          "budget": {**(analysis.budget or {}), "requested_strategy": rules.get("analysis.strategy")},
                          "warnings": analysis.warnings, "tool_calls": analysis.tool_calls, "analyses": analysis.analyses,
@@ -1092,6 +1173,8 @@ class Service:
         d["audio"] = {"operations": plan["audio_ops"]}
         if plan.get("take_crossfade"):   # ADR-054: the join crossfades of a take assembly; written only when planned
             d["audio"]["take_crossfade"] = plan["take_crossfade"]
+        if plan.get("automix"):   # ADR-134: the clips' microphones mixed (and their language tracks); written only when planned
+            d["audio"]["automix"] = plan["automix"]
         # finishing sections (ADR-031) and the QC gate (ADR-032): written only when planned, so an unchanged request keeps its plan hash
         d["captions"] = {"operations": plan["captions_ops"]} if plan.get("captions_ops") else {}
         d["graphics"] = {"operations": plan["graphics_ops"]} if plan.get("graphics_ops") else {}
@@ -1143,6 +1226,8 @@ class Service:
         images += [plan["qc"]["reference"]["path"]] if ((plan.get("qc") or {}).get("enabled") and (plan["qc"].get("reference") or {}).get("path")) else []   # ADR-058: the QC master
         images += [op[k] for op in plan["video_ops"] if op.get("type") == "video.measured_motion" for k in ("captions", "options", "font_file") if op.get(k)]   # ADR-093
         images += [str(Path(op["project"]) / "package.json") for op in plan["video_ops"] if op.get("type") == "video.measured_motion"]
+        images += [(m_.get("source") or {}).get("path") for a_ in d["assets"].values() for m_ in a_.get("microphones") or []
+                   if (m_.get("source") or {}).get("kind") == "file"]   # ADR-134: the microphone files
         images += [doc["path"] for doc in plan.get("documents") or []]   # ADR-095: the document artifacts-skill verifies
         images += [str(Path(op["library"]) / "sound-library.json") for op in plan["audio_ops"] if op.get("type") == "audio.bgm" and op.get("library")]   # ADR-092: the library folder
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
@@ -1153,6 +1238,23 @@ class Service:
         ir.refresh_plan_status()
         ir.finalize_hash()
         return dropped
+
+    @staticmethod
+    def _declared_microphones(reqs: List[Any], analysis: AnalysisResult) -> Dict[str, List[Dict[str, Any]]]:
+        """ADR-134: `assets[<id>].microphones` -- each declared microphone on the clip it belongs to, a file with its sha256."""
+        try:
+            req = mic_task.parse_requirements(requirement_map(reqs))
+        except Exception:   # noqa: BLE001 -- refused earlier with its reason (the --set gate); nothing is declared then
+            return {}
+        if req is None:
+            return {}
+        from .tools.skill_process import sha256_file
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for m_ in req["microphones"]:
+            a_, _ = mic_task.clip_of(m_, analysis.assets)
+            if a_ is not None:
+                out.setdefault(a_.id, []).append(mic_task.declared(m_, sha256_file(m_["path"]) if "path" in m_ else None))
+        return out
 
     # ---- review workflow
     def approve(self, ir: ProjectIR, ir_path: str, ids: List[str], who: Optional[str] = None, reason: str = "") -> Dict[str, Any]:
@@ -1995,7 +2097,7 @@ class Service:
                     continue
                 rows.append({"logical": logical, "type": t.get("artifact_type", "MASTER"), "sources": list(subject["sources"]), "format": planned.get(logical, {}).get("format") or t.get("preset") or "", "target": t["id"], "target_decision_ids": list(t.get("decision_ids") or [])})
             for o in d["plan"].get("outputs") or []:   # finishing outputs of the subject (ADR-031): the subtitle sidecar and the thumbnail; the editor timeline (ADR-052)
-                if o.get("role") in ("CAPTIONS", "THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE") and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
+                if o.get("role") in ("CAPTIONS", "THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE", mic_task.TRACKS_ROLE) and (o.get("expected") or {}).get("source") == asset_id and o["logical"] in paths:
                     rows.append({"logical": o["logical"], "type": o["role"], "sources": list(subject["sources"]), "format": o.get("format") or "", "target": o["role"].lower()})
         for row in rows:
             logical, t = row["logical"], {"id": row["target"], "preset": row["format"], "artifact_type": row["type"]}
@@ -2009,8 +2111,8 @@ class Service:
                 art_qa = "FAIL" if "FAIL" in statuses else ("WARN" if "WARN" in statuses else ("PASS" if items else "UNKNOWN"))
                 # the gate covers deliverables and sidecars by their own reports (no admitted report → FAIL, never promoted on silence); a thumbnail is
                 # covered only as a member of its deliverable set (ADR-065), a timeline not at all
-                qc_verdict: Optional[str] = qc_verdict_of(items, gated=row["type"] not in ("THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE")) if qc_enabled else None
-                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "timeline_export") + THUMBNAIL_SKILLS and logical in o.outputs), None)
+                qc_verdict: Optional[str] = qc_verdict_of(items, gated=row["type"] not in ("THUMBNAIL", "THUMBNAIL_LAYERS", "TIMELINE", mic_task.TRACKS_ROLE)) if qc_enabled else None
+                exp = next((o for o in ops if o.skill in ("delivery_export", "subtitle_generation", "timeline_export", mic_task.TRACKS_SKILL) + THUMBNAIL_SKILLS and logical in o.outputs), None)
                 # a no-preset deliverable is an alias (compiler.delivery(): "the last processed intermediate
                 # is the deliverable") — no op names `logical` itself, so also credit whichever real op's
                 # output resolved to this same on-disk path, or a processed deliverable would misreport as
@@ -2369,6 +2471,7 @@ _SWITCH_REQUIREMENT_KEYS = frozenset(   # surface (1): what a request asks for
     | set(_TAKES_REQUIREMENT_KEYS)
     | set(word_cut_task.REQUIREMENT_KEYS)   # ADR-109: edit.word_cut and its pre / post roll
     | set(_FACE_REQUIREMENT_KEYS)   # ADR-090: edit.redact_faces and its refinements
+    | set(mic_task.REQUIREMENT_KEYS)   # ADR-134: audio.microphones, audio.automix(.*), audio.language_tracks(.*)
 )
 # ADR-112: the opt-in qc-skill checks of a stinger join and a looped bed. Known keys, but not a brief's (or a stored preference's): the limits are
 # QA policy, which only an explicit --set states
@@ -2381,7 +2484,7 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS | 
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
 _PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
                                     "edit.concat.stinger", "edit.condense", "edit.transcript_edit", "edit.selects", "edit.ai_generated", "motion.layer", "motion.themes",
-                                    "subtitle.fonts_dir"})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
+                                    "subtitle.fonts_dir"} | set(mic_task.PATH_KEYS) | {mic_task.PRESET_KEY})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
 
 
@@ -2464,6 +2567,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_document_keys(user_requirements)   # ADR-095: document.verify an existing non-caption file, the preset one of artifacts-skill's names
     check_remotion_keys(user_requirements)   # ADR-093: remotion.* keys known, a composition that keeps the clock, the user's project and files exist
     check_html_layer_keys(user_requirements)   # ADR-114: hyperframes.* only with motion.layer=hyperframes, a template + values or a scene request, segments that add up
+    mic_task.check_keys(user_requirements)   # ADR-134: the clip's microphones (files exist, channels, roles, languages), the automix / language-track keys with their switch
     check_bgm_keys(user_requirements)   # ADR-092: bgm.* keys known, one mode, a library folder that is a sound-design library, with audio.production + audio.mix
     verify_task.parse_verify_requirements(user_requirements)   # ADR-110: verify.* keys known, a switch, in range
     transcribe_task.parse_transcribe_requirements(user_requirements)   # ADR-113: transcribe.* keys known, an engine id / a model name / a segmentation mode

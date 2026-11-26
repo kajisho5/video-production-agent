@@ -58,6 +58,11 @@ class AnalysisResult:
                    analyses=list(doc["analysis"].get("analyses") or []), budget=dict(doc["analysis"].get("budget") or {}))
 
 
+def longform_task_keys() -> tuple:
+    """The chunked-recognition keys (ADR-132) a transcription by microphone does not take (each microphone is one request of its own)."""
+    return ("chunk_seconds", "parallel", "speech_regions")
+
+
 class MediaAnalyzer(Analyzer):
     id = "media"
     version = "1.0"
@@ -66,7 +71,7 @@ class MediaAnalyzer(Analyzer):
     SKILLS = tuple(ANALYSIS_KINDS[k]["skill"] for k in CORE_KINDS)   # required; other kinds need their tool in the map when requested
 
     def __init__(self, adapter: ToolAdapter, tools: Dict[str, str], silence_threshold_db: float = -40.0, min_silence: float = 0.5, strategy: str = "FULL_ANALYSIS",
-                 hash_sources: bool = True, cache_dir: Optional[str] = None):
+                 hash_sources: bool = True, cache_dir: Optional[str] = None, work_dir: Optional[str] = None):
         """`tools` is the skill → tool id map selected by SkillRegistry for this environment. The analyzer has no
         default engine: every measurement skill it uses must be present in the map."""
         if tools is None:
@@ -82,6 +87,7 @@ class MediaAnalyzer(Analyzer):
         self.tools = dict(tools)
         self.cache = ObservationCache(cache_dir)
         self.measure_calls = 0   # tool calls actually made (cache hits excluded); the budget counts these
+        self.work_dir = work_dir   # ADR-134: where a clip's channel microphones are written as files for transcription (<workspace>/cache/microphones)
 
     def _tool(self, skill: str) -> str:
         if skill not in self.tools:
@@ -210,7 +216,12 @@ class MediaAnalyzer(Analyzer):
                     args = {"input": asset.path}
                 if kind == "transcript" and longform and longform["chunked"]:
                     kp = dict(kp, **longform_task.transcribe_params(longform, longform_task.regions_of(regions_obs.data) if regions_obs else None))
-                o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
+                mic_group = ((req.params.get("microphones") or {}).get(asset.path) or None) if kind == "transcript" else None
+                if mic_group:   # ADR-134: the clip's microphones, each transcribed on its own and merged by time (transcription/microphones)
+                    longform = None
+                    o, row = self._observe_microphones(req, meter, asset, fp, {k: v for k, v in kp.items() if k not in longform_task_keys()}, calls, mic_group)
+                else:
+                    o, row = self._observe(req, meter, kind, asset, fp, args, kp, calls, [asset.id])
                 if kind == "transcript" and longform:
                     row["longform"] = dict(longform)
                     if o is not None and longform["chunked"]:   # chunked recognition, and which measured regions its cuts come from (an id, not a copy)
@@ -423,6 +434,83 @@ class MediaAnalyzer(Analyzer):
             return None, row
         if req.cache_policy != "bypass" and not skill_cache:
             self.cache.put(key, o, {"analyzer": self.identity, "tool": source, "params": kparams, "at": o.observed_at})
+        return o, row
+
+    def _observe_microphones(self, req: AnalysisRequest, meter: BudgetMeter, asset: Asset, fp: str, kparams: Dict[str, Any], calls: List[Dict[str, Any]],
+                             group: List[Dict[str, Any]]):
+        """ADR-134: the transcript of a clip by microphone. A channel of the clip is first written as a mono WAV (the registry's mic_extract tool,
+        under <workspace>/cache/microphones, named by the clip's content and the channel); a microphone file is read as it is. The Skill caches each
+        microphone's recognition; the agent keeps no copy. The merged transcript must be about the first microphone's file."""
+        from ..agent.microphones import MIXED_ROLES, speakers_of, transcript_name, transcription_microphones
+        from ..models import Operation
+        row: Dict[str, Any] = {"asset_id": asset.id, "kind": "transcript", "status": "OK", "cache_hit": False}
+        tr_tool = self.tools.get("speech_transcription") or ""
+        tool = tr_tool.split("/", 1)[0] + "/microphones" if tr_tool else ""
+        mixed = [m for m in group if m.get("role") in MIXED_ROLES]
+
+        def fail(kind_: str, msg: str):
+            row.update({"status": "FAILED", "error": {"kind": kind_, "message": msg[:300]}})
+            return None, row
+        if not tool or not self.adapter.supports(tool):
+            return fail("ANALYZER_UNAVAILABLE", "the installed transcription-skill has no transcription/microphones (0.15.0 or later)")
+        if len(mixed) < 2:
+            return fail("ANALYSIS_UNSUPPORTED", f"{len(mixed)} floor / presenter microphone(s): transcription by microphone needs 2..8")
+        files: Dict[str, str] = {}
+        for m in mixed:
+            if "channel" not in m:
+                continue
+            ext = self.tools.get("mic_extract")
+            if not ext or not self.work_dir:
+                return fail("ANALYZER_UNAVAILABLE", "a channel microphone needs the mic_extract tool and a workspace to be written as a file first")
+            out = Path(self.work_dir) / "cache" / "microphones" / f"{fp.replace(':', '_')[:40]}_ch{int(m['channel'])}.wav"
+            if not out.is_file() or out.stat().st_size == 0:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    meter.check(f"microphone channel {m['channel']} of {asset.path}")
+                except AnalysisError as e:
+                    return fail(e.kind, str(e))
+                meter.spent()
+                self.measure_calls += 1
+                r = self.adapter.run(Operation(tool=ext, args={"input": asset.path, "channel": int(m["channel"]), "output": str(out)}, inputs=[asset.path], outputs=[str(out)]), {})
+                calls.append({"tool": r.tool, "ok": r.ok, "seconds": r.seconds, "kind": "transcript", "analysis_id": req.analysis_id})
+                if not r.ok or not out.is_file():
+                    return fail("ANALYZER_UNAVAILABLE", f"channel {m['channel']} could not be written as a file: {r.stderr_tail or (r.data or {}).get('error')}")
+            files[m["id"]] = str(out)
+        mic_in = transcription_microphones(group, files)
+        params = dict(kparams, microphones=mic_in)
+        source = f"{tool}@{self.adapter.version_of(tool) if hasattr(self.adapter, 'version_of') else ''}"
+        key = cache_key(fp, "transcript", self.identity, source, {k: v for k, v in params.items()})
+        row.update({"tool": source, "cache_key": key, "cache_owner": tool.split("/", 1)[0]})
+        if req.cache_policy == "only":
+            return fail("ANALYZER_UNAVAILABLE", "CACHED_ONLY: transcription by microphone has no cache-only mode")
+        try:
+            meter.check(f"transcript by microphone of {asset.path}")
+        except AnalysisError as e:
+            return fail(e.kind, str(e))
+        meter.spent()
+        self.measure_calls += 1
+        args = self.adapter.measurement_args(tool, "transcript", asset.path, asset.id, params, req.analysis_id, req.cache_policy)
+        r = self.adapter.measure(tool, args)
+        calls.append({"tool": r.tool, "ok": r.ok, "seconds": r.seconds, "kind": "transcript", "analysis_id": req.analysis_id})
+        if not r.ok or not isinstance((r.data or {}).get("transcript"), dict):
+            ext_err = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+            row.update({"status": "FAILED", "error": {"kind": "ANALYZER_UNAVAILABLE", "message": (((ext_err or {}).get("message")) or r.stderr_tail or "")[:300],
+                                                      "skill_error": (ext_err or {}).get("code")}})
+            return None, row
+        o = self._lift_transcript(r.data, asset, req, source, key, tool)
+        first = mic_in[0]["input"]
+        want = sha256_file(first)
+        if o.fingerprint != want:
+            return fail("ANALYSIS_INVALID_RESULT", f"the merged transcript is not about the first microphone's file ({os.path.basename(first)})")
+        o.parameters = dict(o.parameters or {}, microphones=[{"id": m["id"], "name": transcript_name(m), "role": m["role"],
+                                                              "source": "channel" if "channel" in m else "file", **({"channel": m["channel"]} if "channel" in m else {})} for m in mixed],
+                            speakers=speakers_of(group))
+        row["cache"] = (r.data or {}).get("cache")
+        row["engine"] = (r.data or {}).get("engine")
+        row["microphones"] = (r.data or {}).get("microphones")
+        errs = validate_observation(o, req, [asset.id], "transcript")
+        if errs:
+            return fail("ANALYSIS_INVALID_RESULT", "; ".join(errs))
         return o, row
 
     @staticmethod

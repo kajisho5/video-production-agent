@@ -13,5 +13,13 @@
     {"id": "generic.analysis.budget.time", "kind": "POLICY", "key": "analysis.budget.max_processing_time", "value": 600}
   ],
   "delivery": {"targets": [{"id": "main", "preset": null, "platform": "custom", "artifact_type": "MASTER"}]},
-  "naming": "{project}_{target}_{version}"
+  "naming": "{project}_{target}_{version}",
+  "automix_presets": {
+    "_comment": "ADR-134: the agent's production values for audio-production AUTOMIX (the Skill has no default for window_ms / max_gain_rate_db_per_s) and the floor level under an interpreter (MIX_TRACKS). Used only when audio.automix is asked for; recorded in the plan as PROFILE requirements; an explicit --set wins.",
+    "default": "panel",
+    "panel": {"window_ms": 30, "max_gain_rate_db_per_s": 300, "hold_below_dbfs": -55, "floor_gain_db": -15,
+              "description": "panel discussion, one microphone per panellist: a share follows the talker within about a syllable, the last open microphone holds through a pause"},
+    "interview": {"window_ms": 20, "max_gain_rate_db_per_s": 400, "hold_below_dbfs": -50, "floor_gain_db": -15,
+                  "description": "two or three close microphones with quick exchanges: faster measurement and gain changes"}
+  }
 }

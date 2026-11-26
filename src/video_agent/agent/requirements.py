@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from ..models import Request, Requirement
 from ..policy.rules import RuleSet
 from ..profiles.loader import Profile
+from .microphones import AUTOMIX_KEY, AUTOMIX_PHRASES, MICS_KEY, TRACKS_KEY, TRACKS_PHRASES, preset_requirements
 
 KEYWORDS = [
     (re.compile(r"(remove|trim|cut)\s+(the\s+)?(leading|opening|initial)\s+silence|先頭の無音|冒頭の無音", re.I), "edit.trim_leading_silence", True),
@@ -68,6 +69,13 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
         if request.raw and rx.search(request.raw) and key not in seen:
             reqs.append(Requirement(key=key, value=value, provenance="USER", source="request-text"))
             seen.add(key)
+    # ADR-134: "automix" / 「自動ミックス」 / "interpreter tracks" / 「通訳トラック」 in the request text, only for a clip whose microphones are declared
+    # (without them the phrase names nothing the plan could do, and is left alone)
+    if request.raw and MICS_KEY in seen:
+        for rx, key in ((AUTOMIX_PHRASES, AUTOMIX_KEY), (TRACKS_PHRASES, TRACKS_KEY)):
+            if key not in seen and rx.search(request.raw):
+                reqs.append(Requirement(key=key, value=True, provenance="USER", source="request-text"))
+                seen.add(key)
     # numeric target extraction (e.g. "-16 LUFS"): takes priority over the profile/rules default
     # for the same key, since seen already includes it once matched here
     for rx, key, cast in NUMERIC_KEYWORDS:
@@ -76,6 +84,10 @@ def extract_requirements(request: Request, profile: Profile, rules: RuleSet) -> 
             if m:
                 reqs.append(Requirement(key=key, value=cast(m.group(1)), provenance="USER", source="request-text"))
                 seen.add(key)
+    # ADR-134: the automix preset's values (profile `automix_presets`), as PROFILE requirements the plan records; a value the request gives wins
+    for r in preset_requirements(reqs, profile.name, profile.data):
+        reqs.append(r)
+        seen.add(r.key)
     # profile-level requirements
     reqs.append(Requirement(key="delivery.targets", value=profile.delivery_targets, provenance="PROFILE", source=f"profile:{profile.name}"))
     for key in ("audio.loudness.target_lufs", "audio.loudness.true_peak", "silence.leading.min_seconds", "silence.threshold_db"):

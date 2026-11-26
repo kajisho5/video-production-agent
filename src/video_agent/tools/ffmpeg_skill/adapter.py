@@ -160,10 +160,13 @@ class FfmpegSkillAdapter(ToolAdapter):
         if not detected:
             return
         chk = self.skill.catalog_check()
+        required = spec.get("required_when_given") or ()
         for key in detected:
             if args.get(key) is None or args.get(key) is False:
                 continue
             keep = chk.offers(script, key)
+            if not keep and key in required:   # ADR-134: dropping it would change what is written (every channel, the file's own rate)
+                raise ToolError(f"ffmpeg-skill/{script}: the installed ffmpeg-skill ({self.version}) does not publish --{key.replace('_', '-')}, which this step needs")
             if keep and script == "export" and key == "no_normalize":
                 platform = chk.platform_presets()
                 keep = platform is not None and str(args.get("preset")) in platform

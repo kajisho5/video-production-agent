@@ -17,6 +17,10 @@ def resolve_intent(reqs: List[Requirement]) -> Intent:
         secondary.append("normalize_audio")
     if m.get("edit.trim_leading_silence") and m["edit.trim_leading_silence"].value in (True, "auto"):
         secondary.append("cleanup_silence")
+    if m.get("audio.automix") and m["audio.automix"].value not in (False, "false", "no", "off", "0"):   # ADR-134: the clip's microphones mixed
+        secondary.append("automix_microphones")
+    if m.get("audio.language_tracks") and m["audio.language_tracks"].value in (True, "true", "yes", "on", "1"):
+        secondary.append("language_tracks")
     if has_export:
         primary, reason = "clean_and_deliver", "profile defines delivery targets with presets"
     elif wants_edit:

@@ -33,6 +33,10 @@ Rule-based coverage (`parse_brief`, English and Japanese, after NFKC so full-wid
              "no captions" / "without subtitles" / 「字幕なし」「字幕不要」 → nothing
   loudness   "-14 LUFS" / "LUFS -14" / 「ラウドネス -14」 → audio.loudness.target_lufs (and audio.normalize=true); "-1 dBTP" →
              audio.loudness.true_peak; a LUFS figure without a minus sign is ambiguous → unmapped
+  microphones (ADR-134) "automix" / "auto-mix" / "gain sharing" / "panel audio" / 「オートミックス」「自動ミックス」「パネルの音」 → audio.automix=true;
+             "interpreter tracks" / "interpretation audio" / "language tracks" / 「通訳トラック」「通訳音声」「同時通訳」「言語別トラック」 →
+             audio.language_tracks=true. Both need the clip's microphones (`audio.microphones`, a file-path key only `--set` gives): without
+             them the key is refused with that reason, like `--set`
   keywords   the request-text keywords of agent/requirements.py (trim the leading / trailing silence, normalise, frame accurate)
 Not covered (left to `--set` or to an AI provider): platform names that imply an aspect ("Shorts", "TikTok", 「ショート」),
 「テロップ」 (on-screen text, not necessarily captions), colour, graphics, thumbnails, takes, and anything else.
@@ -47,6 +51,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from ..media.analysis import _scrub
 from ..models import Requirement
 from ..providers import AIRequest, AIResponse
+from .microphones import AUTOMIX_PHRASES, TRACKS_PHRASES
 from .requirements import KEYWORDS
 
 TASK = "requirements_extraction"
@@ -161,6 +166,11 @@ def parse_brief(text: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     m = _TRUE_PEAK.search(t)
     if m:
         add("audio.loudness.true_peak", float(m.group(1).replace(" ", "")), m.group(0))
+    # ADR-134: the microphones' automix and the interpreters' language tracks (checked like --set: they need audio.microphones)
+    for rx, key in ((AUTOMIX_PHRASES, "audio.automix"), (TRACKS_PHRASES, "audio.language_tracks")):
+        m = rx.search(t)
+        if m:
+            add(key, True, m.group(0))
     # the request-text keywords (agent/requirements.py), same unambiguous phrases
     for rx, key, value in KEYWORDS:
         m = rx.search(t)

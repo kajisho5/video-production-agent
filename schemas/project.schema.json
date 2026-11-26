@@ -424,6 +424,92 @@
      "items": {
       "$ref": "#/$defs/audio_op"
      }
+    },
+    "automix": {
+     "type": "array",
+     "description": "ADR-134: the clips' microphones mixed by audio-production AUTOMIX and muxed under the picture, with the interpreters' language tracks; present only when planned",
+     "items": {
+      "type": "object",
+      "required": [
+       "type",
+       "asset",
+       "microphones",
+       "window_ms",
+       "max_gain_rate_db_per_s",
+       "channels",
+       "output",
+       "mux",
+       "sample_rate",
+       "decision_ids"
+      ],
+      "properties": {
+       "type": {
+        "const": "audio.automix"
+       },
+       "asset": {
+        "type": "string"
+       },
+       "window_ms": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 1000
+       },
+       "max_gain_rate_db_per_s": {
+        "type": "number",
+        "minimum": 10,
+        "maximum": 10000
+       },
+       "hold_below_dbfs": {
+        "type": "number",
+        "minimum": -100,
+        "maximum": 0
+       },
+       "microphones": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 8
+       },
+       "channels": {
+        "type": "array"
+       },
+       "sample_rate": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "output": {
+        "type": "string"
+       },
+       "mux": {
+        "type": "object",
+        "required": [
+         "video",
+         "audio",
+         "output"
+        ]
+       },
+       "preset": {
+        "type": "string"
+       },
+       "language_tracks": {
+        "type": "object",
+        "required": [
+         "inputs",
+         "levels",
+         "languages",
+         "format",
+         "output",
+         "microphones",
+         "decision_ids"
+        ]
+       },
+       "decision_ids": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
     }
    }
   },
@@ -1221,6 +1307,14 @@
     },
     "analysis": {
      "type": "object"
+    },
+    "microphones": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 16,
+     "items": {
+      "$ref": "#/$defs/microphone"
+     }
     }
    }
   },
@@ -3953,6 +4047,107 @@
     "pronunciation": {
      "type": "string",
      "minLength": 1
+    }
+   }
+  },
+  "microphone": {
+   "type": "object",
+   "required": [
+    "id",
+    "name",
+    "role",
+    "source"
+   ],
+   "additionalProperties": false,
+   "description": "ADR-134: one microphone of the clip: who (name, speaker), its role, and where its sound is (a file of its own, or a channel of the clip's audio)",
+   "properties": {
+    "id": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 64
+    },
+    "speaker": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "role": {
+     "enum": [
+      "floor",
+      "presenter",
+      "interp"
+     ]
+    },
+    "language": {
+     "type": "string",
+     "pattern": "^[a-z]{3}$"
+    },
+    "source": {
+     "oneOf": [
+      {
+       "type": "object",
+       "required": [
+        "kind",
+        "path"
+       ],
+       "additionalProperties": false,
+       "properties": {
+        "kind": {
+         "const": "file"
+        },
+        "path": {
+         "type": "string"
+        },
+        "audio_stream": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "sha256": {
+         "type": "string",
+         "pattern": "^[0-9a-f]{64}$"
+        }
+       }
+      },
+      {
+       "type": "object",
+       "required": [
+        "kind",
+        "channel"
+       ],
+       "additionalProperties": false,
+       "properties": {
+        "kind": {
+         "const": "channel"
+        },
+        "channel": {
+         "type": "integer",
+         "minimum": 0
+        }
+       }
+      }
+     ]
+    },
+    "pinned": {
+     "type": "boolean"
+    },
+    "weight_db": {
+     "type": "number",
+     "minimum": -30,
+     "maximum": 30
+    },
+    "gain_db": {
+     "type": "number",
+     "minimum": -60,
+     "maximum": 60
+    },
+    "pan": {
+     "type": "number",
+     "minimum": -1,
+     "maximum": 1
     }
    }
   }
