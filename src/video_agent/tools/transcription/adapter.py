@@ -64,6 +64,8 @@ OPTIONAL_PARAMETER_KEYS = ("word_segmentation", "domain_vocabulary", "correction
 # (only the names the user stored; never programme or slide material from here), each only to a contract that declares it
 DOMAIN_VOCABULARY_KEYS = ("speakers", "terms", "max_terms", "japanese")
 REQUEST_PARAMETER_KEYS = PARAMETER_KEYS + OPTIONAL_PARAMETER_KEYS
+# ADR-132: chunked recognition of a long input (transcription-skill 0.11.2, its ADR-042), set by the analyzer, never by a user key
+LONGFORM_KEYS = ("chunk_seconds", "parallel", "speech_regions")
 WORD_SEGMENTATIONS = ("engine", "dictionary")
 BUDGET_KEYS = ("timeout", "max_audio_seconds")
 FORBIDDEN_ARG_KEYS = ("command", "commands", "argv", "cmd", "shell", "exec", "args", "script", "binary", "executable", "executables", "env",
@@ -339,6 +341,9 @@ class TranscriptionAdapter(ToolAdapter):
         # recognition, and (step 33) phrase search in a transcript the agent measured; segments / export / check are not measurement tools
         return tool in (TRANSCRIBE_TOOL, FIND_TOOL) and tool in self.tools
 
+    def declares_input(self, tool: str, key: str) -> bool:
+        return key in ((self.tools.get(tool) or {}).get("input") or {})
+
     owns_cache = True   # the Skill owns the transcript cache (<workspace>/transcripts); the agent records its status as provenance only
 
     def measurement_args(self, tool: str, kind: str, path: str, asset_id: str, parameters: Dict[str, Any], analysis_id: str, cache_policy: str) -> Optional[Dict[str, Any]]:
@@ -351,6 +356,9 @@ class TranscriptionAdapter(ToolAdapter):
         out = {"input": path, "asset_id": asset_id, "kind": kind, "parameters": params, "budget": budget, "analysis_id": analysis_id, "cache_policy": cache_policy}
         if (parameters or {}).get("speaker_turns") is not None:   # ADR-096: the measured turns of the same asset, merged by the Skill after recognition
             out["speaker_turns"] = parameters["speaker_turns"]
+        for k in LONGFORM_KEYS:   # long input (ADR-132): chunked recognition cut at the measured speech regions' pauses
+            if (parameters or {}).get(k) is not None:
+                out[k] = parameters[k]
         return out
 
     # ---- input boundary (the Skill enforces it again with the same roots; the adapter refuses early and never widens)
@@ -480,9 +488,42 @@ class TranscriptionAdapter(ToolAdapter):
             params["allowed_input_roots"] = list(self.allowed_inputs)
         if args.get("speaker_turns") is not None:
             params["speaker_turns"] = self.check_turns(args["speaker_turns"], declared)
+        longform = {k: args[k] for k in LONGFORM_KEYS if args.get(k) is not None}
+        if longform:
+            params.update(self.check_longform(longform, declared, params.get("language")))
         if dry_run:
             params["dry_run"] = True
         return {"tool": tool, "params": params}
+
+    @staticmethod
+    def check_longform(given: Dict[str, Any], declared: Dict[str, Any], language: Optional[str]) -> Dict[str, Any]:
+        """ADR-132: transcription-skill 0.11.2's chunked recognition of a long input (its ADR-042). `chunk_seconds` 30..3600 needs a
+        language (each chunk is recognised on its own); `parallel` 1..8 and `speech_regions` only with it. The regions go inline: a
+        media-analysis-skill speech_regions observation reduced to its `data.regions` time ranges (never a path)."""
+        missing = [k for k in given if k not in declared]
+        if missing:
+            raise ToolError(f"transcription: this transcription-skill does not take {', '.join(missing)} (0.11.2 or later chunks long recordings)")
+        cs = given.get("chunk_seconds")
+        if cs is None:
+            raise ToolError("transcription: parallel / speech_regions need chunk_seconds")
+        if isinstance(cs, bool) or not isinstance(cs, (int, float)) or not 30 <= float(cs) <= 3600:
+            raise ToolError("transcription: chunk_seconds must be a number in [30, 3600]")
+        if not language:
+            raise ToolError("transcription: chunk_seconds needs a language (each chunk is recognised on its own)")
+        out: Dict[str, Any] = {"chunk_seconds": cs}
+        par = given.get("parallel")
+        if par is not None:
+            if isinstance(par, bool) or not isinstance(par, int) or not 1 <= par <= 8:
+                raise ToolError("transcription: parallel must be an integer in [1, 8]")
+            out["parallel"] = par
+        sr = given.get("speech_regions")
+        if sr is not None:
+            regions = ((sr or {}).get("data") or {}).get("regions") if isinstance(sr, dict) else None
+            if not isinstance(regions, list) or not all(isinstance(r, dict) and isinstance(r.get("start"), (int, float)) and isinstance(r.get("end"), (int, float))
+                                                        and 0 <= r["start"] <= r["end"] for r in regions):
+                raise ToolError("transcription: speech_regions must be a speech_regions observation with data.regions [{start, end}]")
+            out["speech_regions"] = {"kind": "speech_regions", "data": {"regions": [{"start": float(r["start"]), "end": float(r["end"])} for r in regions]}}
+        return out
 
     @staticmethod
     def check_turns(turns: Any, declared: Dict[str, Any]) -> Dict[str, Any]:
