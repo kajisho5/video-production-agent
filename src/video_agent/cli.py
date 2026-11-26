@@ -336,6 +336,12 @@ def cmd_plan(args, svc: Service) -> int:
                   ingest_records=ingest, brief=args.brief or "", brief_answer=answer, ai_model=args.ai_model or "host-chat",
                   channel=getattr(args, "channel", None), use_preferences=not getattr(args, "no_preferences", False),
                   entity_project=getattr(args, "entity_project", None), use_entities=not getattr(args, "no_entities", False))
+    if getattr(args, "deadline", None):
+        try:
+            svc.apply_deadline(ir, args.deadline)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     brief = (ir.doc["request"].get("args") or {}).get("brief")
     out = args.output or str(Path(args.inputs[0]).with_suffix("")) + ".project.json"
     if not args.output and not args.allow_source_dir:
@@ -346,12 +352,21 @@ def cmd_plan(args, svc: Service) -> int:
     handoff = svc.handoffs(ir)   # ADR-051: steps no installed skill can run here
     if args.json:
         _print({"project": out, "summary": ir.doc["plan"]["summary"], "decisions": ir.doc["decisions"], "validation": rep.to_dict(), "handoff": handoff, **ai,
-                **({"brief": brief} if brief else {})}, True)
+                **({"brief": brief} if brief else {}), **({"deadline": ir.doc["deadline"]} if ir.doc.get("deadline") else {})}, True)
     else:
         print(f"Project IR: {out}")
         if brief:
             _print_brief(brief)
         _print_plan(ir.doc)
+        dl = ir.doc.get("deadline")
+        if dl:
+            print(f"Deadline {dl['deadline']}: estimated {dl['estimated_seconds']:.0f} s of {dl['budget_seconds']:.0f} s ({dl['status']})")
+            for d in dl["dropped"]:
+                print(f"  dropped {d['group']}: {d['reason']}")
+            if dl.get("defaults"):
+                print(f"  no measured speed here yet for {', '.join(dl['defaults'])}: default estimate")
+            if dl.get("warning"):
+                print(f"  AT RISK: {dl['warning']}")
         print("Decisions:")
         for d in ir.doc["decisions"]:
             print(f"  [{d['approval']:7s} {d['risk']:6s}] {d['id']}  {d['subject']}: {d['decision']}")
@@ -1235,6 +1250,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-preferences", action="store_true", help="plan without the stored preferences (global and channel)")
     p.add_argument("--entity-project", help="the entity memory's project store to apply on top of the global one (default: --channel) (ADR-128)")
     p.add_argument("--no-entities", action="store_true", help="plan without the entity memory")
+    p.add_argument("--deadline", help="deadline mode (撮って出し, ADR-133): 30m, 1h30m, 90s, minutes, or HH:MM; optional finishing that would miss it is dropped, and the plan says so")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("brief", help="read a brief into --set keys (no media analysed): what plan --brief would apply (ADR-061)")
     p.add_argument("text"); p.add_argument("--profile", default="generic")

@@ -21,6 +21,7 @@ from .agent.ingest import IngestRecord
 from .agent.handoffs import check_job_keys
 from .agent.speakers import check_speaker_keys, speaker_assign_requested, speaker_kind
 from .agent import measurements as measurements_task
+from .agent import deadline as deadline_task
 from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.faces import REQUIREMENT_KEYS as _FACE_REQUIREMENT_KEYS, check_face_keys, face_kind
@@ -1438,6 +1439,25 @@ class Service:
                             "(completed operations of an earlier job are not reused across the change)", "field": f"source.tool_versions.{name}"})
         return out
 
+    def _hw_encoder(self) -> bool:
+        try:
+            return self.caps.resolve().get("gpu") is not None and self.caps.resolve()["gpu"].status == "AVAILABLE"
+        except Exception:   # a capability probe that cannot run says nothing about the encoder
+            return False
+
+    def apply_deadline(self, ir: ProjectIR, deadline: str, now: Optional[float] = None) -> Dict[str, Any]:
+        """ADR-133 (deadline mode, roadmap step 22): estimate the plan's compiled steps from this machine's speed book, drop the optional
+        finishing that would miss the deadline, and record `deadline` in the IR (status fits | at_risk)."""
+        import tempfile as _tempfile
+
+        def ops_of(ir_: ProjectIR):
+            with _tempfile.TemporaryDirectory(prefix="video-agent-deadline-") as d:
+                return compile_ir(ir_, d)[0]
+        rec = deadline_task.apply(ir, deadline, ops_of, self.workspace, self._hw_encoder(), now=now)
+        if rec.get("warning"):
+            ir.doc["analysis"].setdefault("warnings", []).append("deadline: " + rec["warning"])
+        return rec
+
     def preflight(self, ir: ProjectIR, free_fn: Optional[Any] = None) -> Dict[str, Any]:
         """ADR-126: a fast check of the plan's deliverables before any encode; every problem at once. Nothing is encoded or run."""
         from .execution import preflight as pf
@@ -1566,6 +1586,10 @@ class Service:
         finally:
             job.completed_ops = ex.completed
             store.save(job)  # whatever happens next, the job file reflects the operations that completed
+        try:   # ADR-133: how fast each tool ran here, for the next plan with a deadline (never fails the render)
+            deadline_task.record_run(self.workspace, self._hw_encoder(), ir.doc, ops, result.results, result.skipped)
+        except OSError:
+            pass
         out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths, "resume": resume_note, "preflight": preflight}
         if result.status != "COMPLETED":
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"op {result.failed_op}")

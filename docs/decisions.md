@@ -2040,3 +2040,23 @@ It rejected:
 - Contract: no re-pin. The pinned transcription-skill 0.14.0 already declares `chunk_seconds`, `parallel` and `speech_regions`. media-analysis-skill's `speech_regions` kind is already pinned.
 - Verification: `tests/test_longform.py`. The rule cases: short, long, no language, an older contract, no regions tool, unmeasured regions. The adapter's input checks. Plans through the fake engine, the fake media-analysis and the fake transcription: a 2 h source measures the regions before the transcript and sends `chunk_seconds` 600 with those regions; without media-analysis the Skill cuts by level; without a language there is one pass and a warning; a 10 min source is unchanged.
 - Version: 0.11.0 (minor: an additive request to an existing Skill input, and an additive analysis-row field).
+
+## ADR-133 Deadline mode (撮って出し): estimates from this machine's speed book, optional finishing dropped, at risk said at plan time (roadmap step 22; 2026-11-26)
+
+- Context: a digest made during a break or right after a session must be out by a time. Until now a plan had no notion of time. It ran every step it decided on, and nobody could tell before the render whether it would finish.
+- Decision (`agent/deadline.py`, `Service.apply_deadline`, `plan --deadline`):
+  - The deadline is a duration (`30m`, `1h30m`, `90s`, or a bare number of minutes) or a clock time `HH:MM`, meaning the next time the local clock shows it.
+  - The estimate is per compiled operation (the plan is compiled into a temporary directory, the same `compile_ir` that render uses). It is the tool's overhead plus seconds per media second × the programme's media seconds. The media seconds are the summed duration of the plan's video and audio sources.
+  - The rate comes from the speed book `<workspace>/speed/book.json` (`video-agent/speed-book@1`), which `render` writes. Every operation that ran (not one reused from an earlier job) adds its wall seconds and the programme's media seconds under its tool, and the last 20 runs are kept. The book is kept per machine (a hash of host name, OS and architecture, never the name) and per hardware video encoder present or not (the `gpu` capability). With runs of two or more lengths, the fit is overhead + rate by least squares; with one length, it is a straight rate.
+  - A tool never run on this machine gets a stated default: 0.25 s per media second for a transform, 0.05 for a measurement or check, plus 1 s. The plan lists those tools under `defaults`.
+  - Over the budget, optional finishing is dropped in this order until the estimate fits: colour (`color.*`), then graphics (titles, lower thirds, overlays). Each drop is recorded with its estimate and why (`dropped[].reason`, and a line in the plan summary). The cut, the audio, captions, the thumbnail and the delivery encode are never dropped.
+  - When the required steps alone are past the deadline, `deadline.status` is `at_risk`, and a warning in the analysis warnings names the shortfall. The plan is still written, and nothing more is dropped or shortened. It is the early notice, given at plan time.
+  - IR: an optional top-level `deadline` object (schema additive). A plan without `--deadline` is unchanged.
+- Not done:
+  - The steps are not reordered. The roadmap's "proxy cut first" would need a proxy deliverable. Today the compiler's order already finishes the picture before the delivery encode, and a dropped step is not run.
+  - "N minutes after the recording ends" (a deadline relative to a recording still being written) needs step 23's follow of a growing source. Until then, give the clock time.
+  - Captions burned into the picture are not dropped.
+- Verification:
+  - `tests/test_deadline.py`: the parser; the speed book fit and its 20-run window; a 10-minute budget on a 10-minute fixture whose colour grading ran at 1.2× real time here drops colour, says so, validates and renders without it; a budget that fits keeps it; a 20 s budget is at risk; without a book the estimate is a stated default; render writes the book, and the next estimate is measured.
+  - `tests/test_integration.py::DeadlineRealTests` (real ffmpeg-skill): two renders of the 16 s fixture fill the book, and the third render's operations took within 30 % of the estimate. Locally: estimated 21.7 s, real 23.6 s; the earlier runs took 18.9 and 24.5 s.
+- Version: 0.12.0 (minor: an additive IR object and a new plan option).
