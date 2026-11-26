@@ -97,6 +97,12 @@ COLOR_OPERATIONS: Dict[str, Dict[str, Any]] = {
     "color.legalize":     {"skill": "color_legalize", "type": "LEGALIZE", "params": tuple(n for n in LEGALIZE_SPEC if n not in COLOR_ENCODE_PARAMS), "risk": "LOW"},
 }
 COLOR_SKILL_OF = {k: v["skill"] for k, v in COLOR_OPERATIONS.items()}
+# ADR-131: how an alpha source's colour is stored (IR color operation `source_alpha_mode`, sent as the request's project.source.alpha_mode) and the
+# containers a grade that keeps the alpha can write: every alpha line's containers (alpha.keep_alpha.containers) that are also an output format,
+# read from the pinned contract. color-grading-skill does not convert containers, so the output takes the input's container
+COLOR_ALPHA_MODES = tuple(_COLOR_CONTRACT["alpha"]["alpha_mode"]["values"])
+COLOR_ALPHA_CONTAINERS = tuple(sorted({ext.lstrip(".") for exts in _COLOR_CONTRACT["alpha"]["keep_alpha"]["containers"].values() for ext in exts}
+                                      & set(_COLOR_CONTRACT["output_formats"])))
 COLOR_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
 # ADR-100: color.ocio (the source space) + .config / .destination_space / .display / .view / .look / .lut_size / .output_tags;
 # color.match_camera (the reference camera's video) + .reference_at / .at / .model / .patches / .lut_size; color.legalize (true or a profile) + .knee / .lut_size

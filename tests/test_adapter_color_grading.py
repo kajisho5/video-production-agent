@@ -339,6 +339,39 @@ class ColorGradingAdapterTests(unittest.TestCase):
         ok = ad.run(self._op(), {"a": src, "a_retag": str(Path(self.ws) / "ops" / "02_retag" / "alpha_retag.mp4")}, timeout=30)
         self.assertTrue(ok.ok, ok.data)
 
+    def test_premultiplied_refusal_on_an_older_engine_is_unsupported_media(self):
+        """ADR-131: on an ffmpeg-skill without color --source-alpha-mode (before 4.8.0, e.g. 4.7.1) color-grading-skill refuses a source stated
+        as premultiplied for a grade that keeps the alpha (UNSUPPORTED_FORMAT, alpha_premultiplied, exit 6). The agent's arguments were right and
+        the engine lacks the capability, so it is UNSUPPORTED_MEDIA (BLOCK, the hint names the reason and the engine release), never INVALID_ARGS
+        (whose hint says agent bug). On an engine that has it the same call grades, and the record says premultiplied."""
+        from video_agent.execution.recovery import RECOVERY_TABLE
+        ext = pinned_contract()["alpha_extensions"]["premultiplied_grading"]
+        self.assertEqual((ext["source_alpha_mode"], ext["requires"][-1]), ("premultiplied", "ffmpeg-skill/color:source-alpha-mode"))
+        src = fake_video(self.tmp, "premult.mov", pix_fmt="yuva444p10le")
+        ad = self._adapter()
+        out = str(Path(self.ws) / "ops" / "01_correct" / "premult_correct.mov")
+        op = Operation(tool="color-grading/run", args={"operation": "PRIMARY_CORRECTION", "input": "a", "output": "a_correct", "exposure": 0.5,
+                                                         "source_alpha_mode": "premultiplied"}, inputs=["a"], outputs=["a_correct"], id="op_premult")
+        os.environ["FAKE_CG_MODE"] = "no_source_alpha_mode"
+        r = ad.run(op, {"a": src, "a_correct": out}, timeout=30)
+        self.assertFalse(r.ok); self.assertIsNone(r.output)
+        e = r.data["error"]
+        self.assertEqual((r.exit_code, e["code"], e["retryable"], e["details"]["reason"], e["recovery_class"]),
+                         (6, "UNSUPPORTED_FORMAT", False, "alpha_premultiplied", "UNSUPPORTED_MEDIA"))
+        self.assertNotEqual(e["recovery_class"], RECOVERY_CLASS["UNSUPPORTED_FORMAT"])
+        self.assertEqual(classify_error(r), "UNSUPPORTED_MEDIA")
+        nxt = next_attempt(r, 1, 3, 30)
+        self.assertEqual((nxt["action"], nxt["class"]), ("BLOCK", "UNSUPPORTED_MEDIA"))
+        self.assertIn("alpha_premultiplied", RECOVERY_TABLE["UNSUPPORTED_MEDIA"]["hint"])
+        self.assertNotIn("agent bug", RECOVERY_TABLE["UNSUPPORTED_MEDIA"]["hint"])
+        self.assertFalse(os.path.exists(out), "a refused call leaves no output behind")
+        # an engine with --source-alpha-mode: graded, the colour un-premultiplied and the alpha kept
+        os.environ["FAKE_CG_MODE"] = "ok"
+        r = ad.run(op, {"a": src, "a_correct": out}, timeout=30)
+        self.assertTrue(r.ok, r.data)
+        self.assertEqual((r.data["alpha"]["kept"], r.data["alpha"]["alpha_mode"]), (True, "premultiplied"))
+        self.assertEqual(r.data["operation"]["alpha"]["alpha_mode_selection"]["rule"], "request")
+
     def test_security_boundary(self):
         ad = self._adapter(); paths = self._paths()
         log = str(Path(self.tmp) / "calls.log"); os.environ["FAKE_CG_CALLS"] = log

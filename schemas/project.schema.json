@@ -3611,6 +3611,12 @@
     "output": {
      "type": "string"
     },
+    "source_alpha_mode": {
+     "enum": [
+      "straight",
+      "premultiplied"
+     ]
+    },
     "lut": {
      "type": "string"
     },

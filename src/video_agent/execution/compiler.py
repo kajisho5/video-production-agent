@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME_AUDIO, PROGRAMME_OPS as AUDIO_PROGRAMME_OPS, TOOL as AUDIO_TOOL
 from ..agent.editing import (CONDENSE_KEEP_LABEL, CONDENSE_SKILL, IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL,
                              TRIM_SKILLS, delivery_subjects)
-from ..agent.finishing import COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_TOOL
+from ..agent.finishing import COLOR_ALPHA_CONTAINERS, COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_TOOL
 from ..agent.finishing import THUMBNAIL_BATCH_TOOL, THUMBNAIL_TOOL_OF, thumbnail_skill_of
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL, SIDECAR_EXTENSIONS
@@ -259,18 +259,39 @@ def lower_voice_op(tool: str, op: Dict[str, Any], current: Any, out_id: Any) -> 
     return args
 
 
-def lower_color_op(tool: str, op: Dict[str, Any], current: str, out_id: str, lut_id: Optional[str] = None) -> Dict[str, Any]:
+def color_output_format(op: Dict[str, Any], input_path: str, alpha_mode: Optional[str] = None) -> str:
+    """The container a colour step writes (ADR-131). Without an alpha mode: mp4, as before. With one (the operation's `source_alpha_mode`, or the
+    mode an earlier colour step on the same picture stated, `alpha_mode`): the input's own container, which must hold an alpha line
+    (COLOR_ALPHA_CONTAINERS, from the pinned contract), because color-grading-skill keeps the alpha only in the source's container and never
+    converts containers. An mp4 picture (e.g. after an edit) has no alpha left to keep, so the IR is refused instead of flattening it unseen."""
+    mode = op.get("source_alpha_mode") or alpha_mode
+    if not mode:
+        return "mp4"
+    ext = Path(input_path).suffix.lower().lstrip(".")
+    if ext not in COLOR_ALPHA_CONTAINERS:
+        raise CompileError(f"{op['type']} on {op.get('asset')}: source_alpha_mode {mode} needs a picture in a container that holds an alpha line "
+                           f"({', '.join(COLOR_ALPHA_CONTAINERS)}), but its input is .{ext or '?'} (an edit before the colour step writes mp4, which has no alpha)")
+    return ext
+
+
+def lower_color_op(tool: str, op: Dict[str, Any], current: str, out_id: str, lut_id: Optional[str] = None, fmt: str = "mp4",
+                   alpha_mode: Optional[str] = None) -> Dict[str, Any]:
     """IR colour operation → color-grading/run arguments: the contract's operation type plus the allowlisted parameters by name;
-    a LUT travels as an artifact id the adapter resolves through the paths map (ADR-031)."""
+    a LUT travels as an artifact id the adapter resolves through the paths map (ADR-031). ADR-131: the source's alpha mode (the operation's
+    `source_alpha_mode`, else `alpha_mode` carried from an earlier colour step on the same picture) travels as the typed `source_alpha_mode`
+    argument, and `fmt` is the container color_output_format chose."""
     spec = COLOR_OPERATIONS[op["type"]]
     if tool != COLOR_TOOL:
         raise CompileError(f"{op['type']} cannot be executed by {tool}; the only tool of this operation is {COLOR_TOOL}")
-    args: Dict[str, Any] = {"operation": spec["type"], "input": current, "output": out_id, "format": "mp4"}
+    args: Dict[str, Any] = {"operation": spec["type"], "input": current, "output": out_id, "format": fmt}
     for k in spec["params"]:
         if op.get(k) is not None:
             args[k] = op[k]
     if lut_id:
         args["lut"] = lut_id
+    mode = op.get("source_alpha_mode") or alpha_mode
+    if mode:
+        args["source_alpha_mode"] = mode
     return args
 
 
@@ -586,7 +607,10 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             name = op["type"].split(".", 1)[1]
             st["gen"] += 1
             out_id = f"{subject}_{name}"
-            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_{name}" / f"{st['stem']}_{name}.mp4")
+            # ADR-131: a stated alpha mode stays with the picture (a premultiplied grade writes premultiplied colour, a straight one straight)
+            fmt = color_output_format(op, paths[st["current"]], st.get("alpha_mode"))
+            alpha_mode = op.get("source_alpha_mode") or st.get("alpha_mode")
+            paths[out_id] = str(job / "ops" / f"{st['stem']}_{st['gen']:02d}_{name}" / f"{st['stem']}_{name}.{fmt}")
             skill = COLOR_OPERATIONS[op["type"]]["skill"]
             tool = tool_for(skill, subject)
             inputs = [st["current"]]
@@ -596,7 +620,9 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
                 paths[lut_id] = op["lut"]
                 keys[lut_id] = ""
                 inputs.append(lut_id)
-            add(tool, lower_color_op(tool, op, st["current"], out_id, lut_id), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            add(tool, lower_color_op(tool, op, st["current"], out_id, lut_id, fmt, alpha_mode), inputs, [out_id], list(op.get("decision_ids") or []), st["fp"], skill=skill)
+            if alpha_mode:
+                st["alpha_mode"] = alpha_mode
             st["current"] = out_id
         for op in (d.get("graphics") or {}).get("operations") or []:
             if op["asset"] == subject and op["type"] == HTML_LAYER_SUBJECT:   # ADR-114: the motion.layer clip, rendered before the render that places it
