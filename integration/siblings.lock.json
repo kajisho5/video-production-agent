@@ -25,10 +25,10 @@
     },
     "color-grading": {
       "repo": "kajisho5/color-grading-skill",
-      "tag": "v1.1.4",
-      "sha": "f4fe5dda3f6ccf14b09ae92c9468d80dff7a8081",
-      "version": "1.1.4",
-      "pin": "src/video_agent/tools/color_grading/contract_1.1.4.json"
+      "tag": "v1.2.0",
+      "sha": "af271fda7bef4e171a00f4261b6ba51d96b7b1a1",
+      "version": "1.2.0",
+      "pin": "src/video_agent/tools/color_grading/contract_1.2.0.json"
     },
     "detection": {
       "repo": "kajisho5/detection-skill",
