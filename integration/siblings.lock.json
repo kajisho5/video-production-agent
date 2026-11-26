@@ -109,10 +109,10 @@
     },
     "remotion-ffmpeg": {
       "repo": "kajisho5/remotion-ffmpeg-skill",
-      "tag": "v0.14.4",
-      "sha": "f14b27c334e86afde606c5c558eb91acdeff801f",
-      "version": "0.14.4",
-      "pin": "src/video_agent/tools/remotion/contract_0.14.4.json"
+      "tag": "v0.14.5",
+      "sha": "8f2f80e5028a6e240b336e0ee9948aed00379a0c",
+      "version": "0.14.5",
+      "pin": "src/video_agent/tools/remotion/contract_0.14.5.json"
     },
     "slide-sync": {
       "repo": "kajisho5/slide-sync-skill",
