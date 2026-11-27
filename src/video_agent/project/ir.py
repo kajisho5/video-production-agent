@@ -70,7 +70,8 @@ class ProjectIR:
         for op in self.doc["video"]["operations"] + self.doc["audio"]["operations"] + self.finishing_operations() + self.speech_operations() + self.doc["delivery"]["targets"] \
                 + list(self.doc["delivery"].get("timelines") or []) + list(self.doc["delivery"].get("nle") or []) + ([self.doc["audio"]["take_crossfade"]] if self.doc["audio"].get("take_crossfade") else []) \
                 + ([self.doc["delivery"]["publish"]] if self.doc["delivery"].get("publish") else []) \
-                + ([self.doc["delivery"]["chapters"]] if self.doc["delivery"].get("chapters") else []):   # ADR-087 publish, ADR-089 nle, ADR-137 chapters
+                + ([self.doc["delivery"]["chapters"]] if self.doc["delivery"].get("chapters") else []) \
+                + list((self.doc["delivery"].get("shorts") or {}).get("clips") or []):   # ADR-087 publish, ADR-089 nle, ADR-137 chapters
             if any(x in rej for x in op.get("decision_ids") or []):
                 out.append(op)
         return out

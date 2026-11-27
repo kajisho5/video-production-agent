@@ -4904,3 +4904,86 @@ class TranscriptChaptersRealTests(unittest.TestCase):
         print(f"chapters in the deliverable: {got}")
         self.assertEqual(got, list(zip(starts, ["Welcome", "The sound system", "Questions"])))
         self.assertEqual(sorted(s["codec_type"] for s in doc["streams"] if s["codec_type"] in ("audio", "video")), ["audio", "video"])
+
+
+class ShortsSetRealTests(unittest.TestCase):
+    """ADR-138 (roadmap step 25, Done when): a 30-minute talk → 3 vertical clips of at most 60 s, 1080x1920, each with burned captions and a reason
+    quoted from the transcript. Speech recognition is the fake process reading sidecar segments and words, and the clip set comes from a fake AI
+    provider (CI has neither); ffmpeg-skill, video-editing-skill (trim, fill), subtitle-skill (burn-in) and motion-graphics-skill (hook) are
+    real. Each delivered clip is probed (1080x1920, at most 60 s); its plan burns the captions in (subtitle_burn_in) and quotes its reason."""
+
+    def test_30_minutes_to_three_vertical_clips(self):
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.providers import AIProvider, AIResponse, AIUsage
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        for env in ("VIDEO_AGENT_VIDEO_EDITING_DIR", "VIDEO_AGENT_SUBTITLE_DIR", "VIDEO_AGENT_MOTION_GRAPHICS_DIR"):
+            if not os.environ.get(env):
+                self.skipTest(f"needs {env}")
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_shorts_"))
+        src = Path(tmp) / "src"
+        src.mkdir()
+        media = str(src / "keynote.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=10", "-f", "lavfi",
+                        "-i", "sine=frequency=440:sample_rate=48000", "-t", "1800", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", media], check=True)
+        segs = [[30.0 * k + 2.0, 30.0 * k + 22.0, f"point {k} of the talk about the hall"] for k in range(60)]
+        segs[10][2], segs[30][2], segs[50][2] = "this is the moment the whole room went silent", "nobody expected the second speaker to sing", "remember the number forty two"
+        words = []
+        for a, b, t in segs:
+            ws = t.split()
+            step = (b - a) / len(ws)
+            words += [[round(a + i * step, 3), round(a + (i + 1) * step - 0.01, 3), w] for i, w in enumerate(ws)]
+        Path(media + ".segments.json").write_text(json.dumps(segs), encoding="utf-8")
+        Path(media + ".words.json").write_text(json.dumps(words), encoding="utf-8")
+        fake = [sys.executable, str(Path(__file__).resolve().parent / "fake_transcription.py")]
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill(fake, None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                return self._sync_packages(ToolRouter([ts] + [a for a in r.adapters if a.name != "transcription"]))
+
+        class _Clips(AIProvider):
+            name, model = "fake", "fake-clips-1"
+
+            def available(self):
+                return True
+
+            def complete(self, request, timeout=None):
+                tr = next(o for o in request.inputs["observations"] if o["kind"] == "transcript")
+                params = {"clips": [{"first_segment": 10, "last_segment": 11, "hook": "The room went silent", "quote": "the whole room went silent"},
+                                    {"first_segment": 30, "last_segment": 30, "hook": "Then she sang", "quote": "second speaker to sing"},
+                                    {"first_segment": 50, "last_segment": 51, "hook": "Remember 42", "quote": "remember the number forty two"}]}
+                rec = {"intent": "short_clips", "asset_id": tr["asset_id"], "statement": "three moments", "confidence": 0.8, "evidence": [tr["id"]], "params": params}
+                return AIResponse(task_type=request.task_type, result={"recommendations": [rec]}, confidence=0.8, provider=self.name, model=self.model, usage=AIUsage())
+        svc = _Svc(workspace=str(Path(tmp) / "ws"), offline=True, provider=_Clips())
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                caps = dict(real.resolve(refresh))
+                caps["transcription"] = Capability("transcription", "AVAILABLE", "fake recogniser (sidecar transcripts)", {})
+                return caps
+        svc.caps = _Caps()
+        ir = svc.plan([media], "generic", user_requirements={"shorts.count": 3}, params={"language": "en"}, chunk_seconds=0, hash_sources=False)
+        self.assertEqual(svc.validate(ir).errors, [])
+        rec = ir.doc["delivery"]["shorts"]
+        self.assertEqual(len(rec["clips"]), 3, ir.doc["plan"]["summary"])
+        path = str(Path(svc.workspace) / "plans" / "keynote.project.json")
+        save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution", {}).get("failed_op"))
+        sets = out["shorts"]
+        self.assertEqual(sets["rendered"], 3, json.dumps(sets, default=str)[:2000])
+        for row in sets["clips"]:
+            pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json", row["artifact"]],
+                                capture_output=True, text=True, check=True)
+            doc = json.loads(pr.stdout)
+            w, h, dur = doc["streams"][0]["width"], doc["streams"][0]["height"], float(doc["format"]["duration"])
+            child = load_ir(row["project"]).doc
+            steps = [s["skill"] for s in child["plan"]["steps"]]
+            print(f"clip {row['index']}: {w}x{h}, {dur:.2f} s, quote “{row['quote']}”, steps {steps}")
+            self.assertEqual((w, h), (1080, 1920))
+            self.assertLessEqual(dur, 60.5)
+            self.assertIn("subtitle_burn_in", steps)
+            self.assertIn(row["quote"].lower(), " ".join(s[2] for s in segs).lower())
