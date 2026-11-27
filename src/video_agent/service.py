@@ -103,6 +103,7 @@ from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
 from .agent import transcript_edit as transcript_edit_task
 from .agent import chapters as chapters_task
+from .agent import shorts as shorts_task
 from .agent import word_cut as word_cut_task
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
@@ -592,6 +593,11 @@ class Service:
             params = dict(params or {}, word_timestamps=True)
         if chapters_task.requested(user_requirements or {}) and "transcript" not in (kinds or []):
             kinds = list(kinds or []) + ["transcript"]   # ADR-137: the AI reads the transcript's segments to name where the topic changes
+        if shorts_task.requested(user_requirements or {}):
+            # ADR-138: the AI names clips by transcript segments; media-analysis-skill's highlight signals go along when a tool can measure them
+            kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
+            if "highlight_analysis" in self.tools_for(None, user_requirements) and "highlight_signals" not in kinds:
+                kinds = kinds + ["highlight_signals"]
         if word_cut_task.requested(user_requirements or {}):
             # ADR-109: the AI names words to keep / cut by their number in a transcript with word timings, measured for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
@@ -1076,12 +1082,16 @@ class Service:
         inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary,
                                           extra_intents=([TAKE_AI_INTENT] if parse_takes_requirements(rm) is not None else [])
                                           + ([word_cut_task.AI_INTENT] if word_cut_task.parse_word_cut_requirements(rm) is not None else [])
-                                          + ([chapters_task.AI_INTENT] if chapters_task.parse_chapter_requirements(rm) is not None else []),
+                                          + ([chapters_task.AI_INTENT] if chapters_task.parse_chapter_requirements(rm) is not None else [])
+                                          + ([shorts_task.AI_INTENT] if shorts_task.parse_shorts_requirements(rm) is not None else []),
                                           # ADR-109: the numbered words the AI names ranges of (indices and text, never times to write back)
                                           # ADR-137: the numbered segments the AI names chapter starts by
                                           extra_context={**(word_cut_task.ai_context(analysis) if word_cut_task.parse_word_cut_requirements(rm) is not None else {}),
                                                          **(chapters_task.ai_context(analysis, (chapters_task.parse_chapter_requirements(rm) or {}).get("min_seconds"))
-                                                            if chapters_task.parse_chapter_requirements(rm) is not None else {})} or None)
+                                                            if chapters_task.parse_chapter_requirements(rm) is not None else {}),
+                                                         # ADR-138: the numbered segments (with their ends) the AI names clips by, and the highlight signals
+                                                         **(shorts_task.ai_context(analysis, shorts_task.parse_shorts_requirements(rm))
+                                                            if shorts_task.parse_shorts_requirements(rm) is not None else {})} or None)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default,
                            mic_channel_ok=self._mic_extract_ok(router, tools) if mic_task.MICS_KEY in rm else None,
                            mic_track_ok=self._mic_track_ok(router, tools) if mic_task.TRACKS_KEY in rm else None)
@@ -1202,6 +1212,9 @@ class Service:
             d["delivery"]["publish"] = plan["publish"]
         if plan.get("nle"):   # ADR-089: nle-bridge hand-off; written only when planned
             d["delivery"]["nle"] = plan["nle"]
+        shorts_rec = shorts_task.shorts_record(decisions)
+        if shorts_rec:   # ADR-138: the set of vertical clips; written only when planned, so an unchanged request keeps its plan hash
+            d["delivery"]["shorts"] = shorts_rec
         if plan.get("chapters"):   # ADR-137: chapters from the transcript; written only when planned, so an unchanged request keeps its plan hash
             d["delivery"]["chapters"] = plan["chapters"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
@@ -1669,7 +1682,65 @@ class Service:
         """One job (`_render_job`). Every child process the job starts -- each Skill and engine, QA and the checks after it -- gets the
         job's own private temporary directory as TMPDIR / TEMP / TMP, removed when the job ends however it ends (ADR-127)."""
         with job_temp_dir():
-            return self._render_job(ir, ir_path, approve=approve, timeout=timeout, who=who, resume=resume, skip_preflight=skip_preflight)
+            out = self._render_job(ir, ir_path, approve=approve, timeout=timeout, who=who, resume=resume, skip_preflight=skip_preflight)
+        if ir is not None and (ir.doc.get("delivery") or {}).get("shorts") and out.get("status") in ("COMPLETED", "REVIEW"):
+            out["shorts"] = self.render_shorts(load_ir(ir_path), ir_path, timeout=timeout, who=who)   # ADR-138: each confirmed clip, a project of its own
+        return out
+
+    def render_shorts(self, ir: ProjectIR, ir_path: str, timeout: Optional[float] = None, who: Optional[str] = None) -> Dict[str, Any]:
+        """ADR-138: every APPROVED `shorts.clip` of the plan, planned and rendered as its own project: the clip's trim, the vertical frame, captions
+        burned in, the hook card, the platform's preset (and the upload's dry run when asked). The person's yes to the clip is the approval of what
+        the clip decision lists, so the clip's project is rendered with its decisions approved by that yes (recorded as such). A clip waiting for
+        approval, rejected or failed is listed with why; nothing is guessed."""
+        rec = ir.doc["delivery"]["shorts"]
+        who = who or _default_who()
+        decs = {d["id"]: d for d in ir.doc["decisions"]}
+        asset = ir.doc["assets"][rec["asset"]]
+        tr = next((o for o in ir.doc["analysis"]["observations"] if o.get("kind") == "transcript" and o.get("asset_id") == rec["asset"]), None)
+        language = ((tr or {}).get("parameters") or {}).get("language")
+        stem = Path(ir_path).name.split(".")[0]
+        base = Path(self.workspace) / "shorts" / stem
+        base.mkdir(parents=True, exist_ok=True)
+        profile_path = base / f"profile-{rec['platform']}.json"
+        prof = {"name": f"shorts-{rec['platform']}", "version": "1", "extends": ir.doc["project"]["profile"]["name"],
+                "description": f"ADR-138: one vertical {rec['platform']} clip of a shorts set", "delivery": shorts_task.child_profile({}, rec["platform"])["delivery"]}
+        profile_path.write_text(json.dumps(prof, indent=2) + "\n", encoding="utf-8")
+        items: List[Dict[str, Any]] = []
+        for c in rec["clips"]:
+            d = decs.get((c.get("decision_ids") or [None])[0]) or {}
+            row: Dict[str, Any] = {"index": c["index"], "start": c["start"], "end": c["end"], "hook": c["hook"], "quote": c["quote"], "decision_id": d.get("id")}
+            if d.get("status") != "APPROVED":
+                row.update(status="WAITING_FOR_APPROVAL" if d.get("status") == "PROPOSED" else str(d.get("status") or "MISSING"),
+                           reason="the clip is rendered only after a person approves its shorts.clip decision")
+                items.append(row)
+                continue
+            # one child per parent project, plan version and clip (two parents with the same file stem, or a revised parent, never share one)
+            child_path = str(Path(self.workspace) / "plans" / "shorts" / ir.doc["project"]["id"] / f"v{ir.version}" / f"{stem}.short{c['index']:02d}.project.json")
+            try:
+                existing = load_ir(child_path) if os.path.isfile(child_path) else None
+                if existing is not None and ((existing.doc.get("provenance") or {}).get("shorts_parent") or {}).get("decision_id") == d["id"]:
+                    child = existing   # rendered before for this approved clip: the same plan again, so its artifacts keep their provenance
+                else:
+                    # the parent's recorded preferences (never the stores' newer rules), minus the subtitle mode the clip sets itself
+                    prefs = ((ir.doc.get("request") or {}).get("args") or {}).get("preferences") or {}
+                    replay = {k: (prefs.get("values") or {})[k] for k in prefs.get("applied") or [] if k in (prefs.get("values") or {})
+                              and not k.startswith(("subtitle.mode", "subtitle.burn_in", "edit.trim", "edit.fill", "motion.hook", "publish."))}
+                    child = self.plan([asset["path"]], str(profile_path.with_suffix("")), user_requirements={**replay, **shorts_task.child_requirements(c, rec)},
+                                      project_name=f"{stem}-short{c['index']:02d}", params={"language": language} if language else None, use_preferences=False)
+                    child.doc["provenance"]["shorts_parent"] = {"project": ir.doc["project"]["id"], "plan_version": ir.version, "clip": c["index"], "decision_id": d["id"],
+                                                                "approved_by": ((ir.doc["execution"].get("approvals") or {}).get(d["id"]) or {}).get("by")}
+                    save_ir(child, child_path)
+                res = self.render(load_ir(child_path), child_path, approve=["all"], timeout=timeout, who=f"{who} (shorts clip {c['index']}, {d['id']})")
+            except (ValueError, OSError) as e:
+                row.update(status="FAILED", reason=str(e)[:500])
+                items.append(row)
+                continue
+            arts = [a for a in res.get("artifacts") or [] if str(a.get("logical_name", "")).endswith(f"_delivery_{rec['platform']}")]
+            row.update(status=res.get("status"), project=child_path, job=(res.get("job") or {}).get("id"), artifact=arts[0]["path"] if arts else None,
+                       **({"publish": res["publish"]} if res.get("publish") else {}))
+            items.append(row)
+        done = sum(1 for r in items if r["status"] in ("COMPLETED", "REVIEW"))
+        return {"rule": shorts_task.RULE_VERSION, "platform": rec["platform"], "clips": items, "rendered": done, "of": len(items)}
 
     def _render_job(self, ir: ProjectIR, ir_path: str, approve: Optional[List[str]] = None, timeout: Optional[float] = None, who: Optional[str] = None,
                     resume: Optional[str] = None, skip_preflight: bool = False) -> Dict[str, Any]:
@@ -2515,7 +2586,7 @@ class Service:
 SAFE_REATTEMPT = ("INVALID_ARGUMENT", "INPUT_NOT_FOUND", "UNKNOWN_PLATFORM", "CONFIRM_MISMATCH", "METADATA_INVALID", "CREDENTIALS_MISSING", "KEYCHAIN_UNAVAILABLE",
                   "KEYCHAIN_ERROR", "AUTH_FAILED", "QUOTA_EXCEEDED", "UPLOAD_LIMIT_EXCEEDED", "NOT_IMPLEMENTED")
 DEFAULT_MAX_AI_CALLS = 4   # per project; policy key analysis.budget.max_ai_calls
-REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", *measurements_task.PREFIXES, "publish.", "slides.", "bgm.", "remotion.", HTML_LAYER_PREFIX, "document.", verify_task.PREFIX, transcribe_task.PREFIX)
+REQUIREMENT_PREFIXES = ("edit.", "audio.", "silence.", "delivery.", "analysis.", "subtitle", "thumbnail", "color.", "motion.", "qc", "provider.", "sync.", "job.", "voice.", "dub.", "speakers.", *measurements_task.PREFIXES, "publish.", "shorts.", "slides.", "bgm.", "remotion.", HTML_LAYER_PREFIX, "document.", verify_task.PREFIX, transcribe_task.PREFIX)
 # keys that match a REQUIREMENT_PREFIXES prefix but are never a real per-request lever: never-write-the-source is
 # policy/rules.py's hardcoded, non-overridable sys.preserve_source CONSTRAINT (ADR-022's workspace boundary,
 # structurally enforced by ArtifactStore.check_path() regardless of any requirement), not something a request can
@@ -2650,6 +2721,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
     check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
     measurements_task.check_measurement_keys(user_requirements)   # roadmap step 33: text.* / shots.* / speech_regions.* known, in range, refinements with their switch
+    shorts_task.check_keys(user_requirements)   # ADR-138: shorts.* known, a count, a platform with a vertical preset, lengths in range
     chapters_task.check_keys(user_requirements)   # ADR-137: delivery.chapters / its minimum, a switch, in range
     check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
     check_slide_keys(user_requirements)   # ADR-091: slides.* keys known, in range, the deck an existing file of a type slide-sync imports

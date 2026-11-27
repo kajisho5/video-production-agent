@@ -50,6 +50,7 @@ from .editing import TRANSCRIPT_EDIT_OP
 from .transcript_edit import decide_transcript_edit
 from .word_cut import AI_INTENT as WORD_CUT_AI_INTENT, SUBJECT as WORD_CUT_SUBJECT, decide_word_cut
 from .chapters import AI_INTENT as CHAPTERS_AI_INTENT, decide_chapters
+from .shorts import AI_INTENT as SHORTS_AI_INTENT, decide_shorts
 
 # production-skill intent → decision subjects that would already execute it (measured path)
 INTENT_SUBJECTS = {"silence_cleanup": ("silence.leading", "silence.trailing"), "loudness_normalization": ("audio.loudness",),
@@ -823,6 +824,8 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     decide_word_cut(eng, m, analysis, inferences, approval_for, AI_KIND_PREFIX)
     # ---- chapters from the transcript (ADR-137): `delivery.chapters` + the AI's segment numbers → container chapters (CONFIRM), or why not
     decide_chapters(eng, m, analysis, inferences, approval_for, AI_KIND_PREFIX, cap_block)
+    # ---- a set of vertical clips (ADR-138): `shorts.count` + the AI's segment ranges → one `shorts.clip` decision per clip (CONFIRM), or why not
+    decide_shorts(eng, m, analysis, inferences, approval_for, AI_KIND_PREFIX)
     # ---- AI recommendations (provenance AI_GENERATED): proposals only. A recommendation that a measured decision already
     # covers becomes extra evidence on that decision (its confidence / risk / approval are untouched). Anything else is a
     # review item: approval from policy (default CONFIRM), risk from the skill registry, never executable by itself.
@@ -830,7 +833,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
         if not inf.kind.startswith(AI_KIND_PREFIX):
             continue
         ai_intent = str(inf.data.get("intent") or inf.kind[len(AI_KIND_PREFIX):])
-        if ai_intent in (WORD_CUT_AI_INTENT, CHAPTERS_AI_INTENT):
+        if ai_intent in (WORD_CUT_AI_INTENT, CHAPTERS_AI_INTENT, SHORTS_AI_INTENT):
             continue   # ADR-109: decide_word_cut owns these (a cut, a refusal, or a BLOCK by policy); a recorded one without edit.word_cut is not used
         subjects = INTENT_SUBJECTS.get(ai_intent, ())
         covered_decs = [d for d in decs if d.status != "BLOCKED" and any(d.subject == sub or (sub.endswith(".") and d.subject.startswith(sub)) for sub in subjects)

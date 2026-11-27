@@ -285,8 +285,9 @@ def main() -> int:
                 return err("INVALID_REQUEST", "keep ranges must be {start, end}")
             if not r["start"] < r["end"]:
                 return err("INVALID_TIME_RANGE", "start must be before end")
-            if r["end"] > 16.0 + 0.1:
-                return err("INVALID_TIME_RANGE", f"end {r['end']}s is beyond the input duration 16.000s")
+            limit = _fake_duration(sources.get(op.get("input") or ""))   # a self-describing fake input carries its own duration (ADR-138's 30 min talk)
+            if r["end"] > limit + 0.1:
+                return err("INVALID_TIME_RANGE", f"end {r['end']}s is beyond the input duration {limit:.3f}s")
     inputs = op.get("inputs") or [op.get("input")]
     for ref in inputs:
         if ref not in sources:
@@ -443,5 +444,15 @@ def main() -> int:
     return 3 if MODE == "nonzero_ok" else 0
 
 
+def _fake_duration(path) -> float:
+    """The duration a self-describing fake file declares, else the fixed 16 s of a real / opaque file."""
+    try:
+        raw = Path(path).read_bytes() if path else b""
+        return float(json.loads(raw.decode()).get("duration") or 16.0) if raw.startswith(b'{"fake"') else 16.0
+    except (OSError, ValueError, TypeError):
+        return 16.0
+
+
 if __name__ == "__main__":
     sys.exit(main())
+

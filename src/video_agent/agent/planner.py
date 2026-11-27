@@ -1307,6 +1307,10 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     params={"document": doc_id, "name": d.params["name"], **({"preset": d.params["preset"]} if d.params.get("preset") else {})},
                                     outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
         summary.append(d.decision)
+    clip_decs = [x for x in decisions if x.subject.startswith("shorts.clip.") and x.type == "TRANSFORM" and x.status != "REJECTED"]
+    if clip_decs:   # ADR-138: the clips are rendered after this plan, each as a project of its own (Service.render_shorts)
+        summary.append(f"Make {len(clip_decs)} vertical {clip_decs[0].params.get('platform')} clip(s), each a project of its own after its approval: "
+                       + "; ".join(f"{d.params['start']:.1f}-{d.params['end']:.1f}s \u201c{d.params['hook']}\u201d" for d in clip_decs))
     if chapter_dec is not None and not chapters_rec:
         summary.append("Chapters are not written: the plan has no delivery target with a preset to write them into")
     if blocked:
