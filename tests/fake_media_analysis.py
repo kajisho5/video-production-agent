@@ -106,8 +106,50 @@ def main() -> int:
         if MODE == "two_docs":
             print(json.dumps(doc))
         return 0 if result["status"] == "ok" else 6
+    if argv[:1] == ["follow"]:
+        return follow(argv[1:])
     print("unknown", file=sys.stderr)
     return 2
+
+
+def follow(argv: list) -> int:
+    """ADR-136: `follow <input> --kind K --state S --settle N [--final] [--complete-marker M] --json` on a self-describing fake file
+    ({"fake": true, "duration": D, "growing": bool, "moov_at_end": bool}): complete on --final, the marker, or `growing` false with size and
+    mtime unchanged for --settle s; a moov-at-end file is unreadable while growing. FAKE_MA_MODE=no_follow answers like a Skill before 0.3.0."""
+    if MODE == "no_follow":
+        print("media-analysis: error: argument cmd: invalid choice: 'follow'", file=sys.stderr)
+        return 2
+    path = argv[0]
+    opt = {argv[i]: (argv[i + 1] if i + 1 < len(argv) and not argv[i + 1].startswith("--") else True) for i in range(1, len(argv)) if argv[i].startswith("--")}
+    log("follow")
+    meta = json.loads(Path(path).read_text(encoding="utf-8"))
+    st_path = Path(opt["--state"])
+    st = json.loads(st_path.read_text(encoding="utf-8")) if st_path.exists() else {"runs": 0, "since": None, "obs": None}
+    stat = os.stat(path)
+    now = time.time()
+    obs = [stat.st_size, stat.st_mtime]
+    if st["obs"] != obs:
+        st["since"] = now
+    st["obs"] = obs
+    settle = float(opt.get("--settle", 30))
+    marker = opt.get("--complete-marker")
+    reason = "final" if opt.get("--final") else "marker" if isinstance(marker, str) and os.path.exists(marker) else \
+        "settled" if (not meta.get("growing") and now - st["since"] >= settle) else None
+    readable = not (meta.get("moov_at_end") and reason is None)
+    if readable:
+        st["runs"] += 1
+    st_path.parent.mkdir(parents=True, exist_ok=True)
+    st_path.write_text(json.dumps(st), encoding="utf-8")
+    dur = float(meta.get("duration", 0.0))
+    doc = {"schema": "media-analysis/follow@1", "skill": {"id": "media-analysis", "version": CONTRACT["version"]}, "status": "ok", "input": path, "kind": opt["--kind"],
+           "readable": readable, "complete": reason is not None, "growing": reason is None,
+           "completion": {"reason": reason, "settle_seconds": settle, "unchanged_for": round(now - st["since"], 3), "marker": marker if isinstance(marker, str) else None},
+           "restarted": None, "committed_until": (dur if reason else max(0.0, dur - 2.0)) if readable else 0.0, "run": None, "run_count": st["runs"],
+           "measured_seconds": dur if readable else 0, "data": {"duration": dur if reason else None, "segments": []} if readable else None}
+    if not readable:
+        doc["unreadable"] = {"reason": "ffprobe could not open the input as media", "hint": "a plain MP4 / MOV keeps its index (moov) at the end"}
+    print(json.dumps(doc))
+    return 0
 
 
 if __name__ == "__main__":

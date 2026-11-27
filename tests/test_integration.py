@@ -915,6 +915,54 @@ class ChunkedRenderRealTests(unittest.TestCase):
         self.assertEqual(got, expected)
 
 
+@unittest.skipUnless(locate_media_analysis(), "media-analysis-skill not installed (VIDEO_AGENT_MEDIA_ANALYSIS_DIR)")
+class FollowRecordingRealTests(unittest.TestCase):
+    """ADR-136 (roadmap step 23): `follow` on a file ffmpeg is still writing in real time (-re), through the real media-analysis-skill
+    `follow`. Matroska is measured while it grows and completes on the settle rule; a plain MP4 is reported unreadable once (its moov is
+    written at the end) and completes when it is closed; then the finished file is planned."""
+
+    def record(self, path: str, seconds: int) -> "subprocess.Popen":
+        return subprocess.Popen(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-f", "lavfi", "-i", f"testsrc2=size=320x180:rate=25:duration={seconds}",
+                                 "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", "-c:v", "libx264", "-preset", "ultrafast", "-g", "10", "-c:a", "aac", path])
+
+    def follow(self, svc, path, proc):
+        import time
+        lines = []
+        until = time.monotonic() + 20
+        while not os.path.exists(path) and time.monotonic() < until:
+            time.sleep(0.05)
+        try:
+            rec = svc.follow_recording(path, interval=1.0, settle=4.0, emit=lines.append, max_wait=120)
+        finally:
+            proc.wait(timeout=60)
+        return rec, lines
+
+    def test_matroska_measured_while_it_grows_then_planned(self):
+        tmp = tmp_dir(self, prefix="va_follow_")
+        rec_path = str(Path(tmp) / "src" / "room-a.mkv")
+        Path(rec_path).parent.mkdir(parents=True)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        rec, lines = self.follow(svc, rec_path, self.record(rec_path, 6))
+        print("follow (mkv):", *lines, sep="\n  ")
+        self.assertTrue(rec["complete"])
+        self.assertEqual(rec["reason"], "settled")
+        self.assertGreaterEqual(sum(1 for ln in lines if "measured to" in ln), 3, lines)
+        self.assertAlmostEqual(float(rec["duration"]), 6.0, delta=0.2)
+        ir = svc.plan([rec["recording"]], "youtube", hash_sources=False)
+        self.assertEqual(len(ir.doc["assets"]), 1)
+
+    def test_plain_mp4_unreadable_until_closed(self):
+        tmp = tmp_dir(self, prefix="va_follow_")
+        rec_path = str(Path(tmp) / "src" / "room-b.mp4")
+        Path(rec_path).parent.mkdir(parents=True)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        rec, lines = self.follow(svc, rec_path, self.record(rec_path, 4))
+        print("follow (mp4):", *lines, sep="\n  ")
+        self.assertTrue(rec["complete"] and rec["unreadable_while_growing"], rec)
+        self.assertEqual(sum(1 for ln in lines if "moov" in ln), 1, lines)
+        self.assertAlmostEqual(float(rec["duration"]), 4.0, delta=0.2)
+
+
 class NoAudioSourceTests(unittest.TestCase):
     """A video-only source (real-world: DJI drones, some screen captures) must analyze, plan and render without audio steps."""
 
