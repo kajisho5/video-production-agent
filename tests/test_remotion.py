@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pinned_versions import pinned_version  # noqa: E402
+from pinned_versions import pinned_version, version_tuple  # noqa: E402
 from pipeline_harness import PipelineCaps, clear_modes, fake_media, pipeline_service  # noqa: E402
 
 from video_agent.agent.editing import EditRequirementError  # noqa: E402
@@ -113,7 +113,8 @@ class ContractTests(_Base):
         bad = json.loads(json.dumps(c)); next(t for t in bad["tools"] if t["name"] == "pipeline")["flags"].pop("out_dir")
         self.assertTrue(any("out_dir" in e for e in check_contract(bad)))
         self.assertTrue(breaking_drift(bad))
-        for v in ("0.15.0", "0.140.0", "1.0.0"):
+        nxt = "0.%d.0" % (version_tuple(pinned_version("remotion-ffmpeg"))[1] + 1)   # the minor after the pinned one, outside the gate
+        for v in (nxt, "0.140.0", "1.0.0"):
             bad = json.loads(json.dumps(c)); bad["version"] = bad["skill"]["version"] = v
             self.assertTrue(any("supported range" in e for e in check_contract(bad)), v)
         # ADR-107 addendum 14: a 0.12.x install (no Emphasis in the comp descriptions) is inside the gate and is drift, not breaking drift
