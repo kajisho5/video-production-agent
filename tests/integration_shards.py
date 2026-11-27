@@ -35,7 +35,7 @@ SECONDS = {
     "DiarizationRealTests": 22, "RemotionRealTests": 22, "BeatGridRealTests": 18, "TranscriptionRealTests": 18,
     "PublishRealTests": 2, "ProductionContextRealTests": 1, "ProductionDecisionEngineRealTests": 1,
     "SpeechToPlanRealTests": 1, "ConcatWholeFramesRealTests": 10, "PreflightRealTests": 70, "DeadlineRealTests": 110, "ChunkedRenderRealTests": 170, "FollowRecordingRealTests": 35,
-    "MicrophonesRealTests": 40, "TranscriptChaptersRealTests": 180, "ShortsSetRealTests": 300, "ProgressRealTests": 110, "FreezeReverseRealTests": 90,
+    "MicrophonesRealTests": 40, "TranscriptChaptersRealTests": 180, "ShortsSetRealTests": 820, "ProgressRealTests": 110, "FreezeReverseRealTests": 90,
 }
 DEFAULT_SECONDS = 60
 

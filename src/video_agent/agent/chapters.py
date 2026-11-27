@@ -215,17 +215,18 @@ def on_programme(rec: Dict[str, Any], keep: Optional[Sequence[Sequence[float]]],
             dropped.append({"index": c["index"], "title": c["title"], "reason": "its start lies after the last kept range of the trim"})
             continue
         kept.append(dict(c, source_start=c["start"], start=t, **({"moved": "its start was cut; it starts where the next kept range starts"} if moved else {})))
-    merged: List[Dict[str, Any]] = []
-    for n, c in enumerate(kept):
-        nxt = next((x["start"] for x in kept[n + 1:]), programme_seconds)
-        if merged and nxt - c["start"] < min_s - 1e-9:
-            dropped.append({"index": c["index"], "title": c["title"], "reason": f"{nxt - c['start']:.1f}s after the trim, under the {min_s:g}s minimum: joined to the chapter before"})
-            continue
-        merged.append(c)
-    # the last kept chapter may now be short against the end: join it to the one before (never chapter 1)
-    while len(merged) > 1 and programme_seconds - merged[-1]["start"] < min_s - 1e-9:
-        c = merged.pop()
-        dropped.append({"index": c["index"], "title": c["title"], "reason": f"{programme_seconds - c['start']:.1f}s after the trim, under the {min_s:g}s minimum: joined to the chapter before"})
+    # a chapter shorter than the minimum on the programme joins the chapter before it; chapter 1 (at 0) stays and takes in the next one
+    merged = list(kept)
+    while len(merged) > 1:
+        short = next((n for n, c in enumerate(merged)
+                      if (merged[n + 1]["start"] if n + 1 < len(merged) else programme_seconds) - c["start"] < min_s - 1e-9), None)
+        if short is None:
+            break
+        gone = merged.pop(short if short > 0 else 1)
+        nxt = next((x["start"] for x in merged if x["start"] > gone["start"]), programme_seconds)
+        what = "chapter 1 after the trim is" if short == 0 else f"{nxt - gone['start']:.1f}s after the trim,"
+        dropped.append({"index": gone["index"], "title": gone["title"],
+                        "reason": f"{what} under the {min_s:g}s minimum: joined to the chapter before"})
     for n, c in enumerate(merged):
         c["index"] = n + 1
     return {"chapters": merged, "dropped": dropped, "programme_seconds": round(float(programme_seconds), 3)}
@@ -313,8 +314,9 @@ def decide_chapters(eng: Any, m: Dict[str, Requirement], analysis: Any, inferenc
     else:
         segs = numbered_segments((tr.data or {}).get("segments") or [])
         try:
-            if len(segs) > MAX_CONTEXT_SEGMENTS and any(isinstance(c, dict) and isinstance(c.get("segment"), int) and c["segment"] >= MAX_CONTEXT_SEGMENTS
-                                                        for c in ((recs[0].data or {}).get("params") or {}).get("chapters") or []):
+            raw_chs = ((recs[0].data or {}).get("params") or {}).get("chapters") if isinstance((recs[0].data or {}).get("params"), dict) else None
+            if len(segs) > MAX_CONTEXT_SEGMENTS and isinstance(raw_chs, list) and any(isinstance(c, dict) and isinstance(c.get("segment"), int)
+                                                                                     and c["segment"] >= MAX_CONTEXT_SEGMENTS for c in raw_chs):
                 raise ChapterError(f"the AI was shown only segments 0..{MAX_CONTEXT_SEGMENTS - 1}: a chapter past them names a segment it did not see")
             duration = (asset.technical or {}).get("duration")
             derived = derive_chapters((recs[0].data or {}).get("params"), segs, duration if duration is not None else (tr.data or {}).get("duration"), req["min_seconds"])
@@ -367,4 +369,16 @@ def check_chapters(doc: Dict[str, Any]) -> List[str]:
     cited = [decs.get(i) for i in rec.get("decision_ids") or []]
     if not cited or any(d is None or d.get("subject") != SUBJECT or d.get("type") != "TRANSFORM" for d in cited):
         errs.append(f"delivery.chapters must cite its {SUBJECT} decision")
+        return errs
+    # what is written must be what was decided: the decision's chapters, mapped through this plan's trim again
+    src_dur = ((doc.get("assets") or {}).get(rec.get("asset")) or {}).get("technical", {}).get("duration")
+    if src_dur is not None and total > float(src_dur) + 1e-3:
+        errs.append(f"delivery.chapters: programme_seconds {total:g} is longer than the source ({float(src_dur):g}s)")
+    keep = next((op.get("keep") for op in (doc.get("video") or {}).get("operations") or [] if op.get("type") == "video.trim" and op.get("asset") == rec.get("asset")), None)
+    try:
+        again = on_programme(cited[0]["params"], keep, total)["chapters"]
+    except (KeyError, TypeError, ValueError):
+        return errs + [f"delivery.chapters: the {SUBJECT} decision's chapters cannot be read"]
+    if [(round(float(c["start"]), 3), c["title"]) for c in again] != [(round(float(c.get("start", -1)), 3), c.get("title")) for c in chs]:
+        errs.append(f"delivery.chapters differ from the {SUBJECT} decision's chapters mapped through the plan's trim; re-plan instead of editing them")
     return errs
