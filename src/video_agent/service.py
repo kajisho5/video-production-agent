@@ -1683,7 +1683,7 @@ class Service:
         job's own private temporary directory as TMPDIR / TEMP / TMP, removed when the job ends however it ends (ADR-127)."""
         with job_temp_dir():
             out = self._render_job(ir, ir_path, approve=approve, timeout=timeout, who=who, resume=resume, skip_preflight=skip_preflight)
-        if (ir.doc.get("delivery") or {}).get("shorts") and out.get("status") in ("COMPLETED", "REVIEW"):
+        if ir is not None and (ir.doc.get("delivery") or {}).get("shorts") and out.get("status") in ("COMPLETED", "REVIEW"):
             out["shorts"] = self.render_shorts(load_ir(ir_path), ir_path, timeout=timeout, who=who)   # ADR-138: each confirmed clip, a project of its own
         return out
 
