@@ -37,6 +37,7 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    "video_trim": ("asset", "keep", "removed", "accurate", "precision"),   # ADR-062: the same domain parameters as silence_cleanup (one kept range)
                    "video_rotate": ("asset", "degrees", "flip"),
                    "video_speed": ("asset", "factor"),
+                   "video_reverse": ("asset",), "video_freeze": ("asset", "hold", "at"),   # ADR-141
                    "video_resize": ("asset", "width", "fps"), "video_fit": ("asset", "aspect", "width", "pad_color", "fps"), "video_fill": ("asset", "aspect", "width", "fps"),
                    "video_overlay": ("asset", "image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
                    # ADR-077: the overlay image prepared by imagemagick-skill before the overlay (the subject, the user's image, the tool's parameters)
@@ -223,6 +224,11 @@ def subject_duration(doc: Dict[str, Any], subject: str, step: Optional[Dict[str,
         after = step is None or speed_step is None or int(step.get("order", 0)) >= int(speed_step.get("order", 0))
         if after:
             dur = float(dur) / float(speed["factor"])
+    # ADR-141: from a freeze on, the subject's timeline is longer by the hold
+    for fr in (op for op in ops if op.get("type") == "video.freeze" and op.get("asset") == subject and op.get("hold")):
+        fstep = next((s for s in steps if s.get("skill") == "video_freeze" and (s.get("params") or {}).get("asset") == subject), None)
+        if step is None or fstep is None or int(step.get("order", 0)) >= int(fstep.get("order", 0)):
+            dur = float(dur) + float(fr["hold"])
     # ADR-070: from the join of a still on, the subject's timeline is longer by the still
     for ins in (op for op in ops if op.get("type") == "video.image_insert" and op.get("asset") == subject and op.get("duration")):
         join = next((s for s in steps if s.get("id") == f"step_image_join_{subject}"), None)
