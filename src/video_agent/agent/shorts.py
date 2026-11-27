@@ -296,6 +296,8 @@ def check_shorts(doc: Dict[str, Any]) -> List[str]:
         cited = [decs.get(i) for i in c.get("decision_ids") or []]
         if not cited or any(d is None or not is_clip(d.get("subject")) for d in cited):
             errs.append(f"delivery.shorts clip {c['index']} must cite its {SUBJECT} decision")
+        elif any(any((d.get("params") or {}).get(k) != c.get(k) for k in ("index", "first_segment", "last_segment", "start", "end", "hook", "quote")) for d in cited):
+            errs.append(f"delivery.shorts clip {c['index']} differs from its {SUBJECT} decision; re-plan instead of editing it")
         if not re.match(r"^\S", str(c.get("hook") or "")):
             errs.append(f"delivery.shorts clip {c['index']} has no hook")
     return errs
