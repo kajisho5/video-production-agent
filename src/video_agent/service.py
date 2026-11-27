@@ -1751,7 +1751,7 @@ class Service:
                 _write_json(Path(self.workspace) / "jobs" / out["job"]["id"] / "error.json", out["error"])
             except OSError:
                 pass
-        if (ir.doc.get("delivery") or {}).get("shorts") and out.get("status") in ("COMPLETED", "REVIEW"):
+        if ir is not None and (ir.doc.get("delivery") or {}).get("shorts") and out.get("status") in ("COMPLETED", "REVIEW"):
             out["shorts"] = self.render_shorts(load_ir(ir_path), ir_path, timeout=timeout, who=who)   # ADR-138: each confirmed clip, a project of its own
         return out
 

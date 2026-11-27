@@ -110,6 +110,9 @@ class RuleTests(unittest.TestCase):
         self.assertEqual([c["title"] for c in short["chapters"]], ["Welcome", "The sound system"])
         self.assertEqual(short["dropped"][0]["title"], "Questions")
         self.assertEqual(ch.on_programme(rec, None, 90.0)["chapters"][1]["start"], 31.0)
+        lead = ch.on_programme(rec, [[25.0, 90.0]], 65.0)   # chapter 2 starts 6 s in: chapter 1 takes it in and stays at 0
+        self.assertEqual([(c["start"], c["title"]) for c in lead["chapters"]], [(0.0, "Welcome"), (36.0, "Questions")])
+        self.assertEqual([d["title"] for d in lead["dropped"]], ["The sound system"])
 
     def test_timestamps_and_the_description(self):
         self.assertEqual([ch.timestamp(x) for x in (0, 9.99, 61.0, 3600, 3725.4)], ["0:00", "0:09", "1:01", "1:00:00", "1:02:05"])
@@ -302,6 +305,8 @@ class PipelineTests(unittest.TestCase):
         svc, ir, _ = self.plan(_Chapters(THREE))
         ir.doc["delivery"]["chapters"]["chapters"][1]["start"] = 3.0
         self.assertTrue(any("under 10s" in e for e in svc.validate(ir).errors))
+        ir.doc["delivery"]["chapters"]["chapters"][1]["start"] = 32.0   # still 10 s or longer, but not what was decided
+        self.assertTrue(any("differ from the chapters.transcript decision" in e for e in svc.validate(ir).errors))
 
     def test_without_the_requirement_a_chapter_recommendation_is_dropped(self):
         svc = pipeline_service(self.tmp)
