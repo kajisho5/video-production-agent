@@ -157,7 +157,7 @@ class VersionGateTests(unittest.TestCase):
         # addendum 32: 1.4.0 adds the top-level loudness.loudnorm_mode (additive); the gate takes 1.4.x
         self.assertEqual(ap.pinned_contract()["version"], pinned_version("audio-production"))   # addendum 17: 1.3.0 adds the opt-in filler_lexicons.opt_in / opt_in_use
         self.assertTrue({"LOUDNESS_SET", "STEMS"} <= {o["type"] for o in ap.pinned_contract()["operations"]})
-        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2", "1.4.0", "1.5.0", "1.5.0", pinned_version("audio-production")):
+        for v in ("0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.4.10", "0.4.11", "0.4.12", "1.0.0", "1.0.1", "1.1.0", "1.1.3", "1.2.0", "1.2.5", "1.3.0", "1.3.2", "1.4.0", "1.5.1", "1.5.1", pinned_version("audio-production")):
             live = with_version(ap.pinned_contract(), v)
             self.assertEqual(ap.check_contract(live), [], v)
             self.assertEqual(ap.contract_breaking_drift(live), [], v)

@@ -11,10 +11,10 @@
     },
     "audio-production": {
       "repo": "kajisho5/audio-production-skill",
-      "tag": "v1.5.0",
-      "sha": "91374b46dca106f8f04cf5844b870111aef30bae",
-      "version": "1.5.0",
-      "pin": "src/video_agent/tools/audio_production/contract_1.5.0.json"
+      "tag": "v1.5.1",
+      "sha": "c061be49983a3c3fda8ab9a8a6c949d2daa9189c",
+      "version": "1.5.1",
+      "pin": "src/video_agent/tools/audio_production/contract_1.5.1.json"
     },
     "blender": {
       "repo": "kajisho5/blender-skill",
