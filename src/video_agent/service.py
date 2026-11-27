@@ -6,8 +6,9 @@ import hmac
 from time import monotonic as _monotonic
 import json
 import os
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import __version__
 from .agent import build_plan, decide, extract_requirements, infer, resolve_intent
@@ -152,6 +153,7 @@ class Service:
         self._adapter = adapter
         self.registry = default_registry()
         self.provider = provider or get_provider()   # NullProvider unless configured: the pipeline never depends on AI
+        self.on_progress: List[Callable[[Dict[str, Any]], None]] = []   # ADR-140: each render progress snapshot (tests, embedding hosts)
         self._ai_calls: List[Dict[str, Any]] = []     # provenance.ai_calls for the project being planned
         # Reference Skill package: implemented in this codebase (tools/ffmpeg_skill) whether or not a checkout is installed.
         self.registry.register_package(FFMPEG_SKILL_PACKAGE)
@@ -1636,6 +1638,57 @@ class Service:
         ir.doc["deadline"] = rec
         return rec
 
+    def _progress_tracker(self, ir: ProjectIR, ops: List[Any], job: Any) -> Any:
+        """ADR-140: the render's progress, weighted by this machine's speed-book estimates; each snapshot is written to <job>/progress.json, to
+        stderr as one JSON line when VIDEO_AGENT_PROGRESS=jsonl (what the MCP server reads), and to `on_progress`."""
+        from .execution.progress import Progress
+        try:
+            book = deadline_task.SpeedBook(self.workspace)
+            rows = deadline_task.estimate(ops, deadline_task.media_seconds(ir.doc), book, deadline_task.machine_key(self._hw_encoder()))
+            est = {r["op_id"]: float(r["seconds"]) for r in rows}
+        except (OSError, ValueError, KeyError, TypeError):
+            est = {}
+        stream = os.environ.get("VIDEO_AGENT_PROGRESS", "").strip().lower() == "jsonl"
+
+        def sink(snap: Dict[str, Any]) -> None:
+            try:
+                _write_json(job.dir / "progress.json", snap)
+            except OSError:
+                pass
+            if stream:
+                sys.stderr.write(json.dumps({"video_agent_progress": snap}, ensure_ascii=False) + "\n")
+                sys.stderr.flush()
+            for cb in self.on_progress:
+                cb(snap)
+        return Progress(ops, est, sink, job_id=job.id)
+
+    def status(self, job_ref: str = "last") -> Dict[str, Any]:
+        """ADR-140 (`video-agent status --json`): a job's state, its last progress snapshot and, when it failed or was blocked, the error with its
+        class. `job_ref` is a job id or `last`."""
+        store = JobStore(self.workspace)
+        job = store.latest() if job_ref == "last" else store.load(job_ref)
+        if job is None:
+            raise FileNotFoundError(f"no job in {self.workspace}")
+        doc: Dict[str, Any] = {"job": job.id, "state": job.state, "updated_at": job.updated_at, "ir_path": job.ir_path, "plan_version": job.plan_version}
+        for name, key in (("progress.json", "progress"), ("chunks.json", "chunks")):
+            p = job.dir / name
+            if p.is_file():
+                try:
+                    doc[key] = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    doc[key] = None
+        err_ = job.dir / "error.json"
+        if err_.is_file():
+            try:
+                doc["error"] = json.loads(err_.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+        if "error" not in doc and job.state in ("BLOCKED", "FAILED") and job.history:
+            reason = job.history[-1].get("reason") or ""
+            cls = "policy" if "production plan is" in reason or "REJECTED" in reason else ("environment" if "DISK" in reason else "input")
+            doc["error"] = {"error_class": cls, "reason": reason, "code": None, "retry_helps": False}
+        return doc
+
     def _hw_encoder(self) -> bool:
         try:
             return self.caps.resolve().get("gpu") is not None and self.caps.resolve()["gpu"].status == "AVAILABLE"
@@ -1693,6 +1746,11 @@ class Service:
         job's own private temporary directory as TMPDIR / TEMP / TMP, removed when the job ends however it ends (ADR-127)."""
         with job_temp_dir():
             out = self._render_job(ir, ir_path, approve=approve, timeout=timeout, who=who, resume=resume, skip_preflight=skip_preflight)
+        if out.get("error") and (out.get("job") or {}).get("id"):   # ADR-140: what `status` reports for this job
+            try:
+                _write_json(Path(self.workspace) / "jobs" / out["job"]["id"] / "error.json", out["error"])
+            except OSError:
+                pass
         if (ir.doc.get("delivery") or {}).get("shorts") and out.get("status") in ("COMPLETED", "REVIEW"):
             out["shorts"] = self.render_shorts(load_ir(ir_path), ir_path, timeout=timeout, who=who)   # ADR-138: each confirmed clip, a project of its own
         return out
@@ -1772,12 +1830,14 @@ class Service:
             reasons = {d["id"]: (ir.doc["execution"].get("reviews") or {}).get(d["id"], {}).get("reason") for d in ir.rejected()}
             job.transition("BLOCKED", "plan cites REJECTED decisions; revise before rendering")
             store.save(job)
-            return {"job": job.to_dict(), "status": "BLOCKED", "rejected": reasons, "approved": [], "hint": "run `video-agent revise <project>`"}
+            return {"job": job.to_dict(), "status": "BLOCKED", "rejected": reasons, "approved": [], "hint": "run `video-agent revise <project>`",
+                    "error": _plan_error("policy", "REJECTED_CITED", "the plan cites rejected decisions: revise it")}
         rep = self.validate(ir)
         if not rep.ok:
             job.transition("FAILED", "validation failed")
             store.save(job)
-            return {"job": job.to_dict(), "validation": rep.to_dict(), "status": "FAILED"}
+            return {"job": job.to_dict(), "validation": rep.to_dict(), "status": "FAILED",
+                    "error": _plan_error("input", "VALIDATION_FAILED", "; ".join(rep.errors[:3]))}
         if approve:
             approved = ir.approve(approve, who)
         else:
@@ -1785,7 +1845,8 @@ class Service:
         if ir.blocked():
             job.transition("BLOCKED", "; ".join(d["reason"] for d in ir.blocked()))
             store.save(job)
-            return {"job": job.to_dict(), "status": "BLOCKED", "blocked": ir.blocked(), "approved": approved}
+            return {"job": job.to_dict(), "status": "BLOCKED", "blocked": ir.blocked(), "approved": approved,
+                    "error": _plan_error("policy", "PLAN_BLOCKED", "; ".join(d["reason"] for d in ir.blocked())[:500])}
         pending = ir.pending_confirmations()
         if not pending and ir.needs_reapproval():
             job.transition("WAITING_FOR_APPROVAL", f"plan v{ir.version} has not been approved")
@@ -1816,7 +1877,9 @@ class Service:
             job.transition("BLOCKED", "preflight: " + "; ".join(f"{p['code']} {p['field']}" for p in errs))
             store.save(job)
             save_ir(ir, ir_path)
+            env_codes = {"DISK_SPACE_LOW", "OUTPUT_DIR_NOT_WRITABLE", "TOOL_MISSING", "FONT_MISSING"}
             return {"job": job.to_dict(), "status": "BLOCKED", "preflight": preflight, "approved": approved,
+                    "error": _plan_error("environment" if all(p["code"] in env_codes for p in errs) else "input", errs[0]["code"], errs[0]["message"]),
                     "hint": "fix the preflight errors (video-agent preflight <project>), or render with --skip-preflight to run anyway (recorded in the run)"}
         if ir.doc["project"].get("kind") == offload_task.PROJECT_KIND:   # ADR-066: the approved card offload, not a compiled media pipeline
             return self._execute_offload(ir, ir_path, job, store, approved, who, timeout)
@@ -1839,6 +1902,8 @@ class Service:
             if chunked:
                 _write_json(job.dir / "chunks.json", chunks_task.progress(chunked, ops, op_states))
         ex.checkpoint = checkpoint
+        tracker = self._progress_tracker(ir, ops, job)   # ADR-140: step, percent, ETA, chunk -- in <job>/progress.json, `status`, and MCP progress
+        ex.progress = tracker
         try:
             result = ex.run(ops, paths)
         finally:
@@ -1851,6 +1916,10 @@ class Service:
         except OSError:
             pass
         out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths, "resume": resume_note, "preflight": preflight}
+        out["progress"] = tracker.final(result.status)
+        if result.status != "COMPLETED" and result.recovery:   # ADR-140: what to fix and whether a retry helps, with the tool's own code
+            last = result.recovery[-1]
+            out["error"] = {k: last.get(k) for k in ("error_class", "code", "recovery_class", "retry_helps", "fix", "tool", "op", "reason")}
         if chunked:
             out["chunks"] = chunks_task.progress(chunked, ops, op_states)
         if result.status != "COMPLETED":
@@ -2651,6 +2720,12 @@ BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT
 def _checkout_root(skill: Any) -> Optional[str]:
     """The checkout directory of a located Skill (None for a console script): what thumbnail-skill's variants take as their qc-skill (ADR-104)."""
     return str(skill.root) if skill is not None and getattr(skill, "root", None) else None
+
+
+def _plan_error(cls: str, code: str, reason: str) -> Dict[str, Any]:
+    """ADR-140: a render refused before any tool ran, in the same shape as a tool failure's error."""
+    from .execution.recovery import ERROR_CLASS_FIX
+    return {"error_class": cls, "code": code, "recovery_class": None, "retry_helps": False, "fix": ERROR_CLASS_FIX[cls], "tool": None, "op": None, "reason": reason}
 
 
 def _check_requirement_keys(user_requirements: Dict[str, Any]) -> None:
