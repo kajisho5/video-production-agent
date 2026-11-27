@@ -102,6 +102,7 @@ from .agent.thumbnail_features import PATH_KEYS as _THUMBNAIL_PATH_KEYS, thumbna
 from .agent.timeline import TIMELINE_KEY, parse_timeline_requirement
 from .agent.takes import AI_INTENT as TAKE_AI_INTENT, BEAT_KIND, REQUIREMENT_KEYS as _TAKES_REQUIREMENT_KEYS, parse_takes_requirements
 from .agent import transcript_edit as transcript_edit_task
+from .agent import chapters as chapters_task
 from .agent import word_cut as word_cut_task
 from .agent.subtitles import REQUIREMENT_KEYS as _SUBTITLE_REQUIREMENT_KEYS
 from .agent.subtitles import parse_subtitle_requirements
@@ -589,6 +590,8 @@ class Service:
             # ADR-110: what the delivered file is compared with after the render: the source's words with their timings, measured for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
             params = dict(params or {}, word_timestamps=True)
+        if chapters_task.requested(user_requirements or {}) and "transcript" not in (kinds or []):
+            kinds = list(kinds or []) + ["transcript"]   # ADR-137: the AI reads the transcript's segments to name where the topic changes
         if word_cut_task.requested(user_requirements or {}):
             # ADR-109: the AI names words to keep / cut by their number in a transcript with word timings, measured for the requirement
             kinds = list(kinds or []) + ([] if "transcript" in (kinds or []) else ["transcript"])
@@ -1072,9 +1075,13 @@ class Service:
         inferences += infer_from_contexts(contexts, {e.id: e for e in analysis.timeline.events}, {a.id: (a.technical or {}).get("duration") for a in analysis.assets})
         inferences += self._ai_inferences(analysis, rules, prior_ai, request_text=request.raw, intent=intent.primary,
                                           extra_intents=([TAKE_AI_INTENT] if parse_takes_requirements(rm) is not None else [])
-                                          + ([word_cut_task.AI_INTENT] if word_cut_task.parse_word_cut_requirements(rm) is not None else []),
+                                          + ([word_cut_task.AI_INTENT] if word_cut_task.parse_word_cut_requirements(rm) is not None else [])
+                                          + ([chapters_task.AI_INTENT] if chapters_task.parse_chapter_requirements(rm) is not None else []),
                                           # ADR-109: the numbered words the AI names ranges of (indices and text, never times to write back)
-                                          extra_context=word_cut_task.ai_context(analysis) if word_cut_task.parse_word_cut_requirements(rm) is not None else None)
+                                          # ADR-137: the numbered segments the AI names chapter starts by
+                                          extra_context={**(word_cut_task.ai_context(analysis) if word_cut_task.parse_word_cut_requirements(rm) is not None else {}),
+                                                         **(chapters_task.ai_context(analysis, (chapters_task.parse_chapter_requirements(rm) or {}).get("min_seconds"))
+                                                            if chapters_task.parse_chapter_requirements(rm) is not None else {})} or None)
         decisions = decide(reqs, intent, analysis, inferences, rules, caps, self.registry, tool_supports=router.supports, explicit_providers=explicit, default_providers=default,
                            mic_channel_ok=self._mic_extract_ok(router, tools) if mic_task.MICS_KEY in rm else None,
                            mic_track_ok=self._mic_track_ok(router, tools) if mic_task.TRACKS_KEY in rm else None)
@@ -1195,6 +1202,8 @@ class Service:
             d["delivery"]["publish"] = plan["publish"]
         if plan.get("nle"):   # ADR-089: nle-bridge hand-off; written only when planned
             d["delivery"]["nle"] = plan["nle"]
+        if plan.get("chapters"):   # ADR-137: chapters from the transcript; written only when planned, so an unchanged request keeps its plan hash
+            d["delivery"]["chapters"] = plan["chapters"]
         d["qa"]["thresholds"]["loudness_tolerance_lu"] = float(rules.get("audio.loudness.tolerance_lu", 2.0))
         if (plan.get("qc") or {}).get("enabled"):
             d["qa"]["qc"] = plan["qc"]
@@ -2564,7 +2573,7 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS | 
 _PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
                                     "edit.concat.stinger", "edit.condense", "edit.transcript_edit", "edit.selects", "edit.ai_generated", "motion.layer", "motion.themes",
                                     "subtitle.fonts_dir"} | set(mic_task.PATH_KEYS) | {mic_task.PRESET_KEY})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
-BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY})
+BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY} | set(chapters_task.REQUIREMENT_KEYS))   # ADR-137: chapters
 
 
 def _checkout_root(skill: Any) -> Optional[str]:
@@ -2641,6 +2650,7 @@ def _check_edit_requirements(user_requirements: Dict[str, Any]) -> None:
     check_dub_keys(user_requirements)   # ADR-085: dub.* keys known, files present, in the contract's limits, reference only with its consent record
     check_speaker_keys(user_requirements)   # ADR-086: speakers.* keys known, counts as diarization-skill checks them
     measurements_task.check_measurement_keys(user_requirements)   # roadmap step 33: text.* / shots.* / speech_regions.* known, in range, refinements with their switch
+    chapters_task.check_keys(user_requirements)   # ADR-137: delivery.chapters / its minimum, a switch, in range
     check_publish_keys(user_requirements)   # ADR-087: publish.* keys known, an implemented platform, the fields / privacy it takes
     check_slide_keys(user_requirements)   # ADR-091: slides.* keys known, in range, the deck an existing file of a type slide-sync imports
     check_document_keys(user_requirements)   # ADR-095: document.verify an existing non-caption file, the preset one of artifacts-skill's names

@@ -4836,3 +4836,71 @@ class PreflightRealTests(unittest.TestCase):
             self.assertEqual(self.codes(res), ["DISK_SPACE_LOW"])
             out = svc.render(load_ir(p), p, timeout=600)
         self.assertEqual((out["status"], self.codes(out["preflight"])), ("BLOCKED", ["DISK_SPACE_LOW"]))
+
+
+class TranscriptChaptersRealTests(unittest.TestCase):
+    """ADR-137 (roadmap step 26, Done when): a 40 s talk with three topics. Speech recognition is the fake process reading a sidecar transcript
+    and the chapter list comes from a fake AI provider (CI has neither); the engine is real. The plan's three chapters start at 0:00 and last
+    10 s or more, and the delivered file's container carries them (ffprobe -show_chapters) with every stream copied by ffmpeg-skill metadata."""
+
+    SPEECH = [[0.5, 11.0, "Good morning and welcome to the session"], [13.0, 25.0, "Let us turn to the sound system of the hall"],
+              [27.0, 39.0, "Now we take questions from the floor"]]
+
+    def test_three_topics_become_three_container_chapters(self):
+        from video_agent.capabilities.resolver import Capability
+        from video_agent.providers import AIProvider, AIResponse, AIUsage
+        from video_agent.tools.router import ToolRouter
+        from video_agent.tools.transcription import TranscriptionAdapter, TranscriptionSkill
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_chapters_"))
+        src = Path(tmp) / "src"
+        src.mkdir()
+        media = str(src / "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-f", "lavfi",
+                        "-i", "sine=frequency=440:sample_rate=48000", "-t", "40", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", media], check=True)
+        Path(media + ".segments.json").write_text(json.dumps(self.SPEECH), encoding="utf-8")
+        fake = [sys.executable, str(Path(__file__).resolve().parent / "fake_transcription.py")]
+
+        class _Svc(Service):
+            def adapter(self, allowed_inputs=None):
+                r = super().adapter(allowed_inputs)
+                ts = TranscriptionAdapter(TranscriptionSkill(fake, None, {}), workspace=str(Path(self.workspace) / "cache" / "transcription"))
+                return self._sync_packages(ToolRouter([ts] + [a for a in r.adapters if a.name != "transcription"]))
+
+        class _Chapters(AIProvider):
+            name, model = "fake", "fake-chapters-1"
+
+            def available(self):
+                return True
+
+            def complete(self, request, timeout=None):
+                tr = next(o for o in request.inputs["observations"] if o["kind"] == "transcript")
+                params = {"chapters": [{"segment": 0, "title": "Welcome"}, {"segment": 1, "title": "The sound system"}, {"segment": 2, "title": "Questions"}]}
+                rec = {"intent": "transcript_chapters", "asset_id": tr["asset_id"], "statement": "three topics", "confidence": 0.8, "evidence": [tr["id"]], "params": params}
+                return AIResponse(task_type=request.task_type, result={"recommendations": [rec]}, confidence=0.8, provider=self.name, model=self.model, usage=AIUsage())
+        svc = _Svc(workspace=str(Path(tmp) / "ws"), offline=True, provider=_Chapters())
+        real = svc.caps
+
+        class _Caps:
+            def resolve(self, refresh=False):
+                caps = dict(real.resolve(refresh))
+                caps["transcription"] = Capability("transcription", "AVAILABLE", "fake recogniser (sidecar transcripts)", {})
+                return caps
+        svc.caps = _Caps()
+        ir = svc.plan([media], "youtube", user_requirements={"delivery.chapters": True}, params={"language": "en"})
+        self.assertEqual(svc.validate(ir).errors, [])
+        rec = ir.doc["delivery"]["chapters"]
+        starts = [c["start"] for c in rec["chapters"]]
+        self.assertEqual(starts[0], 0.0)
+        self.assertEqual(len(starts), 3, ir.doc["plan"]["summary"])
+        self.assertTrue(all(b - a >= 10.0 for a, b in zip(starts, starts[1:] + [rec["programme_seconds"]])), (starts, rec["programme_seconds"]))
+        path = str(Path(svc.workspace) / "plans" / "talk.project.json")
+        save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution", {}).get("failed_op"))
+        (art,) = [a for a in out["artifacts"] if a["logical_name"].endswith("_delivery_youtube")]
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_chapters", "-show_entries", "stream=codec_type", "-of", "json", art["path"]], capture_output=True, text=True, check=True)
+        doc = json.loads(pr.stdout)
+        got = [(round(float(c["start_time"]), 3), c["tags"]["title"]) for c in doc["chapters"]]
+        print(f"chapters in the deliverable: {got}")
+        self.assertEqual(got, list(zip(starts, ["Welcome", "The sound system", "Questions"])))
+        self.assertEqual(sorted(s["codec_type"] for s in doc["streams"] if s["codec_type"] in ("audio", "video")), ["audio", "video"])

@@ -39,6 +39,7 @@ from .dubbing import OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL, ir_
 from .publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 from .editing import TRANSCRIPT_EDIT_OP
 from .word_cut import SUBJECT as WORD_CUT_SUBJECT
+from . import chapters as chapters_task
 from .microphones import (AUTOMIX_SKILL, EXTRACT_SKILL as MIC_EXTRACT_SKILL, SUBJECT as AUTOMIX_SUBJECT, TRACKS_ROLE, TRACKS_SKILL, TRACKS_SUBJECT, ir_automix,
                           ir_tracks)
 
@@ -444,6 +445,40 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             summary.append(d.decision)
 
     publish_rec: Dict[str, Any] = {}   # ADR-087: delivery.publish, written only when planned
+    chapters_rec: Dict[str, Any] = {}   # ADR-137: delivery.chapters, written only when planned
+    chapter_dec = next((x for x in decisions if x.subject == chapters_task.SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED"), None)
+
+    def chapter_step(subject: str, t: Dict[str, Any], art: str, exp: Any, dur: float) -> Optional[ProductionStep]:
+        """ADR-137: the decided chapters (source times) on this subject's programme timeline, written into the target's exported file by one
+        `container_chapters` step between the export and its check. None (with the reason in the summary) when they cannot be written."""
+        nonlocal order
+        if chapter_dec is None or chapter_dec.params.get("asset_id") != subject:
+            return None
+        ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
+        if "." + ext not in chapters_task.CHAPTER_EXTENSIONS:
+            summary.append(f"Chapters are not written into '{t['id']}': its preset {t['preset']} makes a .{ext}, which holds no chapters")
+            return None
+        if not chapters_rec:
+            keep = next((op["keep"] for op in video_ops if op.get("type") == "video.trim" and op.get("asset") == subject), None)
+            mapped = chapters_task.on_programme(chapter_dec.params, keep, float(dur))
+            if len(mapped["chapters"]) < 2:
+                summary.append(f"Chapters are not written: after the trim {len(mapped['chapters'])} chapter(s) of at least "
+                               f"{float(chapter_dec.params.get('min_seconds') or chapters_task.MIN_DEFAULT):g}s are left")
+                chapters_rec["skipped"] = True
+                return None
+            chapters_rec.update({"type": "delivery.chapters", "asset": subject, "targets": [], "rule": chapters_task.RULE_VERSION,
+                                 "min_seconds": float(chapter_dec.params.get("min_seconds") or chapters_task.MIN_DEFAULT), "transcript_id": chapter_dec.params.get("transcript_id"),
+                                 "programme_seconds": mapped["programme_seconds"], "chapters": mapped["chapters"], "dropped": mapped["dropped"], "decision_ids": [chapter_dec.id]})
+            summary.append(f"Write {len(mapped['chapters'])} chapters from the transcript into the deliverable: "
+                           + ", ".join(chapters_task.description_lines(mapped["chapters"]))
+                           + (f" ({len(mapped['dropped'])} joined to the chapter before after the trim)" if mapped["dropped"] else ""))
+        if chapters_rec.get("skipped"):
+            return None
+        chapters_rec["targets"].append(t["id"])
+        order += 1
+        return ProductionStep(id=f"step_chapters_{t['id']}_{subject}", order=order, skill=chapters_task.SKILL, tool=tool_for(chapters_task.SKILL), inputs=[art],
+                              params={"asset": subject, "target": t["id"], "chapters": len(chapters_rec["chapters"])}, outputs=[], depends_on=[exp.id],
+                              evidence=evidence_of([chapter_dec.id]), decision_ids=[chapter_dec.id], decision_id=chapter_dec.id)
 
     def publish_steps(subject: str) -> None:
         """ADR-087: the `publish.upload` decision of a subject → one step after every QC step of the subject (the upload comes after QC). No IR
@@ -454,6 +489,14 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             art = f"{subject}_delivery_{target}"
             qc_ids = [s_.id for s_ in steps if s_.skill == QC_SKILL and (s_.params or {}).get("asset") == subject]
             meta = {k: d.params[k] for k in ("title", "description", "tags", "privacy") if d.params.get(k) is not None}
+            if chapters_rec.get("chapters") and chapters_rec.get("asset") == subject and target in chapters_rec.get("targets", []) and d.params["platform"] == "youtube":
+                # ADR-137: the chapters as YouTube description timestamps (publish-skill checks them: three or more, from 0:00, each 10 s or longer)
+                desc, why = chapters_task.with_description(meta.get("description"), chapters_rec["chapters"])
+                if why:
+                    summary.append(f"YouTube description: {why}")
+                else:
+                    meta["description"] = desc
+                    chapters_rec["description"] = {"platform": "youtube", "lines": chapters_task.description_lines(chapters_rec["chapters"])}
             attach = {k: bool(d.params.get(k)) for k in ("thumbnail", "captions")}
             publish_rec.update({"type": "publish.upload", "asset": subject, "target": target, "artifact": art, "platform": d.params["platform"], **meta, **attach,
                                 **({"caption_language": d.params["caption_language"]} if d.params.get("caption_language") else {}), "decision_ids": [d.id]})
@@ -794,11 +837,12 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                          tool=tool_for("delivery_export"), inputs=[current], params={"preset": t["preset"], "target": t["id"]}, outputs=[art],
                                          depends_on=[last_step] if last_step else [], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id,
                                          temporal_scope={"start": 0.0, "end": round(dur, 3)} if dur else None)
+                    cst = chapter_step(subject, t, art, exp, dur)   # ADR-137: chapters written into the exported file before it is checked
                     order += 1
                     chk = ProductionStep(id=f"step_check_{t['id']}" if single else f"step_check_{t['id']}_{subject}", order=order, skill="delivery_check",
                                          tool=tool_for("delivery_check"), inputs=[art], params={"platform": t.get("platform", "custom"), "target": t["id"]}, outputs=[],
-                                         depends_on=[exp.id], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id)
-                    steps.extend([exp, chk])
+                                         depends_on=[cst.id if cst else exp.id], evidence=evidence_of(ids), decision_ids=ids, decision_id=d.id)
+                    steps.extend([exp] + ([cst] if cst else []) + [chk])
                     outputs.append({"role": t.get("artifact_type", "MASTER"), "logical": art, "format": t["preset"], "expected": {"platform": t.get("platform", "custom"), "source": subject}})
                     if first:
                         summary.append(f"Export '{t['id']}' with preset {t['preset']} and check against {t.get('platform', 'custom')} spec")
@@ -1263,6 +1307,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     params={"document": doc_id, "name": d.params["name"], **({"preset": d.params["preset"]} if d.params.get("preset") else {})},
                                     outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
         summary.append(d.decision)
+    if chapter_dec is not None and not chapters_rec:
+        summary.append("Chapters are not written: the plan has no delivery target with a preset to write them into")
     if blocked:
         summary.append("BLOCKED: " + "; ".join(d.reason for d in blocked))
     if no_tool:
@@ -1278,6 +1324,7 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                           constraints=[{"id": c.get("id"), "key": c.get("key"), "value": c.get("value")} for c in cons],
                           provenance={"generator": PLANNER_ID, "created_at": now_iso(), "decision_ids": dec_ids_all, "event_ids": event_ids,
                                       "evidence": sorted({e for s in steps for e in s.evidence})}, summary=summary)
-    return {"ai_generated": {a: dict(v) for a, v in sorted(ai_sources.items())}, "plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None, "nle": list(nle_recs), "delivery": delivery,
+    return {"ai_generated": {a: dict(v) for a, v in sorted(ai_sources.items())}, "plan": plan.to_dict(), "version": version, "steps": step_dicts, "summary": summary, "video_ops": video_ops, "audio_ops": audio_ops, "speech_ops": speech_ops, "publish": dict(publish_rec) if publish_rec else None,
+            "chapters": dict(chapters_rec) if chapters_rec.get("chapters") else None, "nle": list(nle_recs), "delivery": delivery,
             "captions_ops": captions_ops, "graphics_ops": graphics_ops, "color_ops": color_ops, "qc": qc_plan, "timelines": timelines, "take_crossfade": take_crossfade,
             "documents": documents, "automix": automix_ops}

@@ -31,6 +31,7 @@ from ..agent.faces import EXEC_SKILLS as FACE_EXEC_SKILLS, SUBJECT as FACE_SUBJE
 from ..agent.voice import OPERATIONS as VOICE_OPERATIONS, VOICE_ORDER
 from ..agent.dubbing import FILES as DUB_FILES, OP as DUB_OP, PARAMS as DUB_PARAMS, SKILL as DUB_SKILL
 from ..tools.dubbing.adapter import engines as dub_engines, parameters as dub_parameters, unfit_policies as dub_unfit_policies
+from ..agent.chapters import check_chapters
 from ..agent.publish import SKILL as PUBLISH_SKILL, SUBJECT as PUBLISH_SUBJECT
 from ..tools.publish.adapter import LANG_RE as PUBLISH_LANG_RE, platforms as publish_platforms
 from ..agent.nle import MODES as NLE_MODES
@@ -1196,6 +1197,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     timelines = list(d["delivery"].get("timelines") or [])
     xf_rec = [d["audio"]["take_crossfade"]] if d["audio"].get("take_crossfade") else []   # ADR-054
     xf_rec += [d["delivery"]["publish"]] if d["delivery"].get("publish") else []   # ADR-087: a rejected publish decision is rejected-cited
+    xf_rec += [d["delivery"]["chapters"]] if d["delivery"].get("chapters") else []   # ADR-137
     xf_rec += list(d["delivery"].get("nle") or [])   # ADR-089: a rejected hand-off decision is rejected-cited
     xf_rec += [dict(r, type=r.get("type") or "audio.automix") for r in d["audio"].get("automix") or []]   # ADR-134: a rejected automix / language tracks is rejected-cited
     for op in d["video"]["operations"] + d["audio"]["operations"] + ir.finishing_operations() + speech_operations(d) + d["delivery"]["targets"] + timelines + xf_rec:
@@ -1212,6 +1214,7 @@ def validate_ir(ir: ProjectIR, caps: Optional[Dict[str, Any]] = None, check_path
     rep.errors += check_nle(d)   # ADR-089
     rep.errors += check_take_assembly(d)
     rep.errors += check_publish(d)   # ADR-087
+    rep.errors += check_chapters(d)   # ADR-137
     rep.errors += check_plan_dependencies(d)
     rep.errors += check_automix(d)   # ADR-134
     for op in timelines:
