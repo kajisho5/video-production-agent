@@ -166,9 +166,10 @@ Uses 17 of ffmpeg-skill's 42 tools directly (3.x, contract_version 2.0 read like
   - なぜ要るか：講演・イベントのアーカイブから縦型の切り出しを同日に出す需要が一番大きい
   - Needs: media-analysis-skill highlight signals, detection-skill subject path
   - Done when: a 30-minute fixture yields 3 clips of at most 60 s, 1080x1920, each with burned captions and a reason quoted from the transcript
-- [ ] **26. Chapters from the transcript** — when there are no slides, topic changes in the transcript become chapter proposals (AI provider, CONFIRM, the first words of each chapter as evidence), written as container chapters through ffmpeg-skill metadata and as YouTube description timestamps through publish-skill
+- [x] **26. Chapters from the transcript** — when there are no slides, topic changes in the transcript become chapter proposals (AI provider, CONFIRM, the first words of each chapter as evidence), written as container chapters through ffmpeg-skill metadata and as YouTube description timestamps through publish-skill
   - なぜ要るか：YouTube のチャプターと学会アーカイブの目次を、スライドがない対談でも作れる
   - Done when: a fixture with three topics gives three chapters starting at 0:00, each at least 10 s long
+  - Done (ADR-137): `delivery.chapters=true`; the AI names segment numbers and titles, the agent takes the starts (`transcript_chapters@1`), CONFIRM with the first words quoted, mapped through the trim, written by ffmpeg-skill `metadata --chapters` into the exported file, and the YouTube description timestamps through the publish step (ADR-087). Fixture: three chapters from 0:00, each ≥ 10 s; real engine: ffprobe reads them from the deliverable ([#232](https://github.com/kajisho5/video-production-agent/pull/232))
 - [ ] **27. YouTube editing pass (jump cut, punch-in, emphasis, SFX)** — one opt-in requirement set for the common YouTube style: silence / filler cuts (audio-production-skill), punch-in zoom on the speaker at a share of the cuts (video-editing-skill punch-in), emphasis captions on key words (remotion-ffmpeg-skill), sound effects at cuts and emphasis (sound-design-skill cue sheet → audio-production MIX), end-screen area kept free (motion-graphics-skill end-screen layout). Every choice is listed in the plan with its reason
   - なぜ要るか：一般的な YouTube 動画の定番編集を一度の指示で組み、何をしたかが説明できる
   - Done when: an eval on a 5-minute talking-head fixture plans all five, and a request without "効果音" plans none

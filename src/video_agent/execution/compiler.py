@@ -16,6 +16,7 @@ from ..agent.audio import AUDIO_ORDER, OPERATIONS as AUDIO_OPERATIONS, PROGRAMME
 from ..agent.editing import (CONDENSE_KEEP_LABEL, CONDENSE_SKILL, IMAGE_INSERT_OP, IMAGE_INSERT_SKILL, IMAGE_JOIN_SKILL, OPERATIONS, PROGRAMME, SINGLE_SOURCE_ORDER, TRIM_SKILL,
                              TRIM_SKILLS, delivery_subjects)
 from ..agent.finishing import COLOR_ALPHA_CONTAINERS, COLOR_OPERATIONS, COLOR_ORDER, COLOR_TOOL, GRAPHICS_SKILL, GRAPHICS_TOOL, THUMBNAIL_FRAME_TOOL
+from ..agent.chapters import SKILL as CHAPTERS_SKILL, TOOL_NAME as CHAPTERS_TOOL_NAME
 from ..agent.finishing import THUMBNAIL_BATCH_TOOL, THUMBNAIL_TOOL_OF, thumbnail_skill_of
 from ..agent.qc import PACKAGE_KIND, PACKAGE_TYPES, QC_SKILL, QC_TOOL, package_rules, rules_for_subject, sidecar_rules
 from ..agent.subtitles import BURN_SKILL, GENERATE_SKILL, GENERATE_TOOL, MUX_SKILL, RENDER_TOOL, SIDECAR_EXTENSIONS
@@ -856,14 +857,27 @@ def compile_ir(ir: ProjectIR, job_dir: str, tool_versions: Optional[Dict[str, st
             if t.get("preset"):
                 ext = {"prores": "mov", "gif": "gif"}.get(t["preset"], "mp4")
                 paths[art_id] = str(job / "artifacts" / f"{st['stem']}_{t['id']}.{ext}")
+                chap = (d.get("delivery") or {}).get("chapters")
+                chap = chap if chap and chap.get("asset") == subject and t["id"] in (chap.get("targets") or []) else None
+                exp_id = f"{art_id}_nochapters" if chap else art_id   # ADR-137: the export, then the chapters written into a copy of it
+                if chap:
+                    paths[exp_id] = str(job / "ops" / f"{st['stem']}_chapters_{t['id']}" / f"{st['stem']}_{t['id']}_nochapters.{ext}")
                 chunked = d.get("chunked_render")
                 if chunked and chunked.get("subject") == subject and t["id"] in (chunked.get("targets") or []):
-                    chunked_delivery(subject, t, art_id, ext, chunked)
+                    chunked_delivery(subject, t, exp_id, ext, chunked)
                 else:
                     # ADR-121: the agent's own loudness decision wins over ffmpeg-skill 4.0's platform-preset normalisation; the adapter passes
                     # --no-normalize only where the checkout publishes it and the preset is a platform preset
-                    args = {"input": st["current"], "preset": t["preset"], "no_normalize": True, "output": art_id}
-                    add(tool_for("delivery_export", t["id"]), args, [st["current"]], [art_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
+                    args = {"input": st["current"], "preset": t["preset"], "no_normalize": True, "output": exp_id}
+                    add(tool_for("delivery_export", t["id"]), args, [st["current"]], [exp_id], list(t.get("decision_ids") or []), st["fp"], skill="delivery_export")
+                if chap:
+                    chap_tool = tool_for(CHAPTERS_SKILL, subject)
+                    if chap_tool.rsplit("/", 1)[-1] != CHAPTERS_TOOL_NAME:
+                        raise CompileError(f"{CHAPTERS_SKILL} needs the engine's {CHAPTERS_TOOL_NAME} tool, the plan names {chap_tool}")
+                    file_id = f"{art_id}_chapters_txt"
+                    paths[file_id] = str(job / "ops" / f"{st['stem']}_chapters_{t['id']}" / "chapters.txt")
+                    margs = {"input": exp_id, "chapters": file_id, "chapter_list": [{"start": float(c["start"]), "title": c["title"]} for c in chap["chapters"]], "output": art_id}
+                    add(chap_tool, margs, [exp_id], [art_id], list(chap.get("decision_ids") or []), st["fp"], skill=CHAPTERS_SKILL)
                 add(tool_for("delivery_check", t["id"]), {"input": art_id, "platform": t.get("platform", "custom")}, [art_id], [], list(t.get("decision_ids") or []), st["fp"], kind="qa", skill="delivery_check")
             elif st["current"] not in d["assets"]:
                 # generic profile: the last processed intermediate is the deliverable (no re-encode). Checking

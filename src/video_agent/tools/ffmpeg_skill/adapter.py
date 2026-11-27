@@ -112,6 +112,9 @@ class FfmpegSkillAdapter(ToolAdapter):
                 inputs.append(p)
                 argv.append(p)
         for key, val in args.items():
+            if key == spec.get("chapter_document"):
+                self.chapter_text(tool, val)   # ADR-137: validated here; written into the chapter file, never onto the command line
+                continue
             if key in spec.get("document", {}):
                 self._timeline_clips(tool, val, paths)   # validated here; written into the project document, never onto the command line
                 continue
@@ -137,7 +140,7 @@ class FfmpegSkillAdapter(ToolAdapter):
                         self.policy.check_input(p)
                     inputs.append(p)
                     argv += [flag, p]
-            elif typ in ("path_in", "path_out"):
+            elif typ in ("path_in", "path_out", "path_out_doc"):   # path_out_doc: a file this adapter writes for the tool to read (ADR-137)
                 p = paths.get(val, val)
                 if self.policy:
                     if typ == "path_in":
@@ -194,6 +197,38 @@ class FfmpegSkillAdapter(ToolAdapter):
             out.append({"src": str(Path(src).resolve()), "in": round(start, 3), "out": round(end, 3)})
         return out
 
+    @staticmethod
+    def chapter_text(tool: str, chapters: Any) -> str:
+        """ADR-137: typed chapters [{start, title}] → metadata.py's --chapters text (`SECONDS TITLE` per line). Starts from 0, strictly increasing,
+        titles of printable characters (a newline would start another chapter)."""
+        if not isinstance(chapters, list) or len(chapters) < 1:
+            raise ToolError(f"{tool}: 'chapter_list' must be a non-empty list")
+        lines: List[str] = []
+        last = -1.0
+        for n, c in enumerate(chapters):
+            if not isinstance(c, dict) or set(c) != {"start", "title"}:
+                raise ToolError(f"{tool}: chapter {n} must be exactly {{start, title}}")
+            start, title = c["start"], c["title"]
+            if isinstance(start, bool) or not isinstance(start, (int, float)) or not start == start or start < 0 or start <= last:
+                raise ToolError(f"{tool}: chapter {n} start must be a number after the previous one, got {start!r}")
+            if not isinstance(title, str) or not title.strip() or any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
+                raise ToolError(f"{tool}: chapter {n} title must be printable text on one line")
+            last = float(start)
+            lines.append(f"{float(start):.3f} {title.strip()}")
+        return "\n".join(lines) + "\n"
+
+    def chapter_document(self, tool: str, args: Dict[str, Any], paths: Dict[str, str]) -> Optional["tuple[str, str]"]:
+        """(path, text) of the chapter file a tool with a `chapter_document` reads: a workspace file that is not one of its inputs."""
+        spec = CATALOG.get(tool[len(PREFIX):]) or {}
+        key = spec.get("chapter_document")
+        if not key or key not in args:
+            return None
+        text = self.chapter_text(tool, args[key])
+        path = paths.get(args["chapters"], args["chapters"])
+        if self.policy:
+            self.policy.check_output(path, [paths.get(args["input"], args["input"])])
+        return path, text
+
     def project_document(self, tool: str, args: Dict[str, Any], paths: Dict[str, str]) -> Optional["tuple[str, Dict[str, Any]]"]:
         """(path, document) of the project a tool with a catalogued `document` reads (render.py, ADR-052), built only from the catalogued
         typed keys: the clips and a hard-cut transition. The path must be a workspace file that is not one of the sources."""
@@ -224,6 +259,10 @@ class FfmpegSkillAdapter(ToolAdapter):
         if doc is not None:   # an intermediate of this operation inside the workspace (written for a dry run too: render.py reads it then as well)
             Path(doc[0]).parent.mkdir(parents=True, exist_ok=True)
             Path(doc[0]).write_text(json.dumps(doc[1], indent=2) + "\n", encoding="utf-8")
+        chap = self.chapter_document(op.tool, op.args, paths)
+        if chap is not None:   # ADR-137: the agent's own intermediate inside the workspace, written for a dry run too
+            Path(chap[0]).parent.mkdir(parents=True, exist_ok=True)
+            Path(chap[0]).write_text(chap[1], encoding="utf-8")
         t0 = time.time()
         out_path = paths.get(op.args["output"], op.args["output"]) if isinstance(op.args.get("output"), str) else None
         code, out, err = run_process_group(cmd, timeout)

@@ -30,6 +30,10 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     # join.py only this way, so a checkout whose --help does not offer --copy cannot run it (the plan is then not chunked)
     "join": {"positional": ["inputs"], "flags": {"transition": "str", "copy": "bool", "output": "path_out"}, "requires_flag": "--copy",
              "produces_output": True, "result_keys": ["output", "mode", "clips"]},
+    # ADR-137: container chapters on a delivered file (`metadata.py IN --chapters FILE -o OUT`, every stream copied; refused for a container without
+    # chapters). The agent writes the chapter file itself from the typed `chapter_list` ([{start, title}]), never a path the user gave
+    "metadata": {"positional": ["input"], "flags": {"chapters": "path_out_doc", "output": "path_out"}, "chapter_document": "chapter_list",
+                 "produces_output": True, "result_keys": ["output", "chapters"]},
     "check": {"positional": ["input"], "flags": {"platform": "str", "max_duration": "float", "aspect": "str", "lufs": "float", "tp": "float", "max_mb": "float", "no_loudness": "bool"},
               "produces_output": False, "result_keys": ["platform", "checks", "failed", "warnings", "ok"], "exit_code_means_fail": True},
     "look": {"positional": ["input"], "flags": {"at": "list[str]", "tiles": "str", "width": "int", "output": "path_out"},
