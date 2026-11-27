@@ -1105,6 +1105,16 @@ class Service:
                 else:
                     keep.append(dcs)
             decisions = keep
+            # ADR-139: in a paper edit a rejected pick cuts its line: the assembly in script order goes on without it
+            cut = {x["asset_id"] for x in dropped if x["subject"] == "takes.pick"}
+            for dcs in decisions:
+                if cut and dcs.subject == "video.concat" and dcs.params.get("script_order") and len([a for a in dcs.params["inputs"] if a not in cut]) >= 2:
+                    keep_ids = [a for a in dcs.params["inputs"] if a not in cut]
+                    dcs.params["inputs"] = keep_ids
+                    dcs.params["cut_lines"] = sorted(cut)
+                    live = {x.id for x in decisions if x.subject == "takes.pick"}
+                    dcs.params["picks"] = [i for i in dcs.params.get("picks") or [] if i in live]
+                    dcs.decision = "concat " + " + ".join(keep_ids) + " → programme (the picked take of each line, in script order; a rejected line cut)"
         precision = rm.get("edit.precision")
         cache_req = rm.get("edit.segment_cache")   # ADR-099
         plan = build_plan(decisions, analysis, tools=tools, version=plan_version, frame_accurate=bool(precision and precision.value == "frame"), project_id=project_id,
@@ -2634,7 +2644,7 @@ _FINISHING_REQUIREMENT_KEYS = _SWITCH_REQUIREMENT_KEYS | _POLICY_DEFAULT_KEYS | 
 # provider.* (handoffs and tool choice stay explicit). Everything else `--set` takes, a brief may yield.
 _PATH_REQUIREMENT_KEYS = frozenset(set(_THUMBNAIL_PATH_KEYS) | {"edit.overlay", "edit.image_insert", "color.lut", "motion.image", "motion.video", "qc.reference_video",
                                     "edit.concat.stinger", "edit.condense", "edit.transcript_edit", "edit.selects", "edit.ai_generated", "motion.layer", "motion.themes",
-                                    "subtitle.fonts_dir"} | set(mic_task.PATH_KEYS) | {mic_task.PRESET_KEY})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
+                                    "subtitle.fonts_dir", "edit.takes.script"} | set(mic_task.PATH_KEYS) | {mic_task.PRESET_KEY})   # ADR-107: the fonts directory   # ADR-102: the layer clip, the theme files   # ADR-099: the stinger, the proposals file, the declared inputs
 BRIEF_REQUIREMENT_KEYS = frozenset((_SWITCH_REQUIREMENT_KEYS - _PATH_REQUIREMENT_KEYS) | {TIMELINE_KEY} | set(chapters_task.REQUIREMENT_KEYS))   # ADR-137: chapters
 
 

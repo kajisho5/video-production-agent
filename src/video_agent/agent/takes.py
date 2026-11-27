@@ -39,6 +39,7 @@ import re
 import statistics
 import unicodedata
 from fractions import Fraction
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models import Requirement
@@ -46,7 +47,7 @@ from ..media.analysis import loudness_facts
 from .editing import AI_OP, PROGRAMME, EditRequirementError, _bool, _number, programme_rate
 
 TAKES_KEY = "edit.takes"
-REQUIREMENT_KEYS = ("edit.takes", "edit.takes.similarity", "edit.takes.music", "edit.takes.snap_max_shift", "edit.takes.crossfade")
+REQUIREMENT_KEYS = ("edit.takes", "edit.takes.similarity", "edit.takes.music", "edit.takes.snap_max_shift", "edit.takes.crossfade", "edit.takes.script")   # ADR-139: the script
 PICK_SUBJECT = "takes.pick"
 GROUP_SUBJECT = "takes.group"          # BLOCKs about the take set as a whole (a take without speech, a conflicting request)
 SNAP_SUBJECT = "takes.beat_snap"
@@ -109,6 +110,14 @@ def parse_takes_requirements(m: Dict[str, Requirement]) -> Optional[Dict[str, An
         if out["music"] is None:
             raise EditRequirementError("edit.takes.snap_max_shift needs edit.takes.music (the beat grid comes from the music bed)")
         out["snap_max_shift"] = float(_number(vals["edit.takes.snap_max_shift"], "edit.takes.snap_max_shift", *SNAP_SHIFT_RANGE))
+    out["script"] = None
+    if "edit.takes.script" in vals:   # ADR-139: the script's lines are the cut order
+        from .paper_edit import ScriptError, read_script
+        try:
+            out["script"] = read_script(vals["edit.takes.script"])
+        except ScriptError as e:
+            raise EditRequirementError(str(e)) from None
+        out["script_path"] = str(Path(str(vals["edit.takes.script"])).expanduser().resolve())
     if "edit.takes.crossfade" in vals:
         out["crossfade"] = float(_number(vals["edit.takes.crossfade"], "edit.takes.crossfade", *CROSSFADE_RANGE))
         out["crossfade_explicit"] = next(r for r in refinements if r.key == "edit.takes.crossfade")
@@ -232,6 +241,7 @@ def score_takes(line: Dict[str, Any], facts: Dict[str, Dict[str, Any]]) -> List[
     takes = line["takes"]
     # the line's representative text: the take most similar to all the others (ties: the earlier take)
     rep = max(takes, key=lambda a: (sum(similarity(facts[a]["clean"], facts[b]["clean"]) for b in takes if b != a), -facts[a]["index"]))
+    ref_text = line.get("script_clean") or facts[rep]["clean"]   # ADR-139: with a script, a take's coverage is of its script line
     lufs = [facts[a]["lufs"] for a in takes if facts[a].get("lufs") is not None]
     median = statistics.median(lufs) if lufs else None
     out: List[Dict[str, Any]] = []
@@ -243,9 +253,10 @@ def score_takes(line: Dict[str, Any], facts: Dict[str, Dict[str, Any]]) -> List[
         rows.append({"factor": "fillers", "value": n, "penalty": WEIGHTS["fillers"] * n, "evidence": tid, "rule": f"{WEIGHTS['fillers']:g} per filler word in the transcript"})
         n = count_restarts(f["raw"])
         rows.append({"factor": "restarts", "value": n, "penalty": WEIGHTS["restarts"] * n, "evidence": tid, "rule": f"{WEIGHTS['restarts']:g} per run said twice in a row"})
-        cov = coverage(f["clean"], facts[rep]["clean"])
-        rows.append({"factor": "coverage", "value": cov, "penalty": round(WEIGHTS["coverage"] * (1.0 - cov), 2), "evidence": sorted({f["transcript"], facts[rep]["transcript"]}),
-                     "rule": f"{WEIGHTS['coverage']:g} x the share of the line ({rep}'s text) this take does not say"})
+        cov = coverage(f["clean"], ref_text)
+        rows.append({"factor": "coverage", "value": cov, "penalty": round(WEIGHTS["coverage"] * (1.0 - cov), 2),
+                     "evidence": sorted({f["transcript"]} | (set() if line.get("script_clean") else {facts[rep]["transcript"]})),
+                     "rule": f"{WEIGHTS['coverage']:g} x the share of the line ({'the script line' if line.get('script_clean') else rep + chr(39) + 's text'}) this take does not say"})
         if f.get("loudness") and f.get("true_peak") is not None:
             clipped = float(f["true_peak"]) >= CLIP_TRUE_PEAK_DBTP
             rows.append({"factor": "clipping", "value": round(float(f["true_peak"]), 2), "penalty": WEIGHTS["clipping"] if clipped else 0.0, "evidence": [f["loudness"]],
@@ -459,7 +470,27 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
         return block(GROUP_SUBJECT, f"no recognised speech in take(s) {', '.join(silent_takes)}",
                      "a take is grouped by what is said in it; without a transcript of it, it cannot be placed on a line",
                      extra=probe_ids_of(silent_takes) + [o.id for o in analysis.observations if o.asset_id in silent_takes and o.kind == "transcript"])
-    lines = group_takes([(a.id, facts[a.id]["clean"]) for a in takes], tk["similarity"])
+    script = tk.get("script")
+    if script:   # ADR-139: the script's lines are the groups and their order; a take like no line is not used
+        from . import paper_edit as pe
+        lines, missing, unplaced = pe.place_takes([(a.id, facts[a.id]["clean"]) for a in takes], script, tk["similarity"], clean_text, similarity)
+        res["script"] = {"rule": pe.RULE_VERSION, "path": tk.get("script_path"), "lines": len(script), "missing": missing, "unplaced": unplaced}
+        res["excluded"] |= {u["asset_id"] for u in unplaced}
+        if missing:
+            eng.decide(subject=pe.MISSING_SUBJECT, type="KEEP", decision=f"{len(missing)} script line(s) have no take: " + "; ".join(f"line {n}" for n in missing),
+                       reason="no take's words are like these script lines (similarity >= " + f"{tk['similarity']:g}); they are reported for a retake, never filled in: "
+                              + "; ".join(f"line {n} \u201c{script[n - 1]}\u201d" for n in missing),
+                       confidence=1.0, evidence=ev_req, risk="MEDIUM", approval="AUTO", provenance="OBSERVED", requirements=reqs,
+                       params={"asset_id": PROGRAMME, "rule": pe.RULE_VERSION, "missing": [{"line": n, "script": script[n - 1]} for n in missing]})
+        if unplaced:
+            eng.decide(subject=pe.UNPLACED_SUBJECT, type="KEEP", decision=f"{len(unplaced)} take(s) are like no script line and are not used: " + ", ".join(u["asset_id"] for u in unplaced),
+                       reason="each take is placed on the script line its words are most like; these reach no line's similarity threshold", confidence=1.0,
+                       evidence=ev_req + [facts[u["asset_id"]]["transcript"] for u in unplaced], risk="LOW", approval="AUTO", provenance="OBSERVED", requirements=reqs,
+                       params={"asset_id": PROGRAMME, "rule": pe.RULE_VERSION, "unplaced": unplaced})
+        if not lines:
+            return block(GROUP_SUBJECT, "no take matches a line of the script", "a paper edit places each take on a script line; none reaches the similarity threshold")
+    else:
+        lines = group_takes([(a.id, facts[a.id]["clean"]) for a in takes], tk["similarity"])
     ai = [i for i in inferences if i.kind == ai_prefix + AI_INTENT]
     picks: List[Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]] = []
     for ln in lines:
@@ -509,6 +540,13 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
                                   "keep": list(rec["keep"]), "speech": [round(x, 3) for x in facts[rec["pick"]]["speech"]], "similarity_threshold": tk["similarity"],
                                   "unmeasured": [dict(u) for u in UNMEASURED], "music_bed": music.id if music is not None else None,
                                   "text": facts[ln["anchor"]]["raw"][:200]}
+        diff_ = None
+        if ln.get("script") is not None:   # ADR-139: the pick against its script line, side by side
+            from .paper_edit import differences
+            diff_ = differences(ln["script"], facts[rec["pick"]]["raw"], strip_fillers)
+            params["script"] = {"line": ln["line"], "text": ln["script"], "spoken": facts[rec["pick"]]["raw"][:500], "differences": diff_}
+            if diff_:
+                appr = approval_for(PICK_SUBJECT, floor="CONFIRM")
         if facts[rec["pick"]].get("speakers") is not None:   # ADR-096: the picked take's speakers, from the diarized transcript
             params["speakers"] = facts[rec["pick"]]["speakers"]
         why = (f"line {rec['line']}: {len(ln['takes'])} take(s) grouped by transcript similarity >= {tk['similarity']:g}; "
@@ -520,12 +558,15 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
             ev = ev + [ov.id]
         elif rec["ambiguous_ai"]:
             why += "; AI recommendations named more than one take of this line, so the measured ranking stands"
+        if diff_:
+            why += ("; the take is said differently from the script line: " + "; ".join(f"script \u201c{x['script']}\u201d / spoken \u201c{x['spoken']}\u201d" for x in diff_)
+                    + f" (script line \u201c{ln['script']}\u201d, spoken \u201c{facts[rec['pick']]['raw'][:200]}\u201d): approve to keep it as said, reject to cut the line and retake it")
         snapped = next((j for j in joins if j["asset_id"] == rec["pick"]), None)
         if snapped is not None:
             params["keep_unsnapped"] = [rec["keep"][0], snapped["out_before"]]
         if (frame_moves.get(rec["pick"]) or {}).get("moved"):
             params["frame_grid"] = {k: v for k, v in frame_moves[rec["pick"]].items() if k != "moved"}
-        d = eng.decide(subject=PICK_SUBJECT, type="TRANSFORM", decision=f"use {rec['pick']} for line {rec['line']} (score {by[rec['pick']]['score']:g} of {len(ranked)} take(s))",
+        d = eng.decide(subject=PICK_SUBJECT, type="TRANSFORM", decision=("[said differently] " if diff_ else "") + f"use {rec['pick']} for line {rec['line']} (score {by[rec['pick']]['score']:g} of {len(ranked)} take(s))",
                        reason=why, confidence=1.0 if ov is None else float(ov.confidence), evidence=ev, risk="MEDIUM", approval=appr,
                        alternatives=[{"decision": f"use {t['asset_id']}", "reason": f"score {t['score']:g} (rank {t['rank']})", "cost": ""} for t in ranked if t["asset_id"] != rec["pick"]],
                        provenance="AI_GENERATED" if ov is not None else "INFERRED", params=params, requirements=reqs, serves_intent=None)
@@ -536,10 +577,12 @@ def decide_takes(eng: Any, m: Dict[str, Requirement], analysis: Any, inferences:
         res["excluded"].add(music.id)
     # ---- the assembly: the picks in line order (the same concat operation and plan path as edit.concat)
     if len(res["picks"]) >= 2:
-        eng.decide(subject="video.concat", type="TRANSFORM", decision="concat " + " + ".join(res["picks"]) + f" → {PROGRAMME} (the picked take of each line, in line order)",
+        eng.decide(subject="video.concat", type="TRANSFORM", decision="concat " + " + ".join(res["picks"]) + f" → {PROGRAMME} (the picked take of each line, in "
+                   + ("script" if script else "line") + " order)",
                    reason=f"user asked to assemble the takes ({reqs[0].source}); the picks of {len(res['picks'])} line(s) become one programme timeline",
                    confidence=1.0, evidence=ev_req + probe_ids_of(res["picks"]), risk="MEDIUM", approval=approval_for("video.concat", explicit=reqs[0]), provenance="USER",
-                   params={"asset_id": PROGRAMME, "inputs": list(res["picks"]), "picks": pick_ids}, requirements=reqs, serves_intent=None)
+                   params={"asset_id": PROGRAMME, "inputs": list(res["picks"]), "picks": pick_ids, **({"script_order": True} if script else {})},
+                   requirements=reqs, serves_intent=None)
         cap_block("video_concat", "capability.video_concat")
     if music is not None:
         music_req = next(r for r in reqs if r.key == "edit.takes.music")

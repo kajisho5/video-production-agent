@@ -1307,6 +1307,13 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
                                     params={"document": doc_id, "name": d.params["name"], **({"preset": d.params["preset"]} if d.params.get("preset") else {})},
                                     outputs=[], depends_on=[], evidence=evidence_of([d.id]), decision_ids=[d.id], decision_id=d.id))
         summary.append(d.decision)
+    # ADR-139: the paper edit's report -- lines said differently (both texts), lines with no take, takes like no line
+    script_picks = [x for x in decisions if x.subject == PICK_SUBJECT and x.type == "TRANSFORM" and x.status != "REJECTED" and (x.params.get("script") or {}).get("differences")]
+    for x in sorted(script_picks, key=lambda d_: d_.params["line"]):
+        sp = x.params["script"]
+        summary.append(f"Script line {sp['line']} is said differently (confirm to keep it as said; reject to cut it and retake): script \u201c{sp['text']}\u201d / spoken \u201c{sp['spoken']}\u201d")
+    for x in [x for x in decisions if x.subject in ("script.missing", "script.unplaced")]:
+        summary.append(x.decision)
     clip_decs = [x for x in decisions if x.subject.startswith("shorts.clip.") and x.type == "TRANSFORM" and x.status != "REJECTED"]
     if clip_decs:   # ADR-138: the clips are rendered after this plan, each as a project of its own (Service.render_shorts)
         summary.append(f"Make {len(clip_decs)} vertical {clip_decs[0].params.get('platform')} clip(s), each a project of its own after its approval: "
