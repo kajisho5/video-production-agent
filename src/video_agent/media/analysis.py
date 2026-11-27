@@ -40,6 +40,9 @@ ANALYSIS_KINDS: Dict[str, Dict[str, Any]] = {
     "timing": {"skill": "timing_analysis", "needs_audio": False, "params": ("gap_factor", "av_mismatch_tolerance")},
     # ADR-103: media-analysis-skill 0.1.10 .. 0.1.13's editing-style profile of a video (cut rate, shot lengths, soft / burned-in subtitle frequency,
     # coverage and position, loudness, silence share) -- e.g. of a reference the user wants to match. A measurement only: nothing is decided from it
+    # ADR-138: media-analysis-skill's highlight signals (speech-energy peaks, speaking-rate changes, screen-change bursts, each a scored range);
+    # measured for a set of vertical clips and handed to the AI with the transcript. A measurement only: which clips are made is the AI's and a person's
+    "highlight_signals": {"skill": "highlight_analysis", "needs_audio": False, "params": ()},
     "edit_style": {"skill": "edit_style_analysis", "needs_audio": False,
                    "params": ("video_stream", "audio_stream", "threshold", "min_shot_duration", "silence_threshold_db", "silence_min_duration", "burned_in_interval")},
     # speech recognition (transcription-skill, ADR-024): a Transcript is a recognition fact; parameters are the Skill's own typed request keys

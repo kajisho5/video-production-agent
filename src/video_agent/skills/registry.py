@@ -369,6 +369,9 @@ def default_registry() -> SkillRegistry:
         # ADR-103: media-analysis-skill 0.1.13's editing-style profile (its contract names filter:edgedetect for the burned-in subtitle probe)
         ("edit_style_analysis", "edit_style", "media-analysis/style", ["ffmpeg", "ffprobe", "media-analysis", "filter:scdet", "filter:edgedetect"],
          "Editing-style profile: cut rate, shot lengths, subtitle frequency / coverage / position, loudness, silence share"),
+        # ADR-138: highlight signals (media-analysis-skill 0.1.18+), measured for a set of vertical clips
+        ("highlight_analysis", "highlight_signals", "media-analysis/signals", ["ffmpeg", "ffprobe", "media-analysis", "filter:astats", "filter:scdet"],
+         "Highlight signals, measured not judged: speech-energy peaks, speaking-rate changes, screen-change bursts as scored time ranges"),
         # ADR-103 addendum 1 (roadmap step 33): speech regions from a voice-activity model (media-analysis owns 発話区間; its optional extra `vad`)
         ("speech_region_analysis", "speech_regions", "media-analysis/vad", ["ffmpeg", "ffprobe", "media-analysis"],
          "Speech regions of one audio stream from a voice-activity model: time ranges with probability, speech share, longest pause"),
