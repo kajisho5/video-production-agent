@@ -143,9 +143,9 @@ class PipelineTests(unittest.TestCase):
         rec = ir.doc["delivery"]["shorts"]
         self.assertEqual(len(rec["clips"]), 3)
         self.assertTrue(all(c["end"] - c["start"] <= 60.0 for c in rec["clips"]))
-        out = svc.render(load_ir(path), path)
-        self.assertEqual(out["status"], "WAITING_FOR_APPROVAL")
-        self.assertNotIn("shorts", out)
+        out = svc.render(load_ir(path), path)   # no clip approved yet: the parent renders, every clip is listed as waiting
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"))
+        self.assertEqual([r["status"] for r in out["shorts"]["clips"]], ["WAITING_FOR_APPROVAL"] * 3)
         out = svc.render(load_ir(path), path, approve=["all"])
         self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution", {}).get("failed_op"))
         sets = out["shorts"]
@@ -172,9 +172,14 @@ class PipelineTests(unittest.TestCase):
         ir = load_ir(path)
         ir.approve([d["id"] for d in self.clips(ir.doc) if d["status"] == "PROPOSED"][:1])
         save_ir(ir, path)
-        out = svc.render_shorts(load_ir(path), path)
-        self.assertEqual([r["status"] for r in out["clips"]][1], "WAITING_FOR_APPROVAL")
+        out = svc.render(load_ir(path), path)["shorts"]   # the public render: the approved clip renders, the other waits
+        self.assertEqual([r["status"] for r in out["clips"]], ["COMPLETED", "WAITING_FOR_APPROVAL"])
         self.assertEqual(out["rendered"], 1)
+        first = out["clips"][0]["project"]
+        self.assertIn(load_ir(path).doc["project"]["id"], first, "the child is the parent project's")
+        again = svc.render(load_ir(path), path)["shorts"]
+        self.assertEqual(again["clips"][0]["project"], first)
+        self.assertEqual(load_ir(first).doc["plan"]["id"], load_ir(again["clips"][0]["project"]).doc["plan"]["id"], "the approved clip's plan is kept")
 
     def test_a_refused_set_is_recorded_and_no_clip_is_planned(self):
         svc, ir, _ = self.plan(_Clips({"clips": [dict(THREE["clips"][0], quote="never said")]}))
@@ -192,6 +197,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_tampered_clip_is_a_validation_error(self):
         svc, ir, _ = self.plan(_Clips(THREE))
+        ir.doc["delivery"]["shorts"]["clips"][1]["hook"] = "Another hook"
+        self.assertTrue(any("differs from its shorts.clip decision" in e for e in svc.validate(ir).errors))
+        ir.doc["delivery"]["shorts"]["clips"][1]["hook"] = "Then she sang"
         ir.doc["delivery"]["shorts"]["clips"][0]["end"] = ir.doc["delivery"]["shorts"]["clips"][0]["start"] + 90
         self.assertTrue(any("outside" in e for e in svc.validate(ir).errors))
 

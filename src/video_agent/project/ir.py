@@ -55,7 +55,8 @@ class ProjectIR:
         return next((d for d in self.doc["decisions"] if d["id"] == id_), None)
 
     def pending_confirmations(self) -> List[Dict[str, Any]]:
-        return [d for d in self.doc["decisions"] if d["approval"] == "CONFIRM" and d["status"] == "PROPOSED"]
+        # ADR-138: a shorts.clip.<n> decision is approved clip by clip and renders its own project; it never holds the parent plan back
+        return [d for d in self.doc["decisions"] if d["approval"] == "CONFIRM" and d["status"] == "PROPOSED" and not str(d.get("subject", "")).startswith("shorts.clip.")]
 
     def blocked(self) -> List[Dict[str, Any]]:
         return [d for d in self.doc["decisions"] if d["approval"] == "BLOCK" or d["status"] == "BLOCKED"]
