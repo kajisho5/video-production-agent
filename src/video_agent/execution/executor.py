@@ -9,7 +9,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..models import Operation, ToolResult, now_iso
 from ..tools.base import ToolAdapter, ToolError
@@ -53,6 +53,13 @@ class Executor:
         self.completed: Dict[str, Any] = dict(completed_keys or {})   # idempotency_key -> {output, size, mtime}
         self.cancel_event = threading.Event()
         self.log: List[str] = []
+        # ADR-135: called after each operation that completed ("ran") or was reused ("reused"), before the next one starts -- the job's
+        # checkpoint, so a render that is killed keeps the record of every operation done before it
+        self.checkpoint: Optional[Callable[[Operation, str], None]] = None
+
+    def _checkpoint(self, op: Operation, state: str) -> None:
+        if self.checkpoint is not None:
+            self.checkpoint(op, state)
 
     def cancel(self) -> None:
         self.cancel_event.set()
@@ -76,6 +83,7 @@ class Executor:
                 for out in op.outputs:
                     paths[out] = rec["output"]
                 self.log.append(f"skip {op.id} (idempotent, reusing {rec['output']})")
+                self._checkpoint(op, "reused")
                 continue
             if rec is not None:
                 self.log.append(f"stale record for {op.id}: output missing or changed, re-running")
@@ -97,6 +105,7 @@ class Executor:
                 if r.ok:
                     if reusable and r.output and os.path.exists(r.output):
                         self.completed[op.idempotency_key] = output_record(r.output)
+                    self._checkpoint(op, "ran")
                     break
                 plan = next_attempt(r, attempt, self.max_attempts, timeout)
                 res.recovery.append({"op": op.id, "attempt": attempt, "class": plan["class"], "action": plan["action"], "reason": plan["reason"], "at": now_iso(), "stderr": r.stderr_tail[-400:]})

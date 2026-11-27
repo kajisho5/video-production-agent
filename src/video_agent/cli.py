@@ -335,7 +335,8 @@ def cmd_plan(args, svc: Service) -> int:
                   strategy=args.strategy, use_cache=not args.no_cache, kinds=args.kinds, params={"language": args.language, "offline": True if args.offline else None},
                   ingest_records=ingest, brief=args.brief or "", brief_answer=answer, ai_model=args.ai_model or "host-chat",
                   channel=getattr(args, "channel", None), use_preferences=not getattr(args, "no_preferences", False),
-                  entity_project=getattr(args, "entity_project", None), use_entities=not getattr(args, "no_entities", False))
+                  entity_project=getattr(args, "entity_project", None), use_entities=not getattr(args, "no_entities", False),
+                  chunk_seconds=getattr(args, "chunk_seconds", None))
     if getattr(args, "deadline", None):
         try:
             svc.apply_deadline(ir, args.deadline)
@@ -498,6 +499,9 @@ def cmd_render(args, svc: Service) -> int:
         if out.get("resume"):
             r = out["resume"]
             print(f"  resumed from {r['resumed_from']} ({r['prior_state']}); plan {'CHANGED' if r['plan_changed'] else 'unchanged'}; reused {len(out['execution']['skipped'])} of {r['candidate_ops']} completed operation(s)")
+        ch = out.get("chunks")
+        if ch:   # ADR-135: the chunked render's state, also in <job>/chunks.json
+            print(f"  chunks: {ch['done']} of {ch['total']} done" + (f", {ch['reused']} reused from the earlier job, rendering started at chunk {ch['started_at']}" if ch["reused"] else ""))
         if out["status"] == "WAITING_FOR_APPROVAL":
             for d in out.get("pending", []):
                 print(f"  CONFIRM {d['id']}  {d['subject']}: {d['decision']}\n    {d['reason']}")
@@ -1250,6 +1254,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-preferences", action="store_true", help="plan without the stored preferences (global and channel)")
     p.add_argument("--entity-project", help="the entity memory's project store to apply on top of the global one (default: --channel) (ADR-128)")
     p.add_argument("--no-entities", action="store_true", help="plan without the entity memory")
+    p.add_argument("--chunk-seconds", type=float, metavar="S", help="render the delivery in chunks of S seconds on whole frames (ADR-135; default: 600 s chunks "
+                   "for a programme of 30 min or more; 0: never chunk); render --resume restarts at the first unfinished chunk")
     p.add_argument("--deadline", help="deadline mode (撮って出し, ADR-133): 30m, 1h30m, 90s, minutes, or HH:MM; optional finishing that would miss it is dropped, and the plan says so")
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("brief", help="read a brief into --set keys (no media analysed): what plan --brief would apply (ADR-061)")

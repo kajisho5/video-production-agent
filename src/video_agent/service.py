@@ -22,6 +22,7 @@ from .agent.handoffs import check_job_keys
 from .agent.speakers import check_speaker_keys, speaker_assign_requested, speaker_kind
 from .agent import measurements as measurements_task
 from .agent import deadline as deadline_task
+from .agent import chunks as chunks_task
 from .skills.handoff_contracts import handoff_request
 from .agent.voice import check_voice_keys
 from .agent.faces import REQUIREMENT_KEYS as _FACE_REQUIREMENT_KEYS, check_face_keys, face_kind
@@ -537,8 +538,9 @@ class Service:
              project_name: Optional[str] = None, hash_sources: bool = True, strategy: Optional[str] = None, use_cache: bool = True,
              kinds: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None, ingest_records: Optional[Dict[str, IngestRecord]] = None,
              brief: str = "", brief_answer: Any = None, ai_model: str = "host-chat", channel: Optional[str] = None, use_preferences: bool = True,
-             entity_project: Optional[str] = None, use_entities: bool = True) -> ProjectIR:
-        """brief (ADR-061): the user's brief in their own words, read into `--set` keys by the AI provider (or the chat model's
+             entity_project: Optional[str] = None, use_entities: bool = True, chunk_seconds: Optional[float] = None) -> ProjectIR:
+        """chunk_seconds (ADR-135): None renders a programme of 30 min or more in 600 s chunks, 0 never chunks, a number chunks at that length.
+        brief (ADR-061): the user's brief in their own words, read into `--set` keys by the AI provider (or the chat model's
         answer `brief_answer`, host provider) or, with neither, by the rule-based reader; explicit `user_requirements` win.
         channel / use_preferences (ADR-111): the project's channel (brand / series) and whether the global and channel preference
         stores' current rules apply (under the brief and explicit keys); the versions used are recorded in request.args.preferences.
@@ -549,6 +551,7 @@ class Service:
         self._check_provider_requirements(explicit)
         if mic_task.requested(explicit):   # ADR-134: recorded as used (absolute paths, ids, roles), so a revision reads the same microphones from anywhere
             explicit[mic_task.MICS_KEY] = mic_task.parse_microphones(explicit[mic_task.MICS_KEY])
+        chunk_seconds = chunks_task.check_chunk_seconds(chunk_seconds)   # ADR-135: refused before any analysis
         self._ai_calls = []   # provenance.ai_calls of this project: the brief's call (if any) and the recommendation call share the budget
         brief_record = self.extract_brief(brief, explicit, profile_name, answer=brief_answer, ai_model=ai_model) if (brief or "").strip() else None
         user_requirements = {**brief_task.values_of(brief_record), **explicit}   # explicit wins (ADR-061)
@@ -655,7 +658,8 @@ class Service:
         profile, rules, analysis = self.analyze(inputs, profile_name, request_text, user_requirements, hash_sources, strategy=strategy, use_cache=use_cache, kinds=kinds, params=params,
                                                 ingest_records=ingest_records, allowed_inputs=allowed)
         request = Request(raw=request_text, args={"inputs": inputs, "profile": profile_name, "requirements": explicit, **({"brief": brief_record} if brief_record else {}),
-                                                   **({"preferences": prefs} if prefs is not None else {}), **({"entities": ent_rec} if ent_rec is not None else {})})
+                                                   **({"preferences": prefs} if prefs is not None else {}), **({"entities": ent_rec} if ent_rec is not None else {}),
+                                                   **({"chunk_seconds": chunk_seconds} if chunk_seconds is not None else {})})
         ir = ProjectIR.new(project_name or Path(inputs[0]).stem, {"name": profile.name, "version": profile.version, "chain": profile.chain}, self.workspace)
         if channel_id:
             ir.doc["project"]["channel_id"] = channel_id   # ADR-111: the channel / brand / series the channel-scoped preferences belong to
@@ -1232,6 +1236,7 @@ class Service:
         images += [str(Path(op["library"]) / "sound-library.json") for op in plan["audio_ops"] if op.get("type") == "audio.bgm" and op.get("library")]   # ADR-092: the library folder
         d["execution"]["allowed_inputs"] = sorted({str(Path(p).resolve().parent) for p in list((request.args or {}).get("inputs", [])) + images})
         d["execution"]["recovery_policy"]["max_attempts"] = int(rules.get("execution.recovery.max_attempts", 2))
+        self._plan_chunks(ir, (request.args or {}).get("chunk_seconds"))   # ADR-135: after the plan's steps, before its hash
         d["provenance"].update({"source_hashes": {a.id: a.hash for a in analysis.assets}, "profile_version": profile.version,
                                 "skill_versions": {s.name: s.version for s in self.registry.all() if s.phase == 1}, "tool_versions": d["source"]["tool_versions"],
                                 "ai_calls": list(self._ai_calls), "ai_provider": self.provider.describe() if self.provider.available() else None})
@@ -1541,6 +1546,25 @@ class Service:
                             "(completed operations of an earlier job are not reused across the change)", "field": f"source.tool_versions.{name}"})
         return out
 
+    def _plan_chunks(self, ir: ProjectIR, chunk_seconds: Optional[float]) -> Optional[Dict[str, Any]]:
+        """ADR-135 (roadmap step 23): render a long programme's delivery chunk by chunk (`chunked_render`), or say in the warnings why not."""
+        d = ir.doc
+        d.pop("chunked_render", None)
+        try:
+            router = self.adapter(None)
+            supports = router.supports
+        except Exception:   # no engine here: nothing can be chunked, and the plan's other checks say why
+            def supports(tool: str) -> bool:
+                return False
+        got = chunks_task.plan_chunks(d, chunk_seconds, supports)
+        if got["warning"]:
+            d["analysis"].setdefault("warnings", []).append(got["warning"])
+        rec = got["record"]
+        if rec is not None:
+            d["chunked_render"] = rec
+            d["plan"]["summary"].append(chunks_task.summary_line(rec))
+        return rec
+
     def _hw_encoder(self) -> bool:
         try:
             return self.caps.resolve().get("gpu") is not None and self.caps.resolve()["gpu"].status == "AVAILABLE"
@@ -1683,16 +1707,32 @@ class Service:
         ops, paths = compile_ir(ir, str(job.dir))
         adapter = self.adapter(ir.doc["execution"].get("allowed_inputs") or [])
         ex = Executor(adapter, max_attempts=int(ir.doc["execution"]["recovery_policy"]["max_attempts"]), timeout=timeout, completed_keys=job.completed_ops)
+        chunked = ir.doc.get("chunked_render")
+        op_states: Dict[str, str] = {}
+
+        def checkpoint(op: Any, state: str) -> None:
+            """ADR-135: after every operation, the job records what is done (a killed render resumes from here) and, for a chunked
+            render, the chunk state (`<job>/chunks.json`)."""
+            op_states[op.id] = state
+            job.completed_ops = dict(ex.completed)
+            store.save(job)
+            if chunked:
+                _write_json(job.dir / "chunks.json", chunks_task.progress(chunked, ops, op_states))
+        ex.checkpoint = checkpoint
         try:
             result = ex.run(ops, paths)
         finally:
             job.completed_ops = ex.completed
             store.save(job)  # whatever happens next, the job file reflects the operations that completed
+            if chunked:
+                _write_json(job.dir / "chunks.json", chunks_task.progress(chunked, ops, op_states))
         try:   # ADR-133: how fast each tool ran here, for the next plan with a deadline (never fails the render)
             deadline_task.record_run(self.workspace, self._hw_encoder(), ir.doc, ops, result.results, result.skipped)
         except OSError:
             pass
         out: Dict[str, Any] = {"job": None, "status": result.status, "execution": result.to_dict(), "approved": approved, "paths": paths, "resume": resume_note, "preflight": preflight}
+        if chunked:
+            out["chunks"] = chunks_task.progress(chunked, ops, op_states)
         if result.status != "COMPLETED":
             job.transition(result.status if result.status in ("FAILED", "BLOCKED", "CANCELLED") else "FAILED", f"op {result.failed_op}")
         else:
@@ -2662,3 +2702,11 @@ def render_report_md(doc: Dict[str, Any], out: Dict[str, Any], job_id: str) -> s
     if ex.get("recovery"):
         lines += ["", "## Recovery", *[f"- op {r['op']} attempt {r.get('attempt')}: {r['class']} → {r['action']} ({r['reason']})" for r in ex["recovery"]]]
     return "\n".join(lines) + "\n"
+
+
+def _write_json(path: Path, doc: Any) -> None:
+    """Write a small state file whole (a temporary file renamed over it), so a reader never sees half of one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+    os.replace(tmp, path)

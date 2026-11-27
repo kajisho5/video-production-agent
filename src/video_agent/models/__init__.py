@@ -319,6 +319,9 @@ class Operation(Model):
     idempotency_key: str = ""
     skill: str = ""                 # the skill this operation realises (for provenance / listing)
     id: str = field(default_factory=lambda: new_id("op"))
+    chunk: Optional[int] = None     # ADR-135: the chunk of a chunked render this operation belongs to (1-based), else None
+    chunk_join: bool = False        # ADR-135: the stream-copy join of a chunked render's chunks
+    media_seconds: Optional[float] = None   # ADR-135: the media seconds this operation encodes when it is not the whole programme (a chunk)
 
 
 @dataclass

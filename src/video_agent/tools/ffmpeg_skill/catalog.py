@@ -26,6 +26,10 @@ CATALOG: Dict[str, Dict[str, Any]] = {
     "export": {"positional": ["input"], "flags": {"preset": "str", "fit": "str", "crf": "int", "allow_long": "bool", "no_scale": "bool", "no_normalize": "bool", "output": "path_out"},
                "detected_flags": ["no_normalize"], "verification_keeps_output": True,
                "produces_output": True, "result_keys": ["output", "probe", "verification", "loudness"]},
+    # ADR-135: the stream-copy join of a chunked render's exported chunks (`--transition none --copy`, ffmpeg-skill 2.24+). The agent drives
+    # join.py only this way, so a checkout whose --help does not offer --copy cannot run it (the plan is then not chunked)
+    "join": {"positional": ["inputs"], "flags": {"transition": "str", "copy": "bool", "output": "path_out"}, "requires_flag": "--copy",
+             "produces_output": True, "result_keys": ["output", "mode", "clips"]},
     "check": {"positional": ["input"], "flags": {"platform": "str", "max_duration": "float", "aspect": "str", "lufs": "float", "tp": "float", "max_mb": "float", "no_loudness": "bool"},
               "produces_output": False, "result_keys": ["platform", "checks", "failed", "warnings", "ok"], "exit_code_means_fail": True},
     "look": {"positional": ["input"], "flags": {"at": "list[str]", "tiles": "str", "width": "int", "output": "path_out"},

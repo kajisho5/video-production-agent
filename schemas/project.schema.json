@@ -615,6 +615,99 @@
     }
    }
   },
+  "chunked_render": {
+   "type": "object",
+   "additionalProperties": false,
+   "description": "ADR-135: the delivery of one long programme rendered chunk by chunk (frame-accurate cut + export per chunk, joined by stream copy); render --resume restarts at the first unfinished chunk; present only when planned",
+   "required": [
+    "rule",
+    "subject",
+    "rate",
+    "chunk_seconds",
+    "targets",
+    "tools",
+    "chunks"
+   ],
+   "properties": {
+    "rule": {
+     "const": "chunked_render@1"
+    },
+    "subject": {
+     "type": "string"
+    },
+    "rate": {
+     "type": "string",
+     "pattern": "^[0-9]+/[0-9]+$"
+    },
+    "chunk_seconds": {
+     "type": "number",
+     "minimum": 10,
+     "maximum": 7200
+    },
+    "programme_seconds": {
+     "type": "number"
+    },
+    "targets": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1
+    },
+    "tools": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "cut",
+      "join"
+     ],
+     "properties": {
+      "cut": {
+       "type": "string"
+      },
+      "join": {
+       "type": "string"
+      }
+     }
+    },
+    "chunks": {
+     "type": "array",
+     "minItems": 2,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "index",
+       "start",
+       "end"
+      ],
+      "properties": {
+       "index": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "start": {
+        "type": "number",
+        "minimum": 0
+       },
+       "end": {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       "start_frame": {
+        "type": "integer",
+        "minimum": 0
+       }
+      }
+     }
+    },
+    "reason": {
+     "type": "string"
+    }
+   }
+  },
   "delivery": {
    "type": "object",
    "required": [
