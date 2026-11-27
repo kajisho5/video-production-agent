@@ -93,6 +93,8 @@ STEP_PARAMETERS = {"silence_cleanup": ("asset", "keep", "removed", "accurate"),
                    # handed-off jobs with a pinned Skill contract (ADR-080): the job.<skill>.<name> parameters, named for the handoff (never run here)
                    "render_3d": ("model", "preset", "transparent"), "html_scene_render": ("scene", "codec"),
                    # publish-skill (ADR-087): the subject, its delivery target, the platform and the metadata the user approved
+                   # ADR-137: chapters written into a target's exported file (the chapters themselves are in delivery.chapters)
+                   "container_chapters": ("asset", "target", "chapters"),
                    "publish_upload": ("asset", "target", "platform", "title", "description", "tags", "privacy", "thumbnail", "captions"),
                    # nle-bridge (ADR-089): the subject, export / conform, the interchange formats and the zip
                    "nle_export": ("asset", "mode", "formats", "zip"), "nle_conform": ("asset", "mode", "formats", "zip")}

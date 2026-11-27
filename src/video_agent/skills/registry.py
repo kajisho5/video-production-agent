@@ -276,6 +276,9 @@ def default_registry() -> SkillRegistry:
                          ["ffmpeg", "ffmpeg-skill", "filter:loudnorm"], "LOW", True, "AUTO", ["ffmpeg-skill/loudness"]))
     r.register(SkillSpec("delivery_export", "1.0", "Encode a delivery target with a platform preset", {"asset": "video", "preset": "str"}, {"artifact": "delivery"},
                          ["ffmpeg", "ffmpeg-skill", "encoder:libx264"], "LOW", True, "AUTO", ["ffmpeg-skill/export"]))
+    # ADR-137: container chapters on the exported deliverable (ffmpeg-skill metadata --chapters, streams copied); chapters from the transcript, CONFIRM
+    r.register(SkillSpec("container_chapters", "1.0", "Write chapter markers into a delivered video's container (MP4 / MOV / MKV / WebM), streams copied",
+                         {"artifact": "delivery", "chapters": "chapter_list"}, {"metadata": "chapters"}, ["ffmpeg", "ffmpeg-skill"], "LOW", True, "CONFIRM", ["ffmpeg-skill/metadata"]))
     r.register(SkillSpec("delivery_check", "1.0", "Platform compliance check", {"artifact": "delivery", "platform": "str"}, {"qa": "delivery"},
                          ["ffmpeg", "ffmpeg-skill"], "LOW", True, "AUTO", ["ffmpeg-skill/check"]))
     # editing operations only video-editing-skill provides (ADR-029): explicit requirement → Decision (CONFIRM by default) → plan step

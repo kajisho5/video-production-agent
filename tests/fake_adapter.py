@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from video_agent.models import Operation, ToolResult
 from video_agent.skills.contract import SkillPackage, ToolSpec
 from video_agent.tools.base import ToolAdapter
+from video_agent.tools.ffmpeg_skill.adapter import FfmpegSkillAdapter
 from video_agent.tools.ffmpeg_skill.catalog import CATALOG
 
 
@@ -129,6 +130,14 @@ class FakeAdapter(ToolAdapter):
             if out and not dry_run:
                 _write_fake(out, {"duration": dur, "lufs": metas[0].get("lufs", self.lufs), "joined": len(metas)})
             return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "mode": "copy", "clips": len(metas), "probe": probe_doc(out or "", dur)}, ["ffmpeg concat copy"], "", 0.1, attempt, dry_run)
+        if script == "metadata":   # ADR-137: chapters into the container, streams copied: the output is the input plus the chapters the file lists
+            text = FfmpegSkillAdapter.chapter_text(op.tool, op.args["chapter_list"])
+            chs = [{"start": float(ln.split(" ", 1)[0]), "title": ln.split(" ", 1)[1]} for ln in text.splitlines()]
+            if out and not dry_run:
+                Path(paths.get(op.args["chapters"], op.args["chapters"])).parent.mkdir(parents=True, exist_ok=True)
+                Path(paths.get(op.args["chapters"], op.args["chapters"])).write_text(text, encoding="utf-8")
+                _write_fake(out, dict(in_meta or {"duration": in_dur, "lufs": self.lufs}, chapters=chs))
+            return ToolResult(op.id, op.tool, True, 0, out, {"output": out, "chapters": chs}, ["ffmpeg -c copy -map_metadata"], "", 0.1, attempt, dry_run)
         if script == "check":
             rows = [{"check": "duration", "status": "PASS", "value": f"{in_dur}s", "expected": "any", "fix": "", "kind": "judgement"},
                     {"check": "video codec", "status": "PASS", "value": "h264", "expected": "h264", "fix": "", "kind": "format"}]
