@@ -190,8 +190,9 @@ def plan_status(doc: Dict[str, Any]) -> str:
         return "DRAFT"
     version = int(doc["plan"].get("version", 1))
     approved_version = (doc.get("revision") or {}).get("approved_plan_version")
-    pending = [d for d in decisions.values() if d["approval"] == "CONFIRM" and d["status"] == "PROPOSED"]
-    if pending or (version > 1 and approved_version != version and any(d["status"] != "APPROVED" for d in decisions.values() if d["approval"] == "CONFIRM")):
+    own = [d for d in decisions.values() if not str(d.get("subject", "")).startswith("shorts.clip.")]   # ADR-138: clips are approved one by one
+    pending = [d for d in own if d["approval"] == "CONFIRM" and d["status"] == "PROPOSED"]
+    if pending or (version > 1 and approved_version != version and any(d["status"] != "APPROVED" for d in own if d["approval"] == "CONFIRM")):
         return "REVIEW"
     if version > 1 and approved_version != version:
         return "REVIEW"
