@@ -101,8 +101,8 @@ _BLENDER_MODELS = (".glb", ".gltf", ".fbx", ".obj", ".stl", ".usd", ".usda", ".u
 
 PINS: Dict[str, HandoffPin] = {p.skill: p for p in (
     HandoffPin(
-        skill="render_3d", package="blender-skill", version="0.31.1", pin_file="blender-skill_0.31.1.json",
-        source="kajisho5/blender-skill blender-skill-v0.31.1 tag ff882b1 (contract/contract.json, = `python3 scripts/_contract.py --json`)",
+        skill="render_3d", package="blender-skill", version="0.32.0", pin_file="blender-skill_0.32.0.json",
+        source="kajisho5/blender-skill blender-skill-v0.32.0 tag 80fee84 (contract/contract.json, = `python3 scripts/_contract.py --json`)",
         tool="blender-skill/render",
         params=(
             HandoffParam("model", "file", "file", suffixes=_BLENDER_MODELS, required=True, doc="the 3D file to render (positional FILE)"),

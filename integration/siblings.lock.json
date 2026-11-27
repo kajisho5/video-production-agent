@@ -18,10 +18,10 @@
     },
     "blender": {
       "repo": "kajisho5/blender-skill",
-      "tag": "blender-skill-v0.31.1",
-      "sha": "ff882b1687ca4edf5f98a57672cc8ad736809831",
-      "version": "0.31.1",
-      "pin": "src/video_agent/skills/pins/blender-skill_0.31.1.json"
+      "tag": "blender-skill-v0.32.0",
+      "sha": "80fee8491bae7cae5d60f7059324b4384544be08",
+      "version": "0.32.0",
+      "pin": "src/video_agent/skills/pins/blender-skill_0.32.0.json"
     },
     "color-grading": {
       "repo": "kajisho5/color-grading-skill",
@@ -109,10 +109,10 @@
     },
     "remotion-ffmpeg": {
       "repo": "kajisho5/remotion-ffmpeg-skill",
-      "tag": "v0.14.5",
-      "sha": "8f2f80e5028a6e240b336e0ee9948aed00379a0c",
-      "version": "0.14.5",
-      "pin": "src/video_agent/tools/remotion/contract_0.14.5.json"
+      "tag": "v0.15.0",
+      "sha": "83f96ee4611c2a8e9895f03ff46e8e9c6bee6564",
+      "version": "0.15.0",
+      "pin": "src/video_agent/tools/remotion/contract_0.15.0.json"
     },
     "slide-sync": {
       "repo": "kajisho5/slide-sync-skill",
@@ -144,10 +144,10 @@
     },
     "transcription": {
       "repo": "kajisho5/transcription-skill",
-      "tag": "v0.15.0",
-      "sha": "b7beb5a121d1dbff7daf67334a9bf93309f0522f",
-      "version": "0.15.0",
-      "pin": "src/video_agent/tools/transcription/contract_0.15.0.json"
+      "tag": "v0.16.0",
+      "sha": "1eeb2542c5166625046dbd585a8bce34cf15c26d",
+      "version": "0.16.0",
+      "pin": "src/video_agent/tools/transcription/contract_0.16.0.json"
     },
     "video-editing": {
       "repo": "kajisho5/video-editing-skill",

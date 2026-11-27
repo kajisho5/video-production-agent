@@ -53,7 +53,7 @@ class VersionGateTests(unittest.TestCase):
         self.assertTrue({"follow_growing_files", "chunked_long_recordings", "transcript_search", "domain_vocabulary", "post_correction"} <= set(tr.pinned_contract()["capabilities"]))
         self.assertIn("transcription/find", [t["name"] for t in tr.pinned_contract()["tools"]])
         self.assertEqual([e["id"] for e in tr.pinned_contract()["engines"]], ["faster_whisper", "haas_ja", "qwen3_asr", "speechcpp", "whisperx"], "the order the Skill lists them in")
-        for v in ("0.1.0", "0.3.0", "0.16.0", "0.130.0", "1.0.0"):
+        for v in ("0.1.0", "0.3.0", "0.17.0", "0.130.0", "1.0.0"):
             self.assertTrue(tr.check_contract(with_version(tr.pinned_contract(), v)), v)
 
     def test_qc_release_versions(self):
