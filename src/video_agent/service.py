@@ -1714,13 +1714,22 @@ class Service:
                            reason="the clip is rendered only after a person approves its shorts.clip decision")
                 items.append(row)
                 continue
-            child_path = str(Path(self.workspace) / "plans" / f"{stem}.short{c['index']:02d}.project.json")
+            # one child per parent project, plan version and clip (two parents with the same file stem, or a revised parent, never share one)
+            child_path = str(Path(self.workspace) / "plans" / "shorts" / ir.doc["project"]["id"] / f"v{ir.version}" / f"{stem}.short{c['index']:02d}.project.json")
             try:
-                child = self.plan([asset["path"]], str(profile_path.with_suffix("")), user_requirements=shorts_task.child_requirements(c, rec),
-                                  project_name=f"{stem}-short{c['index']:02d}", params={"language": language} if language else None)
-                child.doc["provenance"]["shorts_parent"] = {"project": ir.doc["project"]["id"], "plan_version": ir.version, "clip": c["index"], "decision_id": d["id"],
-                                                            "approved_by": ((ir.doc["execution"].get("approvals") or {}).get(d["id"]) or {}).get("by")}
-                save_ir(child, child_path)
+                existing = load_ir(child_path) if os.path.isfile(child_path) else None
+                if existing is not None and ((existing.doc.get("provenance") or {}).get("shorts_parent") or {}).get("decision_id") == d["id"]:
+                    child = existing   # rendered before for this approved clip: the same plan again, so its artifacts keep their provenance
+                else:
+                    # the parent's recorded preferences (never the stores' newer rules), minus the subtitle mode the clip sets itself
+                    prefs = ((ir.doc.get("request") or {}).get("args") or {}).get("preferences") or {}
+                    replay = {k: (prefs.get("values") or {})[k] for k in prefs.get("applied") or [] if k in (prefs.get("values") or {})
+                              and not k.startswith(("subtitle.mode", "subtitle.burn_in", "edit.trim", "edit.fill", "motion.hook", "publish."))}
+                    child = self.plan([asset["path"]], str(profile_path.with_suffix("")), user_requirements={**replay, **shorts_task.child_requirements(c, rec)},
+                                      project_name=f"{stem}-short{c['index']:02d}", params={"language": language} if language else None, use_preferences=False)
+                    child.doc["provenance"]["shorts_parent"] = {"project": ir.doc["project"]["id"], "plan_version": ir.version, "clip": c["index"], "decision_id": d["id"],
+                                                                "approved_by": ((ir.doc["execution"].get("approvals") or {}).get(d["id"]) or {}).get("by")}
+                    save_ir(child, child_path)
                 res = self.render(load_ir(child_path), child_path, approve=["all"], timeout=timeout, who=f"{who} (shorts clip {c['index']}, {d['id']})")
             except (ValueError, OSError) as e:
                 row.update(status="FAILED", reason=str(e)[:500])
