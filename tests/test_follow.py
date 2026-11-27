@@ -113,6 +113,28 @@ class FollowLoopTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "TIMEOUT")
         self.assertIn("follow state is kept", str(cm.exception))
 
+    def test_max_wait_caps_the_sleep_and_the_look(self):
+        """--interval 600 --max-wait 60: one sleep of at most 60 s, and a look's timeout no longer than what is left."""
+        grow = Growing(self.rec, looks=1000)
+        t = [0.0]
+        slept, timeouts = [], []
+
+        def sleep(s):
+            slept.append(s)
+            t[0] += s
+            grow.sleep(s)
+
+        def run(argv, timeout):
+            timeouts.append(timeout)
+            from video_agent.tools.ffmpeg_skill.adapter import run_process_group
+            return run_process_group(list(FAKE.command) + argv, 60)
+        with self.assertRaises(fw.FollowError) as cm:
+            fw.follow(run, self.rec, self.svc.workspace, interval=600, settle=0, max_wait=60, emit=lambda _l: None, sleep=sleep, clock=lambda: t[0])
+        self.assertEqual(cm.exception.code, "TIMEOUT")
+        self.assertEqual(slept, [60.0])
+        self.assertEqual(len(timeouts), 1, "no look starts once the budget is spent")
+        self.assertLessEqual(timeouts[0], 60.0)
+
     def test_without_media_analysis(self):
         Growing(self.rec, looks=0)
         with mock.patch("video_agent.service.locate_media_analysis", return_value=None), self.assertRaises(fw.FollowError) as cm:
@@ -222,6 +244,23 @@ class CliTests(unittest.TestCase):
         code, _, err = self.run_cli(["follow", self.rec, "--deadline-after", "10:30"], grow)
         self.assertEqual(code, 2)
         self.assertIn("clock time", err)
+
+    def test_refuses_an_output_that_is_the_recording_and_bad_keys_before_waiting(self):
+        grow = Growing(self.rec, looks=1)
+        before = Path(self.rec).read_bytes()
+        code, _, err = self.run_cli(["follow", self.rec, "--final", "-o", self.rec], grow)
+        self.assertEqual(code, 2)
+        self.assertIn("recording itself", err)
+        self.assertEqual(Path(self.rec).read_bytes(), before, "the recording is untouched")
+        code, _, err = self.run_cli(["follow", self.rec, "--set", "edit.precision=nope"], grow)
+        self.assertEqual(code, 2)
+        self.assertIn("edit.precision", err)
+
+    def test_render_failure_is_a_failure_exit(self):
+        grow = Growing(self.rec, looks=1)
+        with mock.patch.object(self.svc, "render", return_value={"status": "FAILED", "job": {"id": "job_x"}}):
+            code, _, _ = self.run_cli(["follow", self.rec, "--profile", "youtube", "--interval", "0.2", "--settle", "0", "--render"], grow)
+        self.assertEqual(code, 1)
 
     def test_missing_skill_exit_code(self):
         Growing(self.rec, looks=0)

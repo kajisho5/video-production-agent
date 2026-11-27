@@ -129,8 +129,11 @@ def follow(run: Optional[Callable[[List[str], float], "tuple[int, str, str]"]], 
             size = os.stat(path).st_size
         except OSError:
             raise FollowError(f"{recording} disappeared while it was being followed", "INPUT_MISSING")
-        try:
-            doc = _document(*run(argv_for(path, kind, state, workspace, settle, marker, final), timeout))
+        left = None if max_wait is None else max_wait - (clock() - started)
+        if left is not None and left <= 0 and ticks:
+            raise _timed_out(recording, max_wait, sdir)
+        try:   # a look never runs past --max-wait by much: its timeout is what is left (at least 5 s, so a short budget can still look)
+            doc = _document(*run(argv_for(path, kind, state, workspace, settle, marker, final), timeout if left is None else max(5.0, min(timeout, left))))
         except FollowError as e:
             if e.code != "UNSUPPORTED_FORMAT" or final:
                 raise
@@ -176,9 +179,13 @@ def follow(run: Optional[Callable[[List[str], float], "tuple[int, str, str]"]], 
             return {"rule": RULE, "recording": path, "kind": kind, "state": state, "complete": False, "readable": tick["readable"],
                     "committed_until": tick["committed_until"], "looks": 1, "unreadable_while_growing": said_unreadable}
         if max_wait is not None and now - started >= max_wait:
-            raise FollowError(f"{recording} was not complete after {_hms(max_wait)} (--max-wait); the follow state is kept in {sdir}, "
-                              "so running follow again continues from it", "TIMEOUT")
-        sleep(float(interval))
+            raise _timed_out(recording, max_wait, sdir)
+        sleep(float(interval) if max_wait is None else min(float(interval), max(0.0, max_wait - (now - started))))
+
+
+def _timed_out(recording: str, max_wait: float, sdir: Path) -> FollowError:
+    return FollowError(f"{recording} was not complete after {_hms(max_wait)} (--max-wait); the follow state is kept in {sdir}, "
+                       "so running follow again continues from it", "TIMEOUT")
 
 
 def deadline_text(after_seconds: float, detected_epoch: float, now: Optional[float] = None) -> str:

@@ -1566,6 +1566,13 @@ class Service:
             d["plan"]["summary"].append(chunks_task.summary_line(rec))
         return rec
 
+    def check_plan_options(self, user_requirements: Dict[str, Any], chunk_seconds: Optional[float] = None) -> None:
+        """The refusals `plan` makes of its keys and options before any analysis (ADR-136: `follow` makes them before it waits)."""
+        explicit = dict(user_requirements or {})
+        _check_requirement_keys(explicit)
+        self._check_provider_requirements(explicit)
+        chunks_task.check_chunk_seconds(chunk_seconds)
+
     def follow_recording(self, recording: str, **kw: Any) -> Dict[str, Any]:
         """ADR-136: follow a recording still being written through media-analysis-skill `follow` until it is complete (agent/follow.py).
         Keyword arguments are follow_task.follow's (interval, settle, marker, final, kind, max_wait, once, emit, clock, sleep)."""

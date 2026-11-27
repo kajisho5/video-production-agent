@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -469,6 +470,11 @@ def cmd_preflight(args, svc: Service) -> int:
     return 0 if res["ok"] else 2
 
 
+def _render_exit(status: str) -> int:
+    """render's exit code for a job status (also `follow --render`, ADR-136)."""
+    return {"COMPLETED": 0, "WAITING_FOR_APPROVAL": 4, "BLOCKED": 3, "REVIEW": 5, "CANCELLED": 130}.get(status, 1)
+
+
 def cmd_render(args, svc: Service) -> int:
     ir = load_ir(args.project)
     approve = [x.strip() for x in args.approve.split(",")] if args.approve else None
@@ -558,7 +564,7 @@ def cmd_render(args, svc: Service) -> int:
             hits = [x for x in ex["results"] if x["op_id"] == ex["failed_op"]]
             if hits:
                 print("  failed:", hits[-1]["tool"], "\n   ", hits[-1]["stderr_tail"].replace("\n", "\n    "))
-    return {"COMPLETED": 0, "WAITING_FOR_APPROVAL": 4, "BLOCKED": 3, "REVIEW": 5, "CANCELLED": 130}.get(out["status"], 1)
+    return _render_exit(out["status"])
 
 
 def _ids(s: str) -> List[str]:
@@ -1170,6 +1176,10 @@ def cmd_follow(args, svc: Service) -> int:
         if args.deadline_after:
             follow_task.parse_after(args.deadline_after)   # refused before the wait, not hours later
         reqs = _kv(args.set)
+        svc.check_plan_options(reqs, args.chunk_seconds)   # the plan's own refusals of the keys, before the wait too
+        if args.output and Path(args.recording).exists() and (Path(args.output).resolve() == Path(args.recording).resolve()
+                                                              or (Path(args.output).exists() and os.path.samefile(args.output, args.recording))):
+            raise ValueError(f"-o {args.output} is the recording itself; the project must be written to another file")
     except (DeadlineError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -1200,6 +1210,9 @@ def cmd_follow(args, svc: Service) -> int:
     else:
         dl = None
     out = args.output or default_plan_path(svc.workspace, [rec["recording"]], args.profile)
+    if Path(out).resolve() == Path(rec["recording"]).resolve() or (Path(out).exists() and os.path.samefile(out, rec["recording"])):
+        print(f"error: {out} is the recording itself; the project is not written over it", file=sys.stderr)   # preserve the original media
+        return 2
     save_ir(ir, out)
     rep = svc.validate(ir)
     result: Dict[str, Any] = {"status": "PLANNED", "project": out, "follow": rec, "summary": ir.doc["plan"]["summary"], "validation": rep.to_dict(),
@@ -1226,7 +1239,7 @@ def cmd_follow(args, svc: Service) -> int:
         _print(result, True)
     if not rep.ok:
         return 2
-    return 4 if result["status"] == "WAITING_FOR_APPROVAL" else 0
+    return _render_exit(result["render"]["status"]) if "render" in result else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
