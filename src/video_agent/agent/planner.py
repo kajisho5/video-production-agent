@@ -521,6 +521,8 @@ def build_plan(decisions: List[Decision], analysis: AnalysisResult, tools: Dict[
             refs: Dict[str, Any] = {"input": current_of[subject], "output": out_id}
             if op_type == "video.speed":
                 scope = {"start": 0.0, "end": round((scope["end"] - scope["start"]) / float(params["factor"]), 3)}
+            elif op_type == "video.freeze":   # ADR-141: the held frame lengthens the picture by the hold
+                scope = {"start": 0.0, "end": round((scope["end"] - scope["start"]) + float(params["hold"]), 3)}
             prep_last: Optional[str] = None
             if op_type == "video.overlay":
                 refs["image"] = d.params["image"]

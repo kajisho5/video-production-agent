@@ -1929,7 +1929,9 @@
       "video.redact",
       "video.rotate",
       "video.punch_in",
+      "video.reverse",
       "video.speed",
+      "video.freeze",
       "video.resize",
       "video.fit",
       "video.fill",
@@ -2511,6 +2513,16 @@
     },
     "stinger": {
      "type": "string"
+    },
+    "hold": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "description": "ADR-141: video.freeze, seconds held"
+    },
+    "at": {
+     "type": "number",
+     "minimum": 0,
+     "description": "ADR-141: video.freeze, the time of the frame held (omitted: the last frame, at the end)"
     }
    },
    "additionalProperties": false
