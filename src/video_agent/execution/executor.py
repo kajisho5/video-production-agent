@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..models import Operation, ToolResult, now_iso
 from ..tools.base import ToolAdapter, ToolError
-from .recovery import next_attempt
+from .recovery import describe_failure, next_attempt
 
 
 @dataclass
@@ -56,6 +56,15 @@ class Executor:
         # ADR-135: called after each operation that completed ("ran") or was reused ("reused"), before the next one starts -- the job's
         # checkpoint, so a render that is killed keeps the record of every operation done before it
         self.checkpoint: Optional[Callable[[Operation, str], None]] = None
+        # ADR-140: called with (op, its 0-based index, state) -- "start" before an operation runs, then "ran" / "reused" / "failed" -- for the progress
+        self.progress: Optional[Callable[[Operation, int, str], None]] = None
+
+    def _progress(self, op: Operation, index: int, state: str) -> None:
+        if self.progress is not None:
+            try:
+                self.progress(op, index, state)
+            except Exception:   # noqa: BLE001 -- reporting progress never stops a render
+                pass
 
     def _checkpoint(self, op: Operation, state: str) -> None:
         if self.checkpoint is not None:
@@ -66,13 +75,15 @@ class Executor:
 
     def run(self, ops: List[Operation], paths: Dict[str, str], dry_run: bool = False) -> ExecutionResult:
         res = ExecutionResult()
-        for op in ops:
+        for index, op in enumerate(ops):
             if self.cancel_event.is_set():
                 res.status = "CANCELLED"
                 return res
             if not self.adapter.supports(op.tool):
                 res.status, res.failed_op = "BLOCKED", op.id
-                res.recovery.append({"op": op.id, "class": "TOOL_MISSING", "action": "BLOCK", "reason": f"adapter does not support {op.tool}", "at": now_iso()})
+                res.recovery.append({"op": op.id, "tool": op.tool, "class": "TOOL_MISSING", "action": "BLOCK", "reason": f"adapter does not support {op.tool}", "at": now_iso(),
+                                     "error_class": "environment", "recovery_class": "TOOL_MISSING", "code": None, "retry_helps": False,
+                                     "fix": "this machine: install or update the tool, then render again"})
                 return res
             # a record names one output file; an operation with several (ADR-073: voice-enhance bleed-reduce, one track per input) is re-run, not half-reused
             reusable = bool(op.idempotency_key) and not dry_run and len(op.outputs) == 1
@@ -84,6 +95,7 @@ class Executor:
                     paths[out] = rec["output"]
                 self.log.append(f"skip {op.id} (idempotent, reusing {rec['output']})")
                 self._checkpoint(op, "reused")
+                self._progress(op, index, "reused")
                 continue
             if rec is not None:
                 self.log.append(f"stale record for {op.id}: output missing or changed, re-running")
@@ -91,13 +103,16 @@ class Executor:
             for out in op.outputs:
                 Path(paths[out]).parent.mkdir(parents=True, exist_ok=True)
             attempt, timeout, args = 1, self.timeout, dict(op.args)
+            self._progress(op, index, "start")
             while True:
                 try:
                     r = self.adapter.run(Operation(tool=op.tool, args=args, inputs=op.inputs, outputs=op.outputs, decision_ids=op.decision_ids, kind=op.kind, id=op.id), paths, timeout=timeout, dry_run=dry_run, attempt=attempt)
                 except KeyboardInterrupt:
                     # the adapter has already killed the tool's process group; leave intermediates, record the interruption
                     res.status, res.failed_op = "CANCELLED", op.id
-                    res.recovery.append({"op": op.id, "attempt": attempt, "class": "INTERRUPTED", "action": "CANCEL", "reason": "interrupted by user (SIGINT)", "at": now_iso(), "stderr": ""})
+                    res.recovery.append({"op": op.id, "tool": op.tool, "attempt": attempt, "class": "INTERRUPTED", "action": "CANCEL", "reason": "interrupted by user (SIGINT)",
+                                         "at": now_iso(), "stderr": "", "error_class": "transient", "recovery_class": "INTERRUPTED", "code": None, "retry_helps": True,
+                                         "fix": "render again (`render --resume last` reuses what finished)"})
                     return res
                 except ToolError as exc:
                     r = ToolResult(op_id=op.id, tool=op.tool, ok=False, exit_code=-1, output=None, data={}, commands=[], stderr_tail=str(exc), seconds=0.0, attempt=attempt, dry_run=dry_run)
@@ -106,10 +121,13 @@ class Executor:
                     if reusable and r.output and os.path.exists(r.output):
                         self.completed[op.idempotency_key] = output_record(r.output)
                     self._checkpoint(op, "ran")
+                    self._progress(op, index, "ran")
                     break
                 plan = next_attempt(r, attempt, self.max_attempts, timeout)
-                res.recovery.append({"op": op.id, "attempt": attempt, "class": plan["class"], "action": plan["action"], "reason": plan["reason"], "at": now_iso(), "stderr": r.stderr_tail[-400:]})
+                res.recovery.append({"op": op.id, "tool": op.tool, "attempt": attempt, "class": plan["class"], "action": plan["action"], "reason": plan["reason"], "at": now_iso(),
+                                     "stderr": r.stderr_tail[-400:], **describe_failure(r, plan["class"])})   # ADR-140: error_class, code, retry_helps, fix
                 if plan["action"] != "RETRY":
+                    self._progress(op, index, "failed")
                     res.status = "BLOCKED" if plan["class"] in ("TOOL_MISSING", "INPUT_MISSING", "DISK_FULL", "ACTION_REQUIRED") else "FAILED"
                     res.failed_op = op.id
                     return res

@@ -901,6 +901,25 @@ def cmd_artifacts(args, svc: Service) -> int:
     return 0
 
 
+def cmd_status(args, svc: Service) -> int:
+    """ADR-140: a job's state, its progress (step, percent, ETA, chunk) and its error class."""
+    st = svc.status(args.job)
+    if args.json:
+        _print(st, True)
+        return 0
+    pr = st.get("progress") or {}
+    step = pr.get("step") or {}
+    print(f"job {st['job']}  {st['state']}" + (f"  {pr.get('percent', 0):.1f}%  step {step.get('index')}/{pr.get('total')} {step.get('tool', '')}"
+                                               + (f"  chunk {pr['chunk']}" if pr.get("chunk") is not None else "")
+                                               + (f"  ETA {pr.get('eta_seconds', 0):.0f} s" if pr.get("eta_seconds") is not None else "") if pr else ""))
+    if st.get("error"):
+        e = st["error"]
+        print(f"  error: {e.get('error_class')} ({e.get('code') or e.get('recovery_class') or '-'}); retry helps: {'yes' if e.get('retry_helps') else 'no'}")
+        if e.get("fix"):
+            print(f"  fix: {e['fix']}")
+    return 0
+
+
 def cmd_artifact(args, svc: Service) -> int:
     a = svc.artifact(args.artifact_id)
     if args.json:
@@ -1458,6 +1477,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_explain)
     p = sub.add_parser("artifacts", help="registered artifacts (of a project IR, or all)")
     p.add_argument("project", nargs="?"); p.add_argument("--job"); p.set_defaults(fn=cmd_artifacts)
+    p = sub.add_parser("status", help="a render job's state, progress (step, percent, ETA, chunk) and error class (input / environment / engine / policy / transient)")
+    p.add_argument("job", nargs="?", default="last", help="a job id, or last (default)"); p.set_defaults(fn=cmd_status)
     p = sub.add_parser("artifact", help="one artifact manifest with an integrity check")
     p.add_argument("artifact_id"); p.set_defaults(fn=cmd_artifact)
     p = sub.add_parser("deliver", help="promote a QA-passed artifact of an approved plan to DELIVERED (recorded; no upload)")
