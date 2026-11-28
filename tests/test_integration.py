@@ -5038,3 +5038,31 @@ class ProgressRealTests(unittest.TestCase):
         err = out.get("error") or svc.status("last").get("error")
         print(f"vanished input: {err}")
         self.assertEqual(err["error_class"], "input", err)
+
+
+class FreezeReverseRealTests(unittest.TestCase):
+    """ADR-141 (roadmap step 17): edit.reverse and edit.freeze through the real video-editing-skill (FREEZE / REVERSE on ffmpeg-skill freeze / reverse):
+    the 16 s fixture played backwards with its last frame held 2 s is delivered 18 s long."""
+
+    def test_reverse_then_freeze(self):
+        if not os.environ.get("VIDEO_AGENT_VIDEO_EDITING_DIR"):
+            self.skipTest("needs VIDEO_AGENT_VIDEO_EDITING_DIR")
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_freeze_"))
+        src = str(Path(tmp) / "src" / "clip.mp4")
+        Path(src).parent.mkdir(parents=True)
+        make_media(src)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([src], "youtube", user_requirements={"edit.reverse": True, "edit.freeze": 2, "edit.trim_leading_silence": False, "edit.trim_trailing_silence": False})
+        self.assertEqual(svc.validate(ir).errors, [])
+        path = str(Path(svc.workspace) / "plans" / "clip.project.json")
+        save_ir(ir, path)
+        out = svc.render(load_ir(path), path, approve=["all"])
+        self.assertIn(out["status"], ("COMPLETED", "REVIEW"), out.get("execution", {}).get("failed_op"))
+        (art,) = [a for a in out["artifacts"] if a["logical_name"].endswith("_delivery_youtube")]
+        dur = float(json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", art["path"]], capture_output=True, text=True,
+                                              check=True).stdout)["format"]["duration"])
+        tools = [r["tool"] for r in out["execution"]["results"]]
+        print(f"reverse + freeze 2 s: {dur:.3f} s; tools {tools}")
+        self.assertIn("video-editing/reverse", tools)
+        self.assertIn("video-editing/freeze", tools)
+        self.assertAlmostEqual(dur, 18.0, delta=0.1)

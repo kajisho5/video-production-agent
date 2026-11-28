@@ -68,7 +68,8 @@ APPROVAL_KEYS = {"silence.leading": ("silence.leading.approval", "AUTO"), "silen
                  "delivery.export": ("delivery.export.approval", "AUTO"), "video.vfr": ("video.vfr.approval", "AUTO"),
                  "video.hdr": ("video.hdr.approval", "CONFIRM"), "ai.recommendation": ("ai.recommendation.approval", "CONFIRM"),
                  # editing operations (ADR-029): CONFIRM unless the profile / request says otherwise; an explicit USER requirement waives it
-                 "video.concat": ("video.concat.approval", "CONFIRM"), "video.speed": ("video.speed.approval", "CONFIRM"), "video.resize": ("video.resize.approval", "CONFIRM"),
+                 "video.concat": ("video.concat.approval", "CONFIRM"), "video.speed": ("video.speed.approval", "CONFIRM"),
+                 "video.reverse": ("video.reverse.approval", "CONFIRM"), "video.freeze": ("video.freeze.approval", "CONFIRM"), "video.resize": ("video.resize.approval", "CONFIRM"),
                  "video.fit": ("video.fit.approval", "CONFIRM"), "video.fill": ("video.fill.approval", "CONFIRM"), "video.overlay": ("video.overlay.approval", "CONFIRM"),
                  # audio production path (ADR-030): CONFIRM by default (the picture of a video container is not delivered); explicit USER requirement waives it.
                  # audio.extract is waived only by its own explicit requirement `audio.extract=true` — never by the generic `audio.production` switch (ADR-033)
@@ -324,7 +325,7 @@ def decide(reqs: List[Requirement], intent: Intent, analysis: AnalysisResult, in
     # ---- the clip's microphones (ADR-134): automix → the clip's sound, the interpreters' language tracks, the transcript by microphone
     mic_req = parse_microphone_requirements(m)
     if mic_req is not None:
-        timing = sorted(k for k in edits if k in ("video.speed", IMAGE_INSERT_OP)) + sorted(k for k in ("edit.takes", "edit.selects") if k in m and m[k].provenance == "USER")
+        timing = sorted(k for k in edits if k in ("video.speed", "video.freeze", "video.reverse", IMAGE_INSERT_OP)) + sorted(k for k in ("edit.takes", "edit.selects") if k in m and m[k].provenance == "USER")
         decide_microphones(eng, m, analysis, approval_for, cap_block, probe_ids_of, mic_channel_ok,
                            {"audio_production": audio["production"], "timing": timing, "inputs": len(analysis.assets), "track_ok": mic_track_ok})
         groups: Dict[str, List[Dict[str, Any]]] = {}

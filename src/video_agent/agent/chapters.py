@@ -54,7 +54,7 @@ FIRST_CHARS = 40
 YOUTUBE_MIN_TIMESTAMPS = 3   # publish-skill contract (YouTube): at least three timestamps in ascending order
 CHAPTER_EXTENSIONS = (".mp4", ".m4v", ".mov", ".mkv", ".webm")   # containers ffmpeg-skill metadata writes chapters into
 # requirement keys whose edits move the programme's time against the source in a way other than a trim
-TIME_MOVING_KEYS = ("edit.speed", "edit.image_insert", "edit.takes", "edit.selects", "edit.concat", "edit.switch", "edit.grid")
+TIME_MOVING_KEYS = ("edit.speed", "edit.freeze", "edit.reverse", "edit.image_insert", "edit.takes", "edit.selects", "edit.concat", "edit.switch", "edit.grid")
 SLIDES_KEY = "slides.detect"
 
 

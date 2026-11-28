@@ -299,6 +299,12 @@ def default_registry() -> SkillRegistry:
     # by video-editing/trim when one kept range remains (internal pauses removed inside it keep the multi-range silence_cleanup cut)
     r.register(SkillSpec("video_trim", "1.0", "Trim to an explicit start/end time range", {"asset": "video", "keep": "ranges"}, {"artifact": "INTERMEDIATE"},
                          ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/trim"]))
+    # ADR-141: video-editing-skill FREEZE / REVERSE (0.4.0), asked for by edit.freeze / edit.reverse only
+    r.register(SkillSpec("video_reverse", "1.0", "Play the picture and its sound backwards (frame size and duration kept)", {"asset": "video"}, {"artifact": "INTERMEDIATE"},
+                         ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM", ["video-editing/reverse"]))
+    r.register(SkillSpec("video_freeze", "1.0", "Hold one frame for a number of seconds (at a time, or the last frame at the end); the sound is silent during the hold",
+                         {"asset": "video", "hold": "float", "at": "float"}, {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "MEDIUM", True, "CONFIRM",
+                         ["video-editing/freeze"]))
     # ADR-062: video-editing-skill ROTATE (0.3.0): a clockwise turn (90 / 180 / 270) and / or a mirror
     r.register(SkillSpec("video_rotate", "1.0", "Rotate clockwise by 90 / 180 / 270 degrees and / or mirror (no scaling, no crop)", {"asset": "video", "degrees": "int", "flip": "h|v"},
                          {"artifact": "INTERMEDIATE"}, ["ffmpeg", "ffmpeg-skill", "video-editing"], "LOW", True, "CONFIRM", ["video-editing/rotate"]))

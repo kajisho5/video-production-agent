@@ -191,7 +191,7 @@ def _same_file(a: str, b: str) -> bool:
         return os.path.abspath(a) == os.path.abspath(b)
 
 
-OTHER_RETIMING = ("video.speed", "video.concat", "video.switch", "video.grid", "takes.pick", "editor.cut")
+OTHER_RETIMING = ("video.speed", "video.freeze", "video.reverse", "video.concat", "video.switch", "video.grid", "takes.pick", "editor.cut")
 
 
 def decide_transcript_edit(eng: Any, edit: Dict[str, Any], analysis: Any, approval_for: Any, probe_ids_of: Any, cap_block: Any, condense_skill: str) -> None:

@@ -51,7 +51,9 @@ PROGRAMME = "programme"      # logical id of the concat (or switch / grid) outpu
 IMAGE_INSERT_OP = "video.image_insert"
 PUNCH_IN_OP = "video.punch_in"
 EDIT_ORDER = ("video.concat", "video.switch", "video.grid", "video.deinterlace", "video.stabilize", "video.crop", "video.redact",
-              "video.rotate", PUNCH_IN_OP, "video.speed", "video.resize", "video.fit", "video.fill", "video.overlay", IMAGE_INSERT_OP)
+              "video.rotate", PUNCH_IN_OP, "video.reverse", "video.speed", "video.freeze", "video.resize", "video.fit", "video.fill", "video.overlay", IMAGE_INSERT_OP)
+# ADR-141: video.reverse (the whole picture and sound played backwards) runs before video.speed; video.freeze (a frame held for `hold` seconds,
+# at `at` or at the end) after it, so `at` is a time on the picture as it plays after the speed change
 # the multi-source entry ops (build PROGRAMME from 2+ inputs; mutually exclusive, handled specially by the planner /
 # compiler) vs. the single-source ops that apply to whatever PROGRAMME (or the untouched asset) already is
 MULTI_SOURCE_OPS = ("video.concat", "video.switch", "video.grid")
@@ -78,6 +80,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "video.rotate":  {"skill": "video_rotate",  "tool": "video-editing/rotate",  "params": ("degrees", "flip"), "risk": "LOW"},
     # ADR-099: video-editing-skill 0.5.0 PUNCH_IN: a hard cut in to a zoom (scale) on the user's subject box for [start, end], the frame kept
     PUNCH_IN_OP:     {"skill": "video_punch_in", "tool": "video-editing/punch_in", "params": ("start", "end", "scale", "subject"), "risk": "MEDIUM"},
+    "video.reverse": {"skill": "video_reverse", "tool": "video-editing/reverse", "params": (), "risk": "MEDIUM"},
+    "video.freeze":  {"skill": "video_freeze",  "tool": "video-editing/freeze",  "params": ("hold", "at"), "risk": "MEDIUM"},
     "video.speed":   {"skill": "video_speed",   "tool": "video-editing/speed",   "params": ("factor",), "risk": "MEDIUM"},
     "video.resize":  {"skill": "video_resize",  "tool": "video-editing/resize",  "params": ("width", "fps"), "risk": "LOW"},
     "video.fit":     {"skill": "video_fit",     "tool": "video-editing/fit",     "params": ("aspect", "width", "pad_color", "fps"), "risk": "LOW"},
@@ -135,6 +139,8 @@ REQUIREMENT_KEYS: Dict[str, Tuple[str, ...]] = {
     SEGMENT_CACHE_OP: (SEGMENT_CACHE_KEY,),
     AI_OP: (AI_KEY,),
     "video.speed": ("edit.speed",),
+    "video.reverse": ("edit.reverse",),   # ADR-141
+    "video.freeze": ("edit.freeze", "edit.freeze.at"),
     "video.resize": ("edit.resize", "edit.resize.fps"),
     "video.fit": ("edit.fit", "edit.fit.width", "edit.fit.pad_color", "edit.fit.fps"),
     "video.fill": ("edit.fill", "edit.fill.width", "edit.fill.fps"),
@@ -154,6 +160,7 @@ IMAGE_JOIN_SKILL = "video_concat"            # the join of the still's clip and 
 ROTATIONS = (90, 180, 270)   # video-editing-skill ROTATE.degrees, clockwise
 FLIPS = ("h", "v")           # ROTATE.flip: mirror horizontally / vertically
 SPEED_RANGE = (0.25, 4.0)
+FREEZE_HOLD_RANGE = (0.04, 60.0)   # ADR-141: at least one frame at 25 fps, at most a minute held
 PUNCH_SCALE = (1.0, 4.0)   # video-editing-skill PUNCH_IN.scale: above 1, at most 4
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 NAMED_POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right", "center", "top", "bottom", "left", "right")
@@ -471,6 +478,13 @@ def parse_edit_requirements(m: Dict[str, Requirement]) -> Dict[str, Dict[str, An
             p["segment_cache"] = True
         elif op == AI_OP:   # ADR-099
             p["sources"] = parse_ai_generated(vals[AI_KEY])
+        elif op == "video.reverse":   # ADR-141: a switch
+            if not _bool(vals["edit.reverse"], "edit.reverse"):
+                continue
+        elif op == "video.freeze":   # ADR-141: the hold in seconds; edit.freeze.at the time held (omitted: the last frame, at the end)
+            p["hold"] = float(_number(vals["edit.freeze"], "edit.freeze", *FREEZE_HOLD_RANGE))
+            if "edit.freeze.at" in vals:
+                p["at"] = float(_number(vals["edit.freeze.at"], "edit.freeze.at", 0.0, 86400.0))
         elif op == "video.speed":
             f = _number(vals["edit.speed"], "edit.speed", SPEED_RANGE[0], SPEED_RANGE[1])
             if float(f) == 1.0:
