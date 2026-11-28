@@ -1,0 +1,71 @@
+# Shared config for release-drafter (used in dry-run mode by release.yml to resolve
+# the next semantic version, and in real mode by both release.yml's final Release
+# step and autolabeler.yml's PR autolabeling).
+#
+# This repo has no existing label convention (0 labels used across ~60 merged PRs)
+# and no Conventional Commits convention, so autolabeler rules key off observed
+# PR title keyword patterns and changed-file globs instead.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: '💥 Breaking Changes'
+    labels:
+      - 'major'
+      - 'breaking'
+  - title: '🚀 Features'
+    labels:
+      - 'minor'
+      - 'feature'
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'fix'
+      - 'bug'
+  - title: '🧰 Maintenance'
+    labels:
+      - 'chore'
+      - 'tests'
+
+autolabeler:
+  - label: 'major'
+    title:
+      - '/BREAKING/i'
+    body:
+      - '/BREAKING/i'
+  - label: 'feature'
+    title:
+      - '/^Add /i'
+      - '/^feat(\(.+\))?:/i'
+  - label: 'fix'
+    title:
+      - '/^Fix /i'
+      - '/^fix(\(.+\))?:/i'
+  - label: 'chore'
+    title:
+      - '/^ADR-\d+/i'
+    files:
+      - '.github/**'
+  - label: 'tests'
+    files:
+      - 'tests/**'
+
+version-resolver:
+  major:
+    labels:
+      - 'major'
+      - 'breaking'
+  minor:
+    labels:
+      - 'minor'
+      - 'feature'
+  patch:
+    labels:
+      - 'fix'
+      - 'bug'
+  default: patch
+
+template: |
+  ## Changes
+
+  $CHANGES
