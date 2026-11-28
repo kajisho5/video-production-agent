@@ -53,10 +53,10 @@
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
-      "tag": "v0.14.0",
-      "sha": "f61bf3352c20fd210b781b87383b3b055ab3df42",
-      "version": "0.14.0",
-      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.14.0.json"
+      "tag": "v0.15.0",
+      "sha": "d4e547d5fa9c6d3510a7c394d1d4582763eeb29b",
+      "version": "0.15.0",
+      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.15.0.json"
     },
     "imagemagick": {
       "repo": "kajisho5/imagemagick-skill",
