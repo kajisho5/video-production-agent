@@ -780,7 +780,7 @@ class Service:
         left: List[str] = []
         deadline = _monotonic() + transcribe_task.PREFLIGHT_BUDGET_SECONDS   # one budget for every dry run of the plan, not one per input
         for p in inputs:
-            remaining = deadline - _monotonic()
+            remaining = min(deadline - _monotonic(), transcribe_task.PREFLIGHT_BUDGET_SECONDS)   # never above the budget (float rounding of a coarse clock)
             if remaining <= 1.0:
                 left.append(f"the dry runs' {transcribe_task.PREFLIGHT_BUDGET_SECONDS:g} s budget ran out before {Path(p).name}")
                 break

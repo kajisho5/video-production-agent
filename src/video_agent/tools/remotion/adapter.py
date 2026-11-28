@@ -6,7 +6,7 @@ pipeline, CONFIRM).
          [--beats] [--conform] [--fast] [--aspect=A] [--fit=F] --out-dir=<job>/ops/<…>_motion --json --timeout=T`
           → analyze (ffmpeg-skill measurements) → render (Remotion, verified frame count / fps / size / audio) ; no --platform: the agent delivers
 
-Protocol (remotion-ffmpeg-skill's own contract, `python scripts/_contract.py --json`, pinned from the v0.14.0 release tag in contract_0.14.5.json):
+Protocol (remotion-ffmpeg-skill's own contract, `python scripts/_contract.py --json`, pinned from the v0.14.0 release tag in contract_0.15.0.json):
 pipeline's inputSchema / flags / output (`timeline`, `render`, `look`, `verified`, `warnings`, `steps`), the shared output (`status`
 completed | failed, `output`), the failure shape (`status: failed`, `error`, `kind` input | missing_tool | timeout | failed, exit 2 / 3 / 4 / 1).
 doctor (`scripts/doctor.py --json [--project DIR]`) → `ok` and `checks[]` {check, ok, value, fix} (python, node, npm, ffmpeg-skill, ffmpeg and,
@@ -37,7 +37,8 @@ from .locate import PACKAGE_ID, RemotionSkill, locate_remotion  # noqa: F401  (r
 SKILL_ID = PACKAGE_ID
 PREFIX = SKILL_ID + "/"
 TOOL_PIPELINE = "remotion-ffmpeg-skill/pipeline"
-SUPPORTED_SKILL_VERSIONS = ("0.12.", "0.13.", "0.14.")   # 0.13.0 (remotion-ffmpeg-skill #18, v0.13.0 d135b3b; ADR-107 addendum 14): analyze --emphasis /
+# 0.15.0 (https://github.com/kajisho5/remotion-ffmpeg-skill v0.15.0, automatic re-pin 2026-11-27, ADR-117): si contract-diff additive; the gate takes 0.15.
+SUPPORTED_SKILL_VERSIONS = ("0.12.", "0.13.", "0.14.", "0.15.")   # 0.13.0 (remotion-ffmpeg-skill #18, v0.13.0 d135b3b; ADR-107 addendum 14): analyze --emphasis /
                                               # --emphasis-auto, the timeline key `emphasis` and the Emphasis composition. Additive; the agent
                                               # does not plan Emphasis (it is not in COMPOSITIONS) and sends neither option
                                               # 0.14.0 (v0.14.0 e34a10d; ADR-107 addendum 31): per-tool `deterministic` / `idempotency_hint` and a
@@ -58,7 +59,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "dependenci
 DRIFT_TOOL_KEYS = ("role", "inputSchema", "flags", "output", "dry_run")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "output_failure", "conventions")
 FATAL_DRIFT_TOOL_KEYS = ("role", "flags", "output")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.14.5.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.15.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:
