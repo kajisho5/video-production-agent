@@ -56,7 +56,7 @@ TOOL_RENDER = "hyperframes-skill/render"
 # none of them; the gate takes 0.13 (0.12 was never pinned).
 # Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.12 / 0.14 / 1.x.
 SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.", "0.10.", "0.11.", "0.13.")
-PIN_VERSION = "0.13.0"
+PIN_VERSION = "0.14.0"
 PINNED_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "skills" / "pins" / f"hyperframes-skill_{PIN_VERSION}.json"
 CODEC = "prores"            # ProRes 4444 with alpha: what rendered_layer reads (a VP9 alpha WebM decodes without its alpha there)
 SEGMENT_NAMES = ("in", "loop", "out")
