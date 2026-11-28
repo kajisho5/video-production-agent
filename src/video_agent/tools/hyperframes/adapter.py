@@ -57,9 +57,11 @@ TOOL_RENDER = "hyperframes-skill/render"
 # 0.14.0 (https://github.com/kajisho5/hyperframes-skill v0.14.0 f61bf33, automatic re-pin 2026-11-28, ADR-117): optional `audio` layers and a
 # top-level `beat` in a scene request, the optional result keys `expected.audio?` (render) and `beat_lock?` (scene). si contract-diff reads
 # the output_schema / description strings as breaking (value-changed); the change is those optional keys only. The agent sends none of them.
-# Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.12 / 0.15 / 1.x.
-SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.", "0.10.", "0.11.", "0.13.", "0.14.")
-PIN_VERSION = "0.14.0"
+# 0.15.0 (https://github.com/kajisho5/hyperframes-skill v0.15.0, automatic re-pin 2026-11-28, ADR-117): six style-* templates and the
+# optional `template --gallery` (with its optional capabilities and result shape); the agent uses neither.
+# Every addition is optional; the scene request this adapter sends and the result it admits are unchanged. Never 0.12 / 0.16 / 1.x.
+SUPPORTED_SKILL_VERSIONS = ("0.8.", "0.9.", "0.10.", "0.11.", "0.13.", "0.14.", "0.15.")
+PIN_VERSION = "0.15.0"
 PINNED_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "skills" / "pins" / f"hyperframes-skill_{PIN_VERSION}.json"
 CODEC = "prores"            # ProRes 4444 with alpha: what rendered_layer reads (a VP9 alpha WebM decodes without its alpha there)
 SEGMENT_NAMES = ("in", "loop", "out")
