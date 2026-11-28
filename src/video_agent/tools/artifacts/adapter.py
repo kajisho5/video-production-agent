@@ -3,7 +3,7 @@
     video-production-agent ─(plan step document_verify, QA)─→ ArtifactsAdapter ─(argv lists, never a shell)─→
         `artifacts-skill verify --json --policy={"forbid_placeholder_text": true} [--policy-preset=NAME] -- <document>`
 
-Protocol (artifacts-skill's own contract, `artifacts-skill contract --json`, pinned in contract_0.4.0.json = the v0.4.0
+Protocol (artifacts-skill's own contract, `artifacts-skill contract --json`, pinned in contract_0.5.0.json = the v0.4.0
 release tag ae039d3; it differs from the 0.3.0 pin, taken from main aea2499, only in `version` / `tool_version`):
     contract → `artifacts-skill contract --json` (skill_id artifacts-skill, contract_version 1.x, tools[] by `name`, provides[] by tool_id,
                exit_codes {ok 0, fail 1, input 2, capability 3, security 4, internal 5}, input_mutation_policy never)
@@ -53,7 +53,7 @@ DRIFT_KEYS = ("skill_id", "version", "contract_version", "provides", "not_provid
 DRIFT_TOOL_KEYS = ("input_schema", "output_schema", "side_effects", "errors", "artifact_types")
 FATAL_DRIFT_KEYS = ("skill_id", "contract_version", "exit_codes", "input_mutation_policy")
 FATAL_DRIFT_TOOL_KEYS = ("input_schema", "side_effects")
-PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.4.0.json")
+PINNED_CONTRACT_PATH = Path(__file__).with_name("contract_0.5.0.json")
 
 
 def pinned_contract() -> Dict[str, Any]:

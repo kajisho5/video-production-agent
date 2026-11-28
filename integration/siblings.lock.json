@@ -4,10 +4,10 @@
   "siblings": {
     "artifacts": {
       "repo": "kajisho5/artifacts-skill",
-      "tag": "v0.4.0",
-      "sha": "ae039d3002d5d0c9a786d320ec30ebeb67b8ee43",
-      "version": "0.4.0",
-      "pin": "src/video_agent/tools/artifacts/contract_0.4.0.json"
+      "tag": "v0.5.0",
+      "sha": "61ca0cad95438ace958939b7ea222abaad246470",
+      "version": "0.5.0",
+      "pin": "src/video_agent/tools/artifacts/contract_0.5.0.json"
     },
     "audio-production": {
       "repo": "kajisho5/audio-production-skill",
@@ -53,10 +53,10 @@
     },
     "hyperframes": {
       "repo": "kajisho5/hyperframes-skill",
-      "tag": "v0.11.1",
-      "sha": "64b787c8786237b6bd579116020a3ff227a8132a",
-      "version": "0.11.1",
-      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.11.1.json"
+      "tag": "v0.13.0",
+      "sha": "7710b95be53104b1eb9ab8248c488e16793ab1da",
+      "version": "0.13.0",
+      "pin": "src/video_agent/skills/pins/hyperframes-skill_0.13.0.json"
     },
     "imagemagick": {
       "repo": "kajisho5/imagemagick-skill",
@@ -109,10 +109,10 @@
     },
     "remotion-ffmpeg": {
       "repo": "kajisho5/remotion-ffmpeg-skill",
-      "tag": "v0.15.0",
-      "sha": "83f96ee4611c2a8e9895f03ff46e8e9c6bee6564",
-      "version": "0.15.0",
-      "pin": "src/video_agent/tools/remotion/contract_0.15.0.json"
+      "tag": "v0.19.0",
+      "sha": "82bf1d3f85fd2507b9a7174dad9e4591954059ab",
+      "version": "0.19.0",
+      "pin": "src/video_agent/tools/remotion/contract_0.19.0.json"
     },
     "slide-sync": {
       "repo": "kajisho5/slide-sync-skill",

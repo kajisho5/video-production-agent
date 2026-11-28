@@ -125,8 +125,8 @@ class ContractTests(_Base):
         self.assertEqual((drift(c), breaking_drift(c)), ([], []))
 
     def test_gate_is_the_0_8_to_0_11_lines(self):
-        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.11.1", True), ("0.11.0", True),
-                      ("0.11.1", True), (pinned_version("hyperframes"), True), ("0.12.0", False), ("1.0.0", False), ("0.7.0", False)):
+        for v, ok in (("0.8.0", True), ("0.8.1", True), ("0.8.9", True), ("0.9.0", True), ("0.9.4", True), ("0.10.0", True), ("0.13.0", True), ("0.11.0", True),
+                      ("0.13.0", True), (pinned_version("hyperframes"), True), ("0.12.0", False), ("1.0.0", False), ("0.7.0", False)):
             with self.subTest(version=v):
                 c = dict(pinned_contract(), version=v)
                 self.assertEqual(check_contract(c) == [], ok, check_contract(c))
@@ -192,19 +192,19 @@ class AdapterTests(_Base):
         """hyperframes-skill 0.11 (ADR-117 addendum 2): render's `--fps` is a string in the input_schema and `expected` carries `frame_rate`. The
         adapter takes the contract (it sends no --fps), runs the same argv and passes `expected` on as the Skill reported it."""
         c = json.loads(PINNED_CONTRACT_PATH.read_text(encoding="utf-8"))
-        c["version"] = c["skill"]["version"] = "0.11.1"
+        c["version"] = c["skill"]["version"] = "0.13.0"
         for t in c["tools"]:
-            t["version"] = "0.11.1"
+            t["version"] = "0.13.0"
         render = next(t for t in c["tools"] if t["id"] == "hyperframes-skill/render")
         render["input_schema"]["properties"]["fps"] = {"cli": "--fps", "type": "string",
                                                        "description": "frame rate 1-240: an integer, an exact N/D such as 30000/1001, or an NTSC decimal"}
         self.assertEqual(check_contract(c), [])
-        pin = Path(self.tmp) / "hyperframes-skill_0.11.1.json"
+        pin = Path(self.tmp) / "hyperframes-skill_0.13.0.json"
         pin.write_text(json.dumps(c), encoding="utf-8")
         os.environ["FAKE_HF_PIN"] = str(pin)
         ad, out, r = self.run_op({"template": "lower-third", "values": VALUES, "segments": {"in": 0.5, "loop": 3, "out": 0.5}})
         self.assertTrue(r.ok, r.data)
-        self.assertEqual((ad.version, r.data["skill"]["version"]), ("0.11.1", "0.11.1"))
+        self.assertEqual((ad.version, r.data["skill"]["version"]), ("0.13.0", "0.13.0"))
         [render_call] = self.hf_calls("render")
         self.assertFalse(any(a.startswith("--fps") for a in render_call), render_call)
         self.assertEqual((r.data["expected"]["frame_rate"], r.data["expected"]["fps"]), ("30", 30))
