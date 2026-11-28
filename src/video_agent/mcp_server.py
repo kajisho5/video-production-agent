@@ -195,6 +195,11 @@ TOOLS: List[Dict[str, Any]] = [
          "include_overlap": {"type": "boolean", "description": "also remove kept words that overlap the removed speech (default: refused)"},
          "subtitles": {"type": "array", "items": _STR, "description": "SRT / VTT files of the input to retime"},
          "output": {"type": "string", "description": "where to write the transcript-edit file"}}}},
+    {"name": "status", "description": ("A render job's state and progress (step, percent, ETA, chunk) and, when it failed or was blocked, the error's class: "
+                                       "input (change the file or request), environment (this machine), engine (the tool failed), policy (a person must act) or "
+                                       "transient (render again), with the tool's own code and whether a retry helps. A render called with a progressToken also "
+                                       "sends notifications/progress while it runs."),
+     "inputSchema": {"type": "object", "properties": {"job": {"type": "string", "description": "a job id, or last (default)"}}}},
     {"name": "artifacts", "description": "Registered artifacts of a project (or all), with QA status.",
      "inputSchema": {"type": "object", "properties": {"project": _PROJECT}}},
 ]
@@ -355,6 +360,8 @@ def tool_argv(name: str, a: Dict[str, Any], tmpdir: str) -> List[str]:
         return cmd("check", [*opt("--platform", "platform"), *(["--qc"] if a.get("qc") else [])], [need("output")])
     if name == "artifacts":
         return cmd("artifacts", [], [str(a["project"])] if a.get("project") else [])
+    if name == "status":   # ADR-140
+        return cmd("status", [], [str(a.get("job") or "last")])
     if name == "selects":   # ADR-124: a preview; the render needs plan + approve
         ins = a.get("inputs")
         if not isinstance(ins, list) or not ins or not all(isinstance(x, str) and x for x in ins):
@@ -419,7 +426,62 @@ class Server:
             return None, _refusal(code, name, call.cls, why + "; nothing was done. Call without confirm_token for a new preview")
         return call, None
 
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def notify(self, msg: Dict[str, Any]) -> None:
+        """A notification to the client (ADR-140: notifications/progress), written between replies on the same stream."""
+        out = getattr(self, "_out", None)
+        if out is not None:
+            out.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            out.flush()
+
+    def _run_with_progress(self, cmd: List[str], env: Optional[Dict[str, str]], token: Any) -> "subprocess.CompletedProcess[str]":
+        """ADR-140: the CLI child with VIDEO_AGENT_PROGRESS=jsonl; each progress line it writes to stderr becomes a notifications/progress for
+        `token` (progress = percent of 100, never lower than the last one sent), every other stderr line is kept for the reply."""
+        import threading
+        env = dict(env or os.environ, VIDEO_AGENT_PROGRESS="jsonl")
+        proc = subprocess.Popen(safe_command(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                errors="replace", env=env)
+        out_chunks: List[str] = []
+        err_lines: List[str] = []
+        last = [-1.0]
+
+        def read_out() -> None:
+            out_chunks.append(proc.stdout.read() if proc.stdout else "")
+
+        def read_err() -> None:
+            for line in proc.stderr or []:
+                snap = None
+                if line.startswith('{"video_agent_progress"'):
+                    try:
+                        snap = json.loads(line)["video_agent_progress"]
+                    except (ValueError, KeyError, TypeError):
+                        snap = None
+                if snap is None:
+                    err_lines.append(line)
+                    continue
+                pct = max(last[0], float(snap.get("percent") or 0.0))
+                last[0] = pct
+                step = snap.get("step") or {}
+                msg = (f"step {step.get('index')}/{snap.get('total')} {step.get('tool', '')}" + (f" chunk {snap['chunk']}" if snap.get("chunk") is not None else "")
+                       + (f", ETA {snap['eta_seconds']:.0f} s" if snap.get("eta_seconds") is not None else ""))
+                self.notify({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": token, "progress": pct, "total": 100, "message": msg}})
+        threads = [threading.Thread(target=read_out, daemon=True), threading.Thread(target=read_err, daemon=True)]
+        for t in threads:
+            t.start()
+        try:
+            proc.wait(timeout=TOOL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            for t in threads:
+                t.join(timeout=10)
+            for f in (proc.stdout, proc.stderr):
+                if f is not None:
+                    f.close()
+        return subprocess.CompletedProcess(cmd, proc.returncode, "".join(out_chunks), "".join(err_lines))
+
+    def call_tool(self, name: str, arguments: Dict[str, Any], progress_token: Any = None) -> Dict[str, Any]:
         arguments = dict(arguments or {})
         token = arguments.pop("confirm_token", None)
         call, refused = self._gate(name, arguments, token)
@@ -436,8 +498,12 @@ class Server:
             except ValueError as exc:
                 return _text(str(exc), error=True)
             try:
-                p = subprocess.run(safe_command([*python_module_command("video_agent.cli", self.python), *self.global_args, *argv]), capture_output=True, text=True,
-                                   encoding="utf-8", errors="replace", timeout=TOOL_TIMEOUT_S, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
+                full = [*python_module_command("video_agent.cli", self.python), *self.global_args, *argv]
+                if progress_token is not None and name == "render":   # ADR-140: the render's progress as notifications/progress
+                    p = self._run_with_progress(full, env, progress_token)
+                else:
+                    p = subprocess.run(safe_command(full), capture_output=True, text=True,
+                                       encoding="utf-8", errors="replace", timeout=TOOL_TIMEOUT_S, stdin=subprocess.DEVNULL, **({"env": env} if env else {}))
             except subprocess.TimeoutExpired:
                 return _text(f"{name}: timed out after {TOOL_TIMEOUT_S} s", error=True)
         out = p.stdout.strip()
@@ -457,7 +523,8 @@ class Server:
             result = {"tools": listed_tools(self.permissions)}
         elif method == "tools/call":
             params = msg.get("params") or {}
-            result = self.call_tool(str(params.get("name")), params.get("arguments") or {})
+            meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+            result = self.call_tool(str(params.get("name")), params.get("arguments") or {}, progress_token=meta.get("progressToken"))
         elif method == "ping":
             result = {}
         else:
@@ -466,6 +533,7 @@ class Server:
 
     def serve(self, stdin=None, stdout=None) -> None:
         stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
+        self._out = stdout   # ADR-140: notifications go on the same stream as the replies
         for line in stdin:
             line = line.strip()
             if not line:

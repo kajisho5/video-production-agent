@@ -4987,3 +4987,54 @@ class ShortsSetRealTests(unittest.TestCase):
             self.assertLessEqual(dur, 60.5)
             self.assertIn("subtitle_burn_in", steps)
             self.assertIn(row["quote"].lower(), " ".join(s[2] for s in segs).lower())
+
+
+class ProgressRealTests(unittest.TestCase):
+    """ADR-140 (roadmap step 24, Done when): a render on the real engine, called through the MCP server with a progressToken, sends
+    notifications/progress whose progress never goes down and ends at 100; `status` then reads the job's last snapshot. A render whose input
+    vanished after planning fails with an error of class input, kept with the tool's message."""
+
+    def test_monotonic_progress_over_mcp_and_status(self):
+        import io
+        from video_agent.mcp_server import Server
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_progress_"))
+        src = str(Path(tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True)
+        make_media(src)
+        ws = str(Path(tmp) / "ws")
+        svc = Service(workspace=ws)
+        ir = svc.plan([src], "youtube")
+        ir.approve(["all"])
+        path = str(Path(ws) / "plans" / "talk.project.json")
+        save_ir(ir, path)
+        srv = Server(workspace=ws)
+        out = io.StringIO()
+        req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "render", "arguments": {"project": path}, "_meta": {"progressToken": "p1"}}}
+        srv.serve(stdin=io.StringIO(json.dumps(req) + "\n"), stdout=out)
+        msgs = [json.loads(x) for x in out.getvalue().splitlines()]
+        notes = [m for m in msgs if m.get("method") == "notifications/progress"]
+        reply = next(m for m in msgs if m.get("id") == 1)
+        self.assertFalse(reply["result"].get("isError"), reply["result"]["content"][0]["text"][-2000:])
+        pct = [n["params"]["progress"] for n in notes]
+        print(f"progress over MCP: {pct}")
+        self.assertGreaterEqual(len(pct), 3)
+        self.assertEqual(pct, sorted(pct))
+        self.assertEqual(pct[-1], 100.0)
+        st = Service(workspace=ws).status("last")
+        self.assertEqual((st["state"], st["progress"]["percent"]), ("COMPLETED", 100.0))
+
+    def test_a_vanished_input_is_an_input_error(self):
+        tmp = os.path.realpath(tmp_dir(self, prefix="va_progress_err_"))
+        src = str(Path(tmp) / "src" / "talk.mp4")
+        Path(src).parent.mkdir(parents=True)
+        make_media(src)
+        svc = Service(workspace=str(Path(tmp) / "ws"))
+        ir = svc.plan([src], "youtube", hash_sources=False)
+        path = str(Path(svc.workspace) / "plans" / "talk.project.json")
+        save_ir(ir, path)
+        os.remove(src)
+        out = svc.render(load_ir(path), path, approve=["all"], skip_preflight=True)
+        self.assertNotEqual(out["status"], "COMPLETED")
+        err = out.get("error") or svc.status("last").get("error")
+        print(f"vanished input: {err}")
+        self.assertEqual(err["error_class"], "input", err)

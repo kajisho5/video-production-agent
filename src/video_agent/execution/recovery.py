@@ -109,3 +109,42 @@ def next_attempt(r: ToolResult, attempt: int, max_attempts: int, timeout: Option
     if strat["action"] == "RETRY_LONGER":
         return {"class": cls, "action": "RETRY", "reason": strat["hint"], "args_patch": {}, "timeout": (timeout * 2) if timeout else None}
     return {"class": cls, "action": "RETRY", "reason": strat["hint"], "args_patch": {}, "timeout": timeout}
+
+
+# ---- ADR-140 (roadmap step 24): one host-facing class per failure, so a host can say what to fix and whether a retry helps. The recovery class
+# above stays the executor's (what it does next); the error class is what the person is told. The Skill's own code is kept beside it.
+ERROR_CLASSES = ("input", "environment", "engine", "policy", "transient")
+ERROR_CLASS_OF: Dict[str, str] = {
+    "INPUT_MISSING": "input", "UNSUPPORTED_MEDIA": "input", "LANGUAGE_UNSUPPORTED": "input",
+    "TOOL_MISSING": "environment", "DISK_FULL": "environment", "INSUFFICIENT_VRAM": "environment", "FONTS_DIR_REQUIRED": "environment",
+    "INVALID_ARGS": "engine", "ENCODER_FAILED": "engine", "LEGAL_LEVELS_FAILED": "engine", "ALPHA_NOT_KEPT": "engine", "SKILL_ERROR": "engine", "UNKNOWN": "engine",
+    "ACTION_REQUIRED": "policy", "CONSENT_REQUIRED": "policy",
+    "TIMEOUT": "transient", "INTERRUPTED": "transient",
+}
+ERROR_CLASS_FIX: Dict[str, str] = {
+    "input": "the input or the request: change the file, its path or the requirement named in the error, then plan or render again",
+    "environment": "this machine: install or update the tool, free disk space, add the font or memory the error names, then render again",
+    "engine": "the tool reported a failure on valid input: see the tool's code and message; a retry with the same arguments rarely helps",
+    "policy": "a person must act first: an approval, a consent record, a licence or credentials; the agent never does it",
+    "transient": "a time limit or an interruption: render again (`render --resume last` reuses what finished)",
+}
+
+
+def skill_code(r: ToolResult) -> Optional[str]:
+    """The tool's own error code (data.error.code, else data.error.kind), never rewritten."""
+    err = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+    if isinstance(err, dict):
+        code = err.get("code") or err.get("kind")
+        return str(code) if code else None
+    return None
+
+
+def error_class(recovery_class: str) -> str:
+    return ERROR_CLASS_OF.get(recovery_class, "engine")
+
+
+def describe_failure(r: ToolResult, recovery_class: str) -> Dict[str, Any]:
+    """{error_class, recovery_class, code, retry_helps, fix} of one failed tool run."""
+    cls = error_class(recovery_class)
+    retry = cls == "transient" or (RECOVERY_TABLE.get(recovery_class) or {}).get("action", "BLOCK") != "BLOCK"
+    return {"error_class": cls, "recovery_class": recovery_class, "code": skill_code(r), "retry_helps": bool(retry), "fix": ERROR_CLASS_FIX[cls]}

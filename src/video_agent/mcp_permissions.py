@@ -46,7 +46,7 @@ FREE_AI_PROVIDERS = ("", "null", "none", "host")
 # fails when a listed tool has no class. ESCALATES names the higher classes a call of the tool can reach (see classify).
 TOOL_CLASSES: Dict[str, str] = {
     "doctor": READ, "skills": READ, "brief": READ, "corrections": READ, "validate": READ, "explain": READ, "diff": READ,
-    "check": READ, "artifacts": READ, "preflight": READ,
+    "check": READ, "artifacts": READ, "preflight": READ, "status": READ,   # ADR-140: a job's progress and error class
     "plan": WRITE, "revise": WRITE, "approve": WRITE, "reject": WRITE, "preferences": WRITE, "render": WRITE, "transcript_edit": WRITE,
     "selects": WRITE,
     # ADR-128: the entity memory. list / suggest read; add / edit / import write the store (a new version of the agent's own file); export writes a
